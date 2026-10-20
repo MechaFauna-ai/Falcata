@@ -598,6 +598,19 @@ void CUDASingleGPUTreeLearner::ResolveController(const char* why, bool data_chan
             facts.num_bins, facts.max_feature_bins, facts.missing_feature_count,
             facts.device_major, facts.device_minor, facts.device_sm_count, facts.device_memory_bus_bits,
             facts.performance_modifiers_supported, facts.graph_cache_enabled);
+    // Initial source capabilities, not per-tree execution or graph-replay guarantees.
+    fprintf(stderr, "[hybrid-diag] controller_facts: phase=%s num_rows=%" PRId64 " num_features=%d "
+            "sampled_features=%d num_bins=%" PRId64 " max_feature_bins=%d missing_feature_count=%d "
+            "num_leaves=%d max_depth=%d min_data_in_leaf=%d feature_fraction=%.17g bagging_fraction=%.17g "
+            "bagging_freq=%d device_major=%d device_minor=%d device_sm_count=%d device_memory_bus_bits=%d "
+            "metadata_known=%d quantized=%d graph_cache_enabled=%d performance_modifiers_supported=%d "
+            "scope_supported=%d native_prefix_eligible=%d native_whole_eligible=%d\n",
+            why, facts.num_rows, facts.num_features, facts.sampled_features, facts.num_bins,
+            facts.max_feature_bins, facts.missing_feature_count, facts.num_leaves, facts.max_depth,
+            facts.min_data_in_leaf, facts.feature_fraction, facts.bagging_fraction, facts.bagging_freq,
+            facts.device_major, facts.device_minor, facts.device_sm_count, facts.device_memory_bus_bits,
+            facts.metadata_known, facts.quantized, facts.graph_cache_enabled, facts.performance_modifiers_supported,
+            facts.scope_supported, facts.native_prefix_eligible, facts.native_whole_eligible);
   }
 }
 

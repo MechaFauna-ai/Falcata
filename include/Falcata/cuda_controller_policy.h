@@ -66,6 +66,17 @@ struct CUDAControllerDecision {
   const char* reason = "unresolved";
 };
 
+// The verbatim generic export includes this policy header itself. Declare its
+// entry point after the shared types so either include order is valid.
+inline CUDAControllerRoute LearnedCUDAControllerCandidate(const CUDAControllerFacts& facts);
+
+}  // namespace Falcata
+
+// Supplied only by the pinned generic exporter; no handwritten substitute.
+#include <Falcata/cuda_controller_learned.h>  // NOLINT(build/include_order)
+
+namespace Falcata {
+
 inline CUDAControllerDecision ResolveCUDAController(const CUDAControllerRequest& request,
                                                    const CUDAControllerFacts& facts) {
   if (request.device_levels_explicit || request.device_tree_explicit) {
@@ -77,7 +88,6 @@ inline CUDAControllerDecision ResolveCUDAController(const CUDAControllerRequest&
     return {route, route, "explicit_controller_overrides"};
   }
   using Route = CUDAControllerRoute;
-  // Static metadata estimates for controller scheduling; growth semantics are unchanged.
   // Resource identity of the measured desktop GPU, without device-name matching.
   if (facts.device_major != 12 || facts.device_minor != 0 || facts.device_sm_count != 170 ||
       facts.device_memory_bus_bits != 512) {
@@ -94,34 +104,23 @@ inline CUDAControllerDecision ResolveCUDAController(const CUDAControllerRequest&
   if (!facts.scope_supported) return {Route::kAuto, Route::kLegacy, "legacy_scope"};
   if (!facts.graph_cache_enabled) return {Route::kAuto, Route::kHost, "v2_graph_disabled"};
   if (!facts.performance_modifiers_supported) return {Route::kAuto, Route::kHost, "v2_unqualified_modifiers"};
-  if (facts.num_rows < 100000) return {Route::kAuto, Route::kHost, "v2_min_rows"};
-  if (facts.max_feature_bins > 256) return {Route::kAuto, Route::kHost, "v2_bin_envelope"};
-
-  const double active_bag = facts.bagging_freq > 0 ? facts.bagging_fraction : 1.0;
-  const double leaf_capacity = std::floor(static_cast<double>(facts.num_rows) * active_bag /
-                                          std::max(1, facts.min_data_in_leaf));
-  // Both whole hypotheses retain the native final single-leaf budget boundary.
-  // Low-bin histogram footprint, rather than the row/min-leaf capacity proxy,
-  // bounds the low-bin region. Missing modes are admitted only in that region.
-  if (facts.native_whole_eligible && facts.max_depth >= 1 && facts.max_depth <= 10) {
-    const int64_t depth_leaves = int64_t{1} << facts.max_depth;
-    if (static_cast<int64_t>(facts.num_leaves) + 1 >= depth_leaves) {
-      if (facts.max_feature_bins <= 8 && facts.num_bins <= 8192 && facts.sampled_features <= 512) {
-        return {Route::kAuto, Route::kWhole, "v2_whole_lowbin"};
-      }
-      if (facts.missing_feature_count == 0 && facts.sampled_features <= 256 && leaf_capacity >= depth_leaves) {
-        return {Route::kAuto, Route::kWhole, "v2_whole_dense"};
-      }
-    }
+  // Exactly one raw prediction. Initial native feasibility can decline that
+  // winner, but supplies no ranking or permission to substitute another route.
+  const Route candidate = LearnedCUDAControllerCandidate(facts);
+  switch (candidate) {
+    case Route::kHost:
+      return {Route::kAuto, Route::kHost, "learned_host"};
+    case Route::kPrefix:
+      return facts.native_prefix_eligible ?
+          CUDAControllerDecision{Route::kAuto, Route::kPrefix, "learned_prefix"} :
+          CUDAControllerDecision{Route::kAuto, Route::kHost, "learned_prefix_native_unavailable"};
+    case Route::kWhole:
+      return facts.native_whole_eligible ?
+          CUDAControllerDecision{Route::kAuto, Route::kWhole, "learned_whole"} :
+          CUDAControllerDecision{Route::kAuto, Route::kHost, "learned_whole_native_unavailable"};
+    default:
+      return {Route::kAuto, Route::kHost, "learned_invalid_candidate"};
   }
-  if (facts.missing_feature_count > 0) return {Route::kAuto, Route::kHost, "v2_missing_mode"};
-  if (facts.native_prefix_eligible) {
-    if (facts.sampled_features <= 128 && facts.max_feature_bins <= 4 &&
-        facts.feature_fraction >= 0.5 && active_bag >= 0.5) {
-      return {Route::kAuto, Route::kPrefix, "v2_prefix_smallbin"};
-    }
-  }
-  return {Route::kAuto, Route::kHost, "v2_no_region"};
 }
 
 }  // namespace Falcata

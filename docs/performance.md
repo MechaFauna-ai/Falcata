@@ -2678,7 +2678,7 @@ it produces is the quantized classic loop's to the bit
 quantized training as ground truth in
 `test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).
 
-## Automatic static controller selection
+## Automatic learned controller selection
 
 Controller requests are resolved per CUDA learner, independently of the process-global kernel plan.
 Initialization and configuration/data resets resolve again from configuration, cached GPU properties and
@@ -2706,31 +2706,46 @@ admission also requires L1/L2, path smoothing, minimum split gain and resolved o
 `min_sum_hessian_in_leaf=0.001`; average initialization enabled; and default imbalance weighting and sigmoid.
 Nondefault modifiers select host control. Array presence is checked through metadata pointers, without scans.
 
-The remaining performance envelope requires `N >= 100000` and every valid feature having at most 256 bins.
-Missing modes are counted across **all** valid BinMappers, including `Zero` mode, and admitted only in the
-low-bin whole region below. `U` is the existing column sampler's selected count over valid features, with no
-additional random draw. `H` is the cached total histogram-bin span (`feature_hist_offsets.back()`), covering
-all valid features, rather than just the sampled columns; unavailable `H` selects host control.
-Let `b=bagging_fraction` when `bagging_freq>0`, otherwise `b=1`, and `C=floor(N*b/max(1,min_data_in_leaf))`:
+The remaining route candidate comes from `LearnedCUDAControllerCandidate(facts)`, an offline trained tree
+installed verbatim in `include/Falcata/cuda_controller_learned.h`. Its model SHA is
+`33eceaeae7a242febfe450aca655a0d993b4934d6c02a17841fa4204b2e0bd28`; the generic export is pinned as
+`cfc232d8f9acdfc6daea13946eda3c64a243ffe0983c7b32fef4dd9c04071798`. Training used 44 declared workloads
+on source `c4fe61855140e02f07abcc0d032c5394fb900570` / native
+`174f0e9dc01f3e52af80553841bb4014b9bdb2a009af0416ee2e7b163076a529`. Those are training identities;
+they do not qualify a later integrated native library or establish default/performance acceptance.
+Inference loads no model file and performs no online fitting or benchmarking.
 
-| Order | Controller estimate, subject to native eligibility |
+The raw inputs retain their existing meanings:
+
+| Inputs | Origin |
 |---|---|
-| 1 | Low-bin whole if native whole is eligible, `int64(L)+1 >= 2^D`, valid `Bmax<=8`, `H<=8192`, `U<=512`. Missing modes are allowed; `C` is not required. |
-| 2 | Otherwise dense whole if native whole is eligible, `int64(L)+1 >= 2^D`, no missing modes, `U<=256`, `C>=2^D`. |
-| 3 | Otherwise prefix if native prefix is eligible, no missing modes, `U<=128`, valid `Bmax<=4`, `feature_fraction>=0.5`, `b>=0.5`. |
-| 4 | Otherwise host. |
+| `num_rows`, `num_features` | Learner rows and retained Dataset feature count. |
+| `sampled_features` | The existing sampler's actual rounded selected count, without another draw. |
+| `num_bins`, `max_feature_bins` | Cached total histogram-bin span and maximum actual BinMapper bin count. |
+| `missing_feature_count` | Count across all retained BinMappers with non-None MissingType, including Zero mode. |
+| `num_leaves`, `max_depth`, `min_data_in_leaf` | Raw configuration, including valid unbounded depth. |
+| `feature_fraction`, `bagging_fraction`, `bagging_freq` | Raw configuration; inactive bagging fraction is not replaced with 1. |
 
-The low-bin footprint cap bounds histogram state independently of the row/min-leaf capacity proxy; a wide
-layout can exceed that cap even with a small sampled width. Missing modes are admitted only in this bounded
-low-bin whole region. Dense prefix is outside the automatic regions. These conservative metadata estimates
-describe controller overhead, and workload-specific speed can vary. Native depth 1..10, the final single-leaf
-budget boundary and fallback checks remain authoritative.
+The generated function preserves integer-domain checks before binary64 conversion, finite guards for every
+input and the original 17-digit thresholds. No manual minimum-row, bin envelope, capacity proxy, missing-mode
+exclusion or old performance region surrounds it. Hardware, metadata, legacy scope, graph intent and modifier
+qualification above still precede inference. A predicted device route requires its own initial native
+eligibility; an unavailable PREFIX or WHOLE becomes HOST, never the other device route. Unknown candidate
+values also become HOST. Native depth/leaf budgets, layouts, kernels, active tasks, setup failure and later
+cache-disable/fallback history remain authoritative for actual execution.
+
+The existing controller line distinguishes requested and resolved intent. An additional guarded
+`controller_facts: phase=...` line reports the 12 raw features, cached hardware and initial eligibility flags
+at Init/config/data reset, using existing local facts only. `graph_cache_enabled` records requested graph
+intent; neither it nor initial native eligibility proves per-tree execution or graph replay. Full-model
+correctness, actual raw/effective prediction parity, readiness and fresh native/performance qualification
+remain separate requirements.
 
 ## Experimental complete bounded device trees (`device_tree`)
 
 `cuda_plan=auto,device_tree:on` explicitly requests the complete quantized device controller for scalar,
 numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves + 1`. Automatic selection uses
-the same final single-leaf budget boundary, subject to its other performance predicates. The key supplies
+the same native final single-leaf budget boundary, subject to the learned candidate and outer gates. The key supplies
 its own growth even with `device_levels:off`; unsupported kernels, constraints and data retain the existing
 host flow and report the fallback under `FALCATA_DEBUG=diag`. No training parameters or split rules change.
 

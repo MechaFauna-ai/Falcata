@@ -32,7 +32,13 @@ repos:
       - id: cpplint
         # Standalone perf-probe microbenchmarks (not compiled into the library)
         # follow compact benchmark style, not the library C++ style.
-        exclude: ^benchmarks/construct_partition_probe/|^benchmarks/tc_hist_prototype\.cu$
+        # The learned candidate is a verbatim pinned generic export. Preserve
+        # its bytes; only this style hook is excluded, not functional checks.
+        exclude: |
+          (?x)
+          ^benchmarks/construct_partition_probe/|
+          ^benchmarks/tc_hist_prototype\.cu$|
+          ^include/Falcata/cuda_controller_learned\.h$
         args:
           # --root=.. previously made cpplint derive the header-guard prefix
           # from the parent directory name. After the repo rename to Falcata

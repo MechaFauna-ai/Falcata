@@ -86,7 +86,7 @@ def _reset_probe():
 
 def _auto_probe(mode):
     # Dense fixture: 260 supplied columns, 258 valid features, half-width U=129.
-    # Missing low-bin fixtures separately exercise admission without the capacity proxy.
+    # Retain the old dense/low-bin/missing scenarios without prescribing learned winners.
     rng = np.random.default_rng(193)
     dense = mode in {"", "nan_dense", "zero_dense", "retired_dense_prefix"}
     if dense:
@@ -109,7 +109,7 @@ def _auto_probe(mode):
     if mode in {"zero", "zero_dense"}:
         params["zero_as_missing"] = True
     if mode in {"nan", "zero"}:
-        params["min_data_in_leaf"] = 10000  # capacity proxy=10 < 256; low-bin whole must not require it
+        params["min_data_in_leaf"] = 10000  # Retain the old low-capacity/missing case.
     if mode in {"prefix", "retired_dense_prefix"}:
         params.update(max_depth=11, num_leaves=2048)
     if mode == "retired_dense_prefix":
@@ -172,6 +172,103 @@ def _run(probe, *args):
     return result.stderr
 
 
+def _auto_decisions(diag):
+    matches = list(re.finditer(r"controller: requested=auto resolved=(\w+) reason=(\w+) phase=(\w+)([^\n]*)", diag))
+    assert matches, diag
+    records = []
+    for index, decision in enumerate(matches):
+        following = diag[decision.end() :].splitlines()
+        assert len(following) > 1, diag
+        assert following[1].startswith("[hybrid-diag] controller_facts: "), diag
+        fields = dict(re.findall(r"(\w+)=([^\s]+)", following[1]))
+        assert fields["phase"] == decision[3]
+        facts = {
+            name: float(value) if name in {"feature_fraction", "bagging_fraction"} else int(value)
+            for name, value in fields.items()
+            if name != "phase"
+        }
+        assert {
+            "num_rows",
+            "num_features",
+            "sampled_features",
+            "num_bins",
+            "max_feature_bins",
+            "missing_feature_count",
+            "num_leaves",
+            "max_depth",
+            "min_data_in_leaf",
+            "feature_fraction",
+            "bagging_fraction",
+            "bagging_freq",
+            "device_major",
+            "device_minor",
+            "device_sm_count",
+            "device_memory_bus_bits",
+            "metadata_known",
+            "quantized",
+            "graph_cache_enabled",
+            "performance_modifiers_supported",
+            "scope_supported",
+            "native_prefix_eligible",
+            "native_whole_eligible",
+        } <= facts.keys()
+        for short, full in {
+            "rows": "num_rows",
+            "features": "num_features",
+            "sampled": "sampled_features",
+            "bins": "num_bins",
+            "max_bins": "max_feature_bins",
+            "missing_features": "missing_feature_count",
+        }.items():
+            observed = re.search(rf"\b{short}=(\d+)\b", decision[4])
+            assert observed is not None, diag
+            assert int(observed[1]) == facts[full]
+        route, reason = decision[1], decision[2]
+        assert route in {"host", "prefix", "whole"}
+        if reason.startswith("learned_"):
+            assert facts["metadata_known"] == 1
+            assert facts["quantized"] == 1
+            assert facts["scope_supported"] == 1
+            assert facts["graph_cache_enabled"] == 1
+            assert facts["performance_modifiers_supported"] == 1
+            hardware = tuple(
+                facts[k] for k in ("device_major", "device_minor", "device_sm_count", "device_memory_bus_bits")
+            )
+            assert hardware == (12, 0, 170, 512)
+            expected = {
+                "learned_host": ("host", None, None),
+                "learned_prefix": ("prefix", "native_prefix_eligible", 1),
+                "learned_whole": ("whole", "native_whole_eligible", 1),
+                "learned_prefix_native_unavailable": ("host", "native_prefix_eligible", 0),
+                "learned_whole_native_unavailable": ("host", "native_whole_eligible", 0),
+            }
+            assert reason in expected, diag
+            selected, flag, value = expected[reason]
+            assert route == selected
+            if flag is not None:
+                assert facts[flag] == value
+        else:
+            assert reason in {
+                "unqualified_hardware",
+                "unavailable_metadata",
+                "v2_graph_disabled",
+                "v2_unqualified_modifiers",
+            }, diag
+            assert route == "host"
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(diag)
+        window = diag[decision.end() : end]
+        completions = window.count("device_tree: complete")
+        assert completions <= 1  # One scalar update per AUTO resolution in these fixtures.
+        if route != "whole":
+            assert completions == 0
+        if route == "host":
+            assert "device-driven levels per tree" not in window
+        # Initial eligibility and graph intent are not per-tree engagement or
+        # replay guarantees. Keep actual completion/fallback/cache logs intact.
+        records.append((decision, facts))
+    return records
+
+
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
     ("plan", "route"),
@@ -226,42 +323,29 @@ def test_controller_config_and_data_reset_cuda():
 @_REQUIRES_CUDA
 def test_auto_controller_valid_sample_count_and_resets_cuda():
     diag = _run("_auto_probe", "")
-    decisions = re.findall(r"controller: requested=auto resolved=(\w+) reason=(\w+) phase=(\w+)([^\n]*)", diag)
-    assert decisions, diag
+    records = _auto_decisions(diag)
+    decisions = [decision.groups() for decision, _ in records]
+    assert len(decisions) == 7
     assert "features=258 sampled=258" in decisions[0][3]
+    assert "features=258 sampled=129" in decisions[1][3]
     assert all("missing_features=0" in decision[3] for decision in decisions)
-    if decisions[0][1] == "unqualified_hardware":
-        assert all(decision[0] == "host" for decision in decisions)
-        assert "device-driven levels per tree" not in diag
-        assert "device_tree: complete" not in diag
-    else:
-        assert [decision[0] for decision in decisions] == ["host", "whole", "whole", "host", "whole", "host", "whole"]
-        assert "features=258 sampled=129" in decisions[1][3]
-        assert decisions[2][1] == "v2_whole_dense"  # D=8,L=255 admits the native final single-leaf budget bind
-        assert decisions[5][1:3] == ("v2_min_rows", "reset_data")
-        assert "rows=8192" in decisions[5][3]
-        assert decisions[6][1:3] == ("v2_whole_dense", "reset_data")
-        assert diag.count("device_tree: complete") == 4
-        assert "device_levels: 7 device-driven levels per tree" not in diag
+    assert records[2][1]["num_leaves"] == 255  # Preserve the actual final single-leaf budget case.
+    assert [decision[2] for decision in decisions] == ["init"] + ["reset_config"] * 4 + ["reset_data"] * 2
+    assert records[5][1]["num_rows"] == 8192
+    assert records[6][1]["num_rows"] == 102400
 
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("missing_mode", ["nan", "zero", "nan_dense", "zero_dense"])
 def test_auto_controller_uses_all_valid_missing_metadata_cuda(missing_mode):
     diag = _run("_auto_probe", missing_mode)
-    decision = re.search(r"controller: requested=auto resolved=(\w+) reason=(\w+)[^\n]*missing_features=(\d+)", diag)
-    assert decision is not None, diag
-    assert int(decision[3]) > 0
-    if decision[2] == "unqualified_hardware":
-        assert decision[1] == "host"
-        assert "device_tree: complete" not in diag
-    elif missing_mode in {"nan", "zero"}:
-        assert (decision[1], decision[2]) == ("whole", "v2_whole_lowbin")
-        assert diag.count("device_tree: complete") == 1
-    else:
-        assert (decision[1], decision[2]) == ("host", "v2_missing_mode")
-        assert "device-driven levels per tree" not in diag
-        assert "device_tree: complete" not in diag
+    records = _auto_decisions(diag)
+    assert len(records) == 1
+    facts = records[0][1]
+    assert facts["missing_feature_count"] > 0
+    if missing_mode in {"nan", "zero"}:
+        assert facts["num_features"] == 130
+        assert facts["sampled_features"] == 65
 
 
 @_REQUIRES_CUDA
@@ -271,6 +355,7 @@ def test_auto_controller_uses_all_valid_missing_metadata_cuda(missing_mode):
 )
 def test_auto_controller_declines_unqualified_modifiers_cuda(modifier):
     diag = _run("_auto_probe", modifier)
+    _auto_decisions(diag)
     decision = re.search(r"controller: requested=auto resolved=(\w+) reason=(\w+)", diag)
     assert decision is not None, diag
     assert decision[1] == "host"
@@ -282,17 +367,10 @@ def test_auto_controller_declines_unqualified_modifiers_cuda(modifier):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("mode", ["prefix", "retired_dense_prefix"])
-def test_auto_controller_retains_only_smallbin_prefix_cuda(mode):
+def test_auto_controller_learned_native_mapping_retains_prefix_scenarios_cuda(mode):
     diag = _run("_auto_probe", mode)
-    decision = re.search(r"controller: requested=auto resolved=(\w+) reason=(\w+)", diag)
-    assert decision is not None, diag
-    if decision[2] == "unqualified_hardware":
-        assert decision[1] == "host"
-        assert "device-driven levels per tree" not in diag
-    elif mode == "prefix":
-        assert (decision[1], decision[2]) == ("prefix", "v2_prefix_smallbin")
-        assert "device_levels: 10 device-driven levels per tree" in diag
-    else:
-        assert (decision[1], decision[2]) == ("host", "v2_no_region")
-        assert "device-driven levels per tree" not in diag
+    records = _auto_decisions(diag)
+    assert len(records) == 1
+    assert records[0][1]["max_depth"] == 11
+    assert records[0][1]["native_whole_eligible"] == 0
     assert "device_tree: complete" not in diag
