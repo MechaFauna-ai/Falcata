@@ -656,6 +656,7 @@ class CUDAHistogramConstructor {
     key->push_back(static_cast<const void*>(cuda_hessians_));
     key->push_back(static_cast<const void*>(cuda_gradients_hessians_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_is_column_used_bytree_.RawDataReadOnly()));
     key->push_back(any_feature_unused_bytree_ ? this : nullptr);
     // quantized subtract scratch, baked into the captured subtract/copy params
     // (presized by EnsureHybridGraphBitChangeCapacity; defensive)
@@ -1311,9 +1312,22 @@ class CUDAHistogramConstructor {
   uint32_t count_max_partition_bins_ = 0;
   bool count_scratch_dirty_ = true;
   int count_num_sms_ = 0;
-  /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip).
-   *  Indexed by column_index (== inner_feature_index for dense single-feature groups). */
+  /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip), indexed by inner_feature_index
+   *  (the fix/subtract kernels' need-fix features). */
   CUDAVector<int8_t> cuda_is_feature_used_bytree_;
+  /*! \brief The same sample per bin-matrix COLUMN (1 = some feature of the column is sampled), indexed by
+   *  column_index: what the construct kernels skip by. A column is a feature group (an EFB bundle of several
+   *  features) or a multi-val group's feature, so column_index != inner_feature_index on bundled data. */
+  CUDAVector<int8_t> cuda_is_column_used_bytree_;
+  std::vector<int8_t> host_column_used_bytree_;
+  /*! \brief inner_feature_index -> bin-matrix column (CUDARowData's numbering) */
+  std::vector<int> feature_to_column_;
+  /*! \brief the construct kernels' per-column mask, nullptr before the first tree */
+  const int8_t* column_used_bytree_device() const {
+    return cuda_is_column_used_bytree_.Size() > 0 ? cuda_is_column_used_bytree_.RawDataReadOnly() : nullptr;
+  }
+  /*! \brief column_mask[c] = 1 iff some sampled feature lives in column c */
+  void ColumnsUsedByFeatures(const std::vector<int8_t>& feature_mask, std::vector<int8_t>* column_mask) const;
   /*! \brief effective row-grouping extent of the speculative batched construct
    *  launch (see LaunchComputeBatchedConstructDimYKernel) */
   CUDAVector<int> cuda_hybrid_construct_dim_y_;

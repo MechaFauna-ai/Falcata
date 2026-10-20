@@ -4194,7 +4194,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
       // A level root search without a valid split is not final in the host level flows: their leaf-wise tail first
       // searches the root again with the classic per-leaf search (e.g. on a sampled compact layout whose batched
       // root histogram misses the sampled features). Run that same single search here. A valid split hands the tree
-      // to Train's tail with this search cached; otherwise the stump is the host flows' result as well.
+      // to Train's tail with this search cached; otherwise the stump is the host flows' result as well. Its classic
+      // construct accumulates into an assumed-zero slot: clear the batched root histogram first, as Train's tail does.
+      cuda_histogram_constructor_->ZeroHistSlots({0});
       EnqueuePairBestSplitSearch(tree, cuda_smaller_leaf_splits_->GetCUDAStruct(),
                                  cuda_larger_leaf_splits_->GetCUDAStruct(), smaller_leaf_index_, larger_leaf_index_,
                                  /*synchronize=*/true);
@@ -4983,6 +4985,9 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     }
   }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  // a level prefix without a split leaves its batched root histogram in leaf 0's slot, which the tail's classic
+  // root construct would accumulate onto
+  bool level_root_hist_built = false;
   if (num_splits_done == 0 && HybridGrowthUsable()) {
     if (UseSelectiveGrowth()) {
       // budget-limited exact grow-then-prune: builds the COMPLETE tree
@@ -4993,6 +4998,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
       global_timer.Start("CUDASingleGPUTreeLearner::TrainLevelWisePrefix");
       num_splits_done = TrainLevelWisePrefix(tree.get());
       global_timer.Stop("CUDASingleGPUTreeLearner::TrainLevelWisePrefix");
+      level_root_hist_built = num_splits_done == 0;
       batched_apply_ran = num_splits_done > 0;
       // every current leaf already has a cached best-split candidate; the first
       // tail iteration must not redo the pair search (nor the whole tree's classic root search)
@@ -5013,6 +5019,10 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   for (int i = num_splits_done; !selective_handled && !tail_known_empty && i < config_->num_leaves - 1; ++i) {
     if (!pair_search_cached) {
+      if (i == 0 && level_root_hist_built) {
+        // the classic root construct accumulates into an assumed-zero slot: clear the batched root histogram
+        cuda_histogram_constructor_->ZeroHistSlots({0});
+      }
       if (fp_merge_state_ != nullptr) {
         // The leaf-wise tail's fresh per-pair searches are not winner-merged
         // across ranks. The prefix covers the whole tree for depth-limited
