@@ -5338,10 +5338,15 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     auto launch_dense_quant = [&](auto qhist_tag) {
     constexpr size_t QHIST = decltype(qhist_tag)::value;
     if (use_compact_view_) {
+      // Device-map geometry is chosen before capture using the exact DL kernel's resources. A rejected pair
+      // shape must take the existing dense DL branch, rather than retrying the host variant's pair decision.
+      CUDADeviceLevelConstructShape device_shape{};
+      if (dense_dls != nullptr) DeviceLevelConstructShape(&device_shape);
       if (compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4 && FalcataPlan::Get().pair_hist &&
                  compact_pair_joint_max_ > 0 &&
                  compact_pair_joint_max_ * sizeof(int32_t) <= 48 * 1024 &&
                  level_smaller_num_data == nullptr && hybrid_graph_capture_gstate_ == nullptr &&
+                 (dense_dls == nullptr || device_shape.pair_mode == 1) &&
                  (std::max(1, max_num_compact_cols_per_partition_) + 1) / 2 * static_cast<int>(block_dim.y) <=
                    PairJointMaxThreadsPerBlock()) {
         if (dense_dls != nullptr) {

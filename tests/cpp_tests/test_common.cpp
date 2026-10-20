@@ -4,12 +4,15 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <gtest/gtest.h>
+#include <Falcata/cuda_controller_policy.h>
+#include <Falcata/falcata_plan.h>
 #include <Falcata/utils/common.h>
 
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <vector>
 
 
@@ -168,4 +171,393 @@ TEST(SortForPair, SortsOnlyTheSuffixFromStart) {
   Falcata::Common::SortForPair<int, int>(&keys, &values, 1, true);
   EXPECT_EQ(keys, (std::vector<int>{9, 8, 3, 2, 1}));
   EXPECT_EQ(values, (std::vector<int>{90, 80, 30, 20, 10}));
+}
+
+namespace {
+Falcata::CUDAControllerRequest ControllerRequestFromSpec(const char* spec) {
+  Falcata::Config config;
+  config.cuda_plan = spec;
+  const auto plan = Falcata::FalcataPlan::FromConfig(config);
+  return {plan.device_levels, plan.device_tree, plan.device_levels_explicit, plan.device_tree_explicit};
+}
+}  // namespace
+
+TEST(CUDAControllerPolicy, ExplicitControllerPairRetainsLegacyMeaning) {
+  using Route = Falcata::CUDAControllerRoute;
+  struct Case {
+    const char* spec;
+    bool levels_explicit;
+    bool tree_explicit;
+    Route route;
+  };
+  const Case cases[] = {
+      {"auto,device_levels:off", true, false, Route::kHost},
+      {"auto,device_levels:on", true, false, Route::kPrefix},
+      {"auto,device_tree:off", false, true, Route::kPrefix},
+      {"auto,device_tree:on", false, true, Route::kWhole},
+      {"auto,device_levels:off,device_tree:on", true, true, Route::kWhole},
+      {"auto,device_tree:on,device_levels:off", true, true, Route::kWhole},
+      {"auto,device_tree:off,device_levels:on", true, true, Route::kPrefix},
+      {"auto,device_levels:on,device_tree:off", true, true, Route::kPrefix},
+      {"auto,device_levels:off,device_tree:off", true, true, Route::kHost},
+      {"auto,device_tree:on,device_tree:off", false, true, Route::kPrefix},
+      {"auto,device_tree:off,device_tree:on", false, true, Route::kWhole},
+      {"auto,device_levels:on,device_levels:off", true, false, Route::kHost},
+      {"auto,device_levels:off,device_levels:on", true, false, Route::kPrefix},
+      {"auto,row_batch:off,device_tree:on,device_levels:off,graph_loop:off", true, true, Route::kWhole},
+  };
+  // Force is intent, not an eligibility verdict. Unknown facts must not erase
+  // explicit requests; the learner's existing gates decide actual engagement.
+  for (const auto& test : cases) {
+    SCOPED_TRACE(test.spec);
+    const auto request = ControllerRequestFromSpec(test.spec);
+    EXPECT_EQ(request.device_levels_explicit, test.levels_explicit);
+    EXPECT_EQ(request.device_tree_explicit, test.tree_explicit);
+    const auto decision = Falcata::ResolveCUDAController(request, {});
+    EXPECT_EQ(decision.requested, test.route);
+    EXPECT_EQ(decision.resolved, test.route);
+  }
+}
+
+TEST(CUDAControllerPolicy, BooleanAliasesRememberExplicitOff) {
+  using Route = Falcata::CUDAControllerRoute;
+  for (const char* on : {"on", "1", "true", "ON", "True"}) {
+    for (const char* off : {"off", "0", "false", "OFF", "False"}) {
+      const std::string spec = std::string(" auto, device_tree:") + on + ",device_levels:" + off + " ";
+      SCOPED_TRACE(spec);
+      auto request = ControllerRequestFromSpec(spec.c_str());
+      EXPECT_TRUE(request.device_levels_explicit);
+      EXPECT_TRUE(request.device_tree_explicit);
+      EXPECT_EQ(Falcata::ResolveCUDAController(request, {}).resolved, Route::kWhole);
+      const std::string disabled = spec + ",device_tree:" + off;
+      request = ControllerRequestFromSpec(disabled.c_str());
+      EXPECT_EQ(Falcata::ResolveCUDAController(request, {}).resolved, Route::kHost);
+    }
+  }
+}
+
+TEST(CUDAControllerPolicy, UnrelatedOverridesDoNotForceControllerDefaults) {
+  for (const char* spec : {"auto", "auto,row_batch:off", "auto,device_level_graph:off", "auto,graph_loop:off"}) {
+    SCOPED_TRACE(spec);
+    const auto request = ControllerRequestFromSpec(spec);
+    EXPECT_FALSE(request.device_levels_explicit);
+    EXPECT_FALSE(request.device_tree_explicit);
+    const auto decision = Falcata::ResolveCUDAController(request, {});
+    EXPECT_EQ(decision.requested, Falcata::CUDAControllerRoute::kAuto);
+    EXPECT_EQ(decision.resolved, Falcata::CUDAControllerRoute::kHost);  // unknown hardware is unqualified
+  }
+}
+
+namespace {
+Falcata::CUDAControllerFacts ControllerFacts() {
+  Falcata::CUDAControllerFacts facts;
+  facts.num_rows = 200000;
+  facts.num_features = 104;
+  facts.sampled_features = 104;
+  facts.max_feature_bins = 256;
+  facts.num_bins = 104 * 256;
+  facts.metadata_known = true;
+  facts.num_leaves = 1024;
+  facts.max_depth = 10;
+  facts.min_data_in_leaf = 20;
+  facts.quantized = true;
+  facts.performance_modifiers_supported = true;
+  facts.scope_supported = true;
+  facts.native_prefix_eligible = true;
+  facts.native_whole_eligible = true;
+  facts.device_major = 12;
+  facts.device_minor = 0;
+  facts.device_sm_count = 170;
+  facts.device_memory_bus_bits = 512;
+  return facts;
+}
+
+// The installed generic export is the tree oracle. Check only the independent
+// wrapper contract here, never transcribe learned conditions or V2 winners.
+void ExpectLearnedController(const Falcata::CUDAControllerFacts& facts) {
+  using Route = Falcata::CUDAControllerRoute;
+  const auto raw = Falcata::LearnedCUDAControllerCandidate(facts);
+  ASSERT_TRUE(raw == Route::kHost || raw == Route::kPrefix || raw == Route::kWhole);
+  const auto decision = Falcata::ResolveCUDAController({}, facts);
+  EXPECT_EQ(decision.requested, Route::kAuto);
+  if (raw == Route::kHost) {
+    EXPECT_EQ(decision.resolved, Route::kHost);
+    EXPECT_STREQ(decision.reason, "learned_host");
+  } else if (raw == Route::kPrefix) {
+    EXPECT_EQ(decision.resolved, facts.native_prefix_eligible ? Route::kPrefix : Route::kHost);
+    EXPECT_STREQ(decision.reason, facts.native_prefix_eligible ? "learned_prefix" : "learned_prefix_native_unavailable");
+  } else {
+    EXPECT_EQ(decision.resolved, facts.native_whole_eligible ? Route::kWhole : Route::kHost);
+    EXPECT_STREQ(decision.reason, facts.native_whole_eligible ? "learned_whole" : "learned_whole_native_unavailable");
+  }
+}
+}  // namespace
+
+TEST(CUDAControllerPolicy, LearnedCoverageRetainsOldWidthRowsAndCapacityScenarios) {
+  auto facts = ControllerFacts();
+  ExpectLearnedController(facts);
+  facts.num_rows = 99999;
+  ExpectLearnedController(facts);
+  facts.num_rows = 100000;
+  ExpectLearnedController(facts);
+  facts.num_features = facts.sampled_features = 256;
+  ExpectLearnedController(facts);
+  facts.num_features = facts.sampled_features = 257;
+  ExpectLearnedController(facts);
+  facts = ControllerFacts();
+  facts.min_data_in_leaf = 100;
+  facts.num_rows = 102399;
+  ExpectLearnedController(facts);
+  facts.num_rows = 102400;
+  ExpectLearnedController(facts);
+  facts.num_rows = 204799;
+  facts.bagging_freq = 1;
+  facts.bagging_fraction = 0.5;
+  ExpectLearnedController(facts);
+  facts.num_rows = 204800;
+  ExpectLearnedController(facts);
+  facts.bagging_freq = 0;  // The raw inactive fraction stays an independent model input.
+  facts.bagging_fraction = 0.01;
+  ExpectLearnedController(facts);
+  facts.min_data_in_leaf = 0;
+  ExpectLearnedController(facts);
+}
+
+TEST(CUDAControllerPolicy, FinalSingleLeafBudgetBindingRequiresNativeEligibility) {
+  using Route = Falcata::CUDAControllerRoute;
+  auto facts = ControllerFacts();
+  facts.num_features = facts.sampled_features = 53;
+  facts.num_bins = 53 * 256;
+  facts.native_prefix_eligible = false;
+  const auto explicit_off = ControllerRequestFromSpec("auto,device_tree:off,device_levels:off");
+  const auto explicit_whole = ControllerRequestFromSpec("auto,device_tree:on,device_levels:off");
+  for (const int depth : {8, 10}) {
+    facts.max_depth = depth;
+    const int depth_leaves = 1 << depth;
+    // D=8,L=255 and D=10,L=1023 admit the native final single-leaf bind.
+    facts.num_leaves = depth_leaves - 1;
+    facts.native_whole_eligible = true;
+    ExpectLearnedController(facts);
+    facts.native_whole_eligible = false;
+    ExpectLearnedController(facts);
+    // D=8,L=254 and D=10,L=1022 have native eligibility false. The actual
+    // DeviceControllerLevelCount owns this predicate, not the learned wrapper.
+    facts.num_leaves = depth_leaves - 2;
+    facts.native_whole_eligible = false;
+    ExpectLearnedController(facts);
+    for (const int leaves : {depth_leaves - 2, depth_leaves - 1, depth_leaves}) {
+      facts.num_leaves = leaves;
+      facts.native_whole_eligible = true;
+      EXPECT_EQ(Falcata::ResolveCUDAController(explicit_off, facts).resolved, Route::kHost);
+      // Explicit intent is preserved; actual execution still checks native eligibility.
+      EXPECT_EQ(Falcata::ResolveCUDAController(explicit_whole, facts).resolved, Route::kWhole);
+    }
+    facts.num_leaves = depth_leaves;
+    ExpectLearnedController(facts);
+  }
+}
+
+TEST(CUDAControllerPolicy, LearnedCoverageRetainsOldPrefixScenariosAndNativeEligibility) {
+  auto facts = ControllerFacts();
+  facts.num_leaves = 1023;
+  facts.native_whole_eligible = false;
+  facts.num_features = facts.sampled_features = 64;
+  facts.num_bins = 64 * 256;
+  ExpectLearnedController(facts);
+  facts.num_features = facts.sampled_features = 65;
+  ExpectLearnedController(facts);
+  facts.num_features = 256;
+  facts.sampled_features = 128;
+  facts.feature_fraction = 0.5;
+  facts.bagging_freq = 1;
+  facts.bagging_fraction = 0.5;
+  facts.max_feature_bins = 4;
+  facts.num_bins = 1024;
+  ExpectLearnedController(facts);
+  facts.num_features = 258;
+  facts.sampled_features = 129;
+  ExpectLearnedController(facts);
+  facts.num_features = 256;
+  facts.sampled_features = 128;
+  facts.max_feature_bins = 5;
+  ExpectLearnedController(facts);
+  facts.max_feature_bins = 4;
+  facts.feature_fraction = 0.499;
+  ExpectLearnedController(facts);
+  facts.feature_fraction = 0.5;
+  facts.bagging_fraction = 0.499;
+  ExpectLearnedController(facts);
+  facts.bagging_fraction = 0.5;
+  facts.native_prefix_eligible = false;
+  ExpectLearnedController(facts);
+  facts = ControllerFacts();
+  facts.num_features = facts.sampled_features = 28;
+  facts.max_feature_bins = 4;
+  facts.num_bins = 112;
+  facts.native_whole_eligible = false;
+  ExpectLearnedController(facts);
+  facts.native_prefix_eligible = false;
+  ExpectLearnedController(facts);
+}
+
+TEST(CUDAControllerPolicy, MissingMetadataAndHardwareScopeAreIndependentOfBinHistogram) {
+  using Route = Falcata::CUDAControllerRoute;
+  auto facts = ControllerFacts();
+  auto resolve = [&]() { return Falcata::ResolveCUDAController({}, facts).resolved; };
+  facts.max_feature_bins = 257;
+  ExpectLearnedController(facts);
+  facts.max_feature_bins = 9;
+  facts.num_bins = 104 * 9;
+  ExpectLearnedController(facts);
+  facts.missing_feature_count = 1;  // same bins, a valid feature has None -> NaN or Zero mode
+  ExpectLearnedController(facts);
+  facts.metadata_known = false;
+  EXPECT_EQ(resolve(), Route::kHost);
+  facts = ControllerFacts();
+  facts.device_sm_count = 169;
+  EXPECT_EQ(resolve(), Route::kHost);
+  facts.device_sm_count = 170;
+  facts.device_memory_bus_bits = 384;
+  EXPECT_EQ(resolve(), Route::kHost);
+  facts.device_memory_bus_bits = 512;
+  facts.device_minor = 1;
+  EXPECT_EQ(resolve(), Route::kHost);
+  facts.device_minor = 0;
+  facts.scope_supported = false;
+  EXPECT_EQ(resolve(), Route::kLegacy);
+  facts.scope_supported = true;
+  facts.quantized = false;
+  EXPECT_EQ(resolve(), Route::kLegacy);
+}
+
+TEST(CUDAControllerPolicy, UnqualifiedGraphAndModifiersUseHostButDoNotOverrideExplicitIntent) {
+  using Route = Falcata::CUDAControllerRoute;
+  auto facts = ControllerFacts();
+  facts.graph_cache_enabled = false;
+  auto decision = Falcata::ResolveCUDAController({}, facts);
+  EXPECT_EQ(decision.resolved, Route::kHost);
+  EXPECT_STREQ(decision.reason, "v2_graph_disabled");
+  facts.graph_cache_enabled = true;
+  facts.performance_modifiers_supported = false;
+  decision = Falcata::ResolveCUDAController({}, facts);
+  EXPECT_EQ(decision.resolved, Route::kHost);
+  EXPECT_STREQ(decision.reason, "v2_unqualified_modifiers");
+  // Explicit intent bypasses performance admission on any hardware, including
+  // when metadata is unavailable. Actual execution still uses native gates.
+  facts.device_major = 8;
+  facts.metadata_known = false;
+  facts.graph_cache_enabled = false;
+  EXPECT_EQ(Falcata::ResolveCUDAController({}, facts).resolved, Route::kHost);
+  EXPECT_EQ(Falcata::ResolveCUDAController(ControllerRequestFromSpec("auto,device_levels:on"), facts).resolved,
+            Route::kPrefix);
+  EXPECT_EQ(Falcata::ResolveCUDAController(ControllerRequestFromSpec("auto,device_tree:on,device_levels:off"), facts).resolved,
+            Route::kWhole);
+  facts = ControllerFacts();
+  facts.metadata_known = false;
+  decision = Falcata::ResolveCUDAController({}, facts);
+  EXPECT_EQ(decision.resolved, Route::kHost);
+  EXPECT_STREQ(decision.reason, "unavailable_metadata");
+}
+
+TEST(CUDAControllerPolicy, LearnedCoverageRetainsOldLowBinWidthAndMissingScenarios) {
+  using Route = Falcata::CUDAControllerRoute;
+  auto facts = ControllerFacts();
+  facts.num_features = 2048;
+  facts.sampled_features = 512;
+  facts.feature_fraction = 0.25;
+  facts.max_feature_bins = 8;
+  facts.num_bins = 8192;
+  facts.min_data_in_leaf = 10000;
+  ExpectLearnedController(facts);
+  facts.missing_feature_count = 1;
+  ExpectLearnedController(facts);
+  facts.sampled_features = 513;
+  facts.feature_fraction = 513.0 / facts.num_features;
+  ExpectLearnedController(facts);
+  facts.sampled_features = 512;
+  facts.feature_fraction = 0.25;
+  facts.num_bins = 8193;
+  ExpectLearnedController(facts);
+  facts.num_bins = 8192;
+  facts.max_feature_bins = 9;
+  ExpectLearnedController(facts);
+  facts.missing_feature_count = 0;
+  facts.sampled_features = 256;
+  facts.feature_fraction = 0.125;
+  ExpectLearnedController(facts);
+  facts.min_data_in_leaf = 20;
+  ExpectLearnedController(facts);
+  facts.missing_feature_count = 1;
+  ExpectLearnedController(facts);
+  facts.max_feature_bins = 8;
+  ExpectLearnedController(facts);
+  facts.num_bins = 0;
+  const auto unavailable = Falcata::ResolveCUDAController({}, facts);
+  EXPECT_EQ(unavailable.resolved, Route::kHost);
+  EXPECT_STREQ(unavailable.reason, "unavailable_metadata");
+  facts.num_bins = 8192;
+  facts.native_whole_eligible = false;
+  ExpectLearnedController(facts);
+}
+
+TEST(CUDAControllerPolicy, TotalHistogramFootprintCannotBeReplacedBySampledWidth) {
+  auto facts = ControllerFacts();
+  facts.num_features = 3555;
+  facts.sampled_features = 356;
+  facts.feature_fraction = 0.1;
+  facts.max_feature_bins = 6;
+  facts.num_bins = 15000;
+  facts.min_data_in_leaf = 10000;
+  ExpectLearnedController(facts);
+  facts.missing_feature_count = 1;
+  ExpectLearnedController(facts);
+  // Preserve the independent total-footprint input at the same sampled width;
+  // the generated model, rather than a manual cap, supplies its prediction.
+  facts.num_bins = 8192;
+  ExpectLearnedController(facts);
+}
+
+TEST(CUDAControllerPolicy, LearnedWinnerUsesOnlyItsOwnNativeCapability) {
+  auto facts = ControllerFacts();
+  const int shapes[][2] = {{1, 2}, {1, 512}, {2, 4}, {8, 254}, {8, 255}, {10, 1022}, {10, 1023},
+                          {11, 2048}, {-1, 1024}};
+  for (const int bins : {4, 256}) {
+    facts.max_feature_bins = bins;
+    facts.num_bins = facts.num_features * bins;
+    for (const auto& shape : shapes) {
+      facts.max_depth = shape[0];
+      facts.num_leaves = shape[1];
+      for (const bool prefix : {false, true}) {
+        for (const bool whole : {false, true}) {
+          // Inject the initial capability interface, not a second implementation
+          // of the native level-count predicate or an alternate-route ranking.
+          facts.native_prefix_eligible = prefix;
+          facts.native_whole_eligible = whole;
+          ExpectLearnedController(facts);
+        }
+      }
+    }
+  }
+}
+
+TEST(CUDAControllerPolicy, HardwareAndBasicMetadataPrecedeLegacyScope) {
+  using Route = Falcata::CUDAControllerRoute;
+  auto facts = ControllerFacts();
+  facts.quantized = false;
+  facts.scope_supported = false;
+  facts.device_major = 0;
+  auto decision = Falcata::ResolveCUDAController({}, facts);
+  EXPECT_EQ(decision.resolved, Route::kHost);
+  EXPECT_STREQ(decision.reason, "unqualified_hardware");
+  facts.device_major = 12;
+  facts.metadata_known = false;
+  decision = Falcata::ResolveCUDAController({}, facts);
+  EXPECT_EQ(decision.resolved, Route::kHost);
+  EXPECT_STREQ(decision.reason, "unavailable_metadata");
+  facts.metadata_known = true;
+  facts.graph_cache_enabled = false;
+  facts.performance_modifiers_supported = false;
+  decision = Falcata::ResolveCUDAController({}, facts);
+  EXPECT_EQ(decision.resolved, Route::kLegacy);
+  EXPECT_STREQ(decision.reason, "legacy_scope");
 }

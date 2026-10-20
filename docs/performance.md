@@ -2678,10 +2678,92 @@ it produces is the quantized classic loop's to the bit
 quantized training as ground truth in
 `test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).
 
+## Automatic learned controller selection
+
+Controller requests are resolved per CUDA learner, independently of the process-global kernel plan.
+Initialization and configuration/data resets resolve again from configuration, cached GPU properties and
+host-side Dataset metadata. Bin metadata is refreshed only at initialization or a data reset; no row scans,
+copies, timers, trial trees or compilation are introduced into per-tree routing.
+
+An explicit `device_levels` or `device_tree` key retains the legacy boolean pair, including when unrelated
+overrides are present: `device_tree:on,device_levels:off` requests whole growth; `device_tree:off` alone retains
+the prefix default; `device_levels:off` alone requests host growth. Each key's last occurrence wins, independent
+of the other key's order. Boolean aliases `1`/`0` and `true`/`false` retain the same meaning.
+
+`FALCATA_DEBUG=diag` reports `controller: requested=auto|explicit resolved=host|prefix|whole|legacy reason=... phase=...` separately from the
+existing engagement and fallback diagnostics. Resolution expresses controller intent; existing kernel,
+configuration and graph-cache checks still decide whether it executes. Resets invalidate cached graphs and
+refresh controller diagnostics.
+
+The static selector admits the hardware resource identity: compute capability 12.0, 170 SMs and
+a 512-bit memory bus. Unknown hardware or unavailable metadata selects host control. On admitted hardware,
+nonquantized, forest, distributed, categorical/vector, constrained and other unsupported training scopes retain
+their existing routing (`legacy`) and correctness guards. Other CUDA optimizations remain enabled.
+
+Within ordinary quantized numerical scalar GBDT, automatic device controllers require graph caching enabled,
+no supplied weight or initial-score arrays, and objective `regression`, `binary` or `multiclass`. Performance
+admission also requires L1/L2, path smoothing, minimum split gain and resolved output clipping all zero;
+`min_sum_hessian_in_leaf=0.001`; average initialization enabled; and default imbalance weighting and sigmoid.
+Nondefault modifiers select host control. Array presence is checked through metadata pointers, without scans.
+
+The remaining route candidate comes from `LearnedCUDAControllerCandidate(facts)`, an offline trained tree
+installed verbatim in `include/Falcata/cuda_controller_learned.h`. Its model SHA is
+`11fe1d31494ae75ecd010fe81627a71e57101f2782f850aeadbbfba42294c0ed`; the generic export is pinned as
+`ae70038df11f13b153b4b79d3a803eacd4686f2528948d321280c9f1b7af01f5`. Training used 44 declared workloads
+on source `03cf9b3f763e82fe3065d432255cd7b44bfd8946` / native
+`b0d340edd23ef9b5569742881ba60795b2921ff08fd407a13037c6f39adb1929`. Those are training identities;
+they do not qualify a later integrated native library or establish default/performance acceptance.
+The constrained fit used schema2 training specification
+`bb7d35955b1094c628d495fd726a9b24984f7fdeee52603cb4f496328c91c0b8` and learner
+`b34e62be9a64e1eef682dfdcd935653e179823f03a4ca30bfbc3ea28f2cc66b3` under method revision 2
+(`98e949bbbb5c59043c5fbe455a2e7fcb2a7e59f120369a12550ff17aeb395496`): among grid points whose full-data
+refit satisfies every training label, it selects by cross-validated violation fraction, then size, then
+regret, then the larger minimum family count. That selected depth 2 with minimum two training families per leaf. Training-only admissible-route
+labels supplement the original costs; they are absent from the unchanged schema1 runtime model. Full-fit
+label violations were zero, while cross-validation warnings and limited PREFIX cost-opportunity coverage
+remain. Neither result establishes native readiness or performance acceptance. Inference loads no model
+file and performs no online fitting or benchmarking.
+
+The installed tree reads three of its inputs; both comparisons are inclusive (`<=`):
+
+| `num_leaves` | Second split | Candidate |
+|---|---|---|
+| `<= 1536` | `num_features <= 1472` | WHOLE (`learned_whole`) |
+| `<= 1536` | `num_features > 1472` | HOST (`learned_host`) |
+| `> 1536` | `num_bins <= 1824` | PREFIX (`learned_prefix`) |
+| `> 1536` | `num_bins > 1824` | HOST (`learned_host`) |
+
+The raw inputs retain their existing meanings:
+
+| Inputs | Origin |
+|---|---|
+| `num_rows`, `num_features` | Learner rows and retained Dataset feature count. |
+| `sampled_features` | The existing sampler's actual rounded selected count, without another draw. |
+| `num_bins`, `max_feature_bins` | Cached total histogram-bin span and maximum actual BinMapper bin count. |
+| `missing_feature_count` | Count across all retained BinMappers with non-None MissingType, including Zero mode. |
+| `num_leaves`, `max_depth`, `min_data_in_leaf` | Raw configuration, including valid unbounded depth. |
+| `feature_fraction`, `bagging_fraction`, `bagging_freq` | Raw configuration; inactive bagging fraction is not replaced with 1. |
+
+The generated function preserves integer-domain checks before binary64 conversion, finite guards for every
+input and the original 17-digit thresholds. No manual minimum-row, bin envelope, capacity proxy, missing-mode
+exclusion or old performance region surrounds it. Hardware, metadata, legacy scope, graph intent and modifier
+qualification above still precede inference. A predicted device route requires its own initial native
+eligibility; an unavailable PREFIX or WHOLE becomes HOST, never the other device route. Unknown candidate
+values also become HOST. Native depth/leaf budgets, layouts, kernels, active tasks, setup failure and later
+cache-disable/fallback history remain authoritative for actual execution.
+
+The existing controller line distinguishes requested and resolved intent. An additional guarded
+`controller_facts: phase=...` line reports the 12 raw features, cached hardware and initial eligibility flags
+at Init/config/data reset, using existing local facts only. `graph_cache_enabled` records requested graph
+intent; neither it nor initial native eligibility proves per-tree execution or graph replay. Full-model
+correctness, actual raw/effective prediction parity, readiness and fresh native/performance qualification
+remain separate requirements.
+
 ## Experimental complete bounded device trees (`device_tree`)
 
-`cuda_plan=auto,device_tree:on` (default OFF) requests the complete quantized device controller for scalar,
-numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves`. The key supplies
+`cuda_plan=auto,device_tree:on` explicitly requests the complete quantized device controller for scalar,
+numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves + 1`. Automatic selection uses
+the same native final single-leaf budget boundary, subject to the learned candidate and outer gates. The key supplies
 its own growth even with `device_levels:off`; unsupported kernels, constraints and data retain the existing
 host flow and report the fallback under `FALCATA_DEBUG=diag`. No training parameters or split rules change.
 

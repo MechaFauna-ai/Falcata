@@ -31,6 +31,8 @@ namespace Falcata {
  *
  * The plan is process-global, mirroring the env-var switches it replaced:
  * concurrent in-process boosters with different plans are unsupported.
+ * Automatic controller routing is learner-local; device_levels/device_tree
+ * retain the legacy boolean defaults and explicit override intent here.
  *
  * ``cuda_plan`` grammar: ``auto`` (default) optionally followed by
  * comma-separated expert overrides, e.g. ``auto,graph_loop:off,row_batch:off``.
@@ -935,10 +937,15 @@ struct FalcataPlan {
   // back once after level K, the host replays its bookkeeping and the classic loop continues. Same descriptors,
   // same kernels' sums: bit-identical.
   bool device_levels = true;        // key: device_levels
-  // Experimental complete depth-bounded quantized tree: 2^max_depth <= num_leaves, depth <= 10. Includes the
+  // Complete depth-bounded quantized tree: 2^max_depth <= num_leaves + 1, depth <= 10. Includes the
   // final apply without its unnecessary child search; one growth journal readback and no host growth tail.
+  // The explicit key allows the final level's single-leaf budget bind. Auto policy may be narrower.
   // A changing sampled layout can disable graph caching, but never the device controller itself.
   bool device_tree = false;         // key: device_tree
+  // Keep intent separately from defaults: the learner's automatic controller
+  // policy must never reinterpret an explicit controller pair.
+  bool device_levels_explicit = false;
+  bool device_tree_explicit = false;
   // device_levels' launches as one cached CUDA graph for the prefix (root work and the host tail remain). Trees
   // whose keys keep changing use the host loop after the cache-miss budget: the same model, bit-identical.
   bool device_level_graph = true;   // key: device_level_graph
@@ -1247,6 +1254,8 @@ struct FalcataPlan {
         Log::Fatal("cuda_plan: unknown key \"%s\"", kv[0].c_str());
       }
       *slot = value;
+      if (kv[0] == "device_levels") plan.device_levels_explicit = true;
+      if (kv[0] == "device_tree") plan.device_tree_explicit = true;
       overridden = true;
     }
     if (overridden_out != nullptr) {

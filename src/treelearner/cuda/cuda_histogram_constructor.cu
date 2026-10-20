@@ -2099,6 +2099,103 @@ bool CUDAHistogramConstructor::DeviceLevelConstructSupported() {
   return use_quantized_grad_ && SupportsBatchedLevel();
 }
 
+namespace {
+
+PairJointKernelFn DeviceLevelPairJointKernel(const CUDADeviceLevelConstructShape& shape, const int code_bits) {
+  return shape.kernel_kind == 4 ?
+    PairJointCode5WordKernelDL(shape.code5_flat != 0, shape.code5_epilogue_flat != 0, code_bits) :
+    shape.kernel_kind == 3 ? PairJointCappedDL().gather_code5 :
+    shape.kernel_kind == 2 ? CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, true, true> :
+    shape.kernel_kind == 1 ? PairJointCappedDL().gather :
+    CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, false, true>;
+}
+
+bool DeviceLevelPairJointShapeSupported(const CUDADeviceLevelConstructShape& shape, const int code_bits) {
+  // Host variants supply tuning candidates, not launch guarantees for DL variants. In particular DL adds
+  // static shared state beside the dynamic joint table, and may have different register / thread limits.
+  struct Limits {
+    int device;
+    PairJointKernelFn kernel;
+    cudaFuncAttributes attr;
+    DeviceLaunchLimits device_limits;
+    int block_x;
+    int block_y;
+    int grid_x;
+  };
+  struct Entry {
+    int device;
+    PairJointKernelFn kernel;
+    int block_x;
+    int block_y;
+    int grid_x;
+    int smem_bytes;
+    bool supported;
+  };
+  static thread_local std::vector<Limits> limits_cache;
+  static thread_local std::vector<Entry> shape_cache;
+  int device = 0;
+  CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+  const PairJointKernelFn kernel = DeviceLevelPairJointKernel(shape, code_bits);
+  for (const Entry& e : shape_cache) {
+    if (e.device == device && e.kernel == kernel && e.block_x == shape.block_x && e.block_y == shape.block_y &&
+        e.grid_x == shape.grid_x && e.smem_bytes == shape.smem_bytes) {
+      return e.supported;
+    }
+  }
+  auto found = std::find_if(limits_cache.begin(), limits_cache.end(), [&](const Limits& limits) {
+    return limits.device == device && limits.kernel == kernel;
+  });
+  if (found == limits_cache.end()) {
+    Limits limits{};
+    limits.device = device;
+    limits.kernel = kernel;
+    limits.device_limits = CurrentDeviceLaunchLimits();
+    CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&limits.attr, kernel));
+    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&limits.block_x, cudaDevAttrMaxBlockDimX, device));
+    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&limits.block_y, cudaDevAttrMaxBlockDimY, device));
+    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&limits.grid_x, cudaDevAttrMaxGridDimX, device));
+    limits_cache.push_back(limits);
+    found = limits_cache.end() - 1;
+  }
+  const Limits& limits = *found;
+  const int max_threads = std::min(limits.attr.maxThreadsPerBlock, limits.device_limits.max_threads_per_block);
+  const int64_t threads = static_cast<int64_t>(shape.block_x) * shape.block_y;
+  const size_t shared_limit = limits.device_limits.shared_bytes_per_block;
+  const size_t static_shared = limits.attr.sharedSizeBytes;
+  const char* reason = "ok";
+  int resident_blocks = 0;
+  if (shape.block_x <= 0 || shape.block_y <= 0 || shape.block_x > limits.block_x || shape.block_y > limits.block_y) {
+    reason = "block_dimensions";
+  } else if (shape.grid_x <= 0 || shape.grid_x > limits.grid_x) {
+    reason = "grid_dimensions";
+  } else if (threads > max_threads) {
+    reason = "threads";
+  } else if (shape.smem_bytes < 0 || static_shared > shared_limit ||
+             static_cast<size_t>(shape.smem_bytes) > shared_limit - static_shared ||
+             shape.smem_bytes > limits.attr.maxDynamicSharedSizeBytes) {
+    // No shared-memory opt-in is set on these kernels. Account for static allocation as well as dynamic bytes.
+    reason = "shared_memory";
+  } else {
+    CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+      &resident_blocks, kernel, static_cast<int>(threads), static_cast<size_t>(shape.smem_bytes)));
+    if (resident_blocks == 0) reason = "occupancy";
+  }
+  const bool supported = std::strcmp(reason, "ok") == 0;
+  if (FalcataDebug().diag) {
+    std::fprintf(stderr, "[hybrid-diag] device_pair_joint: route=%s reason=%s kernel=%d block=%dx%d grid_x=%d "
+                 "dynamic_shared=%d static_shared=%zu max_dynamic_shared=%d shared_limit=%zu "
+                 "max_threads=%d resident_blocks=%d\n",
+                 supported ? "pair" : "dense", reason, shape.kernel_kind, shape.block_x, shape.block_y,
+                 shape.grid_x, shape.smem_bytes, static_shared, limits.attr.maxDynamicSharedSizeBytes,
+                 shared_limit, max_threads, resident_blocks);
+  }
+  // Shape and function resources are cached before capture; no row inspection, copies or trial launches.
+  shape_cache.push_back({device, kernel, shape.block_x, shape.block_y, shape.grid_x, shape.smem_bytes, supported});
+  return supported;
+}
+
+}  // namespace
+
 void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstructShape* shape) {
   std::memset(shape, 0, sizeof(*shape));
   // LaunchConstructHistogramBatchedKernelInner0's tree-constant decisions for a multi-pair level that holds fewer
@@ -2117,6 +2214,7 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
   shape->block_y = block_dim_y;
   shape->grid_x = grid_dim_x;
   shape->block_x = block_dim_x;
+  const CUDADeviceLevelConstructShape dense_shape = *shape;
   const int bins = use_quantized_grad_ ? num_grad_quant_bins_ : 0;
   const FalcataPlan& plan = FalcataPlan::Get();
   if (!(use_compact_view_ && compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4 && plan.pair_hist &&
@@ -2193,6 +2291,11 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
   shape->per_pair_min_rows = BatchConstructMinRowsPerThread() * (whole_rows ? grid_dim_x : 1);
   shape->whole_row_partitions = whole_rows ? grid_dim_x : 0;
   shape->whole_row_joint = whole_rows ? static_cast<uint32_t>(compact_pair_joint_total_) : 0u;
+  if (!DeviceLevelPairJointShapeSupported(*shape, code5_bits_)) {
+    // Publish the same dense geometry to the device map, graph key and launch dispatch. The existing dense
+    // quantized kernel accumulates the same integer histograms; controller eligibility and growth are unchanged.
+    *shape = dense_shape;
+  }
 }
 
 bool CUDAHistogramConstructor::DeviceLevelGraphCapturable() {
@@ -2212,16 +2315,12 @@ void CUDAHistogramConstructor::LaunchDeviceLevelPairJoint(const CUDAHybridPairDe
   CUDADeviceLevelConstructShape sh;
   DeviceLevelConstructShape(&sh);
   CHECK_EQ(sh.pair_mode, 1);
-  const PairJointKernelFn kernel =
-    sh.kernel_kind == 4 ? PairJointCode5WordKernelDL(sh.code5_flat != 0, sh.code5_epilogue_flat != 0, code5_bits_) :
-    sh.kernel_kind == 3 ? PairJointCappedDL().gather_code5 :
-    sh.kernel_kind == 2 ? CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, true, true> :
-    sh.kernel_kind == 1 ? PairJointCappedDL().gather :
-    CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, false, true>;
+  const PairJointKernelFn kernel = DeviceLevelPairJointKernel(sh, code5_bits_);
   DiagConstructKernel(sh.kernel_kind == 4 ? "pair_code5_words (device levels)" : "pair_hist (device levels)");
   const uint8_t* data = sh.kernel_kind >= 2 ? compact_data_uint8_t_.RawDataReadOnly() : NibbleViewData();
   const int grid_x = std::max(1, sh.grid_x);
-  int grid_y = std::max(1, std::min(65535, (DeviceLevelConstructTargetBlocks() + grid_x - 1) / grid_x));
+  const int max_grid_y = std::min(65535, CurrentDeviceLaunchLimits().max_grid_dim_y);
+  int grid_y = std::max(1, std::min(max_grid_y, (DeviceLevelConstructTargetBlocks() + grid_x - 1) / grid_x));
   if (device_level_whole_tree_ && sh.kernel_kind == 4 && sh.whole_row_partitions > 0 && grid_x == 1 &&
       sh.slot != 0 && sh.slot_device_slots > 0) {
     // Workers claim virtual block rows until exhausted; row grouping and flushes use the device map, not grid_y.
