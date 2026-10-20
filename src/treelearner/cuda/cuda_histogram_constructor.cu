@@ -1501,7 +1501,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseDeterministic(
       source != nullptr ? source->packed_byte_offsets :
         (det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr),
       source != nullptr ? source->is_feature_used :
-        (cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr),
+        column_used_bytree_device(),
       num_data_,
       det_dense_slot_stride_,
       det_slots,
@@ -1590,7 +1590,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic
       cuda_row_data_->cuda_partition_hist_offsets(),
       cuda_row_data_->cuda_feature_partition_column_index_offsets(),
       det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr,
-      cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
+      column_used_bytree_device(),
       num_data_,
       static_cast<data_size_t>(min_data_in_leaf_),
       min_sum_hessian_in_leaf_,
@@ -1719,7 +1719,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseCount(
   const int* packed_offsets = source != nullptr ? source->packed_byte_offsets :
     (is_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr);
   const int8_t* feature_used = source != nullptr ? source->is_feature_used :
-    (cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr);
+    column_used_bytree_device();
   const int mode = cc.field_bits > 0 ? 3 : (cc.wide ? 2 : (cc.identity ? 0 : 1));
 #define FALCATA_COUNT_LEAF_LAUNCH(IS4, MODE) \
   do { \
@@ -1796,7 +1796,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedCount(
   const int* packed_offsets = !is_4bit ? nullptr : (compact ? compact_packed_partition_byte_offsets_.RawData() :
     cuda_row_data_->cuda_packed_partition_byte_offsets());
   const int8_t* feature_used = compact ? nullptr :
-    (cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr);
+    column_used_bytree_device();
   const int mode = cc.field_bits > 0 ? 3 : (cc.wide ? 2 : (cc.identity ? 0 : 1));
   const int convert_threads = 256;
   const int convert_blocks = (num_total_bin_ + convert_threads - 1) / convert_threads;
@@ -2343,7 +2343,7 @@ void CUDAHistogramConstructor::CaptureHybridGraphDetConstructMergeInner(
       cuda_row_data_->cuda_partition_hist_offsets(),
       cuda_row_data_->cuda_feature_partition_column_index_offsets(),
       det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr,
-      cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
+      column_used_bytree_device(),
       num_data_,
       static_cast<data_size_t>(min_data_in_leaf_),
       min_sum_hessian_in_leaf_,

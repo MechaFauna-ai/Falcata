@@ -125,6 +125,19 @@ void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, co
     feature_num_bins_.emplace_back(static_cast<uint32_t>(bin_mapper->num_bin()));
     feature_most_freq_bins_.emplace_back(most_freq_bin);
   }
+  // CUDARowData's column numbering (DivideCUDAFeatureGroupsWithCap): one column per feature group, except a
+  // multi-val group, whose every feature is a column of its own. With EFB a group bundles several features, so the
+  // per-tree feature sample is translated to columns (ColumnsUsedByFeatures) before any column-level consumer.
+  feature_to_column_.assign(static_cast<size_t>(train_data->num_features()), -1);
+  for (int feature_index = 0, column = -1, prev_group = -1; feature_index < train_data->num_features();
+       ++feature_index) {
+    const int group = train_data->Feature2Group(feature_index);
+    if (group != prev_group || train_data->IsMultiGroup(group)) {
+      ++column;
+    }
+    prev_group = group;
+    feature_to_column_[feature_index] = column;
+  }
   feature_hist_offsets_.clear();
   for (size_t i = 0; i < feature_hist_offsets.size(); ++i) {
     feature_hist_offsets_.emplace_back(feature_hist_offsets[i]);
@@ -278,6 +291,14 @@ void CUDAHistogramConstructor::SetFeatureUsedBytree(const std::vector<int8_t>& i
   }
   UploadTreeStartMeta<int8_t>(cuda_is_feature_used_bytree_.RawData(), is_feature_used_bytree.data(),
                               is_feature_used_bytree.size());
+  // the construct kernels skip by column: a column is built when any of its features is sampled (the finder then
+  // searches only the sampled features of it)
+  ColumnsUsedByFeatures(is_feature_used_bytree, &host_column_used_bytree_);
+  if (cuda_is_column_used_bytree_.Size() != host_column_used_bytree_.size()) {
+    cuda_is_column_used_bytree_.Resize(host_column_used_bytree_.size());
+  }
+  UploadTreeStartMeta<int8_t>(cuda_is_column_used_bytree_.RawData(), host_column_used_bytree_.data(),
+                              host_column_used_bytree_.size());
   // per-tree bin-level used mask for the batched fix/subtract/construct-merge
   // kernels: with feature_fraction sampling, ~ (1 - fraction) of every leaf
   // histogram belongs to features no kernel of this tree will ever read, so the
@@ -477,6 +498,20 @@ static bool CompactFill4BitTiledEligible(const std::vector<size_t>& nib0, const 
 #endif
 }
 
+void CUDAHistogramConstructor::ColumnsUsedByFeatures(const std::vector<int8_t>& feature_mask,
+                                                     std::vector<int8_t>* column_mask) const {
+  const int num_columns = cuda_row_data_->host_feature_partition_column_index_offsets().back();
+  column_mask->assign(static_cast<size_t>(num_columns), 0);
+  const int num_features = std::min(static_cast<int>(feature_mask.size()), static_cast<int>(feature_to_column_.size()));
+  for (int f = 0; f < num_features; ++f) {
+    const int c = feature_to_column_[f];
+    CHECK(c >= 0 && c < num_columns);
+    if (feature_mask[f]) {
+      (*column_mask)[c] = 1;
+    }
+  }
+}
+
 bool CUDAHistogramConstructor::ScanCompactLayout(
     const std::vector<int8_t>& is_feature_used_bytree, CompactLayout* layout) const {
   // Gate: only support the standard dense path (uint8 bins, no large-bin partitions, no sparse).
@@ -487,6 +522,9 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
     return false;
   }
   if (is_feature_used_bytree.empty()) return false;
+  // the feature sample per column (EFB: a column bundles several features)
+  std::vector<int8_t> column_used;
+  ColumnsUsedByFeatures(is_feature_used_bytree, &column_used);
 
   // Read partition info from CUDARowData (host-side).
   const std::vector<int>& src_part_col_offsets = cuda_row_data_->host_feature_partition_column_index_offsets();
@@ -509,9 +547,7 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
     const int p_num = p_end - p_start;
     layout->src_part_stride.push_back(p_num);
     for (int c = p_start; c < p_end; ++c) {
-      // is_feature_used_bytree is indexed by inner_feature_index. For dense single-feature groups
-      // (Numerai), inner_feature_index == column_index; the bounds-check guards us if not.
-      if (c < static_cast<int>(is_feature_used_bytree.size()) && is_feature_used_bytree[c]) {
+      if (column_used[c]) {
         layout->src_local_col.push_back(c - p_start);
         layout->partition_for_slot.push_back(p);
         layout->col_hist_offsets.push_back(src_col_hist_offsets[c]);
