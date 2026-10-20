@@ -17,7 +17,9 @@ distribution vendors every dependency, so there is no ``git clone`` and no
 submodule step.
 
 The build asks ``nvidia-smi`` which GPUs are in the machine and compiles only
-for those: device code for each one, plus PTX for the newest. When no GPU is
+for those: device code for each one, plus PTX for the newest. CUDA 13 cannot
+compile for GPUs below sm_75, so it skips such a GPU with a warning, and the
+build fails if no detected GPU is left (use CUDA 12.x for them). When no GPU is
 visible at build time (docker build stages, CPU-only CI), it compiles for every
 architecture the toolkit supports instead, which takes several times longer.
 To build for a different card, or to choose explicitly:
@@ -30,7 +32,7 @@ To build for a different card, or to choose explicitly:
 The same applies to ``cmake`` builds (``-DCMAKE_CUDA_ARCHITECTURES=...``) and to
 ``build-python.sh`` (``CUDAARCHS=...``). The release wheels are built by
 ``tools/build-release-wheel.sh`` for an explicit list of architectures
-(``FALCATA_WHEEL_ARCHS`` overrides it), never for the build machine's GPU.
+(``FALCATA_WHEEL_ARCHS`` overrides it), whatever GPU the build machine has.
 
 Falcata is a CUDA-first library and the source build targets the GPU by
 default. A CPU-only build exists, but it is not what the project is for:

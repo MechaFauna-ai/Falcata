@@ -132,7 +132,9 @@ the source distribution vendors every dependency, so no `git clone` and no
 submodule dance.
 
 The build detects the GPU(s) in the machine and **compiles only for those**
-(the library compiles in about 50 s on a 24-thread desktop). When no GPU is
+(the library compiles in about 50 s on a 24-thread desktop). CUDA 13 cannot
+compile for GPUs below sm_75: it skips such a GPU with a warning, and the build
+fails if no detected GPU is left, so use CUDA 12.x for those cards. When no GPU is
 visible at build time — docker build stages, CPU-only CI — it instead targets
 every architecture the toolkit supports (sm_60 upward on CUDA 11/12, sm_75
 upward on CUDA 13+, plus PTX for the newest so future cards still run), which
