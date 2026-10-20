@@ -1,5 +1,5 @@
 // Generated candidate only; existing overrides/native/support/hardware gates remain outside.
-// model_sha256=bb6c23f7df3f5b1ae4031fb86f41e33ae9da36a7b5d2dc59b98d90d910735ea9
+// model_sha256=11fe1d31494ae75ecd010fe81627a71e57101f2782f850aeadbbfba42294c0ed
 #pragma once
 #include <cmath>
 #include <Falcata/cuda_controller_policy.h>
@@ -41,9 +41,17 @@ inline CUDAControllerRoute LearnedCUDAControllerCandidate(const CUDAControllerFa
   const double v11 = static_cast<double>(facts.bagging_freq);
   if (!std::isfinite(v11)) return CUDAControllerRoute::kHost;
   if (v6 <= 1536.0) {
-    return CUDAControllerRoute::kWhole;
+    if (v1 <= 1472.0) {
+      return CUDAControllerRoute::kWhole;
+    } else {
+      return CUDAControllerRoute::kHost;
+    }
   } else {
-    return CUDAControllerRoute::kPrefix;
+    if (v3 <= 1824.0) {
+      return CUDAControllerRoute::kPrefix;
+    } else {
+      return CUDAControllerRoute::kHost;
+    }
   }
 }
 }  // namespace Falcata

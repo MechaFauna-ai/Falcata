@@ -37,17 +37,88 @@ Falcata::CUDAControllerFacts NumericFacts() {
 }
 }  // namespace
 
-TEST(CUDAControllerLearned, ConstrainedModelLeafBudgetBoundaryGolden) {
-  // Model bb6c23f7: artifact-specific goldens, independent of the generic
+TEST(CUDAControllerLearned, ConstrainedModelDepthTwoBoundaryGolden) {
+  // Model 11fe1d31: artifact-specific goldens, independent of the generic
   // wrapper/native-capability matrix in test_common.cpp. These assert the raw
   // candidate only; they do not establish native eligibility or engagement.
+  //   num_leaves <= 1536 ? (num_features <= 1472 ? WHOLE : HOST)
+  //                      : (num_bins <= 1824 ? PREFIX : HOST)
+  using Route = Falcata::CUDAControllerRoute;
   auto facts = NumericFacts();
+  auto set_features = [&facts](int features) { facts.num_features = facts.sampled_features = features; };
+  // Left subtree: the leaf budget threshold is inclusive, then the feature-count split.
   for (const int leaves : {1535, 1536}) {
     facts.num_leaves = leaves;
-    EXPECT_EQ(Falcata::LearnedCUDAControllerCandidate(facts), Falcata::CUDAControllerRoute::kWhole);
+    for (const int features : {1471, 1472}) {
+      set_features(features);
+      EXPECT_EQ(Falcata::LearnedCUDAControllerCandidate(facts), Route::kWhole) << leaves << " " << features;
+    }
+    set_features(1473);
+    EXPECT_EQ(Falcata::LearnedCUDAControllerCandidate(facts), Route::kHost) << leaves;
   }
+  // num_bins is not consulted on the left.
+  facts = NumericFacts();
+  facts.num_leaves = 1536;
+  facts.num_bins = 1825;
+  EXPECT_EQ(Falcata::LearnedCUDAControllerCandidate(facts), Route::kWhole);
+  // Right subtree: the histogram-bin split, threshold inclusive.
+  facts = NumericFacts();
   facts.num_leaves = 1537;
-  EXPECT_EQ(Falcata::LearnedCUDAControllerCandidate(facts), Falcata::CUDAControllerRoute::kPrefix);
+  for (const int64_t bins : {int64_t{1823}, int64_t{1824}}) {
+    facts.num_bins = bins;
+    EXPECT_EQ(Falcata::LearnedCUDAControllerCandidate(facts), Route::kPrefix) << bins;
+  }
+  facts.num_bins = 1825;
+  EXPECT_EQ(Falcata::LearnedCUDAControllerCandidate(facts), Route::kHost);
+  // num_features is not consulted on the right.
+  facts.num_bins = 1824;
+  set_features(1473);
+  EXPECT_EQ(Falcata::LearnedCUDAControllerCandidate(facts), Route::kPrefix);
+}
+
+TEST(CUDAControllerLearned, ConstrainedModelLeavesResolveThroughNativeGates) {
+  // One case per model leaf through the shipped wrapper on qualified facts:
+  // a device route needs its own native eligibility, otherwise HOST.
+  using Route = Falcata::CUDAControllerRoute;
+  auto qualified = []() {
+    auto facts = NumericFacts();
+    facts.quantized = facts.scope_supported = facts.performance_modifiers_supported = true;
+    facts.native_prefix_eligible = facts.native_whole_eligible = true;
+    facts.device_major = 12;
+    facts.device_minor = 0;
+    facts.device_sm_count = 170;
+    facts.device_memory_bus_bits = 512;
+    return facts;
+  };
+  struct Case {
+    int leaves;
+    int features;
+    int64_t bins;
+    Route resolved;
+    const char* reason;
+    Route unavailable_resolved;
+    const char* unavailable_reason;
+  };
+  const Case cases[] = {
+      {1536, 1472, 1824 * 2, Route::kWhole, "learned_whole", Route::kHost, "learned_whole_native_unavailable"},
+      {1536, 1473, 1824, Route::kHost, "learned_host", Route::kHost, "learned_host"},
+      {1537, 1473, 1824, Route::kPrefix, "learned_prefix", Route::kHost, "learned_prefix_native_unavailable"},
+      {1537, 104, 1825, Route::kHost, "learned_host", Route::kHost, "learned_host"},
+  };
+  for (const auto& c : cases) {
+    auto facts = qualified();
+    facts.num_leaves = c.leaves;
+    facts.num_features = facts.sampled_features = c.features;
+    facts.num_bins = c.bins;
+    auto decision = Falcata::ResolveCUDAController({}, facts);
+    EXPECT_EQ(decision.requested, Route::kAuto);
+    EXPECT_EQ(decision.resolved, c.resolved) << c.leaves << " " << c.features << " " << c.bins;
+    EXPECT_STREQ(decision.reason, c.reason);
+    facts.native_prefix_eligible = facts.native_whole_eligible = false;
+    decision = Falcata::ResolveCUDAController({}, facts);
+    EXPECT_EQ(decision.resolved, c.unavailable_resolved) << c.leaves << " " << c.features << " " << c.bins;
+    EXPECT_STREQ(decision.reason, c.unavailable_reason);
+  }
 }
 
 TEST(CUDAControllerLearned, GeneratedFirstInclusionAndUnknownMetadata) {

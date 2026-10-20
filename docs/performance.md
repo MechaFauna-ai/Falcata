@@ -2708,19 +2708,30 @@ Nondefault modifiers select host control. Array presence is checked through meta
 
 The remaining route candidate comes from `LearnedCUDAControllerCandidate(facts)`, an offline trained tree
 installed verbatim in `include/Falcata/cuda_controller_learned.h`. Its model SHA is
-`bb6c23f7df3f5b1ae4031fb86f41e33ae9da36a7b5d2dc59b98d90d910735ea9`; the generic export is pinned as
-`6f69b572612c55bef0b974a461cc5e2f5c02f3682499d3f69e3cde776331bea9`. Training used 44 declared workloads
-on source `c4fe61855140e02f07abcc0d032c5394fb900570` / native
-`174f0e9dc01f3e52af80553841bb4014b9bdb2a009af0416ee2e7b163076a529`. Those are training identities;
+`11fe1d31494ae75ecd010fe81627a71e57101f2782f850aeadbbfba42294c0ed`; the generic export is pinned as
+`ae70038df11f13b153b4b79d3a803eacd4686f2528948d321280c9f1b7af01f5`. Training used 44 declared workloads
+on source `03cf9b3f763e82fe3065d432255cd7b44bfd8946` / native
+`b0d340edd23ef9b5569742881ba60795b2921ff08fd407a13037c6f39adb1929`. Those are training identities;
 they do not qualify a later integrated native library or establish default/performance acceptance.
 The constrained fit used schema2 training specification
-`348b6835d2d2b218f189fc10306e3086ae3eb3fa3d8d83df4634aa2178051456` and learner
-`206a614132c2f4c90ff163fbe087a54d505934075a8c5c1bbfa6fdbc04c4b553`, selecting depth1 with minimum
-two training families per leaf. Training-only admissible-route labels supplement the original costs;
-they are absent from the unchanged schema1 runtime model. Full-fit label violations were zero, while
-cross-validation warnings and limited PREFIX cost-opportunity coverage remain. Neither result establishes
-native readiness or performance acceptance. Inference loads no model file and performs no online fitting
-or benchmarking.
+`bb7d35955b1094c628d495fd726a9b24984f7fdeee52603cb4f496328c91c0b8` and learner
+`b34e62be9a64e1eef682dfdcd935653e179823f03a4ca30bfbc3ea28f2cc66b3` under method revision 2
+(`98e949bbbb5c59043c5fbe455a2e7fcb2a7e59f120369a12550ff17aeb395496`): among grid points whose full-data
+refit satisfies every training label, it selects by cross-validated violation fraction, then size, then
+regret, then the larger minimum family count. That selected depth 2 with minimum two training families per leaf. Training-only admissible-route
+labels supplement the original costs; they are absent from the unchanged schema1 runtime model. Full-fit
+label violations were zero, while cross-validation warnings and limited PREFIX cost-opportunity coverage
+remain. Neither result establishes native readiness or performance acceptance. Inference loads no model
+file and performs no online fitting or benchmarking.
+
+The installed tree reads three of its inputs; both comparisons are inclusive (`<=`):
+
+| `num_leaves` | Second split | Candidate |
+|---|---|---|
+| `<= 1536` | `num_features <= 1472` | WHOLE (`learned_whole`) |
+| `<= 1536` | `num_features > 1472` | HOST (`learned_host`) |
+| `> 1536` | `num_bins <= 1824` | PREFIX (`learned_prefix`) |
+| `> 1536` | `num_bins > 1824` | HOST (`learned_host`) |
 
 The raw inputs retain their existing meanings:
 
