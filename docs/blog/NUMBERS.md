@@ -20,7 +20,7 @@ through strict `gpuq` with `--timeout`.
 | Headline Numerai deep | 6 | (b) three strict draws per arm |
 | Article matrix, per row | 172 | (a) `article_ab.py`, 43 rows × 4 |
 | Article matrix, summaries | 5 | (a), derived |
-| Quality per row | 43 | (a′) scoring, not yet implemented |
+| Quality per row | 43 | (a′) `score.py` on the saved A/B models |
 | August-archive ratios | 7 | Derived from (a)/(b) and the archive |
 | Six-state | 14 | (c) six-state driver, to be rebuilt |
 | Stability, FP64 CUDA | 7 | (d) stability driver, to be rebuilt |
@@ -89,10 +89,24 @@ means; point it at the new directory.
 ## (a′) Quality per row
 
 `q_<dataset>_<regime>_<mode>_rc` (43, in `framework-table.md`; three also in the
-article and `benchmarks.md`). **Not produced by `article_ab.py`**, which times
-training only. Either extend its child to predict `X_test` and score (AUC for
-binary, accuracy for covtype, RMSE for Year, CORR for Numerai, matching
-`benchmarks/bench.py` at `a65d34e8`) or run `bench.py` on the RC for scoring only.
+article and `benchmarks.md`). Produced by `kevo/runs/release_1_1/score.py`
+(`release_ab.sh score --new RC`), which predicts each model `article_ab.py
+--save-models` kept on the CPU and scores it as `benchmarks/bench.py` at `a65d34e8`
+does, on the bench cache's held-out split. Read from
+`results/quality_<rc8>.json` `placeholders` (RC arm, median over its runs). Values
+are bare numbers, so every cell that uses one names the metric in front of it:
+
+| Rows | Prefix in the text | Metric | Value format |
+| --- | --- | --- | --- |
+| Fraud, Higgs, Epsilon, Airline (24) | `AUC` | AUC of the predicted probability | 4 decimals |
+| Covtype (6) | `Acc` | Accuracy of the argmax class | 4 decimals |
+| Year (6) | `RMSE` | RMSE | 3 decimals |
+| Numerai example, deep, leaf-limited (7) | `CORR` | Mean per-era `numerai_corr`, 200 test eras | 5 decimals |
+
+The same JSON's `display` object holds the prefixed strings ("AUC .9794") for
+copying into prose; it is not a placeholder source. Old-arm values (`*_a65`) are
+under `old_arm`.
+
 Expected: within the October ranges of `benchmark-matrix.json` for quantized rows
 (Epsilon deep stochastic AUC ~0.942; Numerai deep CORR ~0.0239; example ~0.0194).
 Non-quantized classification rows follow the automatic step limit (#91) and need
@@ -172,12 +186,13 @@ controls at 500 rounds (30–45 minutes). The CPU half is not rerun.
 
 | File(s) | Producer | Input |
 | --- | --- | --- |
-| `benchmark-matrix.json` | **No script on disk.** Write a converter from the (a)/(a′) JSONs into `workloads[].latest_measured` + `record_catalog` (fields read by `plot_framework_comparison.py`: `training_seconds.median`, `metrics`, `selected_records`, `absolute_timing_eligible`, `strict_quiet_verified`, `caveats`, `source`) | (a), (a′), (b) |
-| `framework-comparison-data.json`, `framework-comparison.png`, `framework-comparison.svg` | `plot_framework_comparison.py --matrix benchmark-matrix.json` | Updated matrix |
+| `benchmark-matrix.json` | `kevo/runs/release_1_1/to_blog_json.py --rc RC` (writes `results/blog_<rc8>/`; copy in after review) | (a), (a′), (b) |
+| `framework-comparison-data.json` | Same converter (the script's `compact_data` plus the measured draw counts and date) | Updated matrix |
+| `framework-comparison.png`, `framework-comparison.svg` | `plot_framework_comparison.py --output-dir <dir with the compact JSON>` (footer draw counts and Numerai input from the JSON) | New `framework-comparison-data.json` |
 | `benchmark-appendix.json` | Same converter (45-row mode appendix) | (a), (a′) |
-| `six-state-data.json` | Rebuilt six-state driver | (c) |
-| `six-state-throughput.png`, `six-state-throughput.svg` | `plot_six_state.py` (update its pinned `BUILD`/`LIBRARY` constants to the RC) | New `six-state-data.json` |
-| `stability-data.json` | Rebuilt stability driver, appending RC CUDA records (keep the October records) | (d) |
+| `six-state-data.json` | Same converter, from `six_state.py summarize` | (c) |
+| `six-state-throughput.png`, `six-state-throughput.svg` | `plot_six_state.py --data six-state-data.json --commit <RC sha> --output-dir <dir>` (build, library hash and captions from the JSON; `--commit` must match its `runtime.build`) | New `six-state-data.json` |
+| `stability-data.json` | Same converter, appending RC CUDA records (keep the October records) | (d) |
 | `joint-histogram-codewords.*`, `gpu-coordination.*` | `plot_mechanisms.py` | No change needed (schematics) |
 | `lineage-*` | `build_lineage.py` | Optional: the export is dated 9 October |
 

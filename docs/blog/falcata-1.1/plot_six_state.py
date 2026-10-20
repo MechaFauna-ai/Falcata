@@ -1,9 +1,12 @@
 """Reproduce the six-state throughput chart from published endpoint evidence.
 
-    python plot_six_state.py
+    python plot_six_state.py [--data six-state-data.json] [--commit SHA] [--output-dir DIR]
 
 The checked-in JSON contains the recorded measurements. This script renders
 them without training, GPU access or any private orchestration dependency.
+The build, library hash, dates, device and dataset captions come from the JSON;
+--commit (full SHA or a prefix of at least 7 characters) and --library-sha256
+refuse a JSON measured on another runtime.
 """
 
 # Standalone publication program: stdout reports output files.
@@ -11,10 +14,8 @@ them without training, GPU access or any private orchestration dependency.
 import argparse
 import json
 import os
+import re
 from pathlib import Path
-
-BUILD = "d0bb8c47789e062acbf6b770918a0589a74ae9b2"
-LIBRARY = "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c"
 
 
 def ensure(condition, message):
@@ -22,8 +23,47 @@ def ensure(condition, message):
         raise ValueError(message)
 
 
-def render(data, folder, draft=False):
-    ensure(data["runtime"]["build"] == BUILD and data["runtime"]["library_sha256"] == LIBRARY, "Chart runtime differs")
+def check_runtime(data, commit=None, library=None):
+    build, lib = data["runtime"]["build"], data["runtime"]["library_sha256"]
+    ensure(isinstance(build, str) and re.fullmatch(r"[0-9a-f]{40}", build), f"Runtime build is not a commit: {build}")
+    ensure(isinstance(lib, str) and re.fullmatch(r"[0-9a-f]{64}", lib), f"Library hash is not a SHA-256: {lib}")
+    if commit is not None:
+        ensure(len(commit) >= 7 and build.startswith(commit.lower()), f"Chart runtime {build} differs from {commit}")
+    if library is not None:
+        ensure(lib == library.lower(), f"Chart library {lib} differs from {library}")
+
+
+def dataset_caption(data):
+    target = data["target"]
+    described = target.get("note") or f"target {target['name']}"
+    max_bins = {config["parameters"]["max_bin"] for config in data["configs"].values()}
+    bins = f"max_bin={max_bins.pop()}" if len(max_bins) == 1 else "max_bin per recipe"
+    return f"{described} · {data['n_train']:,} training rows × {data['n_features']:,} features · {bins}"
+
+
+def recipe_caption(data, row):
+    config = data["configs"][row["group"]]
+    parameters = config["parameters"]
+    precision = parameters.get("cuda_precision", config.get("resolved_cuda_precision", "")).upper()
+    return (
+        f"{row['label']}: explicit {precision}, unscaled leaf floor {parameters['min_data_in_leaf']}; "
+        f"this {row['rounds']:,}-tree probe is not a production run."
+    )
+
+
+def panel_title(rows):
+    rounds = {row["rounds"] for row in rows}
+    counts = {len(row["arms"][arm]["draws"]) for row in rows for arm in ("five", "six")}
+    trees = f"{rounds.pop():,} trees" if len(rounds) == 1 else "trees per row"
+    if counts == {1}:
+        return f"{trees} · one complete run per arm"
+    if len(counts) == 1:
+        return f"{trees} · median of {counts.pop()} timed draws per arm"
+    return f"{trees} · median of the timed draws per arm"
+
+
+def render(data, folder, draft=False, commit=None, library=None):
+    check_runtime(data, commit, library)
     ensure(draft or data["status"] == "measured_complete", "Final chart requires settled evidence")
     os.environ.setdefault("MPLCONFIGDIR", str(folder / ".mplconfig"))
     import matplotlib  # noqa: PLC0415
@@ -141,8 +181,8 @@ def render(data, folder, draft=False):
                     weight="bold",
                     color=colors["six"],
                 )
-    axes[0].set_title("2,000 trees · median of 3 timed draws per arm", loc="left", pad=16, fontsize=10.5, color=muted)
-    axes[1].set_title("30,000 trees · one complete run per arm", loc="left", pad=13, fontsize=10.5, color=muted)
+    axes[0].set_title(panel_title(data["chart"][:3]), loc="left", pad=16, fontsize=10.5, color=muted)
+    axes[1].set_title(panel_title(data["chart"][3:]), loc="left", pad=13, fontsize=10.5, color=muted)
     axes[1].set_xlabel("Actual trees per second   ·   log scale   ·   higher is faster", labelpad=11, color=ink)
     title = "Five states and six states, measured" if not draft else "DRAFT — six-state measurement still pending"
     fig.text(0.045, 0.955, title, fontsize=21, weight="bold", color=ink, va="top")
@@ -172,12 +212,17 @@ def render(data, folder, draft=False):
     queue_label = (
         "idle GPU; no recorded contention" if data["chart_eligible"] else "endpoint eligibility retained in JSON"
     )
+    probe_draws = max(len(row["arms"][arm]["draws"]) for row in data["chart"][:3] for arm in ("five", "six"))
+    sanity_eras = len(data["score_era_codes"])
+    recipe = next(row for row in data["chart"] if row["group"] == "recipe-fixed-fp32")
     captions = (
-        f"{dates} · RTX 5090 · Falcata d0bb8c47 · {queue_label}",
-        f"Build 1230 · {data['n_train']:,} training rows × {data['n_features']:,} features · max_bin=255 · Ender20 target",
-        "Ranges list five / six observed min–max across 3 timed draws; warmups excluded. The full pair has no variation estimate.",
-        "Training time includes initial cache/tuner work. Models differ; five-era sanity does not establish equivalent quality.",
-        "Current recipe: explicit FP32, unscaled leaf floor 101079; this 2,000-tree probe is not a production run.",
+        f"{dates} · {data['device']} · Falcata {data['runtime']['build'][:8]} · {queue_label}",
+        dataset_caption(data),
+        f"Ranges list five / six observed min–max across {probe_draws} timed draws; warmups excluded. "
+        "The full pair has no variation estimate.",
+        f"Training time is the whole train() call. Models differ; {sanity_eras}-era sanity does not establish "
+        "equivalent quality.",
+        recipe_caption(data, recipe),
     )
     for y, caption in zip((0.198, 0.160, 0.122, 0.084, 0.046), captions, strict=True):
         fig.text(0.045, y, caption, fontsize=9, color=muted)
@@ -200,11 +245,15 @@ def render(data, folder, draft=False):
 
 def main():
     folder = Path(__file__).absolute().parent
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", type=Path, default=folder / "six-state-data.json")
+    parser.add_argument("--commit", help="Expected runtime build (full SHA or a prefix of at least 7 characters)")
+    parser.add_argument("--library-sha256", help="Expected library SHA-256")
+    parser.add_argument("--output-dir", type=Path, default=folder)
     args = parser.parse_args()
     data = json.loads(args.data.read_text())
-    outputs = render(data, folder)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    outputs = render(data, args.output_dir.absolute(), commit=args.commit, library=args.library_sha256)
     print(json.dumps({"status": data["status"], "counts": data["status_counts"], "outputs": outputs}, indent=2))
 
 

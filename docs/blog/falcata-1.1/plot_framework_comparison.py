@@ -138,13 +138,37 @@ def compact_data(matrix_path):
     }
 
 
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
 def row_detail(row, panel):
     if row["role"] == "modern_falcata":
-        date = panel["modern_measurement_date"][5:]
-        return f"Oct {int(date[-2:])} · {panel['modern_runtime'][:8]} · stochastic"
+        _, month, day = panel["modern_measurement_date"].split("-")
+        return f"{MONTHS[int(month) - 1]} {int(day)} · {panel['modern_runtime'][:8]} · stochastic"
     if row["role"] == "launch_falcata":
         return "Aug 2026 · version label 1.0.0 · stochastic"
     return f"Aug 2026 · version {' / '.join(row['package_versions'])}"
+
+
+def input_dtypes(row):
+    return {
+        endpoint.get("input_dtype", endpoint.get("input_dtype_inferred_from_contemporaneous_harness"))
+        for endpoint in row["recorded_endpoints"]
+    } - {None}
+
+
+def timing_footer(data):
+    draws = ", ".join(f"{panel['label']} {panel['rows'][0]['timed_draws']}" for panel in data["panels"])
+    numerai = [panel for panel in data["panels"] if panel["dataset"] == "numerai"]
+    modern = {panel["label"]: "/".join(sorted(input_dtypes(panel["rows"][0]))) for panel in numerai}
+    launch = sorted({dtype for panel in numerai for dtype in input_dtypes(panel["rows"][1])})
+    if len(set(modern.values())) == 1:
+        inputs = f"Numerai input {next(iter(modern.values()))}"
+    else:
+        inputs = "Numerai input: " + ", ".join(f"{label.split()[-1]} {dtype}" for label, dtype in modern.items())
+    if launch:
+        inputs += f"; launch {'/'.join(launch)}"
+    return f"Dataset construction and prediction are outside the timer. Modern timed draws (median): {draws}. {inputs}."
 
 
 def seconds_label(value):
@@ -293,7 +317,7 @@ def plot(data, output):
     fig.text(
         0.038,
         0.026,
-        "Dataset construction and prediction are outside the timer. Numerai deep is one full requested-round draw; example’s input changed float32 → int8.",
+        timing_footer(data),
         fontsize=9.3,
         color=MUTED,
     )
