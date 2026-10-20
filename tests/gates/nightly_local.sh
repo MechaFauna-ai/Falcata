@@ -15,7 +15,8 @@
 # FALCATA_PERF_SEED_RUNS=1(default)..3 explicitly repeats bench+perf only.
 #
 # Logs: ~/.cache/falcata-gates/nightly-YYYY-MM-DD.log (30 kept)
-# Exit: 0 all gates passed, non-zero otherwise (the log names the failed step).
+# Exit: 0 all gates passed, 125 unresolved CUDA timeout (stop), other non-zero
+# for ordinary failures (the log names the failed step).
 set -u -o pipefail
 
 REPO="${FALCATA_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -31,10 +32,10 @@ export FALCATA_BENCH_CACHE="${FALCATA_BENCH_CACHE:-$HOME/Documents/exaboost-benc
 export FALCATA_NUMERAI_V53="${FALCATA_NUMERAI_V53:-$HOME/Documents/numerai/data/1226_int8nan.dataset}"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG"; }
-# The build is the one hard stop: every later gate tests the artifact it
-# produces, so continuing past it would just report noise.
+# A failed build is a hard stop: every later gate tests its artifact.
+# Reserved gate status 125 also stops the suite on unresolved CUDA timeout.
 abort() { log "ABORT: $*"; echo "ABORTED: $*" > "$LOGDIR/last-status"; exit 1; }
-# Everything else records the failure and carries on. Stopping at the first one
+# Ordinary gate failures are recorded and the suite carries on. Stopping at the first one
 # meant a single known-failing fuzz spec hid the canonical md5 locks, the bench
 # tier and the perf gate every single night -- the gates most likely to catch a
 # real regression were the ones never reached.
@@ -88,9 +89,21 @@ if [ -n "${GPUQ_JOB_ID:-}" ] && command -v gpuq >/dev/null 2>&1; then
 fi
 
 step() {  # step <name> <command...>
-  local name="$1"; shift
+  local name="$1" rc; shift
   log "-> $name"
-  "$@" >>"$LOG" 2>&1 || { fail "$name"; return 1; }
+  "$@" >>"$LOG" 2>&1
+  rc=$?
+  if [ "$rc" -eq 125 ]; then
+    fail "$name: UNRESOLVED_CUDA_TIMEOUT (exit 125)"
+    log "ABORT: unresolved CUDA timeout; remaining nightly gates not run"
+    { echo "UNRESOLVED_CUDA_TIMEOUT (exit 125)"; echo "$FAILED_STEPS"; } > "$LOGDIR/last-status"
+    exit 125
+  fi
+  if [ "$rc" -ne 0 ]; then
+    fail "$name"
+    return 1
+  fi
+  return 0
 }
 
 log "-> build CUDA wheel"

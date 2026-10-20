@@ -40,6 +40,14 @@ option(INSTALL_HEADERS "Install headers to CMAKE_INSTALL_PREFIX (e.g. '/usr/loca
 option(__BUILD_FOR_PYTHON "Set to ON if building lib_falcata for use with the Python-package" OFF)
 option(__BUILD_FOR_R "Set to ON if building lib_falcata for use with the R-package" OFF)
 option(__INTEGRATE_OPENCL "Set to ON if building Falcata with the OpenCL ICD Loader and its dependencies included" OFF)
+# The Python- and R-package builds configure a fresh temporary directory each time,
+# so a cache would never be hit there.
+if(__BUILD_FOR_PYTHON OR __BUILD_FOR_R)
+  set(FLC_USE_CCACHE_DEFAULT OFF)
+else()
+  set(FLC_USE_CCACHE_DEFAULT ON)
+endif()
+option(USE_CCACHE "Compile through ccache (4.8 or newer) when it is found" ${FLC_USE_CCACHE_DEFAULT})
 
 # If using Visual Studio generators, always target v10.x of the Windows SDK.
 # Doing this avoids lookups that could fall back to very old versions, e.g. by finding
@@ -55,6 +63,32 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/modules")
+
+#-- ccache
+if(USE_CCACHE AND NOT MSVC)
+  find_program(CCACHE_PROGRAM ccache)
+  if(CCACHE_PROGRAM)
+    execute_process(
+      COMMAND "${CCACHE_PROGRAM}" --version
+      OUTPUT_VARIABLE FLC_CCACHE_VERSION_OUTPUT
+      ERROR_QUIET
+    )
+    string(REGEX MATCH "[0-9]+\\.[0-9]+(\\.[0-9]+)?" FLC_CCACHE_VERSION "${FLC_CCACHE_VERSION_OUTPUT}")
+    if(FLC_CCACHE_VERSION VERSION_LESS 4.8)
+      message(STATUS "Not using ccache ${FLC_CCACHE_VERSION} (${CCACHE_PROGRAM}): 4.8 or newer is required")
+    else()
+      # nvcc folds the working directory into internal symbol names, which ccache does not
+      # hash without -g; a per-build-directory namespace keeps cached objects byte-identical.
+      foreach(lang C CXX CUDA)
+        # CUDA is enabled after this point, so CMake has not yet applied its environment launcher.
+        if(NOT DEFINED CMAKE_${lang}_COMPILER_LAUNCHER AND NOT DEFINED ENV{CMAKE_${lang}_COMPILER_LAUNCHER})
+          set(CMAKE_${lang}_COMPILER_LAUNCHER "${CCACHE_PROGRAM};namespace=${CMAKE_BINARY_DIR}")
+        endif()
+      endforeach()
+      message(STATUS "Using ccache ${FLC_CCACHE_VERSION}: ${CCACHE_PROGRAM}")
+    endif()
+  endif()
+endif()
 
 #-- Sanitizer
 if(USE_SANITIZER)
@@ -193,7 +227,31 @@ endif()
 
 if(USE_CUDA)
     set(CMAKE_CUDA_HOST_COMPILER "${CMAKE_CXX_COMPILER}")
+    # The first enable_language(CUDA) caches nvcc's default target as
+    # CMAKE_CUDA_ARCHITECTURES when the user gave none. Keep that default only as
+    # a normal variable (try_compile needs one) and an empty cache entry, so a
+    # later -DCMAKE_CUDA_ARCHITECTURES is recognised as the user's choice even when
+    # it equals the default. Build dirs configured before FALCATA_CUDA_ARCHS_TRACKED
+    # existed hold that default ("52" or "75") in the cache.
+    file(GLOB _falcata_cuda_determined "${CMAKE_BINARY_DIR}/CMakeFiles/*/CMakeCUDACompiler.cmake")
+    if("${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "" AND "$ENV{CUDAARCHS}" STREQUAL "")
+        set(_falcata_cuda_archs_injected TRUE)
+    elseif(NOT DEFINED CACHE{FALCATA_CUDA_ARCHS_TRACKED} AND _falcata_cuda_determined
+            AND CMAKE_CUDA_ARCHITECTURES MATCHES "^(52|75)$")
+        set(_falcata_cuda_archs_injected TRUE)
+    endif()
     enable_language(CUDA)
+    if(_falcata_cuda_archs_injected)
+        set(FALCATA_USER_CUDA_ARCHS "")
+        if(NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
+            set(FALCATA_CUDA_DEFAULT_ARCHS "${CMAKE_CUDA_ARCHITECTURES}" CACHE INTERNAL "")
+        endif()
+        set(CMAKE_CUDA_ARCHITECTURES "" CACHE STRING "CUDA architectures" FORCE)
+        set(CMAKE_CUDA_ARCHITECTURES "${FALCATA_CUDA_DEFAULT_ARCHS}")
+    else()
+        set(FALCATA_USER_CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES}")
+    endif()
+    set(FALCATA_CUDA_ARCHS_TRACKED ON CACHE INTERNAL "")
     set(USE_OPENMP ON CACHE BOOL "CUDA requires OpenMP" FORCE)
 endif()
 
@@ -295,10 +353,6 @@ if(USE_CUDA)
     # https://en.wikipedia.org/wiki/CUDA#GPUs_supported
     # CUDA 13.0 removed offline-compilation support for Maxwell (sm_50/52/53), Pascal (sm_60/61/62)
     # and Volta (sm_70/72). sm_75 (Turing) is the lowest still-supported architecture.
-    # NOTE: when the user passes nothing, CMake itself injects nvcc's default
-    # target ("52") into CMAKE_CUDA_ARCHITECTURES at language enablement -- an
-    # arch our code does not even support. Treat that auto-injected value as
-    # "not set" so the every-supported-arch fallback below actually runs.
     # Detect the GPUs actually present so a plain `pip install falcata` builds
     # only for them (minutes instead of the better part of an hour). The
     # every-supported-arch build below remains the fallback when no GPU is
@@ -371,13 +425,8 @@ if(USE_CUDA)
         endif()
     endif()
 
-    # "52" is what CMake injects as nvcc's default target on CUDA <= 12;
-    # nvcc 13 raised that injected default to "75". Both mean "the user
-    # passed nothing", so both must yield to GPU detection below.
-    if(DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL ""
-            AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "52"
-            AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "75")
-        set(CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES}")
+    if(NOT "${FALCATA_USER_CUDA_ARCHS}" STREQUAL "")
+        set(CUDA_ARCHS "${FALCATA_USER_CUDA_ARCHS}")
     elseif(NOT "${FALCATA_DETECTED_ARCHS}" STREQUAL "")
         # real code for each detected GPU + PTX of the newest for forward compat
         set(CUDA_ARCHS ${FALCATA_DETECTED_ARCHS})
@@ -970,6 +1019,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_chunked_array.cpp
       tests/cpp_tests/test_common.cpp
       tests/cpp_tests/test_dataset_subset.cpp
+      tests/cpp_tests/test_host_quantization.cpp
       tests/cpp_tests/test_leaf_splits.cpp
       tests/cpp_tests/test_main.cpp
       tests/cpp_tests/test_nccl_row_split.cpp
@@ -990,6 +1040,8 @@ if(BUILD_CPP_TEST)
       testfalcata
       PRIVATE
         tests/cpp_tests/test_cuda_algorithms.cu
+        tests/cpp_tests/test_cuda_metadata.cu
+        tests/cpp_tests/test_cuda_device_level_budget.cu
         tests/cpp_tests/test_cuda_nonquant_fixed.cu
     )
     set_target_properties(

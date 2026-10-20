@@ -778,7 +778,7 @@ def test_choose_param_value_preserves_nones():
     assert params == {"objective": "regression", "min_data_in_leaf": None}
 
 
-@pytest.mark.parametrize("objective_alias", lgb.basic._ConfigAliases.get("objective"))
+@pytest.mark.parametrize("objective_alias", sorted(lgb.basic._ConfigAliases.get("objective")))
 def test_choose_param_value_objective(objective_alias):
     # If callable is found in objective
     params = {objective_alias: dummy_obj}

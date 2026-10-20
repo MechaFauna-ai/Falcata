@@ -34,6 +34,9 @@ SerialTreeLearner::~SerialTreeLearner() {
 }
 
 void SerialTreeLearner::Init(const Dataset* train_data, bool is_constant_hessian) {
+  if (config_->use_quantized_grad && !IsCUDATreeLearner()) {
+    Log::Fatal("Quantized training requires the CUDA tree learner in Falcata.");
+  }
   train_data_ = train_data;
   num_data_ = train_data_->num_data();
   num_features_ = train_data_->num_features();
@@ -87,6 +90,9 @@ void SerialTreeLearner::Init(const Dataset* train_data, bool is_constant_hessian
 void SerialTreeLearner::GetShareStates(const Dataset* dataset,
                                        bool is_constant_hessian,
                                        bool is_first_time) {
+  if (config_->use_quantized_grad && !IsCUDATreeLearner()) {
+    Log::Fatal("Quantized training requires the CUDA tree learner in Falcata.");
+  }
   if (is_first_time) {
     if (config_->use_quantized_grad) {
       share_state_.reset(dataset->GetShareStates<true, 32>(
@@ -148,6 +154,9 @@ void SerialTreeLearner::ResetTrainingDataInner(const Dataset* train_data,
 }
 
 void SerialTreeLearner::ResetConfig(const Config* config) {
+  if (config->use_quantized_grad && !IsCUDATreeLearner()) {
+    Log::Fatal("Quantized training requires the CUDA tree learner in Falcata.");
+  }
   if (config_->num_leaves != config->num_leaves) {
     config_ = config;
     int max_cache_size = 0;
@@ -198,10 +207,6 @@ Tree* SerialTreeLearner::Train(const score_t* gradients, const score_t *hessians
         share_state_->num_threads, num_threads);
   }
   share_state_->num_threads = num_threads;
-
-  if (config_->use_quantized_grad) {
-    gradient_discretizer_->DiscretizeGradients(num_data_, gradients_, hessians_);
-  }
 
   // some initial works before training
   BeforeTrain();
@@ -263,11 +268,6 @@ Tree* SerialTreeLearner::Train(const score_t* gradients, const score_t *hessians
     cur_depth = std::max(cur_depth, tree->leaf_depth(left_leaf));
   }
 
-  if (config_->use_quantized_grad && config_->quant_train_renew_leaf) {
-    gradient_discretizer_->RenewIntGradTreeOutput(tree.get(), config_, data_partition_.get(), gradients_, hessians_,
-      [this] (int leaf_index) { return GetGlobalDataCountInLeaf(leaf_index); });
-  }
-
   Log::Debug("Trained a tree with leaves = %d and depth = %d", tree->num_leaves(), cur_depth);
   return tree.release();
 }
@@ -314,6 +314,9 @@ Tree* SerialTreeLearner::FitByExistingTree(const Tree* old_tree, const std::vect
 }
 
 void SerialTreeLearner::BeforeTrain() {
+  if (config_->use_quantized_grad) {
+    Log::Fatal("Quantized training requires the CUDA tree learner in Falcata.");
+  }
   Common::FunctionTimer fun_timer("SerialTreeLearner::BeforeTrain", global_timer);
   // reset histogram pool
   histogram_pool_.ResetMap();
@@ -333,35 +336,16 @@ void SerialTreeLearner::BeforeTrain() {
   // Sumup for root
   if (data_partition_->leaf_count(0) == num_data_) {
     // use all data
-    if (!config_->use_quantized_grad) {
-      smaller_leaf_splits_->Init(gradients_, hessians_);
-    } else {
-      smaller_leaf_splits_->Init(
-        gradient_discretizer_->discretized_gradients_and_hessians(),
-        gradient_discretizer_->grad_scale(),
-        gradient_discretizer_->hess_scale());
-    }
+    smaller_leaf_splits_->Init(gradients_, hessians_);
   } else {
     // use bagging, only use part of data
-    if (!config_->use_quantized_grad) {
-      smaller_leaf_splits_->Init(0, data_partition_.get(), gradients_, hessians_);
-    } else {
-      smaller_leaf_splits_->Init(
-        0, data_partition_.get(),
-        gradient_discretizer_->discretized_gradients_and_hessians(),
-        static_cast<score_t>(gradient_discretizer_->grad_scale()),
-        static_cast<score_t>(gradient_discretizer_->hess_scale()));
-    }
+    smaller_leaf_splits_->Init(0, data_partition_.get(), gradients_, hessians_);
   }
 
   larger_leaf_splits_->Init();
 
   if (cegb_ != nullptr) {
     cegb_->BeforeTrain();
-  }
-
-  if (config_->use_quantized_grad && config_->tree_learner != std::string("data")) {
-    gradient_discretizer_->SetNumBitsInHistogramBin<false>(0, -1, data_partition_->leaf_count(0), 0);
   }
 }
 
@@ -438,67 +422,22 @@ void SerialTreeLearner::ConstructHistograms(
   Common::FunctionTimer fun_timer("SerialTreeLearner::ConstructHistograms",
                                   global_timer);
   // construct smaller leaf
-  if (config_->use_quantized_grad) {
-    const uint8_t smaller_leaf_num_bits = gradient_discretizer_->GetHistBitsInLeaf<false>(smaller_leaf_splits_->leaf_index());
-    hist_t* ptr_smaller_leaf_hist_data =
-        smaller_leaf_num_bits <= 16 ?
-        reinterpret_cast<hist_t*>(smaller_leaf_histogram_array_[0].RawDataInt16() - kHistOffset) :
-        reinterpret_cast<hist_t*>(smaller_leaf_histogram_array_[0].RawDataInt32() - kHistOffset);
-    #define SMALLER_LEAF_ARGS \
-      is_feature_used, smaller_leaf_splits_->data_indices(), \
-      smaller_leaf_splits_->num_data_in_leaf(), \
-      reinterpret_cast<const score_t*>(gradient_discretizer_->discretized_gradients_and_hessians()), \
-      nullptr, \
-      reinterpret_cast<score_t*>(gradient_discretizer_->ordered_int_gradients_and_hessians()), \
-      nullptr, \
-      share_state_.get(), \
-      reinterpret_cast<hist_t*>(ptr_smaller_leaf_hist_data)
-    if (smaller_leaf_num_bits <= 16) {
-      train_data_->ConstructHistograms<true, 16>(SMALLER_LEAF_ARGS);
-    } else {
-      train_data_->ConstructHistograms<true, 32>(SMALLER_LEAF_ARGS);
-    }
-    #undef SMALLER_LEAF_ARGS
-    if (larger_leaf_histogram_array_ && !use_subtract) {
-      const uint8_t larger_leaf_num_bits = gradient_discretizer_->GetHistBitsInLeaf<false>(larger_leaf_splits_->leaf_index());
-      hist_t* ptr_larger_leaf_hist_data =
-        larger_leaf_num_bits <= 16 ?
-        reinterpret_cast<hist_t*>(larger_leaf_histogram_array_[0].RawDataInt16() - kHistOffset) :
-        reinterpret_cast<hist_t*>(larger_leaf_histogram_array_[0].RawDataInt32() - kHistOffset);
-      #define LARGER_LEAF_ARGS \
-        is_feature_used, larger_leaf_splits_->data_indices(), \
-        larger_leaf_splits_->num_data_in_leaf(), \
-        reinterpret_cast<const score_t*>(gradient_discretizer_->discretized_gradients_and_hessians()), \
-        nullptr, \
-        reinterpret_cast<score_t*>(gradient_discretizer_->ordered_int_gradients_and_hessians()), \
-        nullptr, \
-        share_state_.get(), \
-        reinterpret_cast<hist_t*>(ptr_larger_leaf_hist_data)
-      if (larger_leaf_num_bits <= 16) {
-        train_data_->ConstructHistograms<true, 16>(LARGER_LEAF_ARGS);
-      } else {
-        train_data_->ConstructHistograms<true, 32>(LARGER_LEAF_ARGS);
-      }
-      #undef LARGER_LEAF_ARGS
-    }
-  } else {
-    hist_t* ptr_smaller_leaf_hist_data =
-        smaller_leaf_histogram_array_[0].RawData() - kHistOffset;
+  hist_t* ptr_smaller_leaf_hist_data =
+      smaller_leaf_histogram_array_[0].RawData() - kHistOffset;
+  train_data_->ConstructHistograms<false, 0>(
+      is_feature_used, smaller_leaf_splits_->data_indices(),
+      smaller_leaf_splits_->num_data_in_leaf(), gradients_, hessians_,
+      ordered_gradients_.data(), ordered_hessians_.data(), share_state_.get(),
+      ptr_smaller_leaf_hist_data);
+  if (larger_leaf_histogram_array_ != nullptr && !use_subtract) {
+    // construct larger leaf
+    hist_t* ptr_larger_leaf_hist_data =
+        larger_leaf_histogram_array_[0].RawData() - kHistOffset;
     train_data_->ConstructHistograms<false, 0>(
-        is_feature_used, smaller_leaf_splits_->data_indices(),
-        smaller_leaf_splits_->num_data_in_leaf(), gradients_, hessians_,
+        is_feature_used, larger_leaf_splits_->data_indices(),
+        larger_leaf_splits_->num_data_in_leaf(), gradients_, hessians_,
         ordered_gradients_.data(), ordered_hessians_.data(), share_state_.get(),
-        ptr_smaller_leaf_hist_data);
-    if (larger_leaf_histogram_array_ != nullptr && !use_subtract) {
-      // construct larger leaf
-      hist_t* ptr_larger_leaf_hist_data =
-          larger_leaf_histogram_array_[0].RawData() - kHistOffset;
-      train_data_->ConstructHistograms<false, 0>(
-          is_feature_used, larger_leaf_splits_->data_indices(),
-          larger_leaf_splits_->num_data_in_leaf(), gradients_, hessians_,
-          ordered_gradients_.data(), ordered_hessians_.data(), share_state_.get(),
-          ptr_larger_leaf_hist_data);
-    }
+        ptr_larger_leaf_hist_data);
   }
 }
 
@@ -519,25 +458,6 @@ void SerialTreeLearner::FindBestSplitsFromHistograms(
     larger_node_used_features = col_sampler_.GetByNode(tree, larger_leaf_splits_->leaf_index());
   }
 
-  if (use_subtract && config_->use_quantized_grad) {
-    const int parent_index = std::min(smaller_leaf_splits_->leaf_index(), larger_leaf_splits_->leaf_index());
-    const uint8_t parent_hist_bits = gradient_discretizer_->GetHistBitsInNode<false>(parent_index);
-    const uint8_t larger_hist_bits = gradient_discretizer_->GetHistBitsInLeaf<false>(larger_leaf_splits_->leaf_index());
-    if (parent_hist_bits > 16 && larger_hist_bits <= 16) {
-      OMP_INIT_EX();
-      #pragma omp parallel for schedule(static) num_threads(share_state_->num_threads)
-      for (int feature_index = 0; feature_index < num_features_; ++feature_index) {
-        OMP_LOOP_EX_BEGIN();
-        if (!is_feature_used[feature_index]) {
-          continue;
-        }
-        larger_leaf_histogram_array_[feature_index].CopyToBuffer(gradient_discretizer_->GetChangeHistBitsBuffer(feature_index));
-        OMP_LOOP_EX_END();
-      }
-      OMP_THROW_EX();
-    }
-  }
-
   OMP_INIT_EX();
 // find splits
 #pragma omp parallel for schedule(static) num_threads(share_state_->num_threads)
@@ -547,24 +467,10 @@ void SerialTreeLearner::FindBestSplitsFromHistograms(
       continue;
     }
     const int tid = omp_get_thread_num();
-    if (config_->use_quantized_grad) {
-      const uint8_t hist_bits_bin = gradient_discretizer_->GetHistBitsInLeaf<false>(smaller_leaf_splits_->leaf_index());
-      const int64_t int_sum_gradient_and_hessian = smaller_leaf_splits_->int_sum_gradients_and_hessians();
-      if (hist_bits_bin <= 16) {
-        train_data_->FixHistogramInt<int32_t, int32_t, 16, 16>(
-            feature_index, int_sum_gradient_and_hessian,
-            reinterpret_cast<hist_t*>(smaller_leaf_histogram_array_[feature_index].RawDataInt16()));
-      } else {
-        train_data_->FixHistogramInt<int64_t, int64_t, 32, 32>(
-            feature_index, int_sum_gradient_and_hessian,
-            reinterpret_cast<hist_t*>(smaller_leaf_histogram_array_[feature_index].RawDataInt32()));
-      }
-    } else {
-      train_data_->FixHistogram(
-          feature_index, smaller_leaf_splits_->sum_gradients(),
-          smaller_leaf_splits_->sum_hessians(),
-          smaller_leaf_histogram_array_[feature_index].RawData());
-    }
+    train_data_->FixHistogram(
+        feature_index, smaller_leaf_splits_->sum_gradients(),
+        smaller_leaf_splits_->sum_hessians(),
+        smaller_leaf_histogram_array_[feature_index].RawData());
     int real_fidx = train_data_->RealFeatureIndex(feature_index);
 
     ComputeBestSplitForFeature(smaller_leaf_histogram_array_, feature_index,
@@ -581,50 +487,13 @@ void SerialTreeLearner::FindBestSplitsFromHistograms(
     }
 
     if (use_subtract) {
-      if (config_->use_quantized_grad) {
-        const int parent_index = std::min(smaller_leaf_splits_->leaf_index(), larger_leaf_splits_->leaf_index());
-        const uint8_t parent_hist_bits = gradient_discretizer_->GetHistBitsInNode<false>(parent_index);
-        const uint8_t smaller_hist_bits = gradient_discretizer_->GetHistBitsInLeaf<false>(smaller_leaf_splits_->leaf_index());
-        const uint8_t larger_hist_bits = gradient_discretizer_->GetHistBitsInLeaf<false>(larger_leaf_splits_->leaf_index());
-        if (parent_hist_bits <= 16) {
-          CHECK_LE(smaller_hist_bits, 16);
-          CHECK_LE(larger_hist_bits, 16);
-          larger_leaf_histogram_array_[feature_index].Subtract<true, int32_t, int32_t, int32_t, 16, 16, 16>(
-              smaller_leaf_histogram_array_[feature_index]);
-        } else if (larger_hist_bits <= 16) {
-          CHECK_LE(smaller_hist_bits, 16);
-          larger_leaf_histogram_array_[feature_index].Subtract<true, int64_t, int32_t, int32_t, 32, 16, 16>(
-              smaller_leaf_histogram_array_[feature_index], gradient_discretizer_->GetChangeHistBitsBuffer(feature_index));
-        } else if (smaller_hist_bits <= 16) {
-          larger_leaf_histogram_array_[feature_index].Subtract<true, int64_t, int32_t, int64_t, 32, 16, 32>(
-              smaller_leaf_histogram_array_[feature_index]);
-        } else {
-          larger_leaf_histogram_array_[feature_index].Subtract<true, int64_t, int64_t, int64_t, 32, 32, 32>(
-              smaller_leaf_histogram_array_[feature_index]);
-        }
-      } else {
-        larger_leaf_histogram_array_[feature_index].Subtract<false>(
-            smaller_leaf_histogram_array_[feature_index]);
-      }
+      larger_leaf_histogram_array_[feature_index].Subtract(
+          smaller_leaf_histogram_array_[feature_index]);
     } else {
-      if (config_->use_quantized_grad) {
-        const int64_t int_sum_gradient_and_hessian = larger_leaf_splits_->int_sum_gradients_and_hessians();
-        const uint8_t hist_bits_bin = gradient_discretizer_->GetHistBitsInLeaf<false>(larger_leaf_splits_->leaf_index());
-        if (hist_bits_bin <= 16) {
-          train_data_->FixHistogramInt<int32_t, int32_t, 16, 16>(
-              feature_index, int_sum_gradient_and_hessian,
-              reinterpret_cast<hist_t*>(larger_leaf_histogram_array_[feature_index].RawDataInt16()));
-        } else {
-          train_data_->FixHistogramInt<int64_t, int64_t, 32, 32>(
-              feature_index, int_sum_gradient_and_hessian,
-              reinterpret_cast<hist_t*>(larger_leaf_histogram_array_[feature_index].RawDataInt32()));
-        }
-      } else {
-        train_data_->FixHistogram(
-            feature_index, larger_leaf_splits_->sum_gradients(),
-            larger_leaf_splits_->sum_hessians(),
-            larger_leaf_histogram_array_[feature_index].RawData());
-      }
+      train_data_->FixHistogram(
+          feature_index, larger_leaf_splits_->sum_gradients(),
+          larger_leaf_splits_->sum_hessians(),
+          larger_leaf_histogram_array_[feature_index].RawData());
     }
 
     ComputeBestSplitForFeature(larger_leaf_histogram_array_, feature_index,
@@ -900,64 +769,27 @@ bool SerialTreeLearner::SplitInner(Tree* tree, int best_leaf, int* left_leaf,
 #endif
 
   // init the leaves that used on next iteration
-  if (!config_->use_quantized_grad) {
-    if (best_split_info.left_count < best_split_info.right_count) {
-      CHECK_GT(best_split_info.left_count, 0);
-      smaller_leaf_splits_->Init(*left_leaf, data_partition_.get(),
-                                 best_split_info.left_sum_gradient,
-                                 best_split_info.left_sum_hessian,
-                                 best_split_info.left_output);
-      larger_leaf_splits_->Init(*right_leaf, data_partition_.get(),
-                                best_split_info.right_sum_gradient,
-                                best_split_info.right_sum_hessian,
-                                best_split_info.right_output);
-    } else {
-      CHECK_GT(best_split_info.right_count, 0);
-      smaller_leaf_splits_->Init(*right_leaf, data_partition_.get(),
-                                 best_split_info.right_sum_gradient,
-                                 best_split_info.right_sum_hessian,
-                                 best_split_info.right_output);
-      larger_leaf_splits_->Init(*left_leaf, data_partition_.get(),
-                                best_split_info.left_sum_gradient,
-                                best_split_info.left_sum_hessian,
-                                best_split_info.left_output);
-    }
+  if (best_split_info.left_count < best_split_info.right_count) {
+    CHECK_GT(best_split_info.left_count, 0);
+    smaller_leaf_splits_->Init(*left_leaf, data_partition_.get(),
+                               best_split_info.left_sum_gradient,
+                               best_split_info.left_sum_hessian,
+                               best_split_info.left_output);
+    larger_leaf_splits_->Init(*right_leaf, data_partition_.get(),
+                              best_split_info.right_sum_gradient,
+                              best_split_info.right_sum_hessian,
+                              best_split_info.right_output);
   } else {
-    if (best_split_info.left_count < best_split_info.right_count) {
-      CHECK_GT(best_split_info.left_count, 0);
-      smaller_leaf_splits_->Init(*left_leaf, data_partition_.get(),
-                                 best_split_info.left_sum_gradient,
-                                 best_split_info.left_sum_hessian,
-                                 best_split_info.left_sum_gradient_and_hessian,
-                                 best_split_info.left_output);
-      larger_leaf_splits_->Init(*right_leaf, data_partition_.get(),
-                                 best_split_info.right_sum_gradient,
-                                 best_split_info.right_sum_hessian,
-                                 best_split_info.right_sum_gradient_and_hessian,
-                                 best_split_info.right_output);
-    } else {
-      CHECK_GT(best_split_info.right_count, 0);
-      smaller_leaf_splits_->Init(*right_leaf, data_partition_.get(),
-                                 best_split_info.right_sum_gradient,
-                                 best_split_info.right_sum_hessian,
-                                 best_split_info.right_sum_gradient_and_hessian,
-                                 best_split_info.right_output);
-      larger_leaf_splits_->Init(*left_leaf, data_partition_.get(),
-                                best_split_info.left_sum_gradient,
-                                best_split_info.left_sum_hessian,
-                                best_split_info.left_sum_gradient_and_hessian,
-                                best_split_info.left_output);
-    }
+    CHECK_GT(best_split_info.right_count, 0);
+    smaller_leaf_splits_->Init(*right_leaf, data_partition_.get(),
+                               best_split_info.right_sum_gradient,
+                               best_split_info.right_sum_hessian,
+                               best_split_info.right_output);
+    larger_leaf_splits_->Init(*left_leaf, data_partition_.get(),
+                              best_split_info.left_sum_gradient,
+                              best_split_info.left_sum_hessian,
+                              best_split_info.left_output);
   }
-  if (config_->use_quantized_grad && config_->tree_learner != std::string("data")) {
-    gradient_discretizer_->SetNumBitsInHistogramBin<false>(*left_leaf, *right_leaf,
-                                                    data_partition_->leaf_count(*left_leaf),
-                                                    data_partition_->leaf_count(*right_leaf));
-  }
-
-  #ifdef DEBUG
-  CheckSplit(best_split_info, *left_leaf, *right_leaf);
-  #endif
 
   auto leaves_need_update = constraints_->Update(
       is_numerical_split, *left_leaf, *right_leaf,
@@ -1023,21 +855,9 @@ void SerialTreeLearner::ComputeBestSplitForFeature(
         train_data_->FeatureNumBin(feature_index));
   }
   SplitInfo new_split;
-  if (config_->use_quantized_grad) {
-    const uint8_t hist_bits_bin = gradient_discretizer_->GetHistBitsInLeaf<false>(leaf_splits->leaf_index());
-    histogram_array_[feature_index].FindBestThresholdInt(
-        leaf_splits->int_sum_gradients_and_hessians(),
-        gradient_discretizer_->grad_scale(),
-        gradient_discretizer_->hess_scale(),
-        hist_bits_bin,
-        hist_bits_bin,
-        num_data,
-        constraints_->GetFeatureConstraint(leaf_splits->leaf_index(), feature_index), parent_output, &new_split);
-  } else {
-    histogram_array_[feature_index].FindBestThreshold(
-        leaf_splits->sum_gradients(), leaf_splits->sum_hessians(), num_data,
-        constraints_->GetFeatureConstraint(leaf_splits->leaf_index(), feature_index), parent_output, &new_split);
-  }
+  histogram_array_[feature_index].FindBestThreshold(
+      leaf_splits->sum_gradients(), leaf_splits->sum_hessians(), num_data,
+      constraints_->GetFeatureConstraint(leaf_splits->leaf_index(), feature_index), parent_output, &new_split);
   new_split.feature = real_fidx;
   if (cegb_ != nullptr) {
     new_split.gain -=
@@ -1116,49 +936,5 @@ std::vector<int8_t> node_used_features = col_sampler_.GetByNode(tree, leaf);
   auto best_idx = ArrayArgs<SplitInfo>::ArgMax(bests);
   *split = bests[best_idx];
 }
-
-#ifdef DEBUG
-void SerialTreeLearner::CheckSplit(const SplitInfo& best_split_info, const int left_leaf_index, const int right_leaf_index) {
-  data_size_t num_data_in_left = 0;
-  data_size_t num_data_in_right = 0;
-  const data_size_t* data_indices_in_left = data_partition_->GetIndexOnLeaf(left_leaf_index, &num_data_in_left);
-  const data_size_t* data_indices_in_right = data_partition_->GetIndexOnLeaf(right_leaf_index, &num_data_in_right);
-  if (config_->use_quantized_grad) {
-    int32_t sum_left_gradient = 0;
-    int32_t sum_left_hessian = 0;
-    int32_t sum_right_gradient = 0;
-    int32_t sum_right_hessian = 0;
-    const int8_t* discretized_grad_and_hess = gradient_discretizer_->discretized_gradients_and_hessians();
-    for (data_size_t i = 0; i < num_data_in_left; ++i) {
-      const data_size_t index = data_indices_in_left[i];
-      sum_left_gradient += discretized_grad_and_hess[2 * index + 1];
-      sum_left_hessian += discretized_grad_and_hess[2 * index];
-    }
-    for (data_size_t i = 0; i < num_data_in_right; ++i) {
-      const data_size_t index = data_indices_in_right[i];
-      sum_right_gradient += discretized_grad_and_hess[2 * index + 1];
-      sum_right_hessian += discretized_grad_and_hess[2 * index];
-    }
-    Log::Warning("============================ start leaf split info ============================");
-    Log::Warning("left_leaf_index = %d, right_leaf_index = %d", left_leaf_index, right_leaf_index);
-    Log::Warning("num_data_in_left = %d, num_data_in_right = %d", num_data_in_left, num_data_in_right);
-    Log::Warning("sum_left_gradient = %d, best_split_info->left_sum_gradient_and_hessian.gradient = %d", sum_left_gradient,
-      static_cast<int32_t>(best_split_info.left_sum_gradient_and_hessian >> 32));
-    Log::Warning("sum_left_hessian = %d, best_split_info->left_sum_gradient_and_hessian.hessian = %d", sum_left_hessian,
-      static_cast<int32_t>(best_split_info.left_sum_gradient_and_hessian & 0x00000000ffffffff));
-    Log::Warning("sum_right_gradient = %d, best_split_info->right_sum_gradient_and_hessian.gradient = %d", sum_right_gradient,
-      static_cast<int32_t>(best_split_info.right_sum_gradient_and_hessian >> 32));
-    Log::Warning("sum_right_hessian = %d, best_split_info->right_sum_gradient_and_hessian.hessian = %d", sum_right_hessian,
-      static_cast<int32_t>(best_split_info.right_sum_gradient_and_hessian & 0x00000000ffffffff));
-    CHECK_EQ(num_data_in_left, best_split_info.left_count);
-    CHECK_EQ(num_data_in_right, best_split_info.right_count);
-    CHECK_EQ(sum_left_gradient, static_cast<int32_t>(best_split_info.left_sum_gradient_and_hessian >> 32))
-    CHECK_EQ(sum_left_hessian, static_cast<int32_t>(best_split_info.left_sum_gradient_and_hessian & 0x00000000ffffffff));
-    CHECK_EQ(sum_right_gradient, static_cast<int32_t>(best_split_info.right_sum_gradient_and_hessian >> 32));
-    CHECK_EQ(sum_right_hessian, static_cast<int32_t>(best_split_info.right_sum_gradient_and_hessian & 0x00000000ffffffff));
-    Log::Warning("============================ end leaf split info ============================");
-  }
-}
-#endif
 
 }  // namespace Falcata

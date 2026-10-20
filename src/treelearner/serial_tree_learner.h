@@ -128,7 +128,6 @@ class SerialTreeLearner: public TreeLearner {
                                   const LeafSplits* leaf_splits,
                                   SplitInfo* best_split, double parent_output);
 
-
   void GetShareStates(const Dataset* dataset, bool is_constant_hessian, bool is_first_time);
 
   /*! \brief Whether this learner constructs histograms on the CUDA device
@@ -176,10 +175,6 @@ class SerialTreeLearner: public TreeLearner {
                       int* cur_depth);
 
   std::set<int> FindAllForceFeatures(Json force_split_leaf_setting);
-
-  #ifdef DEBUG
-  void CheckSplit(const SplitInfo& best_split_info, const int left_leaf_index, const int right_leaf_index);
-  #endif
 
   /*!
   * \brief Get the number of data in a leaf

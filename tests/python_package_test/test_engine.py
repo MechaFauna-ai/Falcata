@@ -640,6 +640,31 @@ def test_cuda_feature_with_more_bins_than_shared_histogram_matches_cpu(huge_firs
 
 
 @pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
+@pytest.mark.parametrize("query_size", [65536, 66560])
+def test_rank_xendcg_cuda_query_of_65536_items_or_more_matches_cpu(query_size):
+    # rank_xendcg has no per-query row cap (lambdarank stops at 10000), so one
+    # query can hold 65536+ items. The CUDA objective sizes its kernels from the
+    # largest query; that size must not wrap at 16 bits.
+    rng = np.random.default_rng(7)
+    groups = [query_size, 100]
+    X = rng.standard_normal((sum(groups), 4))
+    y = rng.integers(0, 4, size=sum(groups))
+    params = {
+        "objective": "rank_xendcg",
+        "metric": "None",
+        "num_leaves": 7,
+        "quant_mode": "none",
+        "seed": 1,
+        "verbose": -1,
+    }
+    preds = {}
+    for device in ["cpu", "cuda"]:
+        bst = lgb.train({**params, "device_type": device}, lgb.Dataset(X, y, group=groups), num_boost_round=3)
+        preds[device] = bst.predict(X, raw_score=True)
+    np.testing.assert_allclose(preds["cuda"], preds["cpu"], rtol=0, atol=1e-6)
+
+
+@pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
 def test_min_data_per_group_cuda_matches_cpu():
     # Regression test for the categorical kernels in cuda_best_split_finder.cu
     # ignoring min_data_per_group entirely. Dataset has 200 rows split across
@@ -4984,7 +5009,7 @@ def test_verbosity_is_respected_when_using_custom_objective(capsys):
     assert "[Falcata] [Warning] Unknown parameter: nonsense" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("verbosity_param", lgb.basic._ConfigAliases.get("verbosity"))
+@pytest.mark.parametrize("verbosity_param", sorted(lgb.basic._ConfigAliases.get("verbosity")))
 @pytest.mark.parametrize("verbosity", [-1, 0])
 def test_verbosity_can_suppress_alias_warnings(capsys, verbosity_param, verbosity):
     X, y = make_synthetic_regression()

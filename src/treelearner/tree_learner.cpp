@@ -43,6 +43,11 @@ TreeLearner* MakeSerialFamily(const std::string& learner_type, const Config* con
 
 TreeLearner* TreeLearner::CreateTreeLearner(const std::string& learner_type, const std::string& device_type,
                                             const Config* config, const bool boosting_on_cuda) {
+  // Raw C++ callers can bypass Config::Set; host learners require float gradients.
+  if ((device_type == "cpu" || device_type == "gpu") && config->use_quantized_grad) {
+    Log::Fatal("Quantized training requires device_type=cuda in Falcata; "
+               "use quant_mode=none for CPU or OpenCL training.");
+  }
   // Backend SPI. Each entry maps a device_type to a factory that produces a
   // TreeLearner (the backend interface). Adding a new backend is a one-line
   // registration here plus an implementation of the TreeLearner interface --

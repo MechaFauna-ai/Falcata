@@ -101,12 +101,14 @@ __device__ __forceinline__ uint8_t DeviceLevelHistBits(const data_size_t n, cons
  *  CollectSplittableLeaves, then per split the apply descriptor (SplitLevelBatched's host math), the tree record
  *  (ApplyLevelBatched's CUDATreeBatchSplit) and the journal entry, the terminal-region gaps (the windows of the leaves
  *  this level does not split: they cover what SplitLevelBatched's gaps between the sorted split regions cover; one
- *  descriptor per such leaf, adjacent windows not merged: the same rows, copied once each) and the flat layout. Any
- *  block of a multiple of 32 threads; each thread takes contiguous runs of the leaves and of the splits. Reads every
- *  leaf's best split: after the level's sync. */
+ *  descriptor per such leaf, adjacent windows not merged: the same rows, copied once each) and the flat layout.
+ *  A binding final level applies the host's gain-descending, lower-leaf-tie top-K order; nonbinding levels stay
+ *  leaf-ascending. Any block of a multiple of 32 threads; each thread takes contiguous runs of leaves and splits.
+ *  Reads every leaf's best split after the level's sync. */
 __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConfig& cfg, const int level) {
   constexpr int kMaxLeaves = 2 * kDeviceLevelMaxPairs;
-  __shared__ int s_leaves[kMaxLeaves];
+  __shared__ int s_leaves[kDeviceLevelMaxPairs];
+  __shared__ double s_gains[kDeviceLevelMaxPairs];
   __shared__ unsigned int s_split_bits[kMaxLeaves / 32];
   __shared__ int s_warp[32];
   __shared__ int s_total;
@@ -133,7 +135,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
       st->split_info_base = split_cursor;
     }
   };
-  if (cur_leaves > kMaxLeaves) {
+  if (cur_leaves > kMaxLeaves || (cfg.whole_tree && cur_leaves > cfg.num_leaves_budget)) {
     stop(true);  // outside the gated regime (the learner gates num_leaves): stop and flag it
     return;
   }
@@ -148,7 +150,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
     }
   }
   int write_pos = DeviceLevelBlockScan(my_count, s_warp, &s_total);
-  const int n = s_total;
+  int n = s_total;
   if (n > kDeviceLevelMaxPairs) {
     stop(true);
     return;
@@ -165,6 +167,56 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   if (n == 0) {
     stop(false);  // no splittable leaf: the tree is complete; later kernels see done / zero live counts
     return;
+  }
+  if (cfg.whole_tree && n > cfg.num_leaves_budget - cur_leaves) {
+    // ArbitrateLevelBudget: only the depth-capped final frontier can be truncated without comparing its future
+    // children. Any earlier binding budget is outside this controller's admitted regime; do not silently prune it.
+    if (level + 1 != cfg.max_depth) {
+      stop(true);
+      return;
+    }
+    const int remaining = cfg.num_leaves_budget - cur_leaves;
+    if (remaining == 0) {
+      stop(false);
+      return;
+    }
+    // Cooperative bounded bitonic sort of valid leaf IDs. Padding sorts after valid candidates; exact gain ties
+    // retain the original leaf-ascending order of the host stable_sort. Keep the sorted order for APPLY as well as
+    // selection: right-child IDs and the terminal journal depend on it. No sort runs on nonbinding levels.
+    int sort_size = 1;
+    while (sort_size < n) sort_size <<= 1;
+    for (int i = tid; i < sort_size; i += nt) {
+      if (i < n) {
+        s_gains[i] = cfg.leaf_best_split_info[s_leaves[i]].gain;
+      } else {
+        s_leaves[i] = -1;
+        s_gains[i] = 0.0;
+      }
+    }
+    __syncthreads();
+    for (int width = 2; width <= sort_size; width <<= 1) {
+      for (int stride = width >> 1; stride > 0; stride >>= 1) {
+        for (int i = tid; i < sort_size; i += nt) {
+          const int j = i ^ stride;
+          if (j > i) {
+            const int a = s_leaves[i];
+            const int b = s_leaves[j];
+            const double ga = s_gains[i];
+            const double gb = s_gains[j];
+            const bool a_first = a >= 0 && (b < 0 || ga > gb || (ga == gb && a < b));
+            const bool b_first = b >= 0 && (a < 0 || gb > ga || (gb == ga && b < a));
+            if (((i & width) == 0) ? b_first : a_first) {
+              s_leaves[i] = b;
+              s_leaves[j] = a;
+              s_gains[i] = gb;
+              s_gains[j] = ga;
+            }
+          }
+        }
+        __syncthreads();
+      }
+    }
+    n = remaining;
   }
   // ---- per split: apply descriptor, tree record, journal ----
   const int split_chunk = (n + nt - 1) / nt;
@@ -274,6 +326,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
     if (((s_split_bits[leaf >> 5] >> (leaf & 31)) & 1u) == 0 && num > 0) {
       CUDAHybridApplyDescriptor& g = cfg.apply_descs[n + gap_pos];
       memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
+      g.left_leaf_index = leaf;  // the final whole apply also maps this terminal leaf
       g.leaf_data_start = cfg.leaf_data_start[leaf];
       g.num_data_in_leaf = num;
       g.num_blocks = (num + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
@@ -308,7 +361,10 @@ __device__ __forceinline__ void DeviceLevelPairsBlock(const CUDADeviceLevelConfi
   CUDADeviceLevelState* st = cfg.state;
   const int tid = static_cast<int>(threadIdx.x);
   const int nt = static_cast<int>(blockDim.x);
-  const int n = st->done ? 0 : st->live_splits;
+  // A complete tree's final apply has no child search. Its partition/child statistics are already written by
+  // the apply; leave the live split count intact for the tree record, and omit unused search descriptors/layout.
+  const bool final_depth = cfg.whole_tree && level + 1 >= cfg.max_depth;
+  const int n = st->done || final_depth ? 0 : st->live_splits;
   if (n == 0) {
     for (int c = tid; c < kDeviceLevelClaimColumns; c += nt) {
       st->construct_next_block[c] = 0;

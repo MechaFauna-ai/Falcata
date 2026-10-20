@@ -533,7 +533,6 @@ void TrainingShareStates::SetMultiValBin(MultiValBin* bin, data_size_t num_data,
     }
   }
   num_total_bin_ += bin->num_bin();
-  num_elements_per_row_ += bin->num_element_per_row();
   multi_val_bin_wrapper_.reset(new MultiValBinWrapper(
     bin, num_data, feature_groups_contained, num_grad_quant_bins));
 }
