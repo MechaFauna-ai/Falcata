@@ -121,9 +121,11 @@ pip install falcata
 ```
 
 On Linux x86_64 this installs a **prebuilt wheel** — no compilation, no CUDA
-toolkit needed — with native GPU code for sm_60 through sm_120 (P100, GTX 10xx,
-V100, T4, A100, RTX 30xx/40xx, H100, B100/B200, RTX 50xx). A GPU outside that
-list fails fast with a message pointing at the source build below.
+toolkit needed — built with CUDA 13, with native GPU code for sm_75 through
+sm_120 (T4, RTX 20xx, A100, RTX 30xx/40xx, H100, B100/B200, RTX 50xx). It
+needs an NVIDIA driver that supports CUDA 13 (R580 or newer). Older GPUs
+(Pascal and Volta: P100, GTX 10xx, V100) fail fast with a message pointing at
+the source build below; build with CUDA 12.x for those.
 
 Everywhere else (and with `pip install --no-binary falcata falcata`), pip
 builds from source, which needs the **CUDA toolkit (>= 11.0)**, CMake >= 3.28,
