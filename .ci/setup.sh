@@ -77,13 +77,18 @@ else  # Linux
         elif [[ $COMPILER == "clang-17" ]]; then
             sudo apt-get install --no-install-recommends -y \
                 wget
-            wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-            sudo apt-add-repository deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main
-            sudo apt-add-repository deb-src http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main
-            sudo apt-get update
-            sudo apt-get install -y \
-                clang-17 \
-                libomp-17-dev
+            # apt.llvm.org is a third-party host: key, list, index and packages as one retried unit, so a
+            # transient failure at any step (an index refresh included) gets a fresh attempt
+            install_clang17() {
+                wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null \
+                && sudo apt-add-repository deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main \
+                && sudo apt-add-repository deb-src http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main \
+                && sudo apt-get update \
+                && sudo apt-get install -y \
+                    clang-17 \
+                    libomp-17-dev
+            }
+            retry install_clang17
         fi
 
         export LANG="en_US.UTF-8"

@@ -278,12 +278,9 @@ jobs:
             gpg-agent \
             software-properties-common \
             sudo
-          # install newest version of git
-          # ref:
-          #     - https://unix.stackexchange.com/a/170831/550004
-          #     - https://git-scm.com/download/linux
-          add-apt-repository ppa:git-core/ppa -y
-          apt-get update -y
+          # git from the Ubuntu archive: actions/checkout needs git >= 2.18 and
+          # jammy ships 2.34. The git-core Launchpad PPA used here before
+          # returned 503s (2026-10-17, -21 x2) and failed otherwise green runs.
           apt-get install --no-install-recommends -y \
             git
       - name: Trust git cloning Falcata
