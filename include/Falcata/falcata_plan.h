@@ -949,6 +949,12 @@ struct FalcataPlan {
   // layout can disable graph caching, but never the device controller itself. The same selector, kernels and order:
   // bit-identical.
   bool device_tree = true;          // key: device_tree
+  // the complete device tree's lean tree end (no split-batch readback or host leaf bookkeeping, the final level's
+  // inline leaf map (the map-only pass when every row is in the tree) and the one-kernel slab readback) for every
+  // objective boosted on the device (binary, multiclass, ranking, L1 / quantile / MAPE renewed on the device, ...),
+  // with weights and under row bagging (not by query), not only unweighted, unbagged constant-hessian L2. The same
+  // kernels write the same map and leaf values: bit-identical.
+  bool device_tree_lean_end = true;  // key: device_tree_lean_end
   // device_levels' launches as one cached CUDA graph for the prefix (root work and the host tail remain). Trees
   // whose keys keep changing use the host loop after the cache-miss budget: the same model, bit-identical.
   bool device_level_graph = true;   // key: device_level_graph
@@ -1114,6 +1120,7 @@ struct FalcataPlan {
     if (key == "dense_wide_hist") return &dense_wide_hist;
     if (key == "device_levels") return &device_levels;
     if (key == "device_tree") return &device_tree;
+    if (key == "device_tree_lean_end") return &device_tree_lean_end;
     if (key == "device_level_graph") return &device_level_graph;
     return nullptr;
   }

@@ -3974,13 +3974,20 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // No current-tree host tail exists for a completed whole tree. Plain unweighted L2 never renews its
   // outputs, and its next BeforeTrain rebuilds root counts/start/bits before any host search. All other
   // modes retain full child statistics; GPU split-info storage/production and full journal replay stay intact.
-  bool skip_host_cache = cfg.whole_tree && config_->boosting == "gbdt" && config_->objective == "regression" &&
-    boosting_on_cuda_ && share_state_->is_constant_hessian && train_data_->metadata().weights() == nullptr &&
+  // cuda_plan key device_tree_lean_end: every objective boosted on the device, not only constant-hessian L2 (the
+  // skipped cache is read only by host searches/tails and the host RenewTreeOutput, which CHECK it; the device renewal
+  // of L1 / quantile / MAPE reads the device leaf windows), with weights and under row bagging
+  const bool lean_end = FalcataPlan::Get().device_tree_lean_end;
+  bool skip_host_cache = cfg.whole_tree && config_->boosting == "gbdt" &&
+    (lean_end || (config_->objective == "regression" && share_state_->is_constant_hessian)) &&
+    boosting_on_cuda_ && (lean_end || train_data_->metadata().weights() == nullptr) &&
     config_->use_quantized_grad && vec_num_targets_ <= 1 && !has_categorical_feature_ &&
     nccl_communicator_ == nullptr && fp_merge_state_ == nullptr && !forest_slot_ &&
-    config_->data_sample_strategy == "bagging" && config_->bagging_freq == 0 &&
-    config_->bagging_fraction == 1.0 && config_->pos_bagging_fraction == 1.0 &&
-    config_->neg_bagging_fraction == 1.0 && !config_->bagging_by_query && !cuda_data_partition_->use_bagging() &&
+    config_->data_sample_strategy == "bagging" && !config_->bagging_by_query &&
+    // device_tree_lean_end: under row bagging too (the bag is partitioned on the device; the cache is not read)
+    (lean_end ||
+     (config_->bagging_freq == 0 && config_->bagging_fraction == 1.0 && config_->pos_bagging_fraction == 1.0 &&
+      config_->neg_bagging_fraction == 1.0 && !cuda_data_partition_->use_bagging())) &&
     !config_->quant_train_renew_leaf && !config_->linear_tree && !select_features_by_node_ &&
     config_->interaction_constraints_vector.empty() && config_->monotone_constraints.empty() &&
     !use_monotone_constraints_ && config_->monotone_penalty == 0.0 && config_->feature_contri.empty() &&
@@ -3992,7 +3999,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   skip_host_cache = false;  // CheckSplitValid consumes the host statistics/windows.
 #endif  // DEBUG
   // Same conservative whole-L2 subset as V10; one mode feeds capture identity and both enqueue routes.
-  const bool inline_all_map = skip_host_cache && cuda_data_partition_->root_num_data() == num_data_ &&
+  // cuda_plan key device_tree_lean_end: a row bag's windows too (the tree-end full pass writes the same in-bag rows)
+  const bool all_rows_root = cuda_data_partition_->root_num_data() == num_data_;
+  const bool inline_all_map = skip_host_cache && (all_rows_root || lean_end) &&
     cuda_data_partition_->cuda_data_index_to_leaf_index() != nullptr;
   cfg.gap_block_dim = CUDADataPartition::DeviceLevelGapBlockDim();
   cfg.min_data_in_leaf = static_cast<data_size_t>(config_->min_data_in_leaf);
@@ -4030,7 +4039,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   }
   // Count staging must already be reserved: the validated journal + exact final counts own all repair metadata.
   // No intermediate readback, new DMA/kernel, plan key or speculative host readiness is introduced.
-  const bool final_map_only = inline_all_map && prefetch_tree_end && end_plan.final_map_only &&
+  const bool final_map_only = inline_all_map && all_rows_root && prefetch_tree_end && end_plan.final_map_only &&
     end_plan.skip_empty_tail;
   // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
   // pointer key, replayed on the next ones); otherwise enqueued as they are

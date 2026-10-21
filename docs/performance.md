@@ -2889,6 +2889,30 @@ search's same-binary checks also covered bagged, feature-sampled, shallower (255
 shapes (1.024-1.091) and feature-sampled Numerai with missing values, which pays a graph capture per tree (its
 whole-tree keys change every tree): 0.994 over 4 pairs there, inside the 1.5% band (this run: 1.002).
 
+`device_tree_lean_end` (default ON) gives the complete device tree's lean tree end, until now only for unweighted,
+unbagged, constant-hessian L2, to every objective boosted on the device (binary, multiclass(ova),
+poisson/gamma/tweedie, huber/fair, lambdarank/rank_xendcg, and L1 / quantile / MAPE, whose device renewal reads only the
+device leaf windows), with weights and under row bagging (not by query): no split-batch readback and no host leaf
+bookkeeping per split (the host leaf cache is marked stale; only host searches/tails and the host RenewTreeOutput read
+it, and they CHECK it), the final level writes the row-to-leaf map inline (`final_map_only` where every row is in the
+tree) and the tree's slab comes back through the one-kernel active readback. Per tree this removes the 72 B x splits D2H
+copy, the host replay of every split's statistics and the post-tree `MaterializeLeafMapKernel` pass (covtype: 13-15 us of
+GPU and a ~19 us host gap per tree, 7 trees a round). A bagged tree writes its bag's map inline (the tree-end full pass
+wrote the same in-bag windows); `final_map_only`, whose deferred count check assumes every row, stays off there. Objectives
+boosted on the host (custom ones; cross-entropy in this build), categorical, NCCL and forest slots keep the full host cache. Models are identical (md5):
+key on/off sweep in `test_cuda_device_tree_lean_end.py`, lattice 441/441.
+
+Quick check vs master (2 pairs, 30000-round scale, five builds): covtype-deep-fixed 1.083-1.092, higgs-deep-stoch
+1.039-1.045, numerai53bench-deep-stoch 1.009-1.011, numerai53bench-nan-deep-stoch 0.994-0.997 (L2: path unchanged, the
+parent's level), score 1.031-1.034 (parent e076 1.024-1.026); against the parent's build directly (3 pairs): covtype-deep-fixed 1.018,
+higgs-deep-stoch 1.013. Same binary, key off vs on, two 2-pair runs: covtype-deep-fixed
+1.0385 / 1.0184, higgs-deep-stoch 1.0404 / 1.0139 (the first with two disturbed off-runs; pooled medians of 4 runs per
+arm: covtype 3.266 -> 3.200 ms/round, +2.0%, higgs 1.620 -> 1.598, +1.4%, every on-run faster than every off-run), both
+Numerai cells 0.9995-1.0005; bagging_fraction 0.5 / freq 1, 300 rounds x 3 pairs: higgs
+1.0097, covtype 1.0230 (every on-run faster); higgs 63 leaves / depth 6 bagged 0.8: 1.004; covtype 255 / 8: 1.010;
+Numerai (L2) bagged 0.5: 1.006; weighted higgs: 1.011; L1 bagged covtype 1.003 and quantile higgs 1.002 (their renewal
+dominates the round).
+
 After the root search, the existing device reset copies the initialized fixed root struct's output into tree
 leaf 0 before the record stream can save it as the root internal value. Device selectors and apply kernels then
 handle every level, including early exhaustion and the final depth. The final apply skips its child histogram/search. One end-of-growth fence reads the journal
