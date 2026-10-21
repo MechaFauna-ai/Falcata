@@ -673,7 +673,7 @@ struct Config {
 
   // desc = quantization mode for gradients and hessians (Falcata)
   // desc = ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
-  // desc = ``none``: non-quantized gradients/hessians; on CUDA, deterministic fixed-point histogram accumulation with fp64 storage, or ordered fp64 kernels (see `performance <./performance.md>`__ for precision bounds and fallbacks)
+  // desc = ``none``: non-quantized gradients/hessians; on CUDA, deterministic fixed-point histogram accumulation with fp64 storage, or ordered fp64 kernels (see `performance <https://github.com/MechaFauna-ai/Falcata/blob/master/docs/performance.md>`__ for precision bounds and fallbacks)
   // desc = ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
   // desc = ``fixedpoint``: XGBoost-style deterministic fixed-point quantization with an outlier-robust, gap-gated gradient scale; near-lossless at the default 64 bins
   // desc = **Note**: ``stochastic`` and ``fixedpoint`` work only with ``cuda`` device type; use ``none`` for CPU training

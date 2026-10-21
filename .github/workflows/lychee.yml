@@ -1,15 +1,39 @@
+# Link checks.
+#
+# There is deliberately no schedule. The former daily online check (08:00 UTC)
+# failed in 6 of its last 8 runs: three only on a broken local link
+# (docs/Parameters.rst -> ./performance.md, which Sphinx does not render; fixed
+# with this change), the others on external hosts or GitHub 503s, and every
+# external fix was one more exclusion. A PR-time offline check catches the local
+# kind when it is introduced, so the schedule bought only the external noise.
+# Now:
+#   - pull requests that touch docs run lychee --offline over the sources and
+#     the built HTML: local file links and fragments only, no network;
+#   - workflow_dispatch runs the full online check on demand (input `online`,
+#     default true; set it false for an offline run).
 name: Link checks
 
 on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '**/*.md'
+      - '**/*.rst'
+      - 'R-package/**/*.Rd'
+      - '.github/workflows/lychee.yml'
+      - 'docs/.lychee.toml'
   # Run manually by clicking a button in the UI
   workflow_dispatch:
-  # Run once a day at 8:00am UTC
-  schedule:
-    - cron: '0 8 * * *'
+    inputs:
+      online:
+        description: 'Check external links too (unchecked: --offline)'
+        type: boolean
+        default: true
 
-# only 1 job running in the repo at any time
+# one run per ref; a newer push to the same PR cancels the older run
 concurrency:
-  group: lock
+  group: lychee-${{ github.ref }}
+  cancel-in-progress: true
 
 # default to 0 permissions
 # (job-level overrides add the minimal permissions needed)
@@ -46,7 +70,10 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411  # v2.8.0
         with:
+          # --offline unless this is a manual run with online=true
+          # (inputs.online is empty on pull_request, so PRs are offline)
           args: >-
+            ${{ inputs.online != true && '--offline' || '' }}
             --config=./docs/.lychee.toml
             --
             "**/*.rst"
