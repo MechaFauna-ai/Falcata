@@ -348,7 +348,7 @@ These fixes change some model outputs versus 1.0.5, on CUDA and, for #91, on CPU
 | Change | Affected inputs | Before |
 | --- | --- | --- |
 | #122 deterministic non-quantized construct | `quant_mode=none` with depth-limited trees, `feature_fraction < 1` or levels wider than the ordered kernels' buffer; `cuda_precision=fp32` | A different model per run |
-| #146 integer root statistics | Fixed-point runs whose integer root gradient sum reaches 2^21 (strong class imbalance under the outlier-robust scale); of the 43 measured workloads, only the two fixed-point fraud shapes changed | Low Hessian bits of the packed root total lost |
+| #146 integer root statistics | Fixed-point runs whose integer root gradient sum reaches 2^21 (strong class imbalance under the outlier-robust scale); of the 30 quantized benchmark comparisons, only fraud shallow and deep in fixed point changed (28 of 30 byte-identical) | Low Hessian bits of the packed root total lost |
 | #91 automatic classification step limit | Non-quantized binary, softmax and one-vs-all classification with GBDT, GOSS or DART, on CPU and CUDA | Unbounded Newton steps (`max_delta_step=0` restores them) |
 | #154 column sampling | Data with bundled features (for example one-hot blocks, as in covtype) and `feature_fraction < 1`, every plan | The wrong columns sampled |
 | #154 root histogram clear | Quantized runs where a level-wise root finds no split | The classic root search counted the root twice and could still split |

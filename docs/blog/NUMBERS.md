@@ -59,8 +59,9 @@ through strict `gpuq` with `--timeout`.
   footnote figure.
 - **Fixed-point fraud attribution (bisected 21 October).**
   `kevo/runs/release_1_1/results/bisect_fraud_fixedpoint/` (REPORT.md, RESULT.json):
-  every first-parent merge a65d34e8..1408ee79 built and both shapes rerun; controls
-  reproduce both A/B arms. #146 (3b043a85) changes both (shallow final: 61ba572a); deep
+  a bisect over the 58 first-parent merges a65d34e8..1408ee79 (six builds: fc4ce7f1,
+  3b043a85, eef89a67, e073efdb, 7ee6c645, b0dd42b3, plus the two endpoint controls,
+  which reproduce both A/B arms exactly) reran both shapes. #146 (3b043a85) changes both (shallow final: 61ba572a); deep
   changes again at #154 (7ee6c645: 2226df83 -> 7b0a53e9, 357 trees). The 2^21 / 2^53
   packed-word mechanism and the 7.27 M iteration-0 gradient sum (estimated by hand, not
   instrumented) are from that report; the mechanism paragraph is in benchmarks.md

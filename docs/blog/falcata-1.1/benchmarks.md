@@ -83,12 +83,13 @@ per workload, every quantized model identical.
 
 ### Fixed-point fraud
 
-Each merge from `a65d34e8` to `1408ee79` was built and both fraud fixed-point shapes
-rerun; the two endpoint builds reproduce the A/B models exactly.
+A bisect over the first-parent merges from `a65d34e8` to `1408ee79` (six builds plus
+the two endpoint controls, which reproduce both A/B arms exactly) reran both fraud
+fixed-point shapes.
 [#146](https://github.com/MechaFauna-ai/Falcata/pull/146) changes both shapes and
 gives shallow its final model.
 [#154](https://github.com/MechaFauna-ai/Falcata/pull/154) changes deep a second time;
-no other merge changes either model.
+no other merge in the range changes either model, as the bisect locates it.
 
 **#146.** The root reduction sums the packed 64-bit total (gradient sum shifted left
 by 32, plus Hessian sum) exactly in integers, but stored it in a double before
@@ -128,8 +129,8 @@ geometric mean and produced one model per workload in
 0.889×, Epsilon 0.890×, Year
 0.929× and Airline 0.944× (speedup =
 `a65d34e8` seconds / release-candidate seconds); Covtype deep (1.040×)
-and Fraud deep (1.099×) are faster. Higgs deep is outside the range
-#122 cost on its own, so the cause of the slowdown is not isolated. Fraud's non-quantized AUC is now
+and Fraud deep (1.099×) are faster. Higgs deep is outside the 0.96–1.08×
+that #122 cost on its own, so the cause of the slowdown is not isolated. Fraud's non-quantized AUC is now
 0.9771 (shallow) and 0.9695 (deep);
 the October matrix recorded 0.515 and 0.739 there, before the automatic step limit
 (#91). Numerai deep and leaf-limited are not run
