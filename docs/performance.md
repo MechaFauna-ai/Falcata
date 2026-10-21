@@ -2891,42 +2891,69 @@ whole-tree keys change every tree): 0.994 over 4 pairs there, inside the 1.5% ba
 
 `device_tree_lean_end` (default ON) gives the complete device tree's lean tree end, until now only for unweighted,
 unbagged, constant-hessian L2, to every objective boosted on the device (binary, multiclass(ova),
-poisson/gamma/tweedie, huber/fair, lambdarank/rank_xendcg, and L1 / quantile / MAPE, whose device renewal reads only the
-device leaf windows), with weights and under row bagging (not by query): no split-batch readback and no host leaf
+poisson/gamma/tweedie, huber/fair, lambdarank/rank_xendcg, and L1 / quantile / MAPE, whose device renewal reads only
+the device leaf windows), with weights and under row bagging (not by query): no split-batch readback and no host leaf
 bookkeeping per split (the host leaf cache is marked stale; only host searches/tails and the host RenewTreeOutput read
 it, and they CHECK it), the final level writes the row-to-leaf map inline (`final_map_only` where every row is in the
-tree) and the tree's slab comes back through the one-kernel active readback. Per tree this removes the 72 B x splits D2H
-copy, the host replay of every split's statistics and the post-tree `MaterializeLeafMapKernel` pass (covtype: 13-15 us of
-GPU and a ~19 us host gap per tree, 7 trees a round). A bagged tree writes its bag's map inline (the tree-end full pass
-wrote the same in-bag windows); `final_map_only`, whose deferred count check assumes every row, stays off there. Objectives
-boosted on the host (custom ones; cross-entropy in this build), categorical, NCCL and forest slots keep the full host cache. Models are identical (md5):
-key on/off sweep in `test_cuda_device_tree_lean_end.py`, lattice 441/441.
+tree) and the tree's slab comes back through the one-kernel active readback. Per tree this removes the 72 B x splits
+D2H copy, the host replay of every split's statistics and the post-tree `MaterializeLeafMapKernel` pass (covtype:
+13-15 us of GPU and a ~19 us host gap per tree, 7 trees a round). A bagged tree writes its bag's map inline (the
+tree-end full pass wrote the same in-bag windows); `final_map_only`, whose deferred count check assumes every row,
+stays off there. Objectives boosted on the host (custom ones; cross-entropy in this build), categorical, NCCL and
+forest slots keep the full host cache. Models are identical (md5): key on/off sweep in
+`test_cuda_device_tree_lean_end.py`, lattice 441/441.
 
 Quick check vs master (2 pairs, 30000-round scale, five builds): covtype-deep-fixed 1.083-1.092, higgs-deep-stoch
 1.039-1.045, numerai53bench-deep-stoch 1.009-1.011, numerai53bench-nan-deep-stoch 0.994-0.997 (L2: path unchanged, the
-parent's level), score 1.031-1.034 (parent e076 1.024-1.026); against the parent's build directly (3 pairs): covtype-deep-fixed 1.018,
-higgs-deep-stoch 1.013. Same binary, key off vs on, two 2-pair runs: covtype-deep-fixed
+parent's level), score 1.031-1.034 (parent e076 1.024-1.026); against the parent's build directly (3 pairs):
+covtype-deep-fixed 1.018, higgs-deep-stoch 1.013. Same binary, key off vs on, two 2-pair runs: covtype-deep-fixed
 1.0385 / 1.0184, higgs-deep-stoch 1.0404 / 1.0139 (the first with two disturbed off-runs; pooled medians of 4 runs per
-arm: covtype 3.266 -> 3.200 ms/round, +2.0%, higgs 1.620 -> 1.598, +1.4%, every on-run faster than every off-run), both
-Numerai cells 0.9995-1.0005; bagging_fraction 0.5 / freq 1, 300 rounds x 3 pairs: higgs
-1.0097, covtype 1.0230 (every on-run faster); higgs 63 leaves / depth 6 bagged 0.8: 1.004; covtype 255 / 8: 1.010;
-Numerai (L2) bagged 0.5: 1.006; weighted higgs: 1.011; L1 bagged covtype 1.003 and quantile higgs 1.002 (their renewal
-dominates the round).
+arm: covtype 3.266 -> 3.200 ms/round, +2.0%, higgs 1.620 -> 1.598, +1.4%, every on-run faster than every off-run),
+both Numerai cells 0.9995-1.0005; bagging_fraction 0.5 / freq 1, 300 rounds x 3 pairs: higgs 1.0097, covtype 1.0230
+(every on-run faster); higgs 63 leaves / depth 6 bagged 0.8: 1.004; covtype 255 / 8: 1.010; Numerai (L2) bagged 0.5:
+1.006; weighted higgs: 1.011; L1 bagged covtype 1.003 and quantile higgs 1.002 (their renewal dominates the round).
 
-`device_level_graph_update` (default ON): complete device trees whose graph keys keep changing (more than 8 misses
-and more misses than hits; feature-sampled wide data such as feature_fraction 0.1 Numerai, where the sampled bin
-totals enter the key) update the least recently used cached exec in place with `cudaGraphExecUpdate` instead of a
-new instantiation (measured per tree: instantiate 184-274 us + upload 36 us + exec destroy 91 us -> update 21 us); a
+`device_level_graph_update` (default ON): complete device trees whose graph keys keep changing (more than 8 misses and
+more misses than hits; feature-sampled wide data such as feature_fraction 0.1 Numerai, where the sampled bin totals
+enter the key) update the least recently used cached exec in place with `cudaGraphExecUpdate` instead of a new
+instantiation (measured per tree: instantiate 184-274 us + upload 36 us + exec destroy 91 us -> update 21 us); a
 refused update instantiates as before (after more than 8 refusals, and more refusals than updates, it stops trying).
 Same-binary A/B, 4 pairs: numerai53bench-nan-deep-stoch 1.0064 (every pair, 3.533 -> 3.511 ms/round; 1.0072 over 2
-pairs on the final build), numerai53bench-deep-stoch 1.001 (2 pairs), bagged (0.5) NaN-Numerai with the
-bagged host-cache skip (e080's `whole_host_cache_bagged`, now part of `device_tree_lean_end`) 1.010, feature_fraction 0.05 / 0.3 Numerai 1.001 / ~1.00. Unbagged covtype/higgs graphs hit: unchanged. The prefix (`device_levels` without
+pairs on the final build), numerai53bench-deep-stoch 1.001 (2 pairs), bagged (0.5) NaN-Numerai with the bagged
+host-cache skip (e080's `whole_host_cache_bagged`, now part of `device_tree_lean_end`) 1.010, feature_fraction 0.05 /
+0.3 Numerai 1.001 / ~1.00. Unbagged covtype/higgs graphs hit: unchanged. The prefix (`device_levels` without
 device_tree) keeps its nine-miss policy: per-tree capture plus update measured slower than its host loop there
 (covtype 255 leaves / unlimited depth / ff 0.5: 0.87).
 
+`index_parity_canonical` (default ON): every level swaps the data partition's two index buffers, so a tree of odd
+depth handed the next tree the buffers in the other role, and the graph key (which holds both pointers, fields 64/65)
+alternated from tree to tree: every layout was captured twice. Each tree now starts with the lower-address buffer as
+the main array: unbagged trees swap before the identity fill rewrites it, bagged trees when a new bag is copied in (a
+bag kept for several trees keeps its order and parity). No row is read from the swapped-out buffer: bit-identical.
+`FALCATA_DEBUG=diag`, 30 rounds of the final22 cells: stump-d1 2 -> 1 graph misses, covtype-small (d7, multiclass) 2
+-> 1, epsilon-sampled-short30 (d7, ff 0.2) 27 -> 24 misses with graph updates (24 -> 19 without); epsilon-fixedpoint
+(d9, ff 0.5), 70 trees: 65 -> 58 (46 -> 33 without updates). Same-binary A/B: within noise everywhere (one capture per
+layout is 0.2-0.3 ms; at 30 rounds the clock's run-to-run spread in rounds 2-30 is 3-9 ms).
+
+On the device-tree default (Falcata 1.2): `device_tree_lean_end` applies to trees of two or more levels only. A
+one-level tree (max_depth 1) measured slower on the lean end (final22 stump-d1, fraud binary, 1000 rounds, same
+binary: 0.090 -> 0.094 ms per tree) and keeps the full tree end (constant-hessian L2 keeps its existing skip); at
+depth 2 the lean end gains 3.9% (stump-d2, 0.127 -> 0.122 ms). Same binary, each key off vs on, 2 pairs (final build):
+`device_tree_lean_end` covtype-deep-fixed 1.016, higgs-deep-stoch 1.013, a generated year-like shape 1.007, the
+Numerai cells, three other generated shapes and epsilon-fixedpoint / epsilon-sampled 0.999-1.002;
+`device_level_graph_update` numerai53bench-nan-deep-stoch 1.007, epsilon-sampled total train time 1.023 (the steady
+median hides per-tree misses), epsilon-sampled-short30 0.905 -> 0.862 ms per steady round, 1.000-1.002 elsewhere.
+Updates raise the miss count (each one replaces the least recently used exec, which a later tree could have hit:
+epsilon-fixedpoint 33 -> 58 misses in 70 trees) and are still faster or equal, since an update costs ~21 us instead of
+~300 us. Against the 1.2 default before this change (master build): covtype-deep-fixed 1.019, higgs-deep-stoch 1.013,
+NaN-Numerai 1.009, epsilon-sampled 1.004 (total 1.013); models identical. The epsilon-fixedpoint gap of the device
+tree to the prefix flow (whose nine-miss policy runs the host loop there) is unchanged by these keys: 8.29 -> 8.42 ms
+per tree on the master build, 8.30 -> 8.44 on this one (3 pairs), so its cause is not graph churn or the tree end.
+
 After the root search, the existing device reset copies the initialized fixed root struct's output into tree
 leaf 0 before the record stream can save it as the root internal value. Device selectors and apply kernels then
-handle every level, including early exhaustion and the final depth. The final apply skips its child histogram/search. One end-of-growth fence reads the journal
+handle every level, including early exhaustion and the final depth. The final apply skips its child
+histogram/search. One end-of-growth fence reads the journal
 and split bookkeeping; the host then restores its tree mirrors without a host growth tail.
 Root initialization/search, stump root-output recovery, host bookkeeping, final leaf-map/score updates and tree
 transfer remain outside this interval. This key does not claim an entirely synchronization-free training call.
@@ -2955,7 +2982,8 @@ can queue the final pooled slab and maximum exact-count prefix on the find strea
 Capacity is reserved before growth, and the existing tree-end copy consumes only the synchronized actual prefix.
 Stumps recover the root and use the original copy path; leaf renewal, linear and distributed flows retain their
 existing paths. This changes transfer placement, with no graph-key, growth, map or split-rule change. It is not
-timed in isolation (the default's end-to-end measurements above include it). Separate `device_tree_end_readback` diagnostics report readiness and consumption.
+timed in isolation (the default's end-to-end measurements above include it). Separate
+`device_tree_end_readback` diagnostics report readiness and consumption.
 
 For plain, unweighted canonical L2 (`objective=regression`, `boosting=gbdt`), the complete controller can
 omit the split-info transfer and host child-statistic/bit-width bookkeeping. It retains the full journal,
