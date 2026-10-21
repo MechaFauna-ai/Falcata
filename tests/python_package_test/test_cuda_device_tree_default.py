@@ -50,7 +50,7 @@ def _data(objective, rows=6000, cols=12, seed=5):
         (64, 6, {}),  # eligible: 2^6 <= 64
         (63, 6, {"bagging_fraction": 0.6, "bagging_freq": 1}),  # eligible: 2^6 <= 63 + 1
         (31, 5, {"feature_fraction": 0.5}),  # eligible, feature-sampled
-        (40, 6, {}),  # outside the bound: the prefix and the host flow
+        (40, 6, {}),  # outside the bound (a binding leaf budget): selective growth on the host
         (31, -1, {}),  # unlimited depth: the host flow
     ],
 )
@@ -123,7 +123,8 @@ def test_device_tree_default_reports_fallback_cuda(leaves, depth, flow):
     # outside the depth bound the default reports the fallback under diag and keeps the flow master ran
     diag = _diag("auto", leaves, depth)
     assert "device_tree: complete" not in diag
-    assert "device_tree: fallback to the prefix/host flow (depth bound or leaf budget)" in diag
+    # once per learner (one binary learner here), not once per tree
+    assert diag.count("device_tree: fallback to the prefix/host flow (depth bound or leaf budget)") == 1
     if flow == "prefix":
         assert "device-driven levels per tree" in diag
     else:
