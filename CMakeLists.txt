@@ -465,6 +465,26 @@ if(USE_CUDA)
         list(APPEND CUDA_ARCHS "${CUDA_LAST_SUPPORTED_ARCH}-real" "${CUDA_LAST_SUPPORTED_ARCH}-virtual")
     endif()
     message(STATUS "CUDA_ARCHITECTURES: ${CUDA_ARCHS}")
+    # __CUDA_ARCH_LIST__ lists real (SASS) and virtual (PTX) targets alike, so
+    # tell the runtime device check which is which: it warns when a device
+    # runs this build through PTX JIT. X-macro lists (FALCATA_CUDA_ARCH(n)...)
+    # because nvcc splits -D values on commas. Left undefined for "native",
+    # "all" and "all-major", which CMake expands itself.
+    set(FALCATA_CUDA_SASS_ARCH_LIST "")
+    set(FALCATA_CUDA_PTX_ARCH_LIST "")
+    set(_falcata_arch_kinds_known ON)
+    foreach(_arch IN LISTS CUDA_ARCHS)
+        if(_arch MATCHES "^([0-9]+)[af]?(-real|-virtual)?$")
+            if(NOT "${CMAKE_MATCH_2}" STREQUAL "-virtual")
+                string(APPEND FALCATA_CUDA_SASS_ARCH_LIST "FALCATA_CUDA_ARCH(${CMAKE_MATCH_1}0)")
+            endif()
+            if(NOT "${CMAKE_MATCH_2}" STREQUAL "-real")
+                string(APPEND FALCATA_CUDA_PTX_ARCH_LIST "FALCATA_CUDA_ARCH(${CMAKE_MATCH_1}0)")
+            endif()
+        else()
+            set(_falcata_arch_kinds_known OFF)
+        endif()
+    endforeach()
     # profiler source-line mapping in every kernel; costs real binary size,
     # so release wheels turn it off
     option(FALCATA_CUDA_LINEINFO "Embed CUDA -lineinfo" ON)
@@ -951,6 +971,14 @@ if(USE_CUDA)
       CUDA_ARCHITECTURES "${CUDA_ARCHS}"
       CUDA_SEPARABLE_COMPILATION OFF
   )
+  if(_falcata_arch_kinds_known)
+    set_property(
+      SOURCE src/cuda/cuda_algorithms.cu
+      APPEND PROPERTY COMPILE_DEFINITIONS
+        "FALCATA_CUDA_SASS_ARCHS=${FALCATA_CUDA_SASS_ARCH_LIST}"
+        "FALCATA_CUDA_PTX_ARCHS=${FALCATA_CUDA_PTX_ARCH_LIST}"
+    )
+  endif()
 
   set_target_properties(
     _falcata

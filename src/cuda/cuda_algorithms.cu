@@ -488,69 +488,162 @@ size_t CUDASideSizeOfConfig() {
   return sizeof(Config);
 }
 
-// Verify the device can run the GPU code compiled into this binary BEFORE any
-// kernel launches: without it, an uncovered architecture surfaces as a cryptic
-// "no kernel image is available" somewhere inside the first launch. A cubin
+// Device support for the GPU code compiled into this binary. A cubin (SASS)
 // runs on a device iff the majors match and the cubin's minor is <= the
-// device's. (__CUDA_ARCH_LIST__ is nvcc >= 11.5; older toolkits skip the
-// check and keep the raw CUDA error.)
-// Whether an unset device_type may resolve to CUDA: a device must exist and,
-// when the compiled arch list is known, be runnable by this binary. Never
-// fatal -- auto-resolution falls back to the CPU; the explicit device_type
-// path keeps its loud error below.
-bool CUDADeviceUsableByDefault() {
-  int count = 0;
-  if (cudaGetDeviceCount(&count) != cudaSuccess || count < 1) {
-    return false;
-  }
+// device's; PTX runs on any device of the same or a newer architecture, after
+// the driver JIT-compiles it. (__CUDA_ARCH_LIST__ is nvcc >= 11.5; older
+// toolkits skip these checks and keep the raw CUDA errors.)
 #ifdef __CUDA_ARCH_LIST__
-  static const int kCompiledArchs[] = {__CUDA_ARCH_LIST__};
-  cudaDeviceProp prop{};
-  if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
-    return false;
-  }
-  for (const int a : kCompiledArchs) {
-    if (a / 100 == prop.major && (a / 10) % 10 <= prop.minor) {
+namespace {
+
+// The one kernel the support check asks the runtime about: it lives in this
+// module, so it has exactly the images (cubins and PTX) every kernel here has.
+__global__ void DeviceSupportProbeKernel() {}
+
+bool CubinRunsOn(const int arch, const cudaDeviceProp& prop) {
+  return arch / 100 == prop.major && (arch / 10) % 10 <= prop.minor;
+}
+
+bool PtxRunsOn(const int arch, const cudaDeviceProp& prop) {
+  return arch > 0 && arch <= prop.major * 100 + prop.minor * 10;
+}
+
+// __CUDA_ARCH_LIST__ lists real and virtual targets alike; CMake passes the
+// split (see CUDA_ARCHS in CMakeLists.txt). Without it, every entry counts as
+// a possible cubin and none as PTX: the explicit check below still probes the
+// runtime, it only cannot tell a JIT apart, and the auto-resolution stays
+// conservative.
+#define FALCATA_CUDA_ARCH(a) a,
+#ifdef FALCATA_CUDA_SASS_ARCHS
+constexpr int kSassArchs[] = {FALCATA_CUDA_SASS_ARCHS 0};
+constexpr int kPtxArchs[] = {FALCATA_CUDA_PTX_ARCHS 0};
+#else
+constexpr int kSassArchs[] = {__CUDA_ARCH_LIST__};
+constexpr int kPtxArchs[] = {0};
+#endif
+#undef FALCATA_CUDA_ARCH
+
+bool HasCubinFor(const cudaDeviceProp& prop) {
+  for (const int a : kSassArchs) {
+    if (a > 0 && CubinRunsOn(a, prop)) {
       return true;
     }
   }
   return false;
-#else
-  return true;
-#endif
 }
 
-void CheckCUDADeviceSupportsThisBuild(const int device_id) {
-#ifdef __CUDA_ARCH_LIST__
-  // one-shot per device: SetCUDADevice calls this on every CUDA entry path
-  static std::atomic<uint64_t> checked_mask{0};
-  const int slot = device_id < 0 ? 0 : (device_id < 63 ? device_id : 63);
-  const uint64_t bit = 1ULL << slot;
-  if (checked_mask.fetch_or(bit) & bit) {
-    return;
+bool HasPtxFor(const cudaDeviceProp& prop) {
+  for (const int a : kPtxArchs) {
+    if (PtxRunsOn(a, prop)) {
+      return true;
+    }
   }
+  return false;
+}
+
+std::string CompiledArchNames() {
   static const int kCompiledArchs[] = {__CUDA_ARCH_LIST__};
-  cudaDeviceProp prop{};
-  if (cudaGetDeviceProperties(&prop, device_id < 0 ? 0 : device_id) != cudaSuccess) {
-    return;  // let the real launch produce its own error
-  }
   std::string archs;
-  for (const int a : kCompiledArchs) {
-    const int major = a / 100;
-    const int minor = (a / 10) % 10;
-    if (major == prop.major && minor <= prop.minor) {
-      return;
+  for (size_t i = 0; i < sizeof(kCompiledArchs) / sizeof(kCompiledArchs[0]); ++i) {
+    const int a = kCompiledArchs[i];
+    if (std::find(kCompiledArchs, kCompiledArchs + i, a) != kCompiledArchs + i) {
+      continue;  // "120-real;120-virtual" lists 1200 twice
     }
     if (!archs.empty()) {
       archs += ", ";
     }
     archs += "sm_" + std::to_string(a / 10);
   }
-  Log::Fatal(
-      "This falcata binary contains GPU code for [%s] but the selected device "
-      "(%s) is sm_%d%d. Install from source so the build targets your GPU: "
-      "pip install --no-binary falcata falcata",
-      archs.c_str(), prop.name, prop.major, prop.minor);
+  return archs;
+}
+
+}  // namespace
+#endif  // __CUDA_ARCH_LIST__
+
+// Whether an unset device_type may resolve to CUDA: a device must exist and,
+// when the compiled arch list is known, be runnable by this binary through a
+// cubin or PTX. Host-side only -- no CUDA context is created while a config is
+// parsed. Never fatal -- auto-resolution falls back to the CPU; the explicit
+// device_type path keeps its loud error below.
+bool CUDADeviceUsableByDefault() {
+  int count = 0;
+  if (cudaGetDeviceCount(&count) != cudaSuccess || count < 1) {
+    return false;
+  }
+#ifdef __CUDA_ARCH_LIST__
+  cudaDeviceProp prop{};
+  if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
+    return false;
+  }
+  return HasCubinFor(prop) || HasPtxFor(prop);
+#else
+  return true;
+#endif
+}
+
+// Verify the device can run the GPU code compiled into this binary BEFORE any
+// kernel launches: without it, an uncovered architecture surfaces as a cryptic
+// "no kernel image is available" somewhere inside the first launch. The
+// runtime decides, not the arch list: cudaFuncGetAttributes loads this
+// module's image for the current device -- a matching cubin, or the PTX after
+// a JIT compile (driver-cached) -- and returns cudaErrorNoKernelImageForDevice
+// when neither exists. device_id < 0 means the current device.
+void CheckCUDADeviceSupportsThisBuild(const int device_id) {
+#ifdef __CUDA_ARCH_LIST__
+  int current = 0;
+  if (cudaGetDevice(&current) != cudaSuccess) {
+    return;  // let the real launch produce its own error
+  }
+  const int device = device_id < 0 ? current : device_id;
+  // one-shot per device: SetCUDADevice calls this on every CUDA entry path
+  static std::atomic<uint64_t> checked_mask{0};
+  const int slot = device < 63 ? device : 63;
+  const uint64_t bit = 1ULL << slot;
+  if (checked_mask.fetch_or(bit) & bit) {
+    return;
+  }
+  cudaDeviceProp prop{};
+  if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) {
+    return;
+  }
+  if (device != current && cudaSetDevice(device) != cudaSuccess) {
+    cudaGetLastError();
+    return;
+  }
+  cudaFuncAttributes attr{};
+  const cudaError_t probe = cudaFuncGetAttributes(&attr, DeviceSupportProbeKernel);
+  // not a sticky error: clear it so the next CUDA call does not report it
+  cudaGetLastError();
+  if (device != current) {
+    cudaSetDevice(current);
+  }
+  if (probe == cudaErrorNoKernelImageForDevice) {
+    Log::Fatal(
+        "This falcata binary contains GPU code for [%s] but the selected device "
+        "(%s) is sm_%d%d. Install from source so the build targets your GPU: "
+        "pip install --no-binary falcata falcata",
+        CompiledArchNames().c_str(), prop.name, prop.major, prop.minor);
+  }
+  if (probe == cudaErrorUnsupportedPtxVersion) {
+    Log::Fatal(
+        "This falcata binary has no GPU code for the selected device (%s, "
+        "sm_%d%d) except PTX, and the installed NVIDIA driver is too old to "
+        "compile that PTX. Update the driver, or install from source so the "
+        "build targets your GPU: pip install --no-binary falcata falcata",
+        prop.name, prop.major, prop.minor);
+  }
+  if (probe != cudaSuccess) {
+    return;  // let the real launch produce its own error
+  }
+  if (!HasCubinFor(prop)) {
+    Log::Warning(
+        "This falcata binary contains GPU code for [%s] but no cubin for the "
+        "selected device (%s, sm_%d%d): its kernels run through the driver's "
+        "PTX JIT, which compiles them on first use (slow once, then cached by "
+        "the driver). Build for sm_%d%d to avoid it: "
+        "pip install --no-binary falcata falcata",
+        CompiledArchNames().c_str(), prop.name, prop.major, prop.minor, prop.major, prop.minor);
+  }
 #else
   (void)device_id;
 #endif
