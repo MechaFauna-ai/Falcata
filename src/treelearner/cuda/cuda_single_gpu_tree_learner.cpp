@@ -4001,8 +4001,10 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // modes retain full child statistics; GPU split-info storage/production and full journal replay stay intact.
   // cuda_plan key device_tree_lean_end: every objective boosted on the device, not only constant-hessian L2 (the
   // skipped cache is read only by host searches/tails and the host RenewTreeOutput, which CHECK it; the device renewal
-  // of L1 / quantile / MAPE reads the device leaf windows), with weights and under row bagging
-  const bool lean_end = FalcataPlan::Get().device_tree_lean_end;
+  // of L1 / quantile / MAPE reads the device leaf windows), with weights and under row bagging. Trees of two or more
+  // levels only: a one-level tree (a stump shape, max_depth 1) measured slower on the lean end (fraud stumps, binary:
+  // 0.090 -> 0.094 ms per tree, same binary, 1000 rounds); it keeps the full tree end (constant-hessian L2 as before).
+  const bool lean_end = FalcataPlan::Get().device_tree_lean_end && num_levels >= 2;
   bool skip_host_cache = cfg.whole_tree && config_->boosting == "gbdt" &&
     (lean_end || (config_->objective == "regression" && share_state_->is_constant_hessian)) &&
     boosting_on_cuda_ && (lean_end || train_data_->metadata().weights() == nullptr) &&

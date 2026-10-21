@@ -134,3 +134,22 @@ def test_device_tree_lean_end_engages_cuda():
         check=True,
     )
     assert "device_tree_host_cache: skipped=0" in off.stderr
+
+
+@_REQUIRES_CUDA
+def test_device_tree_lean_end_not_for_one_level_cuda():
+    # a one-level binary tree (max_depth 1) keeps the full tree end: measured slower on the lean end
+    code = (
+        "import numpy as np, falcata as flc\n"
+        "rng = np.random.default_rng(1)\n"
+        "X = rng.standard_normal((20000, 10)).astype(np.float32)\n"
+        "y = (X[:, 0] + X[:, 1] > 0).astype(np.float32)\n"
+        "p = {'device_type': 'cuda', 'objective': 'binary', 'num_leaves': 8, 'max_depth': 1, 'verbose': -1,\n"
+        "     'quant_mode': 'stochastic', 'use_quantized_grad': True, 'cuda_plan': 'auto'}\n"
+        "flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=3)\n"
+    )
+    env = dict(os.environ, FALCATA_DEBUG="diag")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True)
+    assert "device_tree: complete depth=1 " in out.stderr
+    assert "device_tree_host_cache: skipped=1" not in out.stderr
+    assert "device_tree_host_cache: skipped=0" in out.stderr
