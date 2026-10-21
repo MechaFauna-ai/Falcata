@@ -76,7 +76,7 @@ Each dataset has a launch row (August 2026 sweep) and a 1.1 row (measured
 and quality are the August archive in both. Where the framework table gives
 the archive's LightGBM quality as a range (higgs .8499–.8505, covtype
 .4461–.5346), the launch rows quote the upper end and the 1.1 rows the
-framework table's central value.
+framework table's headline value (.8499, .4990).
 
 | dataset | build | falcata | vs XGBoost | vs upstream LightGBM (CUDA) | vs CatBoost |
 |---|---|---|---|---|---|
