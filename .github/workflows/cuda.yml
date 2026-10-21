@@ -60,15 +60,13 @@ jobs:
             linux_version: "ubuntu20.04"
             task: cuda
     steps:
-      - name: Install latest git and sudo
+      - name: Install git and sudo
         run: |
+          # git from the Ubuntu archive (>= 2.18 suffices for actions/checkout);
+          # the git-core Launchpad PPA returned 503s and failed green runs
           apt-get update
           apt-get install --no-install-recommends -y \
               ca-certificates \
-              software-properties-common
-          add-apt-repository ppa:git-core/ppa -y
-          apt-get update
-          apt-get install --no-install-recommends -y \
               git \
               sudo
       - name: Checkout repository
