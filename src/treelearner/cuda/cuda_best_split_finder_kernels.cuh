@@ -2886,7 +2886,8 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       const data_size_t right_count = num_data - left_count;
       if (SequentialCategoricalGroupAccepted(hist_hess_buffer_ptr, hist_cnt_buffer_ptr, bin, num_cat_thresholds,
           num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
-          min_data_per_group)) {
+          min_data_per_group) &&
+        (!USE_RAND || bin == rand_threshold)) {
         double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
@@ -2935,7 +2936,8 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       const data_size_t right_count = num_data - left_count;
       if (SequentialCategoricalGroupAccepted(hist_hess_buffer_ptr, hist_cnt_buffer_ptr, bin, num_cat_thresholds,
           num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
-          min_data_per_group)) {
+          min_data_per_group) &&
+        (!USE_RAND || bin == rand_threshold)) {
         double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
