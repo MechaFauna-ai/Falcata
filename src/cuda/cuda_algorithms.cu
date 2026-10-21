@@ -563,8 +563,10 @@ std::string CompiledArchNames() {
 // Whether an unset device_type may resolve to CUDA: a device must exist and,
 // when the compiled arch list is known, be runnable by this binary through a
 // cubin or PTX. Host-side only -- no CUDA context is created while a config is
-// parsed. Never fatal -- auto-resolution falls back to the CPU; the explicit
-// device_type path keeps its loud error below.
+// parsed. Never fatal itself -- auto-resolution falls back to the CPU when
+// nothing could run. A device accepted on PTX alone can still fail in
+// CheckCUDADeviceSupportsThisBuild (driver too old for the PTX, JIT disabled),
+// whose message names device_type=cpu as the way out.
 bool CUDADeviceUsableByDefault() {
   int count = 0;
   if (cudaGetDeviceCount(&count) != cudaSuccess || count < 1) {
@@ -621,15 +623,17 @@ void CheckCUDADeviceSupportsThisBuild(const int device_id) {
     Log::Fatal(
         "This falcata binary contains GPU code for [%s] but the selected device "
         "(%s) is sm_%d%d. Install from source so the build targets your GPU: "
-        "pip install --no-binary falcata falcata",
+        "pip install --no-binary falcata falcata (or train on the CPU with "
+        "device_type=cpu)",
         CompiledArchNames().c_str(), prop.name, prop.major, prop.minor);
   }
   if (probe == cudaErrorUnsupportedPtxVersion) {
     Log::Fatal(
         "This falcata binary has no GPU code for the selected device (%s, "
         "sm_%d%d) except PTX, and the installed NVIDIA driver is too old to "
-        "compile that PTX. Update the driver, or install from source so the "
-        "build targets your GPU: pip install --no-binary falcata falcata",
+        "compile that PTX. Update the driver, install from source so the "
+        "build targets your GPU (pip install --no-binary falcata falcata), or "
+        "train on the CPU with device_type=cpu",
         prop.name, prop.major, prop.minor);
   }
   if (probe != cudaSuccess) {
@@ -640,8 +644,8 @@ void CheckCUDADeviceSupportsThisBuild(const int device_id) {
         "This falcata binary contains GPU code for [%s] but no cubin for the "
         "selected device (%s, sm_%d%d): its kernels run through the driver's "
         "PTX JIT, which compiles them on first use (slow once, then cached by "
-        "the driver). Build for sm_%d%d to avoid it: "
-        "pip install --no-binary falcata falcata",
+        "the driver). Build with a CUDA toolkit that supports sm_%d%d to avoid "
+        "it: pip install --no-binary falcata falcata",
         CompiledArchNames().c_str(), prop.name, prop.major, prop.minor, prop.major, prop.minor);
   }
 #else
