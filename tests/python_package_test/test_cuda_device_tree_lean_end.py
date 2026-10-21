@@ -8,7 +8,9 @@ objectives, bagged and weighted ones.
 """
 
 import hashlib
+import json
 import os
+import re
 import subprocess
 import sys
 
@@ -111,29 +113,58 @@ def test_device_tree_lean_end_ranking_same_model_cuda(objective, extra):
     assert md5s[0] == md5s[1]
 
 
-@_REQUIRES_CUDA
-def test_device_tree_lean_end_engages_cuda():
-    # binary trees skip the host leaf cache under the default plan; the key off restores it
-    code = (
-        "import sys, numpy as np, falcata as flc\n"
-        "rng = np.random.default_rng(1)\n"
-        "X = rng.standard_normal((20000, 10)).astype(np.float32)\n"
-        "y = (X[:, 0] + X[:, 1] > 0).astype(np.float32)\n"
-        "p = {'device_type': 'cuda', 'objective': 'binary', 'num_leaves': 64, 'max_depth': 6, 'verbose': -1,\n"
-        "     'quant_mode': 'stochastic', 'use_quantized_grad': True, 'cuda_plan': sys.argv[1]}\n"
-        "flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=3)\n"
-    )
-    env = dict(os.environ, FALCATA_DEBUG="diag")
-    on = subprocess.run([sys.executable, "-c", code, "auto"], env=env, capture_output=True, text=True, check=True)
-    assert "device_tree_host_cache: skipped=1" in on.stderr
-    off = subprocess.run(
-        [sys.executable, "-c", code, "auto,device_tree_lean_end:off"],
-        env=env,
+_ENGAGE = (
+    "import sys, json, numpy as np, falcata as flc\n"
+    "rng = np.random.default_rng(1)\n"
+    "X = rng.standard_normal((20000, 10)).astype(np.float32)\n"
+    "z = X[:, 0] + X[:, 1]\n"
+    "p = dict(json.loads(sys.argv[2]), cuda_plan=sys.argv[1])\n"
+    "y = np.digitize(z, [-1.0, 0.0, 1.0]) if p['objective'] == 'multiclass' else (z > 0) if p['objective'] == 'binary' else z\n"
+    "flc.train(p, flc.Dataset(X, label=y.astype(np.float32), params=p), num_boost_round=3)\n"
+)
+
+
+def _host_cache_lines(plan, extra):
+    params = {
+        "device_type": "cuda",
+        "objective": "binary",
+        "num_leaves": 64,
+        "max_depth": 6,
+        "verbose": -1,
+        "quant_mode": "stochastic",
+        "use_quantized_grad": True,
+        **extra,
+    }
+    out = subprocess.run(
+        [sys.executable, "-c", _ENGAGE, plan, json.dumps(params)],
+        env=dict(os.environ, FALCATA_DEBUG="diag"),
         capture_output=True,
         text=True,
         check=True,
     )
-    assert "device_tree_host_cache: skipped=0" in off.stderr
+    return re.findall(r"device_tree_host_cache: skipped=(\d)", out.stderr)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},  # binary
+        {"bagging_fraction": 0.6, "bagging_freq": 1},  # a row bag: the tree's root holds fewer rows than the data
+        {"objective": "regression_l1"},  # renewed on the device
+        {"objective": "quantile", "alpha": 0.7},
+        {"objective": "multiclass", "num_class": 4},
+    ],
+)
+def test_device_tree_lean_end_engages_cuda(extra):
+    # every complete tree of these shapes skips the host leaf cache under the default plan; the key off restores it.
+    # md5 equality alone would also pass if the predicate silently excluded them.
+    on = _host_cache_lines("auto", extra)
+    assert on, "no complete device tree"
+    assert set(on) == {"1"}, on
+    off = _host_cache_lines("auto,device_tree_lean_end:off", extra)
+    assert off, "no complete device tree"
+    assert set(off) == {"0"}, off
 
 
 @_REQUIRES_CUDA

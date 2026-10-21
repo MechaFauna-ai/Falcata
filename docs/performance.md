@@ -2903,15 +2903,17 @@ stays off there. Objectives boosted on the host (custom ones; cross-entropy in t
 forest slots keep the full host cache. Models are identical (md5): key on/off sweep in
 `test_cuda_device_tree_lean_end.py`, lattice 441/441.
 
-Quick check vs master (2 pairs, 30000-round scale, five builds): covtype-deep-fixed 1.083-1.092, higgs-deep-stoch
-1.039-1.045, numerai53bench-deep-stoch 1.009-1.011, numerai53bench-nan-deep-stoch 0.994-0.997 (L2: path unchanged, the
-parent's level), score 1.031-1.034 (parent e076 1.024-1.026); against the parent's build directly (3 pairs):
-covtype-deep-fixed 1.018, higgs-deep-stoch 1.013. Same binary, key off vs on, two 2-pair runs: covtype-deep-fixed
-1.0385 / 1.0184, higgs-deep-stoch 1.0404 / 1.0139 (the first with two disturbed off-runs; pooled medians of 4 runs per
-arm: covtype 3.266 -> 3.200 ms/round, +2.0%, higgs 1.620 -> 1.598, +1.4%, every on-run faster than every off-run),
-both Numerai cells 0.9995-1.0005; bagging_fraction 0.5 / freq 1, 300 rounds x 3 pairs: higgs 1.0097, covtype 1.0230
-(every on-run faster); higgs 63 leaves / depth 6 bagged 0.8: 1.004; covtype 255 / 8: 1.010; Numerai (L2) bagged 0.5:
-1.006; weighted higgs: 1.011; L1 bagged covtype 1.003 and quantile higgs 1.002 (their renewal dominates the round).
+Search-night lineage numbers (open5, against the older master 1408ee79, before the device tree became the default; not
+comparable with the 1.019 measured against 0cd01529 below). Quick check vs that master (2 pairs, 30000-round scale,
+five builds): covtype-deep-fixed 1.083-1.092, higgs-deep-stoch 1.039-1.045, numerai53bench-deep-stoch 1.009-1.011,
+numerai53bench-nan-deep-stoch 0.994-0.997 (L2: path unchanged, the parent's level), score 1.031-1.034 (parent e076
+1.024-1.026); against the parent's build directly (3 pairs): covtype-deep-fixed 1.018, higgs-deep-stoch 1.013. Same
+binary, key off vs on, two 2-pair runs: covtype-deep-fixed 1.0385 / 1.0184, higgs-deep-stoch 1.0404 / 1.0139 (the
+first with two disturbed off-runs; pooled medians of 4 runs per arm: covtype 3.266 -> 3.200 ms/round, +2.0%, higgs
+1.620 -> 1.598, +1.4%, every on-run faster than every off-run), both Numerai cells 0.9995-1.0005; bagging_fraction 0.5
+/ freq 1, 300 rounds x 3 pairs: higgs 1.0097, covtype 1.0230 (every on-run faster); higgs 63 leaves / depth 6 bagged
+0.8: 1.004; covtype 255 / 8: 1.010; Numerai (L2) bagged 0.5: 1.006; weighted higgs: 1.011; L1 bagged covtype 1.003 and
+quantile higgs 1.002 (their renewal dominates the round).
 
 `device_level_graph_update` (default ON): complete device trees whose graph keys keep changing (more than 8 misses and
 more misses than hits; feature-sampled wide data such as feature_fraction 0.1 Numerai, where the sampled bin totals
@@ -2928,12 +2930,14 @@ device_tree) keeps its nine-miss policy: per-tree capture plus update measured s
 `index_parity_canonical` (default ON): every level swaps the data partition's two index buffers, so a tree of odd
 depth handed the next tree the buffers in the other role, and the graph key (which holds both pointers, fields 64/65)
 alternated from tree to tree: every layout was captured twice. Each tree now starts with the lower-address buffer as
-the main array: unbagged trees swap before the identity fill rewrites it, bagged trees when a new bag is copied in (a
-bag kept for several trees keeps its order and parity). No row is read from the swapped-out buffer: bit-identical.
-`FALCATA_DEBUG=diag`, 30 rounds of the final22 cells: stump-d1 2 -> 1 graph misses, covtype-small (d7, multiclass) 2
--> 1, epsilon-sampled-short30 (d7, ff 0.2) 27 -> 24 misses with graph updates (24 -> 19 without); epsilon-fixedpoint
-(d9, ff 0.5), 70 trees: 65 -> 58 (46 -> 33 without updates). Same-binary A/B: within noise everywhere (one capture per
-layout is 0.2-0.3 ms; at 30 rounds the clock's run-to-run spread in rounds 2-30 is 3-9 ms).
+the main array: unbagged trees swap before the identity fill rewrites it, bagged trees before the bag is copied into
+it (a new bag, or `RestoreBagOrder`'s copy at every score update, which also covers a bag kept for several trees;
+`FALCATA_DEBUG=diag`, depth 5, bagging_freq 1 and 2: 2 -> 1 captures). No row is read from the swapped-out buffer:
+bit-identical. `FALCATA_DEBUG=diag`, 30 rounds of the final22 cells: stump-d1 2 -> 1 graph misses, covtype-small (d7,
+multiclass) 2 -> 1, epsilon-sampled-short30 (d7, ff 0.2) 27 -> 24 misses with graph updates (24 -> 19 without);
+epsilon-fixedpoint (d9, ff 0.5), 70 trees: 65 -> 58 (46 -> 33 without updates). Same-binary A/B: within noise
+everywhere (one capture per layout is 0.2-0.3 ms; at 30 rounds the clock's run-to-run spread in rounds 2-30 is 3-9
+ms).
 
 On the device-tree default (Falcata 1.2): `device_tree_lean_end` applies to trees of two or more levels only. A
 one-level tree (max_depth 1) measured slower on the lean end (final22 stump-d1, fraud binary, 1000 rounds, same

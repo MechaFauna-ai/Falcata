@@ -52,6 +52,7 @@ def _data(rows=8000, cols=12, seed=5):
         (7, 128, "auto", {"objective": "binary"}),
         (5, 32, "auto", {"bagging_fraction": 0.6, "bagging_freq": 1}),  # a new bag every tree
         (5, 32, "auto", {"bagging_fraction": 0.6, "bagging_freq": 3}),  # a bag kept for three trees
+        (5, 32, "auto", {"bagging_fraction": 0.6, "bagging_freq": 2}),  # RestoreBagOrder's copy canonicalizes
         (5, 32, "auto", {"feature_fraction": 0.5}),
         (5, 32, "auto,device_tree:off", {}),  # the device_levels prefix
         (5, 32, "auto,device_levels:off", {}),  # the host flow
@@ -89,7 +90,7 @@ _DIAG_CODE = (
 )
 
 
-def _last_misses(plan, depth):
+def _last_misses(plan, depth, extra=None):
     params = {
         "device_type": "cuda",
         "objective": "regression",
@@ -100,6 +101,7 @@ def _last_misses(plan, depth):
         "quant_mode": "stochastic",
         "verbose": -1,
         "seed": 3,
+        **(extra or {}),
     }
     out = subprocess.run(
         [sys.executable, "-c", _DIAG_CODE, plan, json.dumps(params)],
@@ -119,6 +121,16 @@ def test_index_parity_canonical_one_capture_cuda(depth):
     # an odd-depth tree whose layout never changes: one capture with the key, one per parity (two) without it
     assert _last_misses("auto" + _OFF, depth) == 2
     assert _last_misses("auto", depth) == 1
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("freq", [1, 2])
+def test_index_parity_canonical_one_capture_bagged_cuda(freq):
+    # bagged odd-depth trees: a new bag every tree (SetUsedDataIndices) or a bag kept for two trees (RestoreBagOrder's
+    # copy at the score update) start canonical too
+    bag = {"bagging_fraction": 0.6, "bagging_freq": freq}
+    assert _last_misses("auto" + _OFF, 5, bag) == 2
+    assert _last_misses("auto", 5, bag) == 1
 
 
 @_REQUIRES_CUDA

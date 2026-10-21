@@ -3591,6 +3591,7 @@ void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
   device_level_graph_update_failed_ = false;
   device_level_graph_update_hits_ = 0;
   device_level_graph_update_misses_ = 0;
+  device_level_graph_update_last_refusal_ = -1;
 }
 
 void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
@@ -3933,7 +3934,8 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   if (cfg.whole_tree && update && churning && !device_level_graphs_.empty()) {
     DeviceLevelGraph* lru = device_level_graphs_.front().get();
     cudaGraphExecUpdateResultInfo info = {};
-    if (cudaGraphExecUpdate(lru->exec, graph->graph, &info) == cudaSuccess) {
+    const cudaError_t updated = cudaGraphExecUpdate(lru->exec, graph->graph, &info);
+    if (updated == cudaSuccess) {
       ++device_level_graph_update_hits_;
       std::swap(lru->graph, graph->graph);
       lru->key.swap(graph->key);
@@ -3941,7 +3943,18 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       CUDASUCCESS_OR_FATAL(cudaGraphLaunch(lru->exec, find_stream));
       return true;  // graph (the old capture) is destroyed here
     }
-    cudaGetLastError();  // a refused update is not an error: instantiate below
+    // only a refused update (cudaErrorGraphExecUpdateFailure: the capture's topology or node parameters do not fit
+    // this exec) falls back to a new instantiation; any other error (an invalid argument, a fault from earlier queued
+    // work) is fatal
+    if (updated != cudaErrorGraphExecUpdateFailure) {
+      CUDASUCCESS_OR_FATAL(updated);
+    }
+    cudaGetLastError();  // clear the refusal: instantiate below
+    device_level_graph_update_last_refusal_ = static_cast<int>(info.result);
+    if (FalcataDebug().diag) {
+      fprintf(stderr, "[hybrid-diag] device_level_graph_update: refused result=%d (cudaGraphExecUpdateResult)\n",
+              static_cast<int>(info.result));
+    }
     // topologies that keep changing: no more update attempts
     ++device_level_graph_update_misses_;
     device_level_graph_update_failed_ = device_level_graph_update_misses_ > 8 &&
@@ -4285,9 +4298,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
               total_splits, device_tree_root_tail_ ? 1 : 0, launched ? 1 : 0, device_level_graph_hits_,
               device_level_graph_misses_);
       // cuda_plan key device_level_graph_update: in-place exec updates under key churn (separate line, see above)
-      fprintf(stderr, "[hybrid-diag] device_level_graph_update: updates=%d refused=%d stopped=%d\n",
+      fprintf(stderr, "[hybrid-diag] device_level_graph_update: updates=%d refused=%d stopped=%d last_refusal=%d\n",
               device_level_graph_update_hits_, device_level_graph_update_misses_,
-              device_level_graph_update_failed_ ? 1 : 0);
+              device_level_graph_update_failed_ ? 1 : 0, device_level_graph_update_last_refusal_);
     }
   } else {
     // the last search's result, as the host loop's own readback leaves it
