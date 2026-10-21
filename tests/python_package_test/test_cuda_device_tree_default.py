@@ -114,7 +114,7 @@ def test_device_tree_default_engages_cuda():
 @pytest.mark.parametrize(
     ("leaves", "depth", "flow"),
     [
-        (2048, 11, "prefix"),  # deeper than 10: the device_levels prefix, then host levels
+        (8192, 13, "prefix"),  # deeper than 12: the device_levels prefix, then host levels
         (40, 6, "selective"),  # a binding leaf budget: selective growth on the host, as before
         (255, -1, "selective"),
     ],

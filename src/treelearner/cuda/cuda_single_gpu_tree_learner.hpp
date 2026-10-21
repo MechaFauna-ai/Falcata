@@ -362,7 +362,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void ReleaseHybridGraphs();
   // ---- cuda_plan key device_levels (cuda_device_levels.hpp) ----
   /*! \brief cuda_plan key device_tree (with device_levels): the complete device tree runs for this config, i.e. its
-   *  depth bound holds (positive max_depth <= 10 and 2^max_depth <= num_leaves + 1) */
+   *  depth bound holds (positive max_depth <= kDeviceTreeMaxDepth = 12 and 2^max_depth <= num_leaves + 1) and its
+   *  presized scratch passed the free-memory gate (EvaluateDeviceTreeScratchGate) */
   bool DeviceTreeRequested() const;
   // How many of the classic quantized prefix's first levels run device-driven for this tree: the levels L with
   // 2^(L + 1) <= num_leaves (the budget cannot bind) and L + 1 < max_depth (the children are searched), when every
@@ -371,6 +372,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void LogDeviceLevelsFallback(const char* reason);
   // one-time buffers and static tables of the device levels; false disables them
   bool SetupDeviceLevels(const int num_levels);
+  /*! \brief pairs of the widest child search of num_levels device levels (whole tree: 2^(num_levels - 2)) */
+  int DeviceLevelSearchPairs(int num_levels) const;
+  /*! \brief cuda_plan key device_tree: once per learner, whether a whole tree's presized scratch fits half of free
+   *  device memory; when it does not, DeviceTreeRequested() is false (the prefix flow) */
+  void EvaluateDeviceTreeScratchGate();
   // after the root level's search is enqueued: num_levels device-driven levels (apply + children's search), one
   // readback, the host bookkeeping replayed; host_leaf_best_splits_ then hold the last search's result and *pairs
   // the last level's pairs, as after the host loop's own readback. Returns the splits applied.
@@ -792,6 +798,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool device_tree_fallback_logged_ = false;
   bool device_levels_ready_ = false;
   bool device_levels_disabled_ = false;
+  /*! \brief EvaluateDeviceTreeScratchGate's decision: -1 not yet made, 0 over the free-memory gate, 1 fits */
+  int device_tree_scratch_gate_ = -1;
+  /*! \brief pairs SetupDeviceLevels sized the per-pair search scratch for */
+  int device_level_max_pairs_ = 0;
   CUDAVector<CUDADeviceLevelState> cuda_device_level_state_;
   // the select / pairs kernels' inputs in device memory (the apply's pairs block reads them there), uploaded per tree
   CUDAVector<CUDADeviceLevelConfig> cuda_device_level_config_;

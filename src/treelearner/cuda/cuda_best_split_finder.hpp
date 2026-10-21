@@ -434,6 +434,7 @@ class CUDABestSplitFinder {
   }
 
   int num_used_tasks() const { return num_used_tasks_; }
+  int num_tasks() const { return num_tasks_; }
 
   /*! \brief per-tree pointer/flag choices baked into captured find/sync kernel
    *  params: a graph instance is only valid for trees whose key matches */

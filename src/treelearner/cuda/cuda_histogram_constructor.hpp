@@ -631,7 +631,7 @@ class CUDAHistogramConstructor {
     if (!use_quantized_grad_) {
       return;
     }
-    const size_t needed = static_cast<size_t>(max_pairs) * static_cast<size_t>(num_total_bin_);
+    const size_t needed = BitChangeScratchEntries(max_pairs);
     if (hist_buffer_for_num_bit_change_.Size() < needed) {
       hist_buffer_for_num_bit_change_.Resize(needed);
     }
@@ -737,12 +737,20 @@ class CUDAHistogramConstructor {
   int DeviceLevelNumGradQuantBins() const { return use_quantized_grad_ ? num_grad_quant_bins_ : 0; }
   /*! \brief cuda_plan key device_levels: block rows (times the grid's x) a device level's construct launches */
   static int DeviceLevelConstructTargetBlocks();
+  /*! \brief the 64->32-bit compaction scratch of a level of max_pairs pairs, in its hist_t (8 byte) storage units:
+   *  every writer and reader (SubtractHistogramDiscretizedInner, SubtractDiscretizedBin, CopyChangedNumBitHistogram*,
+   *  the fix+subtract kernels) accesses it through an int32_t pointer, one region of num_total_bin_ int32 entries per
+   *  pair (blockIdx of the batched kernels) or per pipeline (the per-pair host path, sized at Init), and stores the
+   *  packed 16+16-bit larger-leaf histogram entry, an int32 by construction */
+  size_t BitChangeScratchEntries(const int max_pairs) const {
+    return (static_cast<size_t>(std::max(max_pairs, 0)) * static_cast<size_t>(num_total_bin_) + 1) / 2;
+  }
   /*! \brief cuda_plan key device_levels: the bit-change scratch for a level of max_pairs pairs */
   void EnsureDeviceLevelCapacity(const int max_pairs) {
     if (!use_quantized_grad_) {
       return;
     }
-    const size_t needed = static_cast<size_t>(max_pairs) * static_cast<size_t>(num_total_bin_);
+    const size_t needed = BitChangeScratchEntries(max_pairs);
     if (hist_buffer_for_num_bit_change_.Size() < needed) {
       hist_buffer_for_num_bit_change_.Resize(needed);
     }
