@@ -1,12 +1,12 @@
 {
     "schema": 1,
-    "matrix_sha256": "c479be48dc16d95c77ca0f147ce7e39e606a18c245c6554d76470bd296b79b27",
+    "matrix_sha256": "1cdfebacbed573435a82a0bc984141ffbaecd70edfa18f082d31270115010519",
     "timer": "Whole training call, excluding Dataset construction and CPU prediction/scoring",
     "hardware": "One RTX 5090; measurements made on an otherwise idle GPU, with no recorded contention",
     "framework_comparison": "Archived August 2026 competitor endpoints, not current framework reruns",
     "quality_contract": "Shown endpoint values are not quality-equivalence or identical-model claims",
     "baseline_contract": "Launch snapshot printed version1.0.0; not a controlled tagged-v1.0.0 runtime comparison",
-    "numerai_data_contract": "Historical cache:5463797 train rows ×3555 features; target label unidentified. Oct8 deep uses float32; Oct9 example int8. Both launch panels use float32 per contemporaneous loader.",
+    "numerai_data_contract": "Historical cache: 5463797 train rows \u00d7 3555 features; target label unidentified. Release-candidate Numerai rows use the int8 twin; both launch panels used float32 per contemporaneous loader.",
     "l2_contract": "Framework defaults retained: Falcata/LightGBM0, XGBoost1, CatBoost3",
     "upstream_cuda_contract": "Archived LightGBM CUDA does not enforce the requested depth cap; its Epsilon model capacity differs",
     "sources": {
@@ -274,6 +274,32 @@
             "caveats": [
                 "single_draw_deep"
             ]
+        },
+        "rc_1408ee79": {
+            "path": "kevo://runs/release_1_1/results/ab_1408ee79.json",
+            "sha256": "e65cfdea01fec0415f23c20860d9af04cd065485de017c1e4856db1ff6832607",
+            "quality_path": "kevo://runs/release_1_1/results/quality_1408ee79.json",
+            "quality_sha256": "de136fe2245883ea7d51b53220c843f8fd797390bf759a509a052bdb60704dfc",
+            "measurement_identity": "Falcata 1.1 release A/B (runs/release_1_1/release_ab.py over runs/since_1_1/article_ab.py), new arm, 2026-10-21; held-out metrics by runs/release_1_1/score.py (bench.py a65d34e8 metrics, CPU predictions)",
+            "runtime_build": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+            "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
+            "quiet_provenance": "strict gpuq jobs (--exclusive) with GPUQ_CONTENTION_LOG; a contended shape is marked strict_quiet_verified=false",
+            "caveats": [
+                "two_interleaved_draws"
+            ]
+        },
+        "a65_1408ee79": {
+            "path": "kevo://runs/release_1_1/results/ab_1408ee79.json",
+            "sha256": "e65cfdea01fec0415f23c20860d9af04cd065485de017c1e4856db1ff6832607",
+            "quality_path": "kevo://runs/release_1_1/results/quality_1408ee79.json",
+            "quality_sha256": "de136fe2245883ea7d51b53220c843f8fd797390bf759a509a052bdb60704dfc",
+            "measurement_identity": "Falcata 1.1 release A/B (runs/release_1_1/release_ab.py over runs/since_1_1/article_ab.py), old arm, 2026-10-21; held-out metrics by runs/release_1_1/score.py (bench.py a65d34e8 metrics, CPU predictions)",
+            "runtime_build": "a65d34e80a7c337342fba6886d0a1cbd69eda079",
+            "library_sha256": "60b3776e050aa76695a46619765458226491701c5015e68e8509408ea68fa08f",
+            "quiet_provenance": "strict gpuq jobs (--exclusive) with GPUQ_CONTENTION_LOG; a contended shape is marked strict_quiet_verified=false",
+            "caveats": [
+                "two_interleaved_draws"
+            ]
         }
     },
     "caveat_definitions": {
@@ -292,47 +318,48 @@
         "historical_numerai_label_unknown": "Historical build1226 cache metadata omits label identity. It is a fixed-cache implementation workload, not evidence for production/current target selection or honest configuration selection.",
         "numerai_metric_implementation": "Launch/Oct8 used the historical benchmark CORR helper; strict wrapper uses NumeraiEvaluator. This audit copies recorded endpoints and does not recompute corr, Sharpe, or payouts.",
         "upstream_cuda_depth_semantics": "Upstream LightGBM CUDA ignores the depth cap in this corpus, so comparisons are not identical tree capacity; pathological quality/crashes remain failures.",
-        "l2_defaults_differ": "Benchmark uses each framework’s default L2: Falcata/LightGBM0, XGBoost1, CatBoost3. This is not a fully aligned configuration or quality-equivalence experiment.",
-        "historical_competitors_only": "No contemporary competitor run is included. Ratios versus launch competitors are descriptive archive comparisons, not evidence that the gap to today’s frameworks widened.",
+        "l2_defaults_differ": "Benchmark uses each framework\u2019s default L2: Falcata/LightGBM0, XGBoost1, CatBoost3. This is not a fully aligned configuration or quality-equivalence experiment.",
+        "historical_competitors_only": "No contemporary competitor run is included. Ratios versus launch competitors are descriptive archive comparisons, not evidence that the gap to today\u2019s frameworks widened.",
         "single_draw_deep": "Numerai-deep/leaf use one full timed draw per build; no repeated-run precision or quality equivalence is established.",
         "fraud_uncapped_failures": "L2=0/max_delta_step=0 fraud noquant has numerical collapse, saturated probabilities, and early no-split termination; old requested-round throughput is misleading. Retain failures. Later cap1 follow-up changes configuration and is not a default speed comparison.",
         "atomic_noquant_variation": "FP64 noquant can vary by floating atomic reduction order at the same seed; finite covtype/fraud metric ranges and failed endpoints are retained.",
-        "epsilon_quality_lower_than_competitors": "Epsilon strict stochastic AUC≈.94243 versus archived XGBoost≈.94401 and CatBoost≈.95076: do not label the speed bars matched-quality.",
-        "training_only": "train_s excludes Dataset construction and post-training prediction/scoring. Default CatBoost train timer also includes its configured per-round metric work; see frozen harness."
+        "epsilon_quality_lower_than_competitors": "Epsilon strict stochastic AUC\u2248.94243 versus archived XGBoost\u2248.94401 and CatBoost\u2248.95076: do not label the speed bars matched-quality.",
+        "training_only": "train_s excludes Dataset construction and post-training prediction/scoring. Default CatBoost train timer also includes its configured per-round metric work; see frozen harness.",
+        "two_interleaved_draws": "Release-candidate rows: median of 2 interleaved old/new fresh-process pairs (Numerai deep: 3), int8 input for all Numerai rows; timer = the train() call only, as bench.py.",
+        "not_rerun_on_rc": "Not measured on the release candidate (Numerai deep / leaf non-quantized); the October value was the PR #71 prototype."
     },
     "panels": [
         {
             "dataset": "numerai",
             "regime": "numerai-deep",
             "label": "Numerai deep",
-            "detail": "30,000 requested rounds · one timed draw",
+            "detail": "30,000 requested rounds \u00b7 median of 3 timed draws",
             "metric_label": "CORR",
-            "modern_measurement_date": "2026-10-08",
-            "modern_runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+            "modern_measurement_date": "2026-10-21",
+            "modern_runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
             "modern_library_identity": {
-                "library_md5_contemporaneous_and_current_match": "58897acd3df952c1989b8e354ed09a17",
-                "library_sha256_observed_current": "c35e3fbd265d60932c7f78cec698e112c2dca871c7e2096b007401c70d8a4fd1"
+                "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a"
             },
             "archived_measurement_date": "August 2026",
-            "launch_snapshot_div_modern_ratio": 6.703755827359861,
+            "launch_snapshot_div_modern_ratio": 7.018974837278984,
             "contemporary_framework_gap_established": false,
             "quality_equivalence_established": false,
             "rows": [
                 {
                     "role": "modern_falcata",
                     "library": "falcata-stoch",
-                    "label": "Falcata · modern measured build",
-                    "train_s": 110.7989681600011,
+                    "label": "Falcata \u00b7 modern measured build",
+                    "train_s": 105.82303622504696,
                     "training_seconds": {
-                        "n": 1,
-                        "median": 110.7989681600011,
-                        "min": 110.7989681600011,
-                        "max": 110.7989681600011
+                        "n": 3,
+                        "median": 105.82303622504696,
+                        "min": 105.81214676401578,
+                        "max": 105.89436550997198
                     },
-                    "timed_draws": 1,
+                    "timed_draws": 3,
                     "metric_name": "corr_mean",
                     "metric": {
-                        "n": 1,
+                        "n": 3,
                         "median": 0.02385128225200414,
                         "min": 0.02385128225200414,
                         "max": 0.02385128225200414
@@ -340,14 +367,16 @@
                     "package_versions": [
                         "1.0.6"
                     ],
-                    "source": "oct8",
+                    "source": "rc_1408ee79",
                     "records": [
-                        "oct8:166"
+                        "rc_1408ee79:79",
+                        "rc_1408ee79:80",
+                        "rc_1408ee79:81"
                     ],
                     "recorded_endpoints": [
                         {
-                            "source": "oct8",
-                            "line": 166,
+                            "source": "rc_1408ee79",
+                            "line": 79,
                             "library": "falcata-stoch",
                             "dataset": "numerai",
                             "regime": "numerai-deep",
@@ -356,9 +385,12 @@
                             "version": "1.0.6",
                             "n_train": 5463797,
                             "n_features": 3555,
-                            "train_s": 110.7989681600011,
-                            "construct_s": 10.376802578000934,
-                            "total_s": 709.6606673070055,
+                            "train_s": 105.89436550997198,
+                            "construct_s": 6.119853009004146,
+                            "first_call_s": 0.7046983019681647,
+                            "steady_ms": 3.4122535143978894,
+                            "md5": "f9b25d4aceb10beb6c18baad2a347788",
+                            "pair": 0,
                             "metrics": {
                                 "corr_mean": 0.02385128225200414,
                                 "corr_std": 0.016985893303869518,
@@ -366,32 +398,98 @@
                                 "max_drawdown": -0.040056446351020666,
                                 "n_eras": 200,
                                 "rmse": 0.22369592048342113,
-                                "sane": true
+                                "pearson": 0.024814417442037242,
+                                "sane": true,
+                                "all_finite": true
                             },
-                            "input_dtype_inferred_from_contemporaneous_harness": "float32",
-                            "run_id_from_source": 3494,
+                            "input_dtype": "int8",
                             "execution": {
                                 "adm_class": "strict",
                                 "contended": 0,
-                                "state": "done",
-                                "exit_code": 0
+                                "state": "done"
+                            }
+                        },
+                        {
+                            "source": "rc_1408ee79",
+                            "line": 80,
+                            "library": "falcata-stoch",
+                            "dataset": "numerai",
+                            "regime": "numerai-deep",
+                            "kind": "timed2",
+                            "status": "ok",
+                            "version": "1.0.6",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 105.81214676401578,
+                            "construct_s": 5.854699400952086,
+                            "first_call_s": 0.6955683660926297,
+                            "steady_ms": 3.4111719578504562,
+                            "md5": "f9b25d4aceb10beb6c18baad2a347788",
+                            "pair": 1,
+                            "metrics": {
+                                "corr_mean": 0.02385128225200414,
+                                "corr_std": 0.016985893303869518,
+                                "corr_sharpe": 1.4041818010578597,
+                                "max_drawdown": -0.040056446351020666,
+                                "n_eras": 200,
+                                "rmse": 0.22369592048342113,
+                                "pearson": 0.024814417442037242,
+                                "sane": true,
+                                "all_finite": true
+                            },
+                            "input_dtype": "int8",
+                            "execution": {
+                                "adm_class": "strict",
+                                "contended": 0,
+                                "state": "done"
+                            }
+                        },
+                        {
+                            "source": "rc_1408ee79",
+                            "line": 81,
+                            "library": "falcata-stoch",
+                            "dataset": "numerai",
+                            "regime": "numerai-deep",
+                            "kind": "timed3",
+                            "status": "ok",
+                            "version": "1.0.6",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 105.82303622504696,
+                            "construct_s": 5.580390357063152,
+                            "first_call_s": 0.6920980230206624,
+                            "steady_ms": 3.4132509608753026,
+                            "md5": "f9b25d4aceb10beb6c18baad2a347788",
+                            "pair": 2,
+                            "metrics": {
+                                "corr_mean": 0.02385128225200414,
+                                "corr_std": 0.016985893303869518,
+                                "corr_sharpe": 1.4041818010578597,
+                                "max_drawdown": -0.040056446351020666,
+                                "n_eras": 200,
+                                "rmse": 0.22369592048342113,
+                                "pearson": 0.024814417442037242,
+                                "sane": true,
+                                "all_finite": true
+                            },
+                            "input_dtype": "int8",
+                            "execution": {
+                                "adm_class": "strict",
+                                "contended": 0,
+                                "state": "done"
                             }
                         }
                     ],
                     "strict_quiet_verified": true,
                     "caveats": [
-                        "historical_cache_unpinned",
-                        "historical_numerai_label_unknown",
-                        "numerai_metric_implementation",
-                        "pre_ridge_fixedpoint",
-                        "quantization_defaults_change",
-                        "single_draw_deep"
+                        "two_interleaved_draws",
+                        "historical_cache_unpinned"
                     ]
                 },
                 {
                     "role": "launch_falcata",
                     "library": "falcata-stoch",
-                    "label": "Falcata · launch snapshot",
+                    "label": "Falcata \u00b7 launch snapshot",
                     "train_s": 742.769228468067,
                     "training_seconds": {
                         "n": 1,
@@ -516,7 +614,8 @@
                         "numerai_metric_implementation",
                         "quantization_defaults_change",
                         "single_draw_deep"
-                    ]
+                    ],
+                    "archived": true
                 },
                 {
                     "role": "archived_competitor",
@@ -581,7 +680,8 @@
                         "numerai_metric_implementation",
                         "quantization_defaults_change",
                         "single_draw_deep"
-                    ]
+                    ],
+                    "archived": true
                 },
                 {
                     "role": "archived_competitor",
@@ -646,7 +746,8 @@
                         "numerai_metric_implementation",
                         "quantization_defaults_change",
                         "single_draw_deep"
-                    ]
+                    ],
+                    "archived": true
                 }
             ],
             "omitted_frameworks": [
@@ -680,33 +781,33 @@
             "dataset": "numerai",
             "regime": "numerai",
             "label": "Numerai example",
-            "detail": "2,000 rounds · median of three timed draws",
+            "detail": "2,000 requested rounds \u00b7 median of 2 timed draws",
             "metric_label": "CORR",
-            "modern_measurement_date": "2026-10-09",
-            "modern_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "modern_measurement_date": "2026-10-21",
+            "modern_runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
             "modern_library_identity": {
-                "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c"
+                "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a"
             },
             "archived_measurement_date": "August 2026",
-            "launch_snapshot_div_modern_ratio": 5.5166749544245475,
+            "launch_snapshot_div_modern_ratio": 5.769235128416158,
             "contemporary_framework_gap_established": false,
             "quality_equivalence_established": false,
             "rows": [
                 {
                     "role": "modern_falcata",
                     "library": "falcata-stoch",
-                    "label": "Falcata · modern measured build",
-                    "train_s": 5.615935137000633,
+                    "label": "Falcata \u00b7 modern measured build",
+                    "train_s": 5.370085986505728,
                     "training_seconds": {
-                        "n": 3,
-                        "median": 5.615935137000633,
-                        "min": 5.6122681309934705,
-                        "max": 5.642379928991431
+                        "n": 2,
+                        "median": 5.370085986505728,
+                        "min": 5.365305276005529,
+                        "max": 5.374866697005928
                     },
-                    "timed_draws": 3,
+                    "timed_draws": 2,
                     "metric_name": "corr_mean",
                     "metric": {
-                        "n": 3,
+                        "n": 2,
                         "median": 0.019426601611107146,
                         "min": 0.019426601611107146,
                         "max": 0.019426601611107146
@@ -714,16 +815,15 @@
                     "package_versions": [
                         "1.0.6"
                     ],
-                    "source": "strict_numerai-stoch_candidate",
+                    "source": "rc_1408ee79",
                     "records": [
-                        "strict_numerai-stoch_candidate:2",
-                        "strict_numerai-stoch_candidate:3",
-                        "strict_numerai-stoch_candidate:4"
+                        "rc_1408ee79:73",
+                        "rc_1408ee79:74"
                     ],
                     "recorded_endpoints": [
                         {
-                            "source": "strict_numerai-stoch_candidate",
-                            "line": 2,
+                            "source": "rc_1408ee79",
+                            "line": 73,
                             "library": "falcata-stoch",
                             "dataset": "numerai",
                             "regime": "numerai",
@@ -732,40 +832,33 @@
                             "version": "1.0.6",
                             "n_train": 5463797,
                             "n_features": 3555,
-                            "train_s": 5.615935137000633,
-                            "construct_s": 3.9468873549776617,
-                            "construct_shared": false,
-                            "total_s": 15.675544359022751,
-                            "predict_s": 6.112705417006509,
-                            "input_dtype": "int8",
-                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
-                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-                            "seed": 42,
-                            "run_id": 3581,
-                            "resolved_cuda_precision": "fp64",
-                            "cuda_precision_override": null,
-                            "cuda_plan_override": null,
+                            "train_s": 5.374866697005928,
+                            "construct_s": 5.196106225019321,
+                            "first_call_s": 0.6678686219966039,
+                            "steady_ms": 2.325440524145961,
+                            "md5": "31bffb4b6ad913dafc24e3ddd5a0d61d",
+                            "pair": 0,
                             "metrics": {
                                 "corr_mean": 0.019426601611107146,
                                 "corr_std": 0.0160951116367512,
                                 "corr_sharpe": 1.2069876897746332,
                                 "max_drawdown": -0.06426842487962052,
                                 "n_eras": 200,
-                                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
-                                "target_provenance": "unidentified label in historical build1226 benchmark cache",
                                 "rmse": 0.22364269367216263,
-                                "sane": true
+                                "pearson": 0.02053019041104591,
+                                "sane": true,
+                                "all_finite": true
                             },
+                            "input_dtype": "int8",
                             "execution": {
                                 "adm_class": "strict",
                                 "contended": 0,
-                                "state": "done",
-                                "exit_code": 0
+                                "state": "done"
                             }
                         },
                         {
-                            "source": "strict_numerai-stoch_candidate",
-                            "line": 3,
+                            "source": "rc_1408ee79",
+                            "line": 74,
                             "library": "falcata-stoch",
                             "dataset": "numerai",
                             "regime": "numerai",
@@ -774,91 +867,41 @@
                             "version": "1.0.6",
                             "n_train": 5463797,
                             "n_features": 3555,
-                            "train_s": 5.642379928991431,
-                            "construct_s": 3.9064176800020505,
-                            "construct_shared": false,
-                            "total_s": 15.914767858979758,
-                            "predict_s": 6.36595470199245,
-                            "input_dtype": "int8",
-                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
-                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-                            "seed": 42,
-                            "run_id": 3581,
-                            "resolved_cuda_precision": "fp64",
-                            "cuda_precision_override": null,
-                            "cuda_plan_override": null,
+                            "train_s": 5.365305276005529,
+                            "construct_s": 5.09815888106823,
+                            "first_call_s": 0.6673697290243581,
+                            "steady_ms": 2.3198649869300425,
+                            "md5": "31bffb4b6ad913dafc24e3ddd5a0d61d",
+                            "pair": 1,
                             "metrics": {
                                 "corr_mean": 0.019426601611107146,
                                 "corr_std": 0.0160951116367512,
                                 "corr_sharpe": 1.2069876897746332,
                                 "max_drawdown": -0.06426842487962052,
                                 "n_eras": 200,
-                                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
-                                "target_provenance": "unidentified label in historical build1226 benchmark cache",
                                 "rmse": 0.22364269367216263,
-                                "sane": true
+                                "pearson": 0.02053019041104591,
+                                "sane": true,
+                                "all_finite": true
                             },
-                            "execution": {
-                                "adm_class": "strict",
-                                "contended": 0,
-                                "state": "done",
-                                "exit_code": 0
-                            }
-                        },
-                        {
-                            "source": "strict_numerai-stoch_candidate",
-                            "line": 4,
-                            "library": "falcata-stoch",
-                            "dataset": "numerai",
-                            "regime": "numerai",
-                            "kind": "timed3",
-                            "status": "ok",
-                            "version": "1.0.6",
-                            "n_train": 5463797,
-                            "n_features": 3555,
-                            "train_s": 5.6122681309934705,
-                            "construct_s": 3.8937676289933734,
-                            "construct_shared": false,
-                            "total_s": 15.602843386004679,
-                            "predict_s": 6.096791124989977,
                             "input_dtype": "int8",
-                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
-                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-                            "seed": 42,
-                            "run_id": 3581,
-                            "resolved_cuda_precision": "fp64",
-                            "cuda_precision_override": null,
-                            "cuda_plan_override": null,
-                            "metrics": {
-                                "corr_mean": 0.019426601611107146,
-                                "corr_std": 0.0160951116367512,
-                                "corr_sharpe": 1.2069876897746332,
-                                "max_drawdown": -0.06426842487962052,
-                                "n_eras": 200,
-                                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
-                                "target_provenance": "unidentified label in historical build1226 benchmark cache",
-                                "rmse": 0.22364269367216263,
-                                "sane": true
-                            },
                             "execution": {
                                 "adm_class": "strict",
                                 "contended": 0,
-                                "state": "done",
-                                "exit_code": 0
+                                "state": "done"
                             }
                         }
                     ],
                     "strict_quiet_verified": true,
                     "caveats": [
-                        "historical_numerai_label_unknown",
-                        "numerai_dtype_change",
-                        "numerai_metric_implementation"
+                        "two_interleaved_draws",
+                        "historical_cache_unpinned"
                     ]
                 },
                 {
                     "role": "launch_falcata",
                     "library": "falcata-stoch",
-                    "label": "Falcata · launch snapshot",
+                    "label": "Falcata \u00b7 launch snapshot",
                     "train_s": 30.981288715964183,
                     "training_seconds": {
                         "n": 3,
@@ -1085,7 +1128,8 @@
                         "launch_snapshot_not_tag",
                         "numerai_metric_implementation",
                         "quantization_defaults_change"
-                    ]
+                    ],
+                    "archived": true
                 },
                 {
                     "role": "archived_competitor",
@@ -1201,7 +1245,8 @@
                         "launch_snapshot_not_tag",
                         "numerai_metric_implementation",
                         "quantization_defaults_change"
-                    ]
+                    ],
+                    "archived": true
                 }
             ],
             "omitted_frameworks": [
@@ -1357,33 +1402,33 @@
             "dataset": "epsilon",
             "regime": "deep",
             "label": "Epsilon deep",
-            "detail": "500 rounds · median of three timed draws",
+            "detail": "500 requested rounds \u00b7 median of 2 timed draws",
             "metric_label": "AUC",
-            "modern_measurement_date": "2026-10-09",
-            "modern_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "modern_measurement_date": "2026-10-21",
+            "modern_runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
             "modern_library_identity": {
-                "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c"
+                "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a"
             },
             "archived_measurement_date": "August 2026",
-            "launch_snapshot_div_modern_ratio": 3.5010540449676957,
+            "launch_snapshot_div_modern_ratio": 3.9993180531611636,
             "contemporary_framework_gap_established": false,
             "quality_equivalence_established": false,
             "rows": [
                 {
                     "role": "modern_falcata",
                     "library": "falcata-stoch",
-                    "label": "Falcata · modern measured build",
-                    "train_s": 11.220135102019412,
+                    "label": "Falcata \u00b7 modern measured build",
+                    "train_s": 9.822249408985954,
                     "training_seconds": {
-                        "n": 3,
-                        "median": 11.220135102019412,
-                        "min": 11.192825931997504,
-                        "max": 11.241658764018212
+                        "n": 2,
+                        "median": 9.822249408985954,
+                        "min": 9.817610822967254,
+                        "max": 9.826887995004654
                     },
-                    "timed_draws": 3,
+                    "timed_draws": 2,
                     "metric_name": "auc",
                     "metric": {
-                        "n": 3,
+                        "n": 2,
                         "median": 0.942429523367914,
                         "min": 0.942429523367914,
                         "max": 0.942429523367914
@@ -1391,16 +1436,15 @@
                     "package_versions": [
                         "1.0.6"
                     ],
-                    "source": "strict_epsilon-stoch_candidate",
+                    "source": "rc_1408ee79",
                     "records": [
-                        "strict_epsilon-stoch_candidate:2",
-                        "strict_epsilon-stoch_candidate:3",
-                        "strict_epsilon-stoch_candidate:4"
+                        "rc_1408ee79:55",
+                        "rc_1408ee79:56"
                     ],
                     "recorded_endpoints": [
                         {
-                            "source": "strict_epsilon-stoch_candidate",
-                            "line": 2,
+                            "source": "rc_1408ee79",
+                            "line": 55,
                             "library": "falcata-stoch",
                             "dataset": "epsilon",
                             "regime": "deep",
@@ -1409,33 +1453,28 @@
                             "version": "1.0.6",
                             "n_train": 400000,
                             "n_features": 2000,
-                            "train_s": 11.220135102019412,
-                            "construct_s": 1.9832447149965446,
-                            "construct_shared": false,
-                            "total_s": 13.459959456027718,
-                            "predict_s": 0.2565651320037432,
-                            "input_dtype": "float32",
-                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
-                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-                            "seed": 42,
-                            "run_id": 3580,
-                            "resolved_cuda_precision": "fp64",
-                            "cuda_precision_override": null,
-                            "cuda_plan_override": null,
+                            "train_s": 9.826887995004654,
+                            "construct_s": 1.8151949970051646,
+                            "first_call_s": 0.4912108649732545,
+                            "steady_ms": 17.963256977964193,
+                            "md5": "3d088d244ac11b4385d8733e2464edb9",
+                            "pair": 0,
                             "metrics": {
                                 "auc": 0.942429523367914,
-                                "sane": true
+                                "logloss": 0.3171578062393928,
+                                "sane": true,
+                                "all_finite": true
                             },
+                            "input_dtype": "cache npy",
                             "execution": {
                                 "adm_class": "strict",
                                 "contended": 0,
-                                "state": "done",
-                                "exit_code": 0
+                                "state": "done"
                             }
                         },
                         {
-                            "source": "strict_epsilon-stoch_candidate",
-                            "line": 3,
+                            "source": "rc_1408ee79",
+                            "line": 56,
                             "library": "falcata-stoch",
                             "dataset": "epsilon",
                             "regime": "deep",
@@ -1444,73 +1483,35 @@
                             "version": "1.0.6",
                             "n_train": 400000,
                             "n_features": 2000,
-                            "train_s": 11.192825931997504,
-                            "construct_s": 1.9773260579968337,
-                            "construct_shared": false,
-                            "total_s": 13.457362212007865,
-                            "predict_s": 0.28719712802558206,
-                            "input_dtype": "float32",
-                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
-                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-                            "seed": 42,
-                            "run_id": 3580,
-                            "resolved_cuda_precision": "fp64",
-                            "cuda_precision_override": null,
-                            "cuda_plan_override": null,
+                            "train_s": 9.817610822967254,
+                            "construct_s": 1.8705162960104644,
+                            "first_call_s": 0.4921519249910489,
+                            "steady_ms": 17.95722550014034,
+                            "md5": "3d088d244ac11b4385d8733e2464edb9",
+                            "pair": 1,
                             "metrics": {
                                 "auc": 0.942429523367914,
-                                "sane": true
+                                "logloss": 0.3171578062393928,
+                                "sane": true,
+                                "all_finite": true
                             },
+                            "input_dtype": "cache npy",
                             "execution": {
                                 "adm_class": "strict",
                                 "contended": 0,
-                                "state": "done",
-                                "exit_code": 0
-                            }
-                        },
-                        {
-                            "source": "strict_epsilon-stoch_candidate",
-                            "line": 4,
-                            "library": "falcata-stoch",
-                            "dataset": "epsilon",
-                            "regime": "deep",
-                            "kind": "timed3",
-                            "status": "ok",
-                            "version": "1.0.6",
-                            "n_train": 400000,
-                            "n_features": 2000,
-                            "train_s": 11.241658764018212,
-                            "construct_s": 2.0174276509787887,
-                            "construct_shared": false,
-                            "total_s": 13.588863520999439,
-                            "predict_s": 0.32976190699264407,
-                            "input_dtype": "float32",
-                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
-                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-                            "seed": 42,
-                            "run_id": 3580,
-                            "resolved_cuda_precision": "fp64",
-                            "cuda_precision_override": null,
-                            "cuda_plan_override": null,
-                            "metrics": {
-                                "auc": 0.942429523367914,
-                                "sane": true
-                            },
-                            "execution": {
-                                "adm_class": "strict",
-                                "contended": 0,
-                                "state": "done",
-                                "exit_code": 0
+                                "state": "done"
                             }
                         }
                     ],
                     "strict_quiet_verified": true,
-                    "caveats": []
+                    "caveats": [
+                        "two_interleaved_draws"
+                    ]
                 },
                 {
                     "role": "launch_falcata",
                     "library": "falcata-stoch",
-                    "label": "Falcata · launch snapshot",
+                    "label": "Falcata \u00b7 launch snapshot",
                     "train_s": 39.28229938400909,
                     "training_seconds": {
                         "n": 3,
@@ -1703,7 +1704,8 @@
                         "launch_retries",
                         "launch_snapshot_not_tag",
                         "quantization_defaults_change"
-                    ]
+                    ],
+                    "archived": true
                 },
                 {
                     "role": "archived_competitor",
@@ -1802,7 +1804,8 @@
                         "launch_retries",
                         "launch_snapshot_not_tag",
                         "quantization_defaults_change"
-                    ]
+                    ],
+                    "archived": true
                 },
                 {
                     "role": "archived_competitor",
@@ -1902,7 +1905,8 @@
                         "launch_snapshot_not_tag",
                         "quantization_defaults_change",
                         "upstream_cuda_depth_semantics"
-                    ]
+                    ],
+                    "archived": true
                 }
             ],
             "omitted_frameworks": [
@@ -1983,5 +1987,15 @@
             ]
         }
     ],
-    "path_normalization_note": "Absolute machine paths are normalized to portable logical references (external://, evidence://, and build-artifact://). Any source SHA-256 values in this artifact identify the original, unmodified source bytes before path normalization."
+    "rc_remeasure": {
+        "rc_commit": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+        "old_commit": "a65d34e80a7c337342fba6886d0a1cbd69eda079",
+        "date": "2026-10-21",
+        "source_new": "rc_1408ee79",
+        "source_old": "a65_1408ee79",
+        "rows_measured": 43,
+        "q_placeholders_filled": "43 of 43",
+        "note": "latest_measured = the release-candidate arm; October values in october_latest_measured; launch rows, archived_competitors, strict_runtime_pairs (PR #71 prototype) unchanged",
+        "converter": "runs/release_1_1/to_blog_json.py"
+    }
 }

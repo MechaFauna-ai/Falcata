@@ -50,6 +50,7 @@ def digest(path):
 def compact_data(matrix_path):
     matrix = json.loads(matrix_path.read_text())
     catalog = matrix["record_catalog"]
+    remeasure = matrix.get("rc_remeasure")  # release-candidate matrix (runs/release_1_1/to_blog_json.py)
     panels = []
     for dataset, regime, label, detail, metric_label in PANEL_SPECS:
         workload = next(row for row in matrix["workloads"] if (row["dataset"], row["regime"]) == (dataset, regime))
@@ -109,7 +110,9 @@ def compact_data(matrix_path):
                 "label": label,
                 "detail": detail,
                 "metric_label": metric_label,
-                "modern_measurement_date": "2026-10-08" if modern["source"] == "oct8" else "2026-10-09",
+                "modern_measurement_date": remeasure["date"]
+                if remeasure
+                else ("2026-10-08" if modern["source"] == "oct8" else "2026-10-09"),
                 "modern_runtime": runtime,
                 "modern_library_identity": {key: value for key, value in metadata.items() if "library_" in key},
                 "archived_measurement_date": "August 2026",
@@ -129,7 +132,13 @@ def compact_data(matrix_path):
         "framework_comparison": "Archived August 2026 competitor endpoints, not current framework reruns",
         "quality_contract": "Shown endpoint values are not quality-equivalence or identical-model claims",
         "baseline_contract": "Launch snapshot printed version1.0.0; not a controlled tagged-v1.0.0 runtime comparison",
-        "numerai_data_contract": "Historical cache:5463797 train rows ×3555 features; target label unidentified. Oct8 deep uses float32; Oct9 example int8. Both launch panels use float32 per contemporaneous loader.",
+        "numerai_data_contract": (
+            "Historical cache: 5463797 train rows × 3555 features; target label unidentified. Release-candidate "
+            "Numerai rows use the int8 twin; both launch panels used float32 per contemporaneous loader."
+            if remeasure
+            else "Historical cache:5463797 train rows ×3555 features; target label unidentified. Oct8 deep uses "
+            "float32; Oct9 example int8. Both launch panels use float32 per contemporaneous loader."
+        ),
         "l2_contract": "Framework defaults retained: Falcata/LightGBM0, XGBoost1, CatBoost3",
         "upstream_cuda_contract": "Archived LightGBM CUDA does not enforce the requested depth cap; its Epsilon model capacity differs",
         "sources": matrix["sources"],

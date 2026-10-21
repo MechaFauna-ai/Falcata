@@ -1,10 +1,12 @@
 # Falcata 1.1 article: measurements and release scope
 
-Editorial companion, updated 20 October 2026. The [article](../falcata-1.1.md) keeps the
+Editorial companion, updated 21 October 2026. The [article](../falcata-1.1.md) keeps the
 main narrative short; this file keeps the comparisons and limits inspectable.
-Version 1.1 is a release candidate, `{{NUM:rc_commit}}`, not yet published.
-`{{NUM:…}}` marks a number still to be measured on that candidate; the
-[checklist](../NUMBERS.md) names the run behind each one. *Interim* numbers were
+Version 1.1 is a release candidate, `49c5622a`, not yet published. Its numbers were
+measured on master `1408ee79` on 21 October; the candidate adds only
+documentation (#141) and an `extra_trees` filter in the categorical kernel for more
+than 256 bins (#155), which no measured workload uses. The
+[checklist](../NUMBERS.md) names the run behind each number. *Interim* numbers were
 measured on `4641c9f0` (16 October) or on a pull request's own build. Dated numbers
 keep their original build and date.
 
@@ -12,7 +14,7 @@ keep their original build and date.
 
 | Comparison | Before | After | Interpretation |
 | --- | --- | --- | --- |
-| Controlled release comparison | [`a65d34e8`](https://github.com/MechaFauna-ai/Falcata/commit/a65d34e80a7c337342fba6886d0a1cbd69eda079), 12 October master (unreleased, 217 commits after the v1.0.5 tag) | Release candidate `{{NUM:rc_commit}}` | Same machine and session, two interleaved fresh-process pairs per workload and mode; model MD5 per run |
+| Controlled release comparison | [`a65d34e8`](https://github.com/MechaFauna-ai/Falcata/commit/a65d34e80a7c337342fba6886d0a1cbd69eda079), 12 October master (unreleased, 217 commits after the v1.0.5 tag) | Release candidate, measured on `1408ee79` | Same machine and session, two interleaved fresh-process pairs per workload and mode; model MD5 per run |
 | Headline Numerai deep | `a65d34e8` | Release candidate | Three strict draws per arm at 30,000 rounds |
 | Launch → release candidate | August launch benchmark, labelled 1.0.0; covtype forensics identify the pre-tag artifact `724e9358` | Release candidate | Dated archive against a new measurement; not a controlled tagged-v1.0.0 → v1.1 experiment |
 | Classification stability | Unbounded controls | CPU: per-case builds through PR #93 (`08c37d95`, merged as `a65d34e8`); FP64 CUDA: release candidate | Quality and stability evidence, no timing comparison |
@@ -33,7 +35,6 @@ file. Individual appended launch records do not pin their binaries.
 
 ## Framework figure
 
-<!-- REGENERATE: framework-comparison.{png,svg} and framework-comparison-data.json from the release-candidate matrix -->
 ![Training time with dated framework baselines](framework-comparison.png)
 
 The [compact chart data](framework-comparison-data.json) and
@@ -49,27 +50,34 @@ August competitor archive.
 requested rounds, learning rate 0.001, depth 10, 1,024 leaves, feature fraction 0.1,
 `min_data_in_leaf=10000`, `max_bin=255`, seed 42 and 32 CPU threads. Stochastic
 quantization resolves to four gradient bins. Release candidate:
-{{NUM:numerai_deep_30k_rc_s}} s, median of three strict draws; `a65d34e8`:
-{{NUM:numerai_deep_30k_a65_s}} s; holdout CORR {{NUM:q_numerai_numerai_deep_stoch_rc}}.
+105.82 s, median of three strict draws; `a65d34e8`:
+112.97 s; holdout CORR 0.02385.
 The launch archive's 742.8 s used float32 input. Interim: `4641c9f0` took 108.5 s
 against 114.4 s for `a65d34e8` (two relaxed pairs, 16 October, identical models).
 
 **Numerai example:** same training shape, 2,000 rounds, learning rate 0.01,
 32 leaves, depth 5 and feature fraction 0.1. Release candidate
-{{NUM:ab_numerai_numerai_stoch_rc_s}} s against {{NUM:ab_numerai_numerai_stoch_a65_s}} s;
-CORR {{NUM:q_numerai_numerai_stoch_rc}}. Launch archive: 31.0 s (float32 input).
+5.370 s against 5.620 s;
+CORR 0.01943. Launch archive: 31.0 s (float32 input).
 
 **Epsilon deep:** 400,000 training rows × 2,000 features, 500 rounds,
 learning rate 0.1, 1,023 leaves and depth 10. Release candidate
-{{NUM:ab_epsilon_deep_stoch_rc_s}} s against {{NUM:ab_epsilon_deep_stoch_a65_s}} s;
-AUC {{NUM:q_epsilon_deep_stoch_rc}}. Launch archive: 39.3 s. Archived competitor AUCs
+9.822 s against 11.460 s;
+AUC 0.9424. Launch archive: 39.3 s. Archived competitor AUCs
 differ, particularly CatBoost's 0.9507561. Do not describe these bars as an
 equal-quality result.
 
-The release-candidate library SHA256 is `{{NUM:rc_library_sha256}}`. Across all
-quantized workloads and both quantized modes, {{NUM:ab_quant_md5_identical}}
+The release-candidate library SHA256 is `c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a`. Across all
+quantized workloads and both quantized modes, 28 of 30
 comparisons produced the same model on both builds; geometric-mean speedups are
-{{NUM:ab_geomean_stoch}}× (stochastic) and {{NUM:ab_geomean_fixed}}× (fixed point).
+1.189× (stochastic) and 1.216× (fixed point).
+The two exceptions are fraud shallow and deep in fixed-point mode, where #146's
+64-bit root totals change one leaf's Hessian sum in the seventh digit in the second
+or third tree and the models diverge from there. The deep run stops at
+357 of 500 trees (no leaf can be split further), so its
+1.433× is not a like-for-like speedup. Held-out AUC:
+0.9780 → 0.9774 (deep),
+0.9790 → 0.9808 (shallow).
 Interim, `a65d34e8` → `4641c9f0` on 16 October: 1.13× and 1.16×, ranging 1.01–1.37×
 per workload, every quantized model identical.
 
@@ -86,9 +94,15 @@ run-to-run deterministic by default (`nonquant_deterministic`). On the article's
 thirteen non-quantized workloads, key off versus on on the same binary cost
 0.957–1.084× in training time, geometric mean 1.010 (*interim*, 16 October; Higgs deep
 1.084, covtype deep 0.957). Against `a65d34e8`, whose non-quantized models differed
-from run to run, the release candidate measures {{NUM:ab_geomean_none}}× by
+from run to run, the release candidate measures 1.006× by
 geometric mean and produced one model per workload in
-{{NUM:ab_none_rc_deterministic}} workloads. Numerai deep and leaf-limited are not run
+13 of 13 workloads. It is slower on the deep shapes: Higgs
+0.889×, Epsilon 0.890×, Year
+0.929× and Airline 0.944× (speedup =
+`a65d34e8` seconds / release-candidate seconds). Fraud's non-quantized AUC is now
+0.9771 (shallow) and 0.9695 (deep);
+the October matrix recorded 0.515 and 0.739 there, before the automatic step limit
+(#91). Numerai deep and leaf-limited are not run
 in non-quantized mode (20–45 minutes per run).
 
 The October non-quantized figures of the earlier draft came from the unmerged
@@ -109,8 +123,9 @@ classification step policy; [PR #93](https://github.com/MechaFauna-ai/Falcata/pu
 fixes the separate empty-child partition failure exposed by broad coverage. The
 [stability report](stability.md) and [portable evidence](stability-data.json) keep
 the CPU half as measured on 12 October (66 guarded configurations plus eight extra
-tiny-leaf seed runs, all 500 rounds) and the FP64 CUDA half as rerun on the
-release candidate ({{NUM:stability_cuda_guarded_pass}} of 66), because #122 and
+tiny-leaf seed runs, all 500 rounds; rerun on `1408ee79`:
+74 of 74) and the FP64 CUDA half as rerun on
+`1408ee79` (66 of 66), because #122 and
 [#154](https://github.com/MechaFauna-ai/Falcata/pull/154) change non-quantized CUDA
 models on these recipes.
 
@@ -124,8 +139,6 @@ These have different local baselines. Profile timings describe kernels; ablation
 describe a complete measured round. Leave-one-out effects interact. Rows below the
 rule were measured after `a65d34e8`, each on its own pull request's build.
 
-| Change | Recorded effect | Scope and limitation |
-| --- | --- | --- |
 | Change | Recorded effect | Scope and limitation |
 | --- | --- | --- |
 | Direct column-major lifetime | 25.0 → 13.7 GiB above idle; first round 2.49 → 0.64 s | Full 6.79M-row, 3,555-feature shape, feature fraction 0.1 |
@@ -144,8 +157,6 @@ rule were measured after `a65d34e8`, each on its own pull request's build.
 | Generic warp finder, Numerai | 3.964 → 3.976 ms, 0.997× | Narrow tasks do not take the changed generic finder |
 | Native input representation | int8 3.89 s/32.3 GiB RSS versus float32 31.34 s/64.9 GiB | Fresh construction within one build; no held-out scoring and no causal before/after attribution |
 | Forced quantized graphs | ON slower in all seven rerun cases | Same selected binary, matching timed fingerprints; remains opt-in |
-
-The [performance notes](../../performance.md) contain the experiments and guards.
 | **Since `a65d34e8`** | | |
 | Mixed-radix six-bit pair view (`pair_code_radix`, #109) | NaN-Numerai 4.23 → 3.61 ms/round, 1.172× | Same binary, key off/on, two pairs, 15 October; identical models; other cells do not take the view |
 | Register-coefficient wide pack (`pair_code_wide_regs`, #109) | NaN-Numerai 1.059×; fill 1.462 → 1.224 ms per tree | Same binary, two pairs; Nsight fill time |
@@ -175,10 +186,6 @@ stack were also present in v1.0.0 and are removed in 1.1
 
 | Family | Since-launch additions | Implementation |
 | --- | --- | --- |
-in v1.0.0. Their original ablations should not be marketed as newly added gains.
-
-| Family | Since-launch additions | Implementation |
-| --- | --- | --- |
 | Modeling | Vector-leaf multi-regression up to 16 targets; ObliquePool sparse projections; random categorical subsets | [Vector integration](https://github.com/MechaFauna-ai/Falcata/commit/428307adde2d9f74c272778d1d0d6823f049a3b1), [projections](https://github.com/MechaFauna-ai/Falcata/commit/5f91b4cf17a1f05c698869ab31dfbe22bd85ea83), [categories](https://github.com/MechaFauna-ai/Falcata/commit/ab8264b8139374a2df469e120c8a8536227479c9) |
 | Data interfaces | Packed/chunked CUDA arrays, device dataset builder, integer/float16 missing sentinels | [Builder](https://github.com/MechaFauna-ai/Falcata/commit/929580a7a68d4596ab91adb4adc66dce7185d31c), [sentinel](https://github.com/MechaFauna-ai/Falcata/commit/570c1e80c07b22486a4b3d58877b5b4bf7c7eaf2) |
 | Training controls | Evaluation frequency, evaluation-count early stopping, minimum iterations, callback state repair | [Frequency](https://github.com/MechaFauna-ai/Falcata/commit/57f714ceee62a09eaeab46703580a20a6841fcbb), [minimum iterations](https://github.com/MechaFauna-ai/Falcata/commit/89f7456dbb5b91f6ad5f93fb07b72e594f5d64cb) |
@@ -187,7 +194,6 @@ in v1.0.0. Their original ablations should not be marketed as newly added gains.
 | Lifecycle | Importer routing/order, constant trees, model round trips/statistics, transactional mode resets and cached-predictor invalidation | [Lifecycle](https://github.com/MechaFauna-ai/Falcata/commit/116f8b54d74f6c494cb05d47636df16e10fb24e2), [reset guard](https://github.com/MechaFauna-ai/Falcata/commit/dbcdab292ffe398e0bd248bd2a48f9a41647f2ba) |
 | Prediction | FIL bounded slabs and large-input indexing repairs | [Slab scoring](https://github.com/MechaFauna-ai/Falcata/commit/f88b34ad996c2b1f9cf35cd7472909e5f766941a) |
 | Distribution | Automatic CUDA selection, toolkit/wheel repairs, lazy CUDA-driver/NCCL loading, CUDA 13 support; 1.0.5 wheel 99.1 → 71.3 MB | [Lazy driver](https://github.com/MechaFauna-ai/Falcata/commit/ea8301a509cb45f87bdf45f8b28b9fa3589833df), [1.0.5 notes](https://github.com/MechaFauna-ai/Falcata/releases/tag/v1.0.5) |
-
 | Random forests (1.1) | Device objective and lazy score, per-node masks in level flows, trees grown together, count histograms | [#103](https://github.com/MechaFauna-ai/Falcata/pull/103), [#113](https://github.com/MechaFauna-ai/Falcata/pull/113), [#115](https://github.com/MechaFauna-ai/Falcata/pull/115), [#116](https://github.com/MechaFauna-ai/Falcata/pull/116), [#121](https://github.com/MechaFauna-ai/Falcata/pull/121) |
 | Determinism (1.1) | Non-quantized CUDA training deterministic by default | [#122](https://github.com/MechaFauna-ai/Falcata/pull/122) |
 | Host round trips (1.1) | Device-driven level prefix; opt-in whole device tree | [#123](https://github.com/MechaFauna-ai/Falcata/pull/123), [#130](https://github.com/MechaFauna-ai/Falcata/pull/130) |
@@ -197,20 +203,23 @@ in v1.0.0. Their original ablations should not be marketed as newly added gains.
 
 This paired comparison uses the Numerai pipeline's exact conversion: features
 constant at 2 over a complete source era become native int8 -1 (missing), then real
-NaN for CPU prediction. Ordinary twos and zeros stay numeric. Both arms use frozen
-build 1230: 5,502,748 training rows, 3,555 features and the named Ender20 target.
-These times must not be compared as a release speedup against the old cache.
+NaN for CPU prediction. Ordinary twos and zeros stay numeric. On the release
+candidate both arms use the Numerai benchmark split (round 1226, `target`, 5,463,797
+training rows, 3,555 features, eras 1–1016); the 10 October run used frozen build 1230
+(5,502,748 rows, Ender20 target), whose matrices are no longer on disk. The same rule
+gives the same bin layout (1,583 five-bin, 1,942 six-bin and 30 constant features), so
+five versus six compares, but absolute trees/s are not October's rows. These times
+must not be compared as a release speedup against the old cache.
 
 **Release candidate** (six-state driver, same recipes as on 10 October):
 
 | Recipe | Trees per draw | Five-state trees/s | Six-state trees/s | Six/five training time |
 | --- | ---: | ---: | ---: | ---: |
-| Standard stochastic, FP64 | 2,000; median of 3 | {{NUM:sixstate_std_stoch_2k_five_trees_s}} | {{NUM:sixstate_std_stoch_2k_six_trees_s}} | {{NUM:sixstate_std_stoch_2k_six_over_five_time}} |
-| Standard fixed point, FP64 | 2,000; median of 3 | {{NUM:sixstate_std_fixed_2k_five_trees_s}} | {{NUM:sixstate_std_fixed_2k_six_trees_s}} | {{NUM:sixstate_std_fixed_2k_six_over_five_time}} |
-| 16,384-leaf recipe, fixed point, explicit FP32 | 2,000; median of 3 | {{NUM:sixstate_16k_fp32_2k_five_trees_s}} | {{NUM:sixstate_16k_fp32_2k_six_trees_s}} | {{NUM:sixstate_16k_fp32_2k_six_over_five_time}} |
-| Standard stochastic, FP64 | 30,000; one pair | {{NUM:sixstate_std_stoch_30k_five_trees_s}} | {{NUM:sixstate_std_stoch_30k_six_trees_s}} | {{NUM:sixstate_std_stoch_30k_six_over_five_time}} |
+| Standard stochastic, FP64 | 2,000; median of 3 | 261.21 | 247.42 | 1.056 |
+| Standard fixed point, FP64 | 2,000; median of 3 | 220.70 | 209.33 | 1.054 |
+| 16,384-leaf recipe, fixed point, explicit FP32 | 2,000; median of 3 | 64.35 | 10.76 | 5.983 |
+| Standard stochastic, FP64 | 30,000; one pair | 285.05 | 267.79 | 1.064 |
 
-<!-- REGENERATE: six-state-throughput.{png,svg} via plot_six_state.py from the new six-state-data.json -->
 ![Measured five-state and six-state training throughput](six-state-throughput.png)
 
 **Dated, 10 October, before #109:** 246.28 / 180.36, 211.77 / 174.99, 88.21 / 10.29
@@ -226,9 +235,14 @@ histograms.
 benchmark cells' NaN-Numerai shape (Numerai 53 benchmark split, 500 rounds):
 198.8 → 284.0 trees/s from `a65d34e8` to `4641c9f0`, identical models. On the
 release candidate, the standard six-state warmups take the code view in
-{{NUM:sixstate_std_six_code_view_trees}} trees; the 16,384-leaf six-state arm takes
-the {{NUM:sixstate_16k_view_six}} view. #109 does not change the memory-admission
-rule, so the 16,384-leaf result is reported as measured, not as a fix.
+200 of 200 trees; the 16,384-leaf six-state arm takes
+the full-width mask view (the planner logs that the compact regime does
+not fit) with `row_batch` histograms. #109 does not change the memory-admission
+rule, so the 16,384-leaf result is reported as measured, not as a fix. The 30,000-tree
+pair's five-era holdout sanity (eras 1222–1226) has finite predictions and mean CORR
+0.0348 (five) and
+0.0352 (six); it does not establish
+equivalent quality.
 
 The [dated report](../../2026-10-10_numerai-six-state-throughput.md),
 [endpoint evidence](six-state-data.json) and [chart generator](plot_six_state.py)

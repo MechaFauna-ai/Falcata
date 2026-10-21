@@ -1,11 +1,14 @@
 # Falcata 1.1: widening the gap
 
-> **Release article draft, updated 20 October 2026.** Release candidate
-> `{{NUM:rc_commit}}`, compared in one session with the 12 October master
+> **Release article draft, updated 21 October 2026.** Release candidate `49c5622a`.
+> Its numbers were measured on master `1408ee79`, compared in one session with
+> the 12 October master
 > [`a65d34e8`](https://github.com/MechaFauna-ai/Falcata/commit/a65d34e80a7c337342fba6886d0a1cbd69eda079)
-> (unreleased; after 1.0.5). `{{NUM:…}}` marks a number still to be re-measured
-> ([checklist](NUMBERS.md)); *interim* numbers come from `4641c9f0` (16 October) or a
-> pull request's build and are not release-candidate results.
+> (unreleased; after 1.0.5). The candidate adds only documentation (#141) and an
+> `extra_trees` filter in the categorical kernel for more than 256 bins (#155), which
+> no measured workload uses. The [checklist](NUMBERS.md) names the run behind every
+> number; *interim* numbers come from `4641c9f0` (16 October) or a pull request's
+> build and are not release-candidate results.
 
 When we [introduced Falcata](https://www.mechafauna.ai/blog/falcata-gpu-gradient-boosting),
 we showed what happens when gradient boosting gives the GPU a whole level of tree
@@ -14,17 +17,18 @@ been working through the bottlenecks it exposed: redundant data movement, tiny
 histogram tasks, repeated loads and conversations with the CPU.
 
 **The 30,000-round Numerai-deep workload now trains in
-{{NUM:numerai_deep_30k_rc_min}} minutes, versus 12.4 minutes in the launch
-archive: {{NUM:numerai_deep_30k_launch_over_rc}}× faster.** Against `a65d34e8`,
+1.8 minutes, versus 12.4 minutes in the launch
+archive: 7.02× faster.** Against `a65d34e8`,
 measured in the same session, the release candidate takes
-{{NUM:numerai_deep_30k_rc_s}} s instead of {{NUM:numerai_deep_30k_a65_s}} s
-({{NUM:numerai_deep_30k_rc_over_a65}}×). Numerai example takes
-{{NUM:ab_numerai_numerai_stoch_rc_s}} s (launch archive: 31.0 s); Epsilon deep
-takes {{NUM:ab_epsilon_deep_stoch_rc_s}} s (launch archive: 39.3 s). Across the
-article's fifteen workloads, quantized training is {{NUM:ab_geomean_stoch}}×
-(stochastic) and {{NUM:ab_geomean_fixed}}× (fixed point) faster than `a65d34e8`
-by geometric mean, with identical models in {{NUM:ab_quant_md5_identical}}
-quantized comparisons.
+105.82 s instead of 112.97 s
+(1.068×). Numerai example takes
+5.370 s (launch archive: 31.0 s); Epsilon deep
+takes 9.822 s (launch archive: 39.3 s). Across the
+article's fifteen workloads, quantized training is 1.189×
+(stochastic) and 1.216× (fixed point) faster than `a65d34e8`
+by geometric mean, with identical models in 28 of 30
+quantized comparisons (the two exceptions, fixed-point fraud, are
+[explained below](#models-that-change)).
 
 Speed is half of this release. Non-quantized CUDA training now produces the same
 model on every run; random forests train on the device; bounded parts of a tree grow
@@ -34,19 +38,18 @@ Configurations and full results are in the [benchmark companion](falcata-1.1/ben
 
 ## The gap, then and now
 
-<!-- REGENERATE: plot_framework_comparison.py from the release-candidate matrix; see NUMBERS.md -->
 ![Training times for the release candidate beside launch Falcata and the August competitor archive](falcata-1.1/framework-comparison.png)
 
 On the deep Numerai workload, the release candidate is about
-**{{NUM:aug_xgb_over_rc_numerai_deep}}× faster than the launch XGBoost time,
-{{NUM:aug_catboost_over_rc_numerai_deep}}× faster than CatBoost and
-{{NUM:aug_lgbm_opencl_over_rc_numerai_deep}}× faster than LightGBM OpenCL**. The
+**66.2× faster than the launch XGBoost time,
+49.5× faster than CatBoost and
+97.9× faster than LightGBM OpenCL**. The
 launch ratios were roughly 9×, 7× and 14×. On Numerai example, the ratios are
-{{NUM:aug_xgb_over_rc_numerai_example}}× (XGBoost) and
-{{NUM:aug_catboost_over_rc_numerai_example}}× (CatBoost); on Epsilon deep,
-{{NUM:aug_xgb_over_rc_epsilon_deep}}× and {{NUM:aug_catboost_over_rc_epsilon_deep}}×.
+53.3× (XGBoost) and
+20.9× (CatBoost); on Epsilon deep,
+5.3× and 10.3×.
 Competitor times are the **August archive**, not rerun against current releases.
-Quality differs (Epsilon AUC {{NUM:q_epsilon_deep_stoch_rc}} for the release
+Quality differs (Epsilon AUC 0.9424 for the release
 candidate, 0.9508 for launch CatBoost): these are training-budget comparisons, not
 equal-quality claims. Times exclude construction and prediction, on one otherwise
 idle RTX 5090. Release-candidate Numerai inputs are int8; the launch deep run used
@@ -141,14 +144,16 @@ to `4641c9f0` that cell went from **198.8 to 284.0 trees/s** with identical mode
 (*interim*, 16 October, two relaxed pairs).
 
 On the release candidate, the paired six-state benchmark trains 30,000 trees at
-**{{NUM:sixstate_std_stoch_30k_six_trees_s}} trees/s** with the missing state, versus
-**{{NUM:sixstate_std_stoch_30k_five_trees_s}}** with five numeric states
-({{NUM:sixstate_std_stoch_30k_six_over_five_time}}× training time). The
-16,384-leaf FP32 recipe previously crossed a memory-admission threshold and fell
-back to a full-width view (10.3 trees/s in October's short probes); on the release
-candidate it reaches **{{NUM:sixstate_16k_fp32_2k_six_trees_s}}** versus
-**{{NUM:sixstate_16k_fp32_2k_five_trees_s}} trees/s** ({{NUM:sixstate_16k_view_six}}
-view; [details](falcata-1.1/benchmarks.md#five-values-versus-five-values-plus-missing)).
+**267.79 trees/s** with the missing state, versus
+**285.05** with five numeric states
+(1.064× training time, against 1.38× on
+10 October); the six-state warmup took the code view in
+200 of 200 trees. The 16,384-leaf FP32 recipe still
+crosses a memory-admission threshold: its six-state arm falls back to the
+full-width mask view and reaches **10.76**
+versus **64.35 trees/s**
+(5.983× training time;
+[details](falcata-1.1/benchmarks.md#five-values-versus-five-values-plus-missing)).
 
 Code: [joint histograms](https://github.com/MechaFauna-ai/Falcata/commit/4da13ec904d51eb851eba7ec5187ff69a78fd1c1),
 [five-bit view](https://github.com/MechaFauna-ai/Falcata/commit/4767ce8bc1ee358d50e51fd5098db1b3e7005e27),
@@ -214,8 +219,11 @@ The plan key is `nonquant_deterministic`; `:off` restores the float atomics.
 On the article's thirteen non-quantized workloads the cost was 0.96–1.08× in
 training time, geometric mean 1.010 (*interim*, 16 October, same binary, key off
 versus on); Higgs deep is the costliest. On the release candidate, non-quantized
-training runs at {{NUM:ab_geomean_none}}× the speed of `a65d34e8` by geometric mean,
-with one model per shape in {{NUM:ab_none_rc_deterministic}} workloads. Linear
+training runs at 1.006× the speed of `a65d34e8` by geometric mean,
+with one model per shape in 13 of 13 workloads. The deep
+shapes pay for it: Higgs deep runs at 0.889×, Epsilon deep
+0.890×, Year deep 0.929× and Airline
+deep 0.944×. Linear
 trees, ranking objectives, multi-GPU training and non-quantized vector leaves
 remain nondeterministic.
 
@@ -301,11 +309,14 @@ committing a split.
 
 The coverage cohort spans fraud and covtype, 20 training seeds, five fresh splits
 and eight stress profiles per dataset and backend. The CPU half (66 guarded
-configurations plus eight tiny-leaf seed cases, 12 October) passed all 500 rounds.
-The FP64 CUDA half was rerun on the release candidate, because #122 and #154 change
-its models: **{{NUM:stability_cuda_guarded_pass}} of 66** passed, and
-{{NUM:stability_cuda_controls_reproduced}} of two uncapped controls reproduced
-runaway margins. `0` restores unbounded updates; regression, custom objectives and
+configurations plus eight tiny-leaf seed cases, 12 October) passed all 500 rounds,
+and again on `1408ee79` (74 of 74).
+The FP64 CUDA half was rerun on `1408ee79`, because #122 and #154 change
+its models: **66 of 66** passed, and
+2 of two uncapped controls reproduced
+runaway margins. Tree fingerprints match October's in only
+2 of 68 CUDA cases, as those fixes predict; the
+claim is the gates, not bit identity. `0` restores unbounded updates; regression, custom objectives and
 random forests are outside the automatic bound. The
 [stability report](falcata-1.1/stability.md) has recipes, builds and quality ranges.
 
@@ -332,7 +343,7 @@ These fixes change some CUDA model outputs versus 1.0.5:
 | Change | Affected inputs | Before |
 | --- | --- | --- |
 | #122 deterministic non-quantized construct | `quant_mode=none` with depth-limited trees, `feature_fraction < 1` or levels wider than the ordered kernels' buffer; `cuda_precision=fp32` | A different model per run |
-| #146 integer root statistics | Quantized training whose packed 64-bit root statistic exceeds 2^53 | Low Hessian bits lost at the root |
+| #146 integer root statistics | Quantized training whose packed 64-bit root statistic exceeds 2^53; in the release comparison also fixed-point fraud (below) | Low Hessian bits lost at the root |
 | #154 column sampling | Data with bundled features (for example one-hot blocks, as in covtype) and `feature_fraction < 1`, every plan | The wrong columns sampled |
 | #135 categorical extra trees | `extra_trees=true` with more categories than `max_cat_to_onehot` | Run-to-run variation; now the most common former model |
 
@@ -344,16 +355,30 @@ per-node generators since [#113](https://github.com/MechaFauna-ai/Falcata/pull/1
 weighted L1/quantile initialization ([#124](https://github.com/MechaFauna-ai/Falcata/pull/124)),
 and non-quantized forests deeper than 12 levels or with sampled features
 ([#121](https://github.com/MechaFauna-ai/Falcata/pull/121)). The Numerai benchmark's
-quantized model is {{NUM:numerai_deep_md5_rc_vs_a65}} to `a65d34e8`'s.
+quantized model is identical to `a65d34e8`'s.
+
+In the release comparison every quantized classic and Numerai model is byte-identical
+to `a65d34e8`'s except fraud shallow and deep in fixed-point mode. #146 keeps the
+quantized root reduction totals in 64-bit integers: the first tree is identical, then
+one leaf's Hessian sum differs in the seventh significant digit (tree 1 deep, tree 2
+shallow) and the fixed-point models diverge. The deep run stops at
+357 of 500 trees because no leaf can be split
+further. Held-out AUC goes from 0.9780 to
+0.9774 (deep) and from 0.9790 to
+0.9808 (shallow); for scale, 20 training seeds of the
+non-quantized FP64 CUDA stability recipe span 0.9697–0.9850.
+Non-quantized models differ from `a65d34e8`'s on all thirteen workloads, because
+`a65d34e8`'s differed from run to run (#122).
 
 ## Speed has to survive the checks
 
-The release candidate passes {{NUM:canonical_gates_rc}} canonical model gates and
-a {{NUM:lattice_cells_rc}}-cell verification lattice. Its CUDA suite passes
-{{NUM:cuda_tests_passed_rc}} tests ({{NUM:cuda_tests_skipped_rc}} skipped), the CPU
-and C API suite {{NUM:cpu_tests_passed_rc}}, and the C++ suite {{NUM:cpp_tests_rc}}.
-All {{NUM:ci_checks_rc}} CI checks and the nightly gates, including
-{{NUM:nightly_fuzz_specs_rc}} fuzz specifications, passed. Mechanical optimizations
+The release candidate's nightly gates passed: 4 canonical
+model gates, 310 fuzz specifications without a failure and
+the CUDA suite with 2,422 tests passed
+(189 skipped). On `1408ee79`, the
+verification lattice has 441 cells, and CI passed the CPU and
+C API suite (1,396 tests), the C++ suite
+(59) and all 20 checks. Mechanical optimizations
 have identity checks; numerical changes need fresh quality evidence. Losing
 experiments stay visible: forced quantized CUDA graphs remain opt-in, and the device
 prefix's regressions stay in its record.

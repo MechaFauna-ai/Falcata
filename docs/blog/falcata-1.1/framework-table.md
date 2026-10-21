@@ -1,8 +1,8 @@
 # Full framework comparison
 
-Updated 20 October 2026. The Falcata columns are release candidate
-`{{NUM:rc_commit}}`, measured with the [mode appendix](appendix-table.md)'s
-controlled runs (`{{NUM:…}}` marks a value from them; [checklist](../NUMBERS.md)).
+Updated 21 October 2026. The Falcata columns are the release candidate, measured on
+`1408ee79` with the [mode appendix](appendix-table.md)'s
+controlled runs ([checklist](../NUMBERS.md)).
 The competitor columns are the **August archive**: the original August 2026
 launch-snapshot measurements, not rerun against current releases of those engines.
 This is a descriptive table, not a matched-quality experiment.
@@ -18,26 +18,26 @@ unsuitable for timing headlines.
 
 | Workload | Falcata stochastic | Falcata fixedpoint | Falcata non-quantized | XGBoost | CatBoost | LightGBM CUDA | LightGBM OpenCL |
 |---|---|---|---|---|---|---|---|
-| Fraud shallow | {{NUM:ab_fraud_shallow_stoch_rc_s}} s<br>AUC {{NUM:q_fraud_shallow_stoch_rc}} | {{NUM:ab_fraud_shallow_fixed_rc_s}} s<br>AUC {{NUM:q_fraud_shallow_fixed_rc}} | {{NUM:ab_fraud_shallow_none_rc_s}} s<br>AUC {{NUM:q_fraud_shallow_none_rc}} | 0.460 s<br>AUC .9794 | 1.34 s<br>AUC .9792 | 2.29 s<br>AUC .7947 [.7752–.8159] | **FAILED** (skipped_warmup_failed) |
-| Fraud deep | {{NUM:ab_fraud_deep_stoch_rc_s}} s<br>AUC {{NUM:q_fraud_deep_stoch_rc}} | {{NUM:ab_fraud_deep_fixed_rc_s}} s<br>AUC {{NUM:q_fraud_deep_fixed_rc}} | {{NUM:ab_fraud_deep_none_rc_s}} s<br>AUC {{NUM:q_fraud_deep_none_rc}} | 0.516 s<br>AUC .9747 | 5.86 s<br>AUC .9785 | **FAILED** (skipped_warmup_failed) | **FAILED** (skipped_warmup_failed) |
-| Covtype shallow | {{NUM:ab_covtype_shallow_stoch_rc_s}} s<br>Acc {{NUM:q_covtype_shallow_stoch_rc}} | {{NUM:ab_covtype_shallow_fixed_rc_s}} s<br>Acc {{NUM:q_covtype_shallow_fixed_rc}} | {{NUM:ab_covtype_shallow_none_rc_s}} s<br>Acc {{NUM:q_covtype_shallow_none_rc}} | 3.64 s<br>Acc .8942 | 1.97 s<br>Acc .8499 | 28.07 s<br>Acc .8341 [.8084–.8427] | **FAILED** (skipped_warmup_failed) |
-| Covtype deep | {{NUM:ab_covtype_deep_stoch_rc_s}} s<br>Acc {{NUM:q_covtype_deep_stoch_rc}} | {{NUM:ab_covtype_deep_fixed_rc_s}} s<br>Acc {{NUM:q_covtype_deep_fixed_rc}} | {{NUM:ab_covtype_deep_none_rc_s}} s<br>Acc {{NUM:q_covtype_deep_none_rc}} | 8.70 s<br>Acc .9631 | 9.76 s<br>Acc .9177 [.9169–.9177] | 117.65 s<br>Acc .4990 [.4461–.5346]<br>**FAIL / incomplete** | **FAILED** (skipped_warmup_failed) |
-| Year shallow | {{NUM:ab_year_shallow_stoch_rc_s}} s<br>RMSE {{NUM:q_year_shallow_stoch_rc}} | {{NUM:ab_year_shallow_fixed_rc_s}} s<br>RMSE {{NUM:q_year_shallow_fixed_rc}} | {{NUM:ab_year_shallow_none_rc_s}} s<br>RMSE {{NUM:q_year_shallow_none_rc}} | 0.889 s<br>RMSE 8.955 | 1.31 s<br>RMSE 9.005 | 3.94 s<br>RMSE 8.974 [8.973–8.975] | **FAILED** (skipped_warmup_failed) |
-| Year deep | {{NUM:ab_year_deep_stoch_rc_s}} s<br>RMSE {{NUM:q_year_deep_stoch_rc}} | {{NUM:ab_year_deep_fixed_rc_s}} s<br>RMSE {{NUM:q_year_deep_fixed_rc}} | {{NUM:ab_year_deep_none_rc_s}} s<br>RMSE {{NUM:q_year_deep_none_rc}} | 5.79 s<br>RMSE 9.009 | 5.44 s<br>RMSE 8.931 | 60.77 s<br>RMSE 9.031 [9.030–9.039] | **FAILED** (skipped_warmup_failed) |
-| Higgs shallow | {{NUM:ab_higgs_shallow_stoch_rc_s}} s<br>AUC {{NUM:q_higgs_shallow_stoch_rc}} | {{NUM:ab_higgs_shallow_fixed_rc_s}} s<br>AUC {{NUM:q_higgs_shallow_fixed_rc}} | {{NUM:ab_higgs_shallow_none_rc_s}} s<br>AUC {{NUM:q_higgs_shallow_none_rc}} | 3.65 s<br>AUC .8306 | 9.06 s<br>AUC .8225 [.8224–.8227] | 6.09 s<br>AUC .8347 | **FAILED** (skipped_warmup_failed) |
-| Higgs deep | {{NUM:ab_higgs_deep_stoch_rc_s}} s<br>AUC {{NUM:q_higgs_deep_stoch_rc}} | {{NUM:ab_higgs_deep_fixed_rc_s}} s<br>AUC {{NUM:q_higgs_deep_fixed_rc}} | {{NUM:ab_higgs_deep_none_rc_s}} s<br>AUC {{NUM:q_higgs_deep_none_rc}} | 9.69 s<br>AUC .8484 | 19.33 s<br>AUC .8374 [.8373–.8374] | 51.73 s<br>AUC .8499 [.8499–.8505] | **FAILED** (skipped_warmup_failed) |
-| Epsilon shallow | {{NUM:ab_epsilon_shallow_stoch_rc_s}} s<br>AUC {{NUM:q_epsilon_shallow_stoch_rc}} | {{NUM:ab_epsilon_shallow_fixed_rc_s}} s<br>AUC {{NUM:q_epsilon_shallow_fixed_rc}} | {{NUM:ab_epsilon_shallow_none_rc_s}} s<br>AUC {{NUM:q_epsilon_shallow_none_rc}} | 9.86 s<br>AUC .9490 | 12.69 s<br>AUC .9485 | 30.77 s<br>AUC .9510 | **FAILED** (skipped_warmup_failed) |
-| Epsilon deep | {{NUM:ab_epsilon_deep_stoch_rc_s}} s<br>AUC {{NUM:q_epsilon_deep_stoch_rc}} | {{NUM:ab_epsilon_deep_fixed_rc_s}} s<br>AUC {{NUM:q_epsilon_deep_fixed_rc}} | {{NUM:ab_epsilon_deep_none_rc_s}} s<br>AUC {{NUM:q_epsilon_deep_none_rc}} | 52.26 s<br>AUC .9440 | 101.48 s<br>AUC .9508 | 462.83 s<br>AUC .9432 | **FAILED** (skipped_warmup_failed) |
-| Airline shallow | {{NUM:ab_airline_shallow_stoch_rc_s}} s<br>AUC {{NUM:q_airline_shallow_stoch_rc}} | {{NUM:ab_airline_shallow_fixed_rc_s}} s<br>AUC {{NUM:q_airline_shallow_fixed_rc}} | {{NUM:ab_airline_shallow_none_rc_s}} s<br>AUC {{NUM:q_airline_shallow_none_rc}} | 22.83 s<br>AUC .8256 | 79.99 s<br>AUC .8024 [.8022–.8026] | 32.56 s<br>AUC .8352 | 638.15 s<br>AUC .8265 [.8263–.8266] |
-| Airline deep | {{NUM:ab_airline_deep_stoch_rc_s}} s<br>AUC {{NUM:q_airline_deep_stoch_rc}} | {{NUM:ab_airline_deep_fixed_rc_s}} s<br>AUC {{NUM:q_airline_deep_fixed_rc}} | {{NUM:ab_airline_deep_none_rc_s}} s<br>AUC {{NUM:q_airline_deep_none_rc}} | 39.75 s<br>AUC .8633 | 138.36 s<br>AUC .8222 | 114.80 s<br>AUC .8782 [.8780–.8783] | **FAILED** (skipped_warmup_failed) |
-| Numerai example | {{NUM:ab_numerai_numerai_stoch_rc_s}} s<br>CORR {{NUM:q_numerai_numerai_stoch_rc}} | {{NUM:ab_numerai_numerai_fixed_rc_s}} s<br>CORR {{NUM:q_numerai_numerai_fixed_rc}} | {{NUM:ab_numerai_numerai_none_rc_s}} s<br>CORR {{NUM:q_numerai_numerai_none_rc}} | 286.35 s<br>CORR .01972 † | 112.10 s<br>CORR .01800 † | **FAILED** (skipped_warmup_failed) | **FAILED** (skipped_warmup_failed) |
-| Numerai deep | {{NUM:ab_numerai_numerai_deep_stoch_rc_s}} s<br>CORR {{NUM:q_numerai_numerai_deep_stoch_rc}} | {{NUM:ab_numerai_numerai_deep_fixed_rc_s}} s<br>CORR {{NUM:q_numerai_numerai_deep_fixed_rc}} | not run | 7,007 s<br>CORR .02345 | 5,240 s<br>CORR .02171 † | **FAILED** (crashed) | 10,362 s<br>CORR .02384 |
-| Numerai leaf-limited | {{NUM:ab_numerai_numerai_leaf_stoch_rc_s}} s<br>CORR {{NUM:q_numerai_numerai_leaf_stoch_rc}} | {{NUM:ab_numerai_numerai_leaf_fixed_rc_s}} s<br>CORR {{NUM:q_numerai_numerai_leaf_fixed_rc}} | not run | 10,094 s<br>CORR .02012 | **FAILED** (crashed) | **FAILED** (crashed) | **FAILED** (timeout) |
+| Fraud shallow | 0.203 s<br>AUC .9365 | 0.274 s<br>AUC .9808 | 0.379 s<br>AUC .9771 | 0.460 s<br>AUC .9794 | 1.34 s<br>AUC .9792 | 2.29 s<br>AUC .7947 [.7752–.8159] | **FAILED** (skipped_warmup_failed) |
+| Fraud deep | 0.250 s<br>AUC .9630 | 0.323 s<br>AUC .9774 | 0.477 s<br>AUC .9695 | 0.516 s<br>AUC .9747 | 5.86 s<br>AUC .9785 | **FAILED** (skipped_warmup_failed) | **FAILED** (skipped_warmup_failed) |
+| Covtype shallow | 1.133 s<br>Acc .9204 | 1.169 s<br>Acc .9221 | 2.696 s<br>Acc .9243 | 3.64 s<br>Acc .8942 | 1.97 s<br>Acc .8499 | 28.07 s<br>Acc .8341 [.8084–.8427] | **FAILED** (skipped_warmup_failed) |
+| Covtype deep | 1.893 s<br>Acc .9581 | 2.060 s<br>Acc .9687 | 7.496 s<br>Acc .9704 | 8.70 s<br>Acc .9631 | 9.76 s<br>Acc .9177 [.9169–.9177] | 117.65 s<br>Acc .4990 [.4461–.5346]<br>**FAIL / incomplete** | **FAILED** (skipped_warmup_failed) |
+| Year shallow | 0.285 s<br>RMSE 9.000 | 0.306 s<br>RMSE 8.971 | 0.740 s<br>RMSE 8.961 | 0.889 s<br>RMSE 8.955 | 1.31 s<br>RMSE 9.005 | 3.94 s<br>RMSE 8.974 [8.973–8.975] | **FAILED** (skipped_warmup_failed) |
+| Year deep | 0.690 s<br>RMSE 8.972 | 0.706 s<br>RMSE 8.971 | 3.690 s<br>RMSE 8.973 | 5.79 s<br>RMSE 9.009 | 5.44 s<br>RMSE 8.931 | 60.77 s<br>RMSE 9.031 [9.030–9.039] | **FAILED** (skipped_warmup_failed) |
+| Higgs shallow | 1.305 s<br>AUC .8310 | 1.457 s<br>AUC .8303 | 3.936 s<br>AUC .8306 | 3.65 s<br>AUC .8306 | 9.06 s<br>AUC .8225 [.8224–.8227] | 6.09 s<br>AUC .8347 | **FAILED** (skipped_warmup_failed) |
+| Higgs deep | 2.101 s<br>AUC .8486 | 2.236 s<br>AUC .8482 | 17.509 s<br>AUC .8484 | 9.69 s<br>AUC .8484 | 19.33 s<br>AUC .8374 [.8373–.8374] | 51.73 s<br>AUC .8499 [.8499–.8505] | **FAILED** (skipped_warmup_failed) |
+| Epsilon shallow | 2.330 s<br>AUC .9489 | 2.558 s<br>AUC .9487 | 9.401 s<br>AUC .9485 | 9.86 s<br>AUC .9490 | 12.69 s<br>AUC .9485 | 30.77 s<br>AUC .9510 | **FAILED** (skipped_warmup_failed) |
+| Epsilon deep | 9.822 s<br>AUC .9424 | 10.373 s<br>AUC .9432 | 72.703 s<br>AUC .9430 | 52.26 s<br>AUC .9440 | 101.48 s<br>AUC .9508 | 462.83 s<br>AUC .9432 | **FAILED** (skipped_warmup_failed) |
+| Airline shallow | 13.317 s<br>AUC .8263 | 13.859 s<br>AUC .8262 | 27.439 s<br>AUC .8261 | 22.83 s<br>AUC .8256 | 79.99 s<br>AUC .8024 [.8022–.8026] | 32.56 s<br>AUC .8352 | 638.15 s<br>AUC .8265 [.8263–.8266] |
+| Airline deep | 22.098 s<br>AUC .8641 | 22.443 s<br>AUC .8639 | 140.881 s<br>AUC .8637 | 39.75 s<br>AUC .8633 | 138.36 s<br>AUC .8222 | 114.80 s<br>AUC .8782 [.8780–.8783] | **FAILED** (skipped_warmup_failed) |
+| Numerai example | 5.370 s<br>CORR .01943 | 6.127 s<br>CORR .01896 | 55.743 s<br>CORR .01931 | 286.35 s<br>CORR .01972 † | 112.10 s<br>CORR .01800 † | **FAILED** (skipped_warmup_failed) | **FAILED** (skipped_warmup_failed) |
+| Numerai deep | 105.823 s<br>CORR .02385 | 127.390 s<br>CORR .02332 | not run | 7,007 s<br>CORR .02345 | 5,240 s<br>CORR .02171 † | **FAILED** (crashed) | 10,362 s<br>CORR .02384 |
+| Numerai leaf-limited | 239.700 s<br>CORR .01999 | 259.415 s<br>CORR .01979 | not run | 10,094 s<br>CORR .02012 | **FAILED** (crashed) | **FAILED** (crashed) | **FAILED** (timeout) |
 
 ## Build and source legend
 
-- **Falcata:** release candidate `{{NUM:rc_commit}}`, library SHA256
-  `{{NUM:rc_library_sha256}}`, default plan, one otherwise idle RTX 5090. The
+- **Falcata:** release candidate `49c5622a`, measured on `1408ee79`, library SHA256
+  `c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a`, default plan, one otherwise idle RTX 5090. The
   non-quantized column is deterministic by default since #122. Numerai deep and
   leaf-limited are not run without quantization.
 - **August archive (competitors):** recorded versions XGBoost 3.3.0, CatBoost 1.2.10,

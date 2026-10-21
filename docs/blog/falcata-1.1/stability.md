@@ -1,13 +1,14 @@
 # Deep classification stability: CPU on 12 October, FP64 CUDA on the release candidate
 
-Updated 20 October 2026. The CPU half below is the 12 October validation. The FP64
-CUDA half is rerun on release candidate `{{NUM:rc_commit}}`: since then
+Updated 21 October 2026. The CPU half below is the 12 October validation, repeated on
+`1408ee79` (the measured base of release candidate `49c5622a`). The FP64
+CUDA half is rerun on `1408ee79`: since then
 [#122](https://github.com/MechaFauna-ai/Falcata/pull/122) made non-quantized CUDA
 histograms deterministic fixed-point sums, and
 [#154](https://github.com/MechaFauna-ai/Falcata/pull/154) corrected column sampling on
 bundled data (covtype's sampled recipe uses `feature_fraction=0.8`), so the October
-CUDA models no longer describe the release. `{{NUM:…}}` marks a value from that rerun
-([checklist](../NUMBERS.md)).
+CUDA models no longer describe the release ([checklist](../NUMBERS.md) for the
+source of every rerun value).
 
 This extends the earlier single-seed diagnosis with
 full-data coverage on fraud and covtype. [PR #91](https://github.com/MechaFauna-ai/Falcata/pull/91)
@@ -54,11 +55,19 @@ universal bit identity or monotonically decreasing loss is claimed.
 
 **CPU, 12 October: 66 guarded full-data configurations plus eight additional
 tiny-leaf seed cases completed all 500 boosting rounds and passed the recorded
-gates. FP64 CUDA, release candidate: {{NUM:stability_cuda_guarded_pass}} of 66.**
+gates. FP64 CUDA, release candidate: 66 of 66.**
 Explicit `max_delta_step=0` controls reproduced runaway margins on CPU (2 of 2) and
-on the release candidate's CUDA build ({{NUM:stability_cuda_controls_reproduced}}
+on the release candidate's CUDA build (2
 of 2); they stop once that negative-control condition is observed and do not count
-as 500-round passes.
+as 500-round passes. Tree fingerprints equal the October records in
+2 of 68 CUDA cases: #122 and #154 change these
+models, so the checked claim is the gates, not bit identity.
+
+The CPU half was repeated on `1408ee79` (its CUDA-enabled build with
+`device_type=cpu`; October used a CPU-only build): 74
+of 74 cases passed and 2 of 2 controls
+reproduced; fraud AUC over the 20 seeds 0.9722–0.9840,
+covtype accuracy 0.9692–0.9702.
 
 Each of the four dataset/backend combinations covers:
 
@@ -84,12 +93,12 @@ and sampled recipes:
 | Backend | Fraud raw-score AUC range | Covtype accuracy range |
 | --- | ---: | ---: |
 | CPU (12 October) | 0.97224–0.98396 | 0.96916–0.97022 |
-| FP64 CUDA (release candidate) | {{NUM:stability_cuda_fraud_auc_range}} | {{NUM:stability_cuda_covtype_acc_range}} |
+| FP64 CUDA (release candidate) | 0.9697–0.9850 | 0.9694–0.9704 |
 
 Across fresh splits, CPU fraud AUC ranges from 0.96120 to 0.98575 and covtype
 accuracy from 0.97025 to 0.97108; on the release candidate's FP64 CUDA build,
-{{NUM:stability_cuda_fresh_fraud_auc_range}} and
-{{NUM:stability_cuda_fresh_covtype_acc_range}}. (The October CUDA ranges were
+0.9647–0.9849 and
+0.9702–0.9710. (The October CUDA ranges were
 0.97078–0.98479 and 0.96812–0.97072 on the original split.) Changed stress recipes can trade quality
 for capacity or convergence speed: CPU covtype at learning rate `0.03` reaches
 0.93902 accuracy at 500 rounds, and the 15-bin profile reaches 0.94684. Passing
@@ -110,7 +119,7 @@ at every iteration, particularly with DART.
 
 ## Build provenance and final validation
 
-The release-candidate CUDA rerun uses one library, SHA256 `{{NUM:rc_library_sha256}}`,
+The release-candidate CUDA rerun uses one library, SHA256 `c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a`,
 for all 68 CUDA cases (66 guarded, two controls). The paragraphs below describe the
 October cohort; its CUDA records are retained in the evidence as history, labelled
 by their own library hashes.
@@ -147,7 +156,7 @@ That establishes the tested deterministic comparison, not universal identity.
 [stability-data.json](stability-data.json) retains 146 compact October observations:
 136 original observations (132 guarded configurations and four controls), two final
 reruns and eight extra seed cases. The release-candidate CUDA records are
-{{NUM:stability_rc_records}} further observations in the same schema. It keeps every case's parameters, checkpoints,
+68 further observations in the same schema. It keeps every case's parameters, checkpoints,
 model fingerprint, loss summary, original-record hash and native-library hash,
 plus summary groups, retained compatibility failures and final CI provenance.
 Full 500-round trajectories, model files and prediction arrays are retained in

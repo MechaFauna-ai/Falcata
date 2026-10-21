@@ -1,10 +1,16 @@
 # Mode appendix
 
 Every Falcata workload and mode of the [benchmark matrix](benchmark-matrix.json),
-updated 20 October 2026. The first table is the controlled release comparison:
-`a65d34e8` (12 October master) against release candidate `{{NUM:rc_commit}}`, two
-interleaved fresh-process pairs per row, training seconds as medians of the two runs
-per arm. `{{NUM:…}}` marks a value from that run ([checklist](../NUMBERS.md)). Launch
+updated 21 October 2026. The first table is the controlled release comparison:
+`a65d34e8` (12 October master) against the release candidate, measured on
+`1408ee79` ([checklist](../NUMBERS.md)), two interleaved fresh-process pairs
+per row, training seconds as medians of the two runs per arm; speedup is `a65d34e8`
+seconds over release-candidate seconds. "Same model" compares the two builds' model
+MD5s for quantized rows. For `none` rows it says whether the release candidate's two
+runs agree: `a65d34e8`'s non-quantized runs differed from run to run, so its models
+differ from the release candidate's on every `none` row (#122). Fraud fixed point
+differs because of #146; the deep run stops at 357
+trees. Launch
 times are the August archive. Numerai rows use native int8 input; the launch Numerai
 deep and leaf-limited rows used float32.
 
@@ -12,50 +18,50 @@ deep and leaf-limited rows used float32.
 
 | Dataset / regime | Mode | Launch s | `a65d34e8` s | Release candidate s | Speedup | Same model |
 |---|---|---:|---:|---:|---:|---|
-| fraud/shallow | stoch | 0.389116 | {{NUM:ab_fraud_shallow_stoch_a65_s}} | {{NUM:ab_fraud_shallow_stoch_rc_s}} | {{NUM:ab_fraud_shallow_stoch_x}} | {{NUM:ab_fraud_shallow_stoch_md5}} |
-| fraud/shallow | fixed | 0.445616 | {{NUM:ab_fraud_shallow_fixed_a65_s}} | {{NUM:ab_fraud_shallow_fixed_rc_s}} | {{NUM:ab_fraud_shallow_fixed_x}} | {{NUM:ab_fraud_shallow_fixed_md5}} |
-| fraud/shallow | none | missing | {{NUM:ab_fraud_shallow_none_a65_s}} | {{NUM:ab_fraud_shallow_none_rc_s}} | {{NUM:ab_fraud_shallow_none_x}} | {{NUM:ab_fraud_shallow_none_md5}} |
-| fraud/deep | stoch | 0.376829 | {{NUM:ab_fraud_deep_stoch_a65_s}} | {{NUM:ab_fraud_deep_stoch_rc_s}} | {{NUM:ab_fraud_deep_stoch_x}} | {{NUM:ab_fraud_deep_stoch_md5}} |
-| fraud/deep | fixed | 0.558055 | {{NUM:ab_fraud_deep_fixed_a65_s}} | {{NUM:ab_fraud_deep_fixed_rc_s}} | {{NUM:ab_fraud_deep_fixed_x}} | {{NUM:ab_fraud_deep_fixed_md5}} |
-| fraud/deep | none | 0.3789 | {{NUM:ab_fraud_deep_none_a65_s}} | {{NUM:ab_fraud_deep_none_rc_s}} | {{NUM:ab_fraud_deep_none_x}} | {{NUM:ab_fraud_deep_none_md5}} |
-| covtype/shallow | stoch | 2.35175 | {{NUM:ab_covtype_shallow_stoch_a65_s}} | {{NUM:ab_covtype_shallow_stoch_rc_s}} | {{NUM:ab_covtype_shallow_stoch_x}} | {{NUM:ab_covtype_shallow_stoch_md5}} |
-| covtype/shallow | fixed | 2.58746 | {{NUM:ab_covtype_shallow_fixed_a65_s}} | {{NUM:ab_covtype_shallow_fixed_rc_s}} | {{NUM:ab_covtype_shallow_fixed_x}} | {{NUM:ab_covtype_shallow_fixed_md5}} |
-| covtype/shallow | none | 2.71079 | {{NUM:ab_covtype_shallow_none_a65_s}} | {{NUM:ab_covtype_shallow_none_rc_s}} | {{NUM:ab_covtype_shallow_none_x}} | {{NUM:ab_covtype_shallow_none_md5}} |
-| covtype/deep | stoch | 5.15619 | {{NUM:ab_covtype_deep_stoch_a65_s}} | {{NUM:ab_covtype_deep_stoch_rc_s}} | {{NUM:ab_covtype_deep_stoch_x}} | {{NUM:ab_covtype_deep_stoch_md5}} |
-| covtype/deep | fixed | 5.68891 | {{NUM:ab_covtype_deep_fixed_a65_s}} | {{NUM:ab_covtype_deep_fixed_rc_s}} | {{NUM:ab_covtype_deep_fixed_x}} | {{NUM:ab_covtype_deep_fixed_md5}} |
-| covtype/deep | none | 5.09616 | {{NUM:ab_covtype_deep_none_a65_s}} | {{NUM:ab_covtype_deep_none_rc_s}} | {{NUM:ab_covtype_deep_none_x}} | {{NUM:ab_covtype_deep_none_md5}} |
-| year/shallow | stoch | 0.570685 | {{NUM:ab_year_shallow_stoch_a65_s}} | {{NUM:ab_year_shallow_stoch_rc_s}} | {{NUM:ab_year_shallow_stoch_x}} | {{NUM:ab_year_shallow_stoch_md5}} |
-| year/shallow | fixed | 0.576381 | {{NUM:ab_year_shallow_fixed_a65_s}} | {{NUM:ab_year_shallow_fixed_rc_s}} | {{NUM:ab_year_shallow_fixed_x}} | {{NUM:ab_year_shallow_fixed_md5}} |
-| year/shallow | none | 0.736454 | {{NUM:ab_year_shallow_none_a65_s}} | {{NUM:ab_year_shallow_none_rc_s}} | {{NUM:ab_year_shallow_none_x}} | {{NUM:ab_year_shallow_none_md5}} |
-| year/deep | stoch | 2.15412 | {{NUM:ab_year_deep_stoch_a65_s}} | {{NUM:ab_year_deep_stoch_rc_s}} | {{NUM:ab_year_deep_stoch_x}} | {{NUM:ab_year_deep_stoch_md5}} |
-| year/deep | fixed | 1.97925 | {{NUM:ab_year_deep_fixed_a65_s}} | {{NUM:ab_year_deep_fixed_rc_s}} | {{NUM:ab_year_deep_fixed_x}} | {{NUM:ab_year_deep_fixed_md5}} |
-| year/deep | none | 3.33884 | {{NUM:ab_year_deep_none_a65_s}} | {{NUM:ab_year_deep_none_rc_s}} | {{NUM:ab_year_deep_none_x}} | {{NUM:ab_year_deep_none_md5}} |
-| higgs/shallow | stoch | 2.36564 | {{NUM:ab_higgs_shallow_stoch_a65_s}} | {{NUM:ab_higgs_shallow_stoch_rc_s}} | {{NUM:ab_higgs_shallow_stoch_x}} | {{NUM:ab_higgs_shallow_stoch_md5}} |
-| higgs/shallow | fixed | 2.54355 | {{NUM:ab_higgs_shallow_fixed_a65_s}} | {{NUM:ab_higgs_shallow_fixed_rc_s}} | {{NUM:ab_higgs_shallow_fixed_x}} | {{NUM:ab_higgs_shallow_fixed_md5}} |
-| higgs/shallow | none | 3.86487 | {{NUM:ab_higgs_shallow_none_a65_s}} | {{NUM:ab_higgs_shallow_none_rc_s}} | {{NUM:ab_higgs_shallow_none_x}} | {{NUM:ab_higgs_shallow_none_md5}} |
-| higgs/deep | stoch | 4.23726 | {{NUM:ab_higgs_deep_stoch_a65_s}} | {{NUM:ab_higgs_deep_stoch_rc_s}} | {{NUM:ab_higgs_deep_stoch_x}} | {{NUM:ab_higgs_deep_stoch_md5}} |
-| higgs/deep | fixed | 4.9944 | {{NUM:ab_higgs_deep_fixed_a65_s}} | {{NUM:ab_higgs_deep_fixed_rc_s}} | {{NUM:ab_higgs_deep_fixed_x}} | {{NUM:ab_higgs_deep_fixed_md5}} |
-| higgs/deep | none | 15.3027 | {{NUM:ab_higgs_deep_none_a65_s}} | {{NUM:ab_higgs_deep_none_rc_s}} | {{NUM:ab_higgs_deep_none_x}} | {{NUM:ab_higgs_deep_none_md5}} |
-| epsilon/shallow | stoch | 4.9727 | {{NUM:ab_epsilon_shallow_stoch_a65_s}} | {{NUM:ab_epsilon_shallow_stoch_rc_s}} | {{NUM:ab_epsilon_shallow_stoch_x}} | {{NUM:ab_epsilon_shallow_stoch_md5}} |
-| epsilon/shallow | fixed | 5.35324 | {{NUM:ab_epsilon_shallow_fixed_a65_s}} | {{NUM:ab_epsilon_shallow_fixed_rc_s}} | {{NUM:ab_epsilon_shallow_fixed_x}} | {{NUM:ab_epsilon_shallow_fixed_md5}} |
-| epsilon/shallow | none | 8.73323 | {{NUM:ab_epsilon_shallow_none_a65_s}} | {{NUM:ab_epsilon_shallow_none_rc_s}} | {{NUM:ab_epsilon_shallow_none_x}} | {{NUM:ab_epsilon_shallow_none_md5}} |
-| epsilon/deep | stoch | 39.2823 | {{NUM:ab_epsilon_deep_stoch_a65_s}} | {{NUM:ab_epsilon_deep_stoch_rc_s}} | {{NUM:ab_epsilon_deep_stoch_x}} | {{NUM:ab_epsilon_deep_stoch_md5}} |
-| epsilon/deep | fixed | 39.2276 | {{NUM:ab_epsilon_deep_fixed_a65_s}} | {{NUM:ab_epsilon_deep_fixed_rc_s}} | {{NUM:ab_epsilon_deep_fixed_x}} | {{NUM:ab_epsilon_deep_fixed_md5}} |
-| epsilon/deep | none | 59.1271 | {{NUM:ab_epsilon_deep_none_a65_s}} | {{NUM:ab_epsilon_deep_none_rc_s}} | {{NUM:ab_epsilon_deep_none_x}} | {{NUM:ab_epsilon_deep_none_md5}} |
-| airline/shallow | stoch | 18.0865 | {{NUM:ab_airline_shallow_stoch_a65_s}} | {{NUM:ab_airline_shallow_stoch_rc_s}} | {{NUM:ab_airline_shallow_stoch_x}} | {{NUM:ab_airline_shallow_stoch_md5}} |
-| airline/shallow | fixed | 19.5105 | {{NUM:ab_airline_shallow_fixed_a65_s}} | {{NUM:ab_airline_shallow_fixed_rc_s}} | {{NUM:ab_airline_shallow_fixed_x}} | {{NUM:ab_airline_shallow_fixed_md5}} |
-| airline/shallow | none | 27.8943 | {{NUM:ab_airline_shallow_none_a65_s}} | {{NUM:ab_airline_shallow_none_rc_s}} | {{NUM:ab_airline_shallow_none_x}} | {{NUM:ab_airline_shallow_none_md5}} |
-| airline/deep | stoch | 29.472 | {{NUM:ab_airline_deep_stoch_a65_s}} | {{NUM:ab_airline_deep_stoch_rc_s}} | {{NUM:ab_airline_deep_stoch_x}} | {{NUM:ab_airline_deep_stoch_md5}} |
-| airline/deep | fixed | 31.9576 | {{NUM:ab_airline_deep_fixed_a65_s}} | {{NUM:ab_airline_deep_fixed_rc_s}} | {{NUM:ab_airline_deep_fixed_x}} | {{NUM:ab_airline_deep_fixed_md5}} |
-| airline/deep | none | 145.053 | {{NUM:ab_airline_deep_none_a65_s}} | {{NUM:ab_airline_deep_none_rc_s}} | {{NUM:ab_airline_deep_none_x}} | {{NUM:ab_airline_deep_none_md5}} |
-| numerai/numerai | stoch | 30.9813 | {{NUM:ab_numerai_numerai_stoch_a65_s}} | {{NUM:ab_numerai_numerai_stoch_rc_s}} | {{NUM:ab_numerai_numerai_stoch_x}} | {{NUM:ab_numerai_numerai_stoch_md5}} |
-| numerai/numerai | fixed | 31.1184 | {{NUM:ab_numerai_numerai_fixed_a65_s}} | {{NUM:ab_numerai_numerai_fixed_rc_s}} | {{NUM:ab_numerai_numerai_fixed_x}} | {{NUM:ab_numerai_numerai_fixed_md5}} |
-| numerai/numerai | none | 65.6925 | {{NUM:ab_numerai_numerai_none_a65_s}} | {{NUM:ab_numerai_numerai_none_rc_s}} | {{NUM:ab_numerai_numerai_none_x}} | {{NUM:ab_numerai_numerai_none_md5}} |
-| numerai/numerai-deep | stoch | 742.769 | {{NUM:ab_numerai_numerai_deep_stoch_a65_s}} | {{NUM:ab_numerai_numerai_deep_stoch_rc_s}} | {{NUM:ab_numerai_numerai_deep_stoch_x}} | {{NUM:ab_numerai_numerai_deep_stoch_md5}} |
-| numerai/numerai-deep | fixed | 763.635 | {{NUM:ab_numerai_numerai_deep_fixed_a65_s}} | {{NUM:ab_numerai_numerai_deep_fixed_rc_s}} | {{NUM:ab_numerai_numerai_deep_fixed_x}} | {{NUM:ab_numerai_numerai_deep_fixed_md5}} |
+| fraud/shallow | stoch | 0.389116 | 0.289 | 0.203 | 1.424 | yes |
+| fraud/shallow | fixed | 0.445616 | 0.353 | 0.274 | 1.291 | no |
+| fraud/shallow | none | missing | 0.430 | 0.379 | 1.135 | yes |
+| fraud/deep | stoch | 0.376829 | 0.309 | 0.250 | 1.237 | yes |
+| fraud/deep | fixed | 0.558055 | 0.463 | 0.323 | 1.433 | no |
+| fraud/deep | none | 0.3789 | 0.525 | 0.477 | 1.099 | yes |
+| covtype/shallow | stoch | 2.35175 | 1.493 | 1.133 | 1.319 | yes |
+| covtype/shallow | fixed | 2.58746 | 1.532 | 1.169 | 1.310 | yes |
+| covtype/shallow | none | 2.71079 | 3.057 | 2.696 | 1.134 | yes |
+| covtype/deep | stoch | 5.15619 | 2.450 | 1.893 | 1.294 | yes |
+| covtype/deep | fixed | 5.68891 | 2.665 | 2.060 | 1.294 | yes |
+| covtype/deep | none | 5.09616 | 7.799 | 7.496 | 1.040 | yes |
+| year/shallow | stoch | 0.570685 | 0.391 | 0.285 | 1.370 | yes |
+| year/shallow | fixed | 0.576381 | 0.408 | 0.306 | 1.333 | yes |
+| year/shallow | none | 0.736454 | 0.794 | 0.740 | 1.073 | yes |
+| year/deep | stoch | 2.15412 | 0.918 | 0.690 | 1.331 | yes |
+| year/deep | fixed | 1.97925 | 1.012 | 0.706 | 1.434 | yes |
+| year/deep | none | 3.33884 | 3.428 | 3.690 | 0.929 | yes |
+| higgs/shallow | stoch | 2.36564 | 1.516 | 1.305 | 1.162 | yes |
+| higgs/shallow | fixed | 2.54355 | 1.749 | 1.457 | 1.200 | yes |
+| higgs/shallow | none | 3.86487 | 4.042 | 3.936 | 1.027 | yes |
+| higgs/deep | stoch | 4.23726 | 2.488 | 2.101 | 1.184 | yes |
+| higgs/deep | fixed | 4.9944 | 3.107 | 2.236 | 1.390 | yes |
+| higgs/deep | none | 15.3027 | 15.566 | 17.509 | 0.889 | yes |
+| epsilon/shallow | stoch | 4.9727 | 2.539 | 2.330 | 1.090 | yes |
+| epsilon/shallow | fixed | 5.35324 | 2.925 | 2.558 | 1.144 | yes |
+| epsilon/shallow | none | 8.73323 | 9.274 | 9.401 | 0.987 | yes |
+| epsilon/deep | stoch | 39.2823 | 11.460 | 9.822 | 1.167 | yes |
+| epsilon/deep | fixed | 39.2276 | 12.583 | 10.373 | 1.213 | yes |
+| epsilon/deep | none | 59.1271 | 64.739 | 72.703 | 0.890 | yes |
+| airline/shallow | stoch | 18.0865 | 14.436 | 13.317 | 1.084 | yes |
+| airline/shallow | fixed | 19.5105 | 14.831 | 13.859 | 1.070 | yes |
+| airline/shallow | none | 27.8943 | 27.225 | 27.439 | 0.992 | yes |
+| airline/deep | stoch | 29.472 | 23.157 | 22.098 | 1.048 | yes |
+| airline/deep | fixed | 31.9576 | 24.094 | 22.443 | 1.074 | yes |
+| airline/deep | none | 145.053 | 132.977 | 140.881 | 0.944 | yes |
+| numerai/numerai | stoch | 30.9813 | 5.620 | 5.370 | 1.046 | yes |
+| numerai/numerai | fixed | 31.1184 | 6.324 | 6.127 | 1.032 | yes |
+| numerai/numerai | none | 65.6925 | 54.837 | 55.743 | 0.984 | yes |
+| numerai/numerai-deep | stoch | 742.769 | 112.969 | 105.823 | 1.068 | yes |
+| numerai/numerai-deep | fixed | 763.635 | 133.469 | 127.390 | 1.048 | yes |
 | numerai/numerai-deep | none | 1566.2 | not run | not run | — | — |
-| numerai/numerai-leaf | stoch | 1808.84 | {{NUM:ab_numerai_numerai_leaf_stoch_a65_s}} | {{NUM:ab_numerai_numerai_leaf_stoch_rc_s}} | {{NUM:ab_numerai_numerai_leaf_stoch_x}} | {{NUM:ab_numerai_numerai_leaf_stoch_md5}} |
-| numerai/numerai-leaf | fixed | 1964.14 | {{NUM:ab_numerai_numerai_leaf_fixed_a65_s}} | {{NUM:ab_numerai_numerai_leaf_fixed_rc_s}} | {{NUM:ab_numerai_numerai_leaf_fixed_x}} | {{NUM:ab_numerai_numerai_leaf_fixed_md5}} |
+| numerai/numerai-leaf | stoch | 1808.84 | 265.021 | 239.700 | 1.106 | yes |
+| numerai/numerai-leaf | fixed | 1964.14 | 282.766 | 259.415 | 1.090 | yes |
 | numerai/numerai-leaf | none | 3037.97 | not run | not run | — | — |
 
 "Same model" compares the model MD5 across both arms and all runs. Non-quantized

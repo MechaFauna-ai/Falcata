@@ -1,6 +1,6 @@
 {
     "schema": 1,
-    "matrix_sha256": "c479be48dc16d95c77ca0f147ce7e39e606a18c245c6554d76470bd296b79b27",
+    "matrix_sha256": "1cdfebacbed573435a82a0bc984141ffbaecd70edfa18f082d31270115010519",
     "selection_rule": "Latest relevant actual measurement, not the fastest record/build. Historical duplicate kinds use the last record to reconstruct the figure while retaining prior failures. All finite timed endpoints, including failed models, enter displayed intervals. Warmups/curves are preserved but excluded from timing medians.",
     "sources": {
         "launch": {
@@ -267,6 +267,32 @@
             "caveats": [
                 "single_draw_deep"
             ]
+        },
+        "rc_1408ee79": {
+            "path": "kevo://runs/release_1_1/results/ab_1408ee79.json",
+            "sha256": "e65cfdea01fec0415f23c20860d9af04cd065485de017c1e4856db1ff6832607",
+            "quality_path": "kevo://runs/release_1_1/results/quality_1408ee79.json",
+            "quality_sha256": "de136fe2245883ea7d51b53220c843f8fd797390bf759a509a052bdb60704dfc",
+            "measurement_identity": "Falcata 1.1 release A/B (runs/release_1_1/release_ab.py over runs/since_1_1/article_ab.py), new arm, 2026-10-21; held-out metrics by runs/release_1_1/score.py (bench.py a65d34e8 metrics, CPU predictions)",
+            "runtime_build": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+            "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
+            "quiet_provenance": "strict gpuq jobs (--exclusive) with GPUQ_CONTENTION_LOG; a contended shape is marked strict_quiet_verified=false",
+            "caveats": [
+                "two_interleaved_draws"
+            ]
+        },
+        "a65_1408ee79": {
+            "path": "kevo://runs/release_1_1/results/ab_1408ee79.json",
+            "sha256": "e65cfdea01fec0415f23c20860d9af04cd065485de017c1e4856db1ff6832607",
+            "quality_path": "kevo://runs/release_1_1/results/quality_1408ee79.json",
+            "quality_sha256": "de136fe2245883ea7d51b53220c843f8fd797390bf759a509a052bdb60704dfc",
+            "measurement_identity": "Falcata 1.1 release A/B (runs/release_1_1/release_ab.py over runs/since_1_1/article_ab.py), old arm, 2026-10-21; held-out metrics by runs/release_1_1/score.py (bench.py a65d34e8 metrics, CPU predictions)",
+            "runtime_build": "a65d34e80a7c337342fba6886d0a1cbd69eda079",
+            "library_sha256": "60b3776e050aa76695a46619765458226491701c5015e68e8509408ea68fa08f",
+            "quiet_provenance": "strict gpuq jobs (--exclusive) with GPUQ_CONTENTION_LOG; a contended shape is marked strict_quiet_verified=false",
+            "caveats": [
+                "two_interleaved_draws"
+            ]
         }
     },
     "global_caveats": [
@@ -291,13 +317,15 @@
         "historical_numerai_label_unknown": "Historical build1226 cache metadata omits label identity. It is a fixed-cache implementation workload, not evidence for production/current target selection or honest configuration selection.",
         "numerai_metric_implementation": "Launch/Oct8 used the historical benchmark CORR helper; strict wrapper uses NumeraiEvaluator. This audit copies recorded endpoints and does not recompute corr, Sharpe, or payouts.",
         "upstream_cuda_depth_semantics": "Upstream LightGBM CUDA ignores the depth cap in this corpus, so comparisons are not identical tree capacity; pathological quality/crashes remain failures.",
-        "l2_defaults_differ": "Benchmark uses each framework’s default L2: Falcata/LightGBM0, XGBoost1, CatBoost3. This is not a fully aligned configuration or quality-equivalence experiment.",
-        "historical_competitors_only": "No contemporary competitor run is included. Ratios versus launch competitors are descriptive archive comparisons, not evidence that the gap to today’s frameworks widened.",
+        "l2_defaults_differ": "Benchmark uses each framework\u2019s default L2: Falcata/LightGBM0, XGBoost1, CatBoost3. This is not a fully aligned configuration or quality-equivalence experiment.",
+        "historical_competitors_only": "No contemporary competitor run is included. Ratios versus launch competitors are descriptive archive comparisons, not evidence that the gap to today\u2019s frameworks widened.",
         "single_draw_deep": "Numerai-deep/leaf use one full timed draw per build; no repeated-run precision or quality equivalence is established.",
         "fraud_uncapped_failures": "L2=0/max_delta_step=0 fraud noquant has numerical collapse, saturated probabilities, and early no-split termination; old requested-round throughput is misleading. Retain failures. Later cap1 follow-up changes configuration and is not a default speed comparison.",
         "atomic_noquant_variation": "FP64 noquant can vary by floating atomic reduction order at the same seed; finite covtype/fraud metric ranges and failed endpoints are retained.",
-        "epsilon_quality_lower_than_competitors": "Epsilon strict stochastic AUC≈.94243 versus archived XGBoost≈.94401 and CatBoost≈.95076: do not label the speed bars matched-quality.",
-        "training_only": "train_s excludes Dataset construction and post-training prediction/scoring. Default CatBoost train timer also includes its configured per-round metric work; see frozen harness."
+        "epsilon_quality_lower_than_competitors": "Epsilon strict stochastic AUC\u2248.94243 versus archived XGBoost\u2248.94401 and CatBoost\u2248.95076: do not label the speed bars matched-quality.",
+        "training_only": "train_s excludes Dataset construction and post-training prediction/scoring. Default CatBoost train timer also includes its configured per-round metric work; see frozen harness.",
+        "two_interleaved_draws": "Release-candidate rows: median of 2 interleaved old/new fresh-process pairs (Numerai deep: 3), int8 input for all Numerai rows; timer = the train() call only, as bench.py.",
+        "not_rerun_on_rc": "Not measured on the release candidate (Numerai deep / leaf non-quantized); the October value was the PR #71 prototype."
     },
     "rows": [
         {
@@ -327,6 +355,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 0.2029317889828235,
+                    "min": 0.1982322719413787,
+                    "max": 0.20763130602426827
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.9365029917425608,
+                        "min": 0.9365029917425608,
+                        "max": 0.9365029917425608
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.010826738648402565,
+                        "min": 0.010826738648402565,
+                        "max": 0.010826738648402565
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:1",
+                    "rc_1408ee79:2"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.9174739500597668,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 0.394485534998239,
                     "min": 0.3740209789975779,
@@ -350,18 +420,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 0.986389574500689,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "fraud",
@@ -390,6 +449,49 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 0.27363169752061367,
+                    "min": 0.27225071901921183,
+                    "max": 0.2750126760220155
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.9808321753011839,
+                        "min": 0.9808321753011839,
+                        "max": 0.9808321753011839
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.004451482065494651,
+                        "min": 0.004451482065494651,
+                        "max": 0.004451482065494651
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:3",
+                    "rc_1408ee79:4"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.6285243340489277,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 0.4589466080069542,
                     "min": 0.4460006790031912,
@@ -413,19 +515,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 0.970953636447146,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "latest_fixedpoint_quality_not_measured_here",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "fraud",
@@ -441,6 +531,51 @@
                 ]
             },
             "latest_measured": {
+                "train_s": {
+                    "n": 2,
+                    "median": 0.37905883853090927,
+                    "min": 0.3764377450570464,
+                    "max": 0.3816799320047721
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.9770605555108931,
+                        "min": 0.9770605555108931,
+                        "max": 0.9770605555108931
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.004532749099570765,
+                        "min": 0.004532749099570765,
+                        "max": 0.004532749099570765
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:5",
+                    "rc_1408ee79:6"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": null,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
                 "train_s": {
                     "n": 3,
                     "median": 0.34653709997655824,
@@ -470,20 +605,7 @@
                 ],
                 "all_timed_sane": false,
                 "strict_quiet_verified": false
-            },
-            "descriptive_launch_div_latest_time_ratio": null,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "fraud",
@@ -512,6 +634,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 0.24960167100653052,
+                    "min": 0.24756123893894255,
+                    "max": 0.2516421030741185
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.9629731482491702,
+                        "min": 0.9629731482491702,
+                        "max": 0.9629731482491702
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.00993586249854871,
+                        "min": 0.00993586249854871,
+                        "max": 0.00993586249854871
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:7",
+                    "rc_1408ee79:8"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.5097201250373526,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 0.39192336799169425,
                     "min": 0.39053656700707506,
@@ -535,18 +699,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 0.9614855778885256,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "fraud",
@@ -575,6 +728,49 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 0.323191647476051,
+                    "min": 0.320170740946196,
+                    "max": 0.326212554005906
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.9774449312645711,
+                        "min": 0.9774449312645711,
+                        "max": 0.9774449312645711
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.005898721877272576,
+                        "min": 0.005898721877272576,
+                        "max": 0.005898721877272576
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:9",
+                    "rc_1408ee79:10"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.7266993265049198,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 0.5528739959991071,
                     "min": 0.5491862759954529,
@@ -598,19 +794,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.0093706777082965,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "latest_fixedpoint_quality_not_measured_here",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "fraud",
@@ -639,6 +823,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 0.47736839746357873,
+                    "min": 0.47624251595698297,
+                    "max": 0.4784942789701745
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.969479632032892,
+                        "min": 0.969479632032892,
+                        "max": 0.969479632032892
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.0047061010874382995,
+                        "min": 0.0047061010874382995,
+                        "max": 0.0047061010874382995
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:11",
+                    "rc_1408ee79:12"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.7937259233788386,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 0.4538492129941005,
                     "min": 0.44274505600333214,
@@ -664,20 +893,7 @@
                 ],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 0.8348580568621162,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "covtype",
@@ -712,6 +928,50 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 1.1326047900365666,
+                    "min": 1.1294856440508738,
+                    "max": 1.1357239360222593
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 2,
+                        "median": 0.9204065299518945,
+                        "min": 0.9204065299518945,
+                        "max": 0.9204065299518945
+                    },
+                    "mlogloss": {
+                        "n": 2,
+                        "median": 0.23062118783447524,
+                        "min": 0.23062118783447524,
+                        "max": 0.23062118783447524
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:13",
+                    "rc_1408ee79:14"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.0764113349390407,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "mixed_snapshot",
+                "quantization_defaults_change",
+                "ridge_changes_model",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 1.4438301369955298,
                     "min": 1.4344638740003575,
@@ -741,19 +1001,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": false
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.6288297104893168,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "mixed_snapshot",
-                "quantization_defaults_change",
-                "ridge_changes_model"
-            ]
+            }
         },
         {
             "dataset": "covtype",
@@ -788,6 +1036,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 1.1692701309802942,
+                    "min": 1.168551141046919,
+                    "max": 1.1699891209136695
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 2,
+                        "median": 0.922101839023089,
+                        "min": 0.922101839023089,
+                        "max": 0.922101839023089
+                    },
+                    "mlogloss": {
+                        "n": 2,
+                        "median": 0.2126235167651894,
+                        "min": 0.2126235167651894,
+                        "max": 0.2126235167651894
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:15",
+                    "rc_1408ee79:16"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.2128882808107653,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_accidental_robust_scale",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "mixed_snapshot",
+                "quantization_defaults_change",
+                "ridge_changes_model",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 1.4978846670128405,
                     "min": 1.4967931439750828,
@@ -817,20 +1110,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": false
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.727412147898154,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_accidental_robust_scale",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "mixed_snapshot",
-                "quantization_defaults_change",
-                "ridge_changes_model"
-            ]
+            }
         },
         {
             "dataset": "covtype",
@@ -865,6 +1145,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 2.696337236498948,
+                    "min": 2.693091693916358,
+                    "max": 2.6995827790815383
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 2,
+                        "median": 0.9243048802526613,
+                        "min": 0.9243048802526613,
+                        "max": 0.9243048802526613
+                    },
+                    "mlogloss": {
+                        "n": 2,
+                        "median": 0.2063507964045167,
+                        "min": 0.2063507964045167,
+                        "max": 0.2063507964045167
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:17",
+                    "rc_1408ee79:18"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.0053608484917231,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 2.427205336978659,
                     "min": 2.4179603310185485,
@@ -894,20 +1219,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.1168366559710827,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "covtype",
@@ -942,6 +1254,50 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 1.8925472680130042,
+                    "min": 1.8922477980377153,
+                    "max": 1.8928467379882932
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 2,
+                        "median": 0.9581336110083216,
+                        "min": 0.9581336110083216,
+                        "max": 0.9581336110083216
+                    },
+                    "mlogloss": {
+                        "n": 2,
+                        "median": 0.13685258157533747,
+                        "min": 0.13685258157533747,
+                        "max": 0.13685258157533747
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:19",
+                    "rc_1408ee79:20"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.724468908219304,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "mixed_snapshot",
+                "quantization_defaults_change",
+                "ridge_changes_model",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 2.5040347920148633,
                     "min": 2.491947867994895,
@@ -971,19 +1327,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": false
-            },
-            "descriptive_launch_div_latest_time_ratio": 2.0591511769243063,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "mixed_snapshot",
-                "quantization_defaults_change",
-                "ridge_changes_model"
-            ]
+            }
         },
         {
             "dataset": "covtype",
@@ -1018,6 +1362,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 2.060203453525901,
+                    "min": 2.0484407920157537,
+                    "max": 2.071966115036048
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 2,
+                        "median": 0.9687271412958357,
+                        "min": 0.9687271412958357,
+                        "max": 0.9687271412958357
+                    },
+                    "mlogloss": {
+                        "n": 2,
+                        "median": 0.09936702766674609,
+                        "min": 0.09936702766674609,
+                        "max": 0.09936702766674609
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:21",
+                    "rc_1408ee79:22"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.761336443839286,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_accidental_robust_scale",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "mixed_snapshot",
+                "quantization_defaults_change",
+                "ridge_changes_model",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 2.7980212819820736,
                     "min": 2.7961721920000855,
@@ -1047,20 +1436,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": false
-            },
-            "descriptive_launch_div_latest_time_ratio": 2.0331921399520914,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_accidental_robust_scale",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "mixed_snapshot",
-                "quantization_defaults_change",
-                "ridge_changes_model"
-            ]
+            }
         },
         {
             "dataset": "covtype",
@@ -1095,6 +1471,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 7.495904928480741,
+                    "min": 7.484379305969924,
+                    "max": 7.5074305509915575
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 2,
+                        "median": 0.970370816588212,
+                        "min": 0.970370816588212,
+                        "max": 0.970370816588212
+                    },
+                    "mlogloss": {
+                        "n": 2,
+                        "median": 0.08781771499682538,
+                        "min": 0.08781771499682538,
+                        "max": 0.08781771499682538
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:23",
+                    "rc_1408ee79:24"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.6798587506944068,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 4.219613576977281,
                     "min": 4.182448622013908,
@@ -1124,20 +1545,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.2077306291282706,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "year",
@@ -1166,6 +1574,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 0.2854695009882562,
+                    "min": 0.2848792769946158,
+                    "max": 0.2860597249818966
+                },
+                "metrics": {
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.5601669885962337,
+                        "min": 0.5601669885962337,
+                        "max": 0.5601669885962337
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 8.999646635229224,
+                        "min": 8.999646635229224,
+                        "max": 8.999646635229224
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:25",
+                    "rc_1408ee79:26"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.9991098174118849,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 0.4814810419920832,
                     "min": 0.46757104199787136,
@@ -1189,18 +1639,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.1852696829684901,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "year",
@@ -1229,6 +1668,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 0.3063924594898708,
+                    "min": 0.30505362001713365,
+                    "max": 0.307731298962608
+                },
+                "metrics": {
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.5631651320902444,
+                        "min": 0.5631651320902444,
+                        "max": 0.5631651320902444
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 8.971445097997275,
+                        "min": 8.971445097997275,
+                        "max": 8.971445097997275
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:27",
+                    "rc_1408ee79:28"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.8811841516837724,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 0.48668303099111654,
                     "min": 0.4757119730056729,
@@ -1252,18 +1733,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.1843039561374762,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "year",
@@ -1292,6 +1762,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 0.7399172019795515,
+                    "min": 0.7397263899911195,
+                    "max": 0.7401080139679834
+                },
+                "metrics": {
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.5644650803758186,
+                        "min": 0.5644650803758186,
+                        "max": 0.5644650803758186
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 8.961243316024822,
+                        "min": 8.961243316024822,
+                        "max": 8.961243316024822
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:29",
+                    "rc_1408ee79:30"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.9953189276673068,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 0.7673308459925465,
                     "min": 0.7667899829975795,
@@ -1315,20 +1830,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 0.9597601867344125,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "year",
@@ -1357,6 +1859,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 0.6898649490321986,
+                    "min": 0.6895619770511985,
+                    "max": 0.6901679210131988
+                },
+                "metrics": {
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.5645915146891174,
+                        "min": 0.5645915146891174,
+                        "max": 0.5645915146891174
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 8.97161968782209,
+                        "min": 8.97161968782209,
+                        "max": 8.97161968782209
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:31",
+                    "rc_1408ee79:32"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 3.1225263858525683,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 0.999961235007504,
                     "min": 0.9991028309887042,
@@ -1380,18 +1924,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 2.154205013769071,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "year",
@@ -1420,6 +1953,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 0.7059311965131201,
+                    "min": 0.7005374700529501,
+                    "max": 0.7113249229732901
+                },
+                "metrics": {
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.5646626300264477,
+                        "min": 0.5646626300264477,
+                        "max": 0.5646626300264477
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 8.97136240740313,
+                        "min": 8.97136240740313,
+                        "max": 8.97136240740313
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:33",
+                    "rc_1408ee79:34"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.8037414450942655,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 1.0188864049996482,
                     "min": 1.0045198430016171,
@@ -1443,18 +2018,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.9425605674358788,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "year",
@@ -1483,6 +2047,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 3.6902311369776726,
+                    "min": 3.6836962859379128,
+                    "max": 3.6967659880174324
+                },
+                "metrics": {
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.5643166891196789,
+                        "min": 0.5643166891196789,
+                        "max": 0.5643166891196789
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 8.97325293153775,
+                        "min": 8.97325293153775,
+                        "max": 8.97325293153775
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:35",
+                    "rc_1408ee79:36"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.904778974846566,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 2.738359684997704,
                     "min": 2.7320370630186517,
@@ -1506,20 +2115,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.2192859701205891,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "higgs",
@@ -1548,6 +2144,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 1.3047897664946504,
+                    "min": 1.3007266749627888,
+                    "max": 1.308852858026512
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8309534729754372,
+                        "min": 0.8309534729754372,
+                        "max": 0.8309534729754372
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.5025315305746714,
+                        "min": 0.5025315305746714,
+                        "max": 0.5025315305746714
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:37",
+                    "rc_1408ee79:38"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.8130440610059684,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 1.6935866780113429,
                     "min": 1.6872771790076513,
@@ -1571,18 +2209,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.3968233027094266,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "higgs",
@@ -1611,6 +2238,49 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 1.4572289935313165,
+                    "min": 1.455258121015504,
+                    "max": 1.459199866047129
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8302647755277941,
+                        "min": 0.8302647755277941,
+                        "max": 0.8302647755277941
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.5034649357197524,
+                        "min": 0.5034649357197524,
+                        "max": 0.5034649357197524
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:39",
+                    "rc_1408ee79:40"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.7454700704519335,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 1.9566332769900328,
                     "min": 1.9458058160089422,
@@ -1634,19 +2304,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.2999623505926217,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "latest_fixedpoint_quality_not_measured_here",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "higgs",
@@ -1675,6 +2333,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 3.935581917525269,
+                    "min": 3.931418522959575,
+                    "max": 3.939745312090963
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8306189710080942,
+                        "min": 0.8306189710080942,
+                        "max": 0.8306189710080942
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.5030062288781759,
+                        "min": 0.5030062288781759,
+                        "max": 0.5030062288781759
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:41",
+                    "rc_1408ee79:42"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.9820320435430654,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 3.157845628011273,
                     "min": 3.144968851993326,
@@ -1698,20 +2401,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.223893758046832,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "higgs",
@@ -1740,6 +2430,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 2.101368003000971,
+                    "min": 2.0988424230599776,
+                    "max": 2.1038935829419643
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8486426575005191,
+                        "min": 0.8486426575005191,
+                        "max": 0.8486426575005191
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.47871552925290817,
+                        "min": 0.47871552925290817,
+                        "max": 0.47871552925290817
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:43",
+                    "rc_1408ee79:44"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.0164289058497893,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 2.6982400599954417,
                     "min": 2.6890610690024914,
@@ -1763,18 +2495,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.5703788724736978,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "higgs",
@@ -1803,6 +2524,49 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 2.235700129531324,
+                    "min": 2.2334335640771315,
+                    "max": 2.2379666949855164
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8482265952353628,
+                        "min": 0.8482265952353628,
+                        "max": 0.8482265952353628
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.4792742456475118,
+                        "min": 0.4792742456475118,
+                        "max": 0.4792742456475118
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:45",
+                    "rc_1408ee79:46"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.23393227250337,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 3.3253984129987657,
                     "min": 3.29811873199651,
@@ -1826,19 +2590,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.501896028902039,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "latest_fixedpoint_quality_not_measured_here",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "higgs",
@@ -1867,6 +2619,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 17.508708132547326,
+                    "min": 17.505426521063782,
+                    "max": 17.51198974403087
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8484260316995542,
+                        "min": 0.8484260316995542,
+                        "max": 0.8484260316995542
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.4790774158787343,
+                        "min": 0.4790774158787343,
+                        "max": 0.4790774158787343
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:47",
+                    "rc_1408ee79:48"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.8740070129799726,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 9.655266374000348,
                     "min": 9.555799352005124,
@@ -1890,20 +2687,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.5849105662452738,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "epsilon",
@@ -1932,6 +2716,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 2.32957857393194,
+                    "min": 2.31290951394476,
+                    "max": 2.34624763391912
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.9488517477699158,
+                        "min": 0.9488517477699158,
+                        "max": 0.9488517477699158
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.295176156551488,
+                        "min": 0.295176156551488,
+                        "max": 0.295176156551488
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:49",
+                    "rc_1408ee79:50"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.134593237051922,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 2.5488505139946938,
                     "min": 2.5376198000012664,
@@ -1955,18 +2781,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.950958929051785,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "epsilon",
@@ -1995,6 +2810,49 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 2.5581541274441406,
+                    "min": 2.5580587149597704,
+                    "max": 2.558249539928511
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.9487164304603088,
+                        "min": 0.9487164304603088,
+                        "max": 0.9487164304603088
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.2965520184239201,
+                        "min": 0.2965520184239201,
+                        "max": 0.2965520184239201
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:51",
+                    "rc_1408ee79:52"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.0926193044825125,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 2.9688410939997993,
                     "min": 2.947752179999952,
@@ -2018,19 +2876,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.8031422165876245,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "latest_fixedpoint_quality_not_measured_here",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "epsilon",
@@ -2059,6 +2905,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 9.400703151535708,
+                    "min": 9.396913581062108,
+                    "max": 9.404492722009309
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.9484847266726286,
+                        "min": 0.9484847266726286,
+                        "max": 0.9484847266726286
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.2969669633675874,
+                        "min": 0.2969669633675874,
+                        "max": 0.2969669633675874
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:53",
+                    "rc_1408ee79:54"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.92899766732322,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 8.021514767984627,
                     "min": 8.019272920006188,
@@ -2082,20 +2973,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.0887259515909242,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "epsilon",
@@ -2124,6 +3002,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 9.822249408985954,
+                    "min": 9.817610822967254,
+                    "max": 9.826887995004654
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.942429523367914,
+                        "min": 0.942429523367914,
+                        "max": 0.942429523367914
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.3171578062393928,
+                        "min": 0.3171578062393928,
+                        "max": 0.3171578062393928
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:55",
+                    "rc_1408ee79:56"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 3.9993180531611636,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 11.220135102019412,
                     "min": 11.192825931997504,
@@ -2147,17 +3067,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 3.5010540449676957,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "epsilon",
@@ -2186,6 +3096,49 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 10.372737493016757,
+                    "min": 10.37170778401196,
+                    "max": 10.373767202021554
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.9431809683765843,
+                        "min": 0.9431809683765843,
+                        "max": 0.9431809683765843
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.3151702160137598,
+                        "min": 0.3151702160137598,
+                        "max": 0.3151702160137598
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:57",
+                    "rc_1408ee79:58"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 3.7817947768703437,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 12.417504817000008,
                     "min": 12.41584723899723,
@@ -2209,19 +3162,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 3.1590536948481,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "latest_fixedpoint_quality_not_measured_here",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "epsilon",
@@ -2250,6 +3191,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 72.70302728697425,
+                    "min": 72.6951266839169,
+                    "max": 72.7109278900316
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.9429818090152653,
+                        "min": 0.9429818090152653,
+                        "max": 0.9429818090152653
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.3160541454860275,
+                        "min": 0.3160541454860275,
+                        "max": 0.3160541454860275
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:59",
+                    "rc_1408ee79:60"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.8132683296888699,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 46.63613747499767,
                     "min": 46.605321607989026,
@@ -2273,20 +3259,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.2678380493389012,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "airline",
@@ -2315,6 +3288,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 13.317112994962372,
+                    "min": 13.314980863011442,
+                    "max": 13.319245126913302
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8263211989093822,
+                        "min": 0.8263211989093822,
+                        "max": 0.8263211989093822
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.5066190614823968,
+                        "min": 0.5066190614823968,
+                        "max": 0.5066190614823968
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:61",
+                    "rc_1408ee79:62"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.3581433377254566,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 15.440120860992465,
                     "min": 15.066834047000157,
@@ -2338,18 +3353,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.1713993986626523,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "airline",
@@ -2378,6 +3382,49 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 13.85860604152549,
+                    "min": 13.85367073607631,
+                    "max": 13.86354134697467
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8261677362469204,
+                        "min": 0.8261677362469204,
+                        "max": 0.8261677362469204
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.5067586152799657,
+                        "min": 0.5067586152799657,
+                        "max": 0.5067586152799657
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:63",
+                    "rc_1408ee79:64"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.4078259528807988,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 15.550531732005766,
                     "min": 15.522321092998027,
@@ -2401,19 +3448,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.2546519689647733,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "latest_fixedpoint_quality_not_measured_here",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "airline",
@@ -2442,6 +3477,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 27.439287975023035,
+                    "min": 27.42511780699715,
+                    "max": 27.45345814304892
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8260589572269768,
+                        "min": 0.8260589572269768,
+                        "max": 0.8260589572269768
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.5069409497539971,
+                        "min": 0.5069409497539971,
+                        "max": 0.5069409497539971
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:65",
+                    "rc_1408ee79:66"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.0165832727241142,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 19.97133741201833,
                     "min": 19.962018697988242,
@@ -2465,20 +3545,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.3967177357928038,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "airline",
@@ -2507,6 +3574,48 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 22.09773075254634,
+                    "min": 22.08906931709498,
+                    "max": 22.1063921879977
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8641163352048453,
+                        "min": 0.8641163352048453,
+                        "max": 0.8641163352048453
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.4519431348922181,
+                        "min": 0.4519431348922181,
+                        "max": 0.4519431348922181
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:67",
+                    "rc_1408ee79:68"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.3337127164330516,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 23.731697758994414,
                     "min": 23.730020115996012,
@@ -2530,18 +3639,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.2418843695164934,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "airline",
@@ -2570,6 +3668,49 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 22.442749951500446,
+                    "min": 22.43692623602692,
+                    "max": 22.44857366697397
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8638593406277459,
+                        "min": 0.8638593406277459,
+                        "max": 0.8638593406277459
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.45219816196235824,
+                        "min": 0.45219816196235824,
+                        "max": 0.45219816196235824
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:69",
+                    "rc_1408ee79:70"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.4239592745133651,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 25.849110807990655,
                     "min": 24.75137394700141,
@@ -2593,19 +3734,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.2363118474908814,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "latest_fixedpoint_quality_not_measured_here",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "airline",
@@ -2634,6 +3763,51 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 140.8807741824421,
+                    "min": 140.87599852692802,
+                    "max": 140.8855498379562
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 2,
+                        "median": 0.8636961879179013,
+                        "min": 0.8636961879179013,
+                        "max": 0.8636961879179013
+                    },
+                    "logloss": {
+                        "n": 2,
+                        "median": 0.4524198576063417,
+                        "min": 0.4524198576063417,
+                        "max": 0.4524198576063417
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:71",
+                    "rc_1408ee79:72"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.0296175232966973,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 64.58398364699678,
                     "min": 64.51955722799175,
@@ -2657,20 +3831,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 2.245964178776582,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "numerai",
@@ -2711,6 +3872,81 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 5.370085986505728,
+                    "min": 5.365305276005529,
+                    "max": 5.374866697005928
+                },
+                "metrics": {
+                    "corr_mean": {
+                        "n": 2,
+                        "median": 0.019426601611107146,
+                        "min": 0.019426601611107146,
+                        "max": 0.019426601611107146
+                    },
+                    "corr_sharpe": {
+                        "n": 2,
+                        "median": 1.2069876897746332,
+                        "min": 1.2069876897746332,
+                        "max": 1.2069876897746332
+                    },
+                    "corr_std": {
+                        "n": 2,
+                        "median": 0.0160951116367512,
+                        "min": 0.0160951116367512,
+                        "max": 0.0160951116367512
+                    },
+                    "max_drawdown": {
+                        "n": 2,
+                        "median": -0.06426842487962052,
+                        "min": -0.06426842487962052,
+                        "max": -0.06426842487962052
+                    },
+                    "n_eras": {
+                        "n": 2,
+                        "median": 200.0,
+                        "min": 200,
+                        "max": 200
+                    },
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.02053019041104591,
+                        "min": 0.02053019041104591,
+                        "max": 0.02053019041104591
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 0.22364269367216263,
+                        "min": 0.22364269367216263,
+                        "max": 0.22364269367216263
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:73",
+                    "rc_1408ee79:74"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 5.769235128416158,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "numerai_metric_implementation",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 5.615935137000633,
                     "min": 5.6122681309934705,
@@ -2746,20 +3982,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 5.5166749544245475,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "historical_numerai_label_unknown",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "numerai_metric_implementation",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "numerai",
@@ -2800,6 +4023,80 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 6.126701674540527,
+                    "min": 6.0790461810538545,
+                    "max": 6.1743571680272
+                },
+                "metrics": {
+                    "corr_mean": {
+                        "n": 2,
+                        "median": 0.018963988192664653,
+                        "min": 0.018963988192664653,
+                        "max": 0.018963988192664653
+                    },
+                    "corr_sharpe": {
+                        "n": 2,
+                        "median": 1.160608074800925,
+                        "min": 1.160608074800925,
+                        "max": 1.160608074800925
+                    },
+                    "corr_std": {
+                        "n": 2,
+                        "median": 0.016339700372942415,
+                        "min": 0.016339700372942415,
+                        "max": 0.016339700372942415
+                    },
+                    "max_drawdown": {
+                        "n": 2,
+                        "median": -0.0650516631008013,
+                        "min": -0.0650516631008013,
+                        "max": -0.0650516631008013
+                    },
+                    "n_eras": {
+                        "n": 2,
+                        "median": 200.0,
+                        "min": 200,
+                        "max": 200
+                    },
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.019914696811372014,
+                        "min": 0.019914696811372014,
+                        "max": 0.019914696811372014
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 0.22364769331003115,
+                        "min": 0.22364769331003115,
+                        "max": 0.22364769331003115
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:75",
+                    "rc_1408ee79:76"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 5.079146944471189,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 6.261794023987022,
                     "min": 6.243981692008674,
@@ -2835,20 +4132,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 4.969569099642031,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "historical_numerai_label_unknown",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_metric_implementation",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "numerai",
@@ -2889,6 +4173,83 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 55.743068996060174,
+                    "min": 55.73289573006332,
+                    "max": 55.75324226205703
+                },
+                "metrics": {
+                    "corr_mean": {
+                        "n": 2,
+                        "median": 0.019311622652810632,
+                        "min": 0.019311622652810632,
+                        "max": 0.019311622652810632
+                    },
+                    "corr_sharpe": {
+                        "n": 2,
+                        "median": 1.2079632680179222,
+                        "min": 1.2079632680179222,
+                        "max": 1.2079632680179222
+                    },
+                    "corr_std": {
+                        "n": 2,
+                        "median": 0.015986928712243022,
+                        "min": 0.015986928712243022,
+                        "max": 0.015986928712243022
+                    },
+                    "max_drawdown": {
+                        "n": 2,
+                        "median": -0.06028787849393446,
+                        "min": -0.06028787849393446,
+                        "max": -0.06028787849393446
+                    },
+                    "n_eras": {
+                        "n": 2,
+                        "median": 200.0,
+                        "min": 200,
+                        "max": 200
+                    },
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.020350113943180436,
+                        "min": 0.020350113943180436,
+                        "max": 0.020350113943180436
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 0.22364410353022926,
+                        "min": 0.22364410353022926,
+                        "max": 0.22364410353022926
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:77",
+                    "rc_1408ee79:78"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.1784873049908002,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "numerai_metric_implementation",
+                "quantization_defaults_change",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 3,
                     "median": 53.807147262996295,
                     "min": 53.75861015400733,
@@ -2924,22 +4285,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.220887976684476,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "historical_numerai_label_unknown",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "numerai_metric_implementation",
-                "quantization_defaults_change"
-            ]
+            }
         },
         {
             "dataset": "numerai",
@@ -2978,6 +4324,82 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 3,
+                    "median": 105.82303622504696,
+                    "min": 105.81214676401578,
+                    "max": 105.89436550997198
+                },
+                "metrics": {
+                    "corr_mean": {
+                        "n": 3,
+                        "median": 0.02385128225200414,
+                        "min": 0.02385128225200414,
+                        "max": 0.02385128225200414
+                    },
+                    "corr_sharpe": {
+                        "n": 3,
+                        "median": 1.4041818010578597,
+                        "min": 1.4041818010578597,
+                        "max": 1.4041818010578597
+                    },
+                    "corr_std": {
+                        "n": 3,
+                        "median": 0.016985893303869518,
+                        "min": 0.016985893303869518,
+                        "max": 0.016985893303869518
+                    },
+                    "max_drawdown": {
+                        "n": 3,
+                        "median": -0.040056446351020666,
+                        "min": -0.040056446351020666,
+                        "max": -0.040056446351020666
+                    },
+                    "n_eras": {
+                        "n": 3,
+                        "median": 200,
+                        "min": 200,
+                        "max": 200
+                    },
+                    "pearson": {
+                        "n": 3,
+                        "median": 0.024814417442037242,
+                        "min": 0.024814417442037242,
+                        "max": 0.024814417442037242
+                    },
+                    "rmse": {
+                        "n": 3,
+                        "median": 0.22369592048342113,
+                        "min": 0.22369592048342113,
+                        "max": 0.22369592048342113
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:79",
+                    "rc_1408ee79:80",
+                    "rc_1408ee79:81"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 7.018974837278984,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "quantization_defaults_change",
+                "single_draw_deep",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 1,
                     "median": 110.7989681600011,
                     "min": 110.7989681600011,
@@ -3011,21 +4433,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 6.703755827359861,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "historical_numerai_label_unknown",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_metric_implementation",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change",
-                "single_draw_deep"
-            ]
+            }
         },
         {
             "dataset": "numerai",
@@ -3064,6 +4472,82 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 3,
+                    "median": 127.39032655209303,
+                    "min": 127.27650126593653,
+                    "max": 127.39980928099249
+                },
+                "metrics": {
+                    "corr_mean": {
+                        "n": 3,
+                        "median": 0.023324283933313747,
+                        "min": 0.023324283933313747,
+                        "max": 0.023324283933313747
+                    },
+                    "corr_sharpe": {
+                        "n": 3,
+                        "median": 1.3702053429251275,
+                        "min": 1.3702053429251275,
+                        "max": 1.3702053429251275
+                    },
+                    "corr_std": {
+                        "n": 3,
+                        "median": 0.01702247334952062,
+                        "min": 0.01702247334952062,
+                        "max": 0.01702247334952062
+                    },
+                    "max_drawdown": {
+                        "n": 3,
+                        "median": -0.042069023998409144,
+                        "min": -0.042069023998409144,
+                        "max": -0.042069023998409144
+                    },
+                    "n_eras": {
+                        "n": 3,
+                        "median": 200,
+                        "min": 200,
+                        "max": 200
+                    },
+                    "pearson": {
+                        "n": 3,
+                        "median": 0.024416921760735538,
+                        "min": 0.024416921760735538,
+                        "max": 0.024416921760735538
+                    },
+                    "rmse": {
+                        "n": 3,
+                        "median": 0.2237018810779163,
+                        "min": 0.2237018810779163,
+                        "max": 0.2237018810779163
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:82",
+                    "rc_1408ee79:83",
+                    "rc_1408ee79:84"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 5.994452481160352,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "quantization_defaults_change",
+                "single_draw_deep",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 1,
                     "median": 129.2801683209982,
                     "min": 129.2801683209982,
@@ -3097,21 +4581,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 5.906824449516043,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "historical_numerai_label_unknown",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_metric_implementation",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change",
-                "single_draw_deep"
-            ]
+            }
         },
         {
             "dataset": "numerai",
@@ -3148,7 +4618,25 @@
                     "launch:473"
                 ]
             },
-            "latest_measured": {
+            "latest_measured": null,
+            "descriptive_launch_div_latest_time_ratio": null,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "not_rerun_on_rc",
+                "numerai_dtype_change",
+                "numerai_metric_implementation",
+                "quantization_defaults_change",
+                "single_draw_deep"
+            ],
+            "october_latest_measured": {
                 "train_s": {
                     "n": 1,
                     "median": 1236.5093722750025,
@@ -3183,23 +4671,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.2666289428743776,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "atomic_noquant_variation",
-                "fraud_uncapped_failures",
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "historical_numerai_label_unknown",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_dtype_change",
-                "numerai_metric_implementation",
-                "quantization_defaults_change",
-                "single_draw_deep"
-            ]
+            }
         },
         {
             "dataset": "numerai",
@@ -3238,6 +4710,81 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 239.69974465901032,
+                    "min": 239.68831528595183,
+                    "max": 239.7111740320688
+                },
+                "metrics": {
+                    "corr_mean": {
+                        "n": 2,
+                        "median": 0.019990811192615476,
+                        "min": 0.019990811192615476,
+                        "max": 0.019990811192615476
+                    },
+                    "corr_sharpe": {
+                        "n": 2,
+                        "median": 1.23137326610624,
+                        "min": 1.23137326610624,
+                        "max": 1.23137326610624
+                    },
+                    "corr_std": {
+                        "n": 2,
+                        "median": 0.016234566514367315,
+                        "min": 0.016234566514367315,
+                        "max": 0.016234566514367315
+                    },
+                    "max_drawdown": {
+                        "n": 2,
+                        "median": -0.057259983086773984,
+                        "min": -0.057259983086773984,
+                        "max": -0.057259983086773984
+                    },
+                    "n_eras": {
+                        "n": 2,
+                        "median": 200.0,
+                        "min": 200,
+                        "max": 200
+                    },
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.020595414745445975,
+                        "min": 0.020595414745445975,
+                        "max": 0.020595414745445975
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 0.22391740506035326,
+                        "min": 0.22391740506035326,
+                        "max": 0.22391740506035326
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:85",
+                    "rc_1408ee79:86"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 7.546267882538401,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "quantization_defaults_change",
+                "single_draw_deep",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 1,
                     "median": 263.8137378679967,
                     "min": 263.8137378679967,
@@ -3271,21 +4818,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 6.8564984492127765,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "historical_numerai_label_unknown",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_metric_implementation",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change",
-                "single_draw_deep"
-            ]
+            }
         },
         {
             "dataset": "numerai",
@@ -3324,6 +4857,81 @@
             },
             "latest_measured": {
                 "train_s": {
+                    "n": 2,
+                    "median": 259.4151761009707,
+                    "min": 259.3180055000121,
+                    "max": 259.51234670192935
+                },
+                "metrics": {
+                    "corr_mean": {
+                        "n": 2,
+                        "median": 0.019792928709034718,
+                        "min": 0.019792928709034718,
+                        "max": 0.019792928709034718
+                    },
+                    "corr_sharpe": {
+                        "n": 2,
+                        "median": 1.2437042255130764,
+                        "min": 1.2437042255130764,
+                        "max": 1.2437042255130764
+                    },
+                    "corr_std": {
+                        "n": 2,
+                        "median": 0.015914498240825196,
+                        "min": 0.015914498240825196,
+                        "max": 0.015914498240825196
+                    },
+                    "max_drawdown": {
+                        "n": 2,
+                        "median": -0.04358809818348848,
+                        "min": -0.04358809818348848,
+                        "max": -0.04358809818348848
+                    },
+                    "n_eras": {
+                        "n": 2,
+                        "median": 200.0,
+                        "min": 200,
+                        "max": 200
+                    },
+                    "pearson": {
+                        "n": 2,
+                        "median": 0.020594357512223792,
+                        "min": 0.020594357512223792,
+                        "max": 0.020594357512223792
+                    },
+                    "rmse": {
+                        "n": 2,
+                        "median": 0.22390854920204079,
+                        "min": 0.22390854920204079,
+                        "max": 0.22390854920204079
+                    }
+                },
+                "source": "rc_1408ee79",
+                "runtime": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+                "records": [
+                    "rc_1408ee79:87",
+                    "rc_1408ee79:88"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 7.571406950137123,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "quantization_defaults_change",
+                "single_draw_deep",
+                "two_interleaved_draws"
+            ],
+            "october_latest_measured": {
+                "train_s": {
                     "n": 1,
                     "median": 289.56424485199386,
                     "min": 289.56424485199386,
@@ -3357,21 +4965,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 6.783081482680546,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "historical_numerai_label_unknown",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_metric_implementation",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change",
-                "single_draw_deep"
-            ]
+            }
         },
         {
             "dataset": "numerai",
@@ -3408,7 +5002,23 @@
                     "launch:483"
                 ]
             },
-            "latest_measured": {
+            "latest_measured": null,
+            "descriptive_launch_div_latest_time_ratio": null,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "not_rerun_on_rc",
+                "numerai_metric_implementation",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change",
+                "single_draw_deep"
+            ],
+            "october_latest_measured": {
                 "train_s": {
                     "n": 1,
                     "median": 2789.3922689509927,
@@ -3443,21 +5053,7 @@
                 "failures": [],
                 "all_timed_sane": true,
                 "strict_quiet_verified": true
-            },
-            "descriptive_launch_div_latest_time_ratio": 1.089114855027013,
-            "causal_paired_speedup_established": false,
-            "quality_equivalence_established": false,
-            "caveats": [
-                "historical_binary_unpinned",
-                "historical_cache_unpinned",
-                "historical_numerai_label_unknown",
-                "launch_retries",
-                "launch_snapshot_not_tag",
-                "numerai_metric_implementation",
-                "pre_ridge_fixedpoint",
-                "quantization_defaults_change",
-                "single_draw_deep"
-            ]
+            }
         }
     ],
     "path_normalization_note": "Absolute machine paths are normalized to portable logical references (external://, evidence://, and build-artifact://). Any source SHA-256 values in this artifact identify the original, unmodified source bytes before path normalization."
