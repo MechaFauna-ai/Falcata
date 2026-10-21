@@ -700,6 +700,7 @@ set(
       src/objective/objective_function.cpp
       src/treelearner/data_parallel_tree_learner.cpp
       src/treelearner/feature_histogram.cpp
+      src/treelearner/feature_histogram_numerical.cpp
       src/treelearner/feature_parallel_tree_learner.cpp
       src/treelearner/gpu_tree_learner.cpp
       src/treelearner/gradient_discretizer.cpp
