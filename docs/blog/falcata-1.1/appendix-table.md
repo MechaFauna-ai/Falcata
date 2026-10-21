@@ -9,8 +9,8 @@ seconds over release-candidate seconds. "Same model" compares the two builds' mo
 MD5s for quantized rows. For `none` rows it says whether the release candidate's two
 runs agree: `a65d34e8`'s non-quantized runs differed from run to run, so its models
 differ from the release candidate's on every `none` row (#122). Fraud fixed point
-differs because of a fixed-point accumulation change since `a65d34e8` (most likely #146, which keeps the quantized CUDA root reduction's packed totals in int64); the deep run stops at 357
-trees. Launch
+differs because of #146 (shallow) and #146 then #154 (deep, which stops at 357
+trees); see [benchmarks](benchmarks.md#fixed-point-fraud). Launch
 times are the August archive. Numerai rows use native int8 input; the launch Numerai
 deep and leaf-limited rows used float32.
 

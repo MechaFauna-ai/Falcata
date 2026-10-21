@@ -338,7 +338,7 @@ random forests are outside the automatic bound. The
   every plan ([#154](https://github.com/MechaFauna-ai/Falcata/pull/154)).
 - **Categorical `extra_trees`** drew its random threshold on every thread
   ([#135](https://github.com/MechaFauna-ai/Falcata/pull/135)), and **quantized root
-  sums** are now reduced as packed int64 totals
+  sums** lost low Hessian bits when their packed 64-bit total passed through a double
   ([#146](https://github.com/MechaFauna-ai/Falcata/pull/146)).
 
 ### Models that change
@@ -348,9 +348,10 @@ These fixes change some model outputs versus 1.0.5, on CUDA and, for #91, on CPU
 | Change | Affected inputs | Before |
 | --- | --- | --- |
 | #122 deterministic non-quantized construct | `quant_mode=none` with depth-limited trees, `feature_fraction < 1` or levels wider than the ordered kernels' buffer; `cuda_precision=fp32` | A different model per run |
-| #146 integer root statistics (most likely; see below) | Quantized training whose packed root totals lost precision in floating-point accumulation; of the 43 measured workloads, only the two fixed-point fraud shapes changed | Low bits of the root sums lost |
+| #146 integer root statistics | Fixed-point runs whose integer root gradient sum reaches 2^21 (strong class imbalance under the outlier-robust scale); of the 43 measured workloads, only the two fixed-point fraud shapes changed | Low Hessian bits of the packed root total lost |
 | #91 automatic classification step limit | Non-quantized binary, softmax and one-vs-all classification with GBDT, GOSS or DART, on CPU and CUDA | Unbounded Newton steps (`max_delta_step=0` restores them) |
 | #154 column sampling | Data with bundled features (for example one-hot blocks, as in covtype) and `feature_fraction < 1`, every plan | The wrong columns sampled |
+| #154 root histogram clear | Quantized runs where a level-wise root finds no split | The classic root search counted the root twice and could still split |
 | #135 categorical extra trees | `extra_trees=true` with more categories than `max_cat_to_onehot` | Run-to-run variation; now the most common former model |
 
 Output also changes where it was wrong: quantized sparse rows wider than 504
@@ -366,12 +367,10 @@ and non-quantized forests deeper than 12 levels or with sampled features
 quantized model is identical to `a65d34e8`'s.
 
 In the release comparison every quantized classic and Numerai model is byte-identical
-to `a65d34e8`'s except fraud shallow and deep in fixed-point mode. The cause is
-a fixed-point accumulation change since `a65d34e8` (most likely #146, which keeps the quantized CUDA root reduction's packed totals in int64): the first tree is identical, then
-one leaf's Hessian sum differs in the seventh significant digit (tree 1 deep, tree 2
-shallow) and the fixed-point models diverge. The deep run stops at
-357 of 500 trees because no leaf can be split
-further. Held-out AUC goes from 0.9780 to
+to `a65d34e8`'s except fraud shallow and deep in fixed-point mode. Bisected: the
+shallow model changes with #146 alone; the deep model changes with #146 and again with
+#154, whose root-histogram clear makes it stop at 357 of 500 trees
+([mechanism](falcata-1.1/benchmarks.md#fixed-point-fraud)). Held-out AUC goes from 0.9780 to
 0.9774 (deep) and from 0.9790 to
 0.9808 (shallow); for scale, 20 training seeds of the
 non-quantized FP64 CUDA stability recipe span 0.9697–0.9850.

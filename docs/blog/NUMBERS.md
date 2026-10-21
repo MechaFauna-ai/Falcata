@@ -57,10 +57,14 @@ through strict `gpuq` with `--timeout`.
   like); this is the headline. `ab_geomean_fixed_no_fraud` = the same over the 13 rows
   without fraud/shallow and fraud/deep. `ab_geomean_fixed` (all 15 rows) is kept as a
   footnote figure.
-- **Fixed-point fraud attribution.** Worded as "a fixed-point accumulation change since
-  `a65d34e8` (most likely #146, ...)" pending the bisect; one sentence per document
-  (falcata-1.1.md, benchmarks.md, appendix-table.md, release notes) to upgrade once
-  confirmed. No numeric scope (such as 2^53) is claimed.
+- **Fixed-point fraud attribution (bisected 21 October).**
+  `kevo/runs/release_1_1/results/bisect_fraud_fixedpoint/` (REPORT.md, RESULT.json):
+  every first-parent merge a65d34e8..1408ee79 built and both shapes rerun; controls
+  reproduce both A/B arms. #146 (3b043a85) changes both (shallow final: 61ba572a); deep
+  changes again at #154 (7ee6c645: 2226df83 -> 7b0a53e9, 357 trees). The 2^21 / 2^53
+  packed-word mechanism and the 7.27 M iteration-0 gradient sum (estimated by hand, not
+  instrumented) are from that report; the mechanism paragraph is in benchmarks.md
+  ("Fixed-point fraud").
 - **Evidence JSONs (review follow-up).** `to_blog_json.py` normalizes machine paths to
   `external://`, `evidence://` and `build-artifact://` references and refuses output
   that still names a home directory, mount or private tool; it no longer counts the
@@ -68,7 +72,7 @@ through strict `gpuq` with `--timeout`.
   = 68), and adds the CPU rerun (`rc_1408ee79_cpu`) to `rc_reruns`. Regenerated from
   the pre-fill files of release/1.1 as `--pr-dir`.
 - **Against expectations.** `ab_quant_md5_identical` is 28 of 30, not 30: fraud
-  shallow/deep fixed point change (#146; the deep run stops at 357 of 500 trees, see
+  shallow/deep fixed point change (#146; deep also #154, stops at 357 of 500 trees, see
   the article's model-change notice). `ab_geomean_none` 1.006, deep non-quantized shapes
   0.889–0.944. Six-state six/five 1.054–1.064 (October 1.21–1.38) and 5.98 on the
   16,384-leaf recipe, which still takes the mask view. `ci_checks_rc` 20 (expected 21)

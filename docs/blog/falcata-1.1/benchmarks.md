@@ -73,15 +73,41 @@ comparisons produced the same model on both builds; geometric-mean speedups are
 1.189× (stochastic) and 1.202× (fixed point, without
 fraud deep; all fifteen rows 1.216×, without both fixed-point fraud rows
 1.195×).
-The two exceptions are fraud shallow and deep in fixed-point mode. The cause is
-a fixed-point accumulation change since `a65d34e8` (most likely #146, which keeps the quantized CUDA root reduction's packed totals in int64): one leaf's Hessian sum changes in the seventh digit in the second
-or third tree and the models diverge from there. The deep run stops at
-357 of 500 trees (no leaf can be split further), so its
-1.433× is not a like-for-like speedup. Held-out AUC:
+The two exceptions are fraud shallow and deep in fixed-point mode (bisected below): the
+shallow model changes with #146 alone, the deep model with #146 and then #154, which
+stops it at 357 of 500 trees, so its 1.433× is not a like-for-like speedup. Held-out AUC:
 0.9780 → 0.9774 (deep),
 0.9790 → 0.9808 (shallow).
 Interim, `a65d34e8` → `4641c9f0` on 16 October: 1.13× and 1.16×, ranging 1.01–1.37×
 per workload, every quantized model identical.
+
+### Fixed-point fraud
+
+Each merge from `a65d34e8` to `1408ee79` was built and both fraud fixed-point shapes
+rerun; the two endpoint builds reproduce the A/B models exactly.
+[#146](https://github.com/MechaFauna-ai/Falcata/pull/146) changes both shapes and
+gives shallow its final model.
+[#154](https://github.com/MechaFauna-ai/Falcata/pull/154) changes deep a second time;
+no other merge changes either model.
+
+**#146.** The root reduction sums the packed 64-bit total (gradient sum shifted left
+by 32, plus Hessian sum) exactly in integers, but stored it in a double before
+converting it back. No root statistic comes near 2^53; the packed word does as soon as
+the integer gradient sum reaches 2^21 (about 2.1 million), and from there the double
+drops low Hessian bits. Fraud gets there because fixed-point mode's outlier-robust
+scale maps the bulk of the gradients to +32 and clips the 394 positives at -32, so they
+hardly cancel: about 7.27 million at the first iteration, an estimate by hand, not a
+measurement. Stochastic quantization's values of at most ±2 keep fraud below 2^21, and
+on balanced data the gradient sum cancels in both modes, which is why every other
+quantized model is byte-identical. In the models, the first tree is identical, then
+one leaf's Hessian sum differs in the seventh digit (second tree deep, third tree
+shallow) and the models diverge.
+
+**#154.** When the level-wise prefix found no split at the root, its root histogram
+stayed in slot 0, and the leaf-wise tail's classic root search added onto it,
+counting the root twice, and could still find a split. #154 clears the slot first, so
+such a round ends in a single-leaf tree; deep fraud now stops after 357 trees (the
+stop is read from the code and the commit, not traced).
 
 Historical Numerai scores retain their original benchmark evaluation; the cache's
 target label is unidentified, so these are reproduction metrics, not target
