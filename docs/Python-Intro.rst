@@ -134,7 +134,7 @@ In Falcata, the validation data should be aligned with training data.
     train_data = flc.Dataset(data, label=label, feature_name=['c1', 'c2', 'c3'], categorical_feature=['c3'])
 
 Falcata can use categorical features as input directly.
-It doesn't need to convert to one-hot encoding, and is much faster than one-hot encoding (about 8x speed-up).
+It doesn't need to convert to one-hot encoding, and is much faster than one-hot encoding (about 8x speed-up in upstream LightGBM's CPU experiment on Expo data).
 
 **Note**: You should convert your categorical features to ``int`` type before you construct ``Dataset``.
 

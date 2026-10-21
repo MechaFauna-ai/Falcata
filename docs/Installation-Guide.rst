@@ -11,10 +11,17 @@ whole story:
 
    pip install falcata
 
-That builds the CUDA library from source, so it needs the CUDA toolkit
-(>= 11.0), CMake >= 3.28, a C++17 compiler and Python >= 3.10. The source
-distribution vendors every dependency, so there is no ``git clone`` and no
-submodule step.
+On Linux x86_64 this installs a **prebuilt wheel**, with no compilation and no
+CUDA toolkit needed: it is built with CUDA 13, with native GPU code for sm_75
+through sm_120 (T4, RTX 20xx, A100, RTX 30xx/40xx, H100, B100/B200, RTX 50xx),
+and needs an NVIDIA driver that supports CUDA 13 (R580 or newer). Older GPUs
+(Pascal and Volta) fail fast with a message pointing at the source build; build
+with CUDA 12.x for those.
+
+Everywhere else (and with ``pip install --no-binary falcata falcata``), pip
+builds the CUDA library from source, so it needs the CUDA toolkit (>= 11.0),
+CMake >= 3.28, a C++17 compiler and Python >= 3.10. The source distribution
+vendors every dependency, so there is no ``git clone`` and no submodule step.
 
 The build asks ``nvidia-smi`` which GPUs are in the machine and compiles only
 for those: device code for each one, plus PTX for the newest. CUDA 13 cannot
@@ -725,7 +732,7 @@ Build CUDA Version
 
 The `original GPU version <#build-gpu-version>`__ of Falcata (``device_type=gpu``) is based on OpenCL, and only computes histograms on GPUs, with other parts of training in CPUs.
 
-The CUDA-based version (``device_type=cuda``) is a separate implementation that runs significantly faster by putting all the training process on GPUs. It also supports multi-GPU, and multi-node multi-GPU training.
+The CUDA-based version (``device_type=cuda``) is a separate implementation that runs significantly faster by putting all the training process on GPUs. It also supports multi-GPU training on a single machine (distributed multi-machine training is CPU-only; see `Features <./Features.rst>`__).
 Use this version on Linux or Windows with an NVIDIA GPU with compute capability 6.0 or higher (7.5+ with recent CUDA toolkits, which have dropped older architectures).
 
 Windows
@@ -762,9 +769,11 @@ distribution, so ``USE_NCCL`` stays ``OFF`` on Windows.)
    ``unsupported Microsoft Visual Studio version!``. Either install a matching
    MSVC toolset, or override the check by adding
    ``-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler`` to the first ``cmake``
-   command. (Overriding works in practice — CUDA training results are verified
-   bit-for-bit against the CPU path — but is unsupported by NVIDIA, so prefer a
-   matching toolset for production.)
+   command. (Overriding works in practice — CUDA training is deterministic run
+   to run, quantized and, since 1.1, non-quantized, and the nightly gates
+   compare CUDA with the CPU path within a metric tolerance, not bit-for-bit —
+   but it is unsupported by NVIDIA, so prefer a matching toolset for
+   production.)
 
 3. Build and install the Python-package against the compiled DLL:
 
@@ -787,7 +796,7 @@ Please refer to `this detailed guide`_ for **CUDA** libraries installation.
 
 The default build is **single-GPU** and has no NCCL dependency.
 
-For **multi-GPU** (and multi-node multi-GPU) training, add ``-DUSE_NCCL=ON``.
+For **multi-GPU** training (several GPUs in one machine), add ``-DUSE_NCCL=ON``.
 NCCL's headers are then needed at configure time, so install the development
 package (``libnccl-dev`` on Debian/Ubuntu, ``libnccl-devel`` on Fedora/RHEL,
 or ``conda install -c conda-forge nccl``); otherwise configuration fails with

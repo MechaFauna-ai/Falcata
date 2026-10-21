@@ -29,9 +29,10 @@ What makes it fast
   inner loop on shallow trees.
 - **Per-tree compact column view.** With any `feature_fraction < 1`, only the
   sampled columns are materialized and gathered for histogram construction.
-  The win scales with the excluded fraction: ~3.4× end-to-end training at
-  `feature_fraction = 0.1` on wide, low-cardinality data, tapering to ~1.1×
-  at 0.6.
+  The win scales with the excluded fraction: on the Numerai deep regime
+  (2,000 trees, stochastic) it is 29.7× end-to-end training at
+  `feature_fraction = 0.1`, 4.25× at 0.3 and 2.33× at 0.6, with the same model
+  either way (21 Oct 2026 on `a82336d8`).
 - **GPU-native dataset construction.** Dense binning, row-data build, and EFB
   pre-checking run on the device; CuPy and `__cuda_array_interface__` inputs are
   ingested without a host round-trip.
@@ -40,16 +41,21 @@ What makes it fast
   expectation). `quant_mode=fixedpoint` is the near-lossless end: deterministic
   rounding, with an internal outlier-robust gradient scale so rare huge
   gradients don't crush the quantization range. Bin counts default to 4 and 64
-  respectively; override with `quant_bins` (any value in `[2, 65534]` —
-  training refuses counts whose histogram sums could overflow at your row
-  count). Both modes are bit-reproducible — not just run to run, but across GPU
-  models and host machines: the same seed trains the bit-identical model on
-  any CUDA device (verified sm_89 vs sm_120); `quant_mode=none` is
-  full precision.
+  respectively; stochastic raises itself automatically to 16 (64 for
+  constant-hessian objectives) on large data with small leaves (at least 100k
+  rows and fewer than 4,096 expected rows per leaf; not for multiclass or
+  ≥50:1-imbalanced binary). Override with `quant_bins` (any value in
+  `[2, 65534]` — training refuses counts whose histogram sums could overflow at
+  your row count). Both modes are bit-reproducible — not just run to run, but
+  across GPU models and host machines: the same seed trains the bit-identical
+  model on any CUDA device (verified sm_89 vs sm_120 on a pre-launch build; the
+  integer-only Philox stream keeps the guarantee by construction);
+  `quant_mode=none` is full precision.
 - **An execution planner.** Shape-conditional kernel choices are resolved once
   from the data and parameters (`cuda_plan=auto`) instead of from a pile of
-  environment variables — every decision guaranteed bit-identical, and
-  individually overridable for experiments.
+  environment variables — every decision bit-identical except where the
+  `cuda_plan` documentation says otherwise (`robust_scale`, and the tie order
+  of `batch_kernels`), and individually overridable for experiments.
 - **GPU inference via NVIDIA FIL.** `Booster.predict()` transparently runs on
   cuML's Forest Inference Library when available (see below); CuPy arrays stay
   on the device end to end.
@@ -59,11 +65,12 @@ Correctness discipline
 
 Every optimization above must be *bit-identical* to the reference path, and
 that is enforced mechanically rather than trusted. A regression-gate suite runs
-on every commit against a real GPU: a 38-cell lattice of (config × data-shape)
-training cells fingerprinted by model md5, plan-flip equality cells that prove
-each planner decision changes nothing, validity assertions, metric floors, and
-a perf gate against a rolling baseline. A nightly tier adds a config × shape
-fuzzer with CPU-parity checks plus full-scale gates on real datasets.
+locally on a GPU for every merge and nightly (hosted CI has no GPU): a 441-cell
+lattice of (config × data-shape) training cells (98 md5-fingerprinted, 341
+plan-flip equality cells that prove each planner decision changes nothing,
+2 metric cells), validity assertions, metric floors, and a perf gate against a
+rolling baseline. The nightly tier adds a config × shape fuzzer with CPU-parity
+checks plus full-scale gates on real datasets.
 
 See [tests/gates/README.md](tests/gates/README.md).
 
@@ -91,7 +98,8 @@ model = flc.train(
 GPU inference (NVIDIA FIL)
 --------------------------
 
-With cuML installed (`pip install cuml-cu12`), `Booster.predict()` on a
+With cuML installed (`pip install cuml-cu13` alongside the prebuilt CUDA 13
+wheel; `cuml-cu12` for a source build against CUDA 12), `Booster.predict()` on a
 CUDA-trained model transparently runs on NVIDIA's Forest Inference Library —
 no API change. 2-D numpy input returns numpy; CuPy (or any
 `__cuda_array_interface__` array) stays on the device end to end. Converted
@@ -106,9 +114,10 @@ preds = model.predict(cupy_X)          # device in -> device out, no host round-
 - `FALCATA_FIL=0` disables the FIL path; without cuML installed, predict
   silently falls back to the regular CPU predictor.
 - `FALCATA_FIL_PRECISION=single` (default) evaluates thresholds in fp32 —
-  ~0.01% of rows near a split threshold can route differently than the exact
-  predictor; `double` restores exact routing (~1e-13), `native` uses the
-  model's own precision.
+  rows near a split threshold can route differently than the exact predictor
+  (~0.01% of rows; July 2026, pre-launch build; not re-measured for 1.1);
+  `double` restores exact routing (differences ~1e-13; same check, not
+  re-measured for 1.1), `native` uses the model's own precision.
 - Training-time validation metrics (and early stopping) do **not** go through
   FIL: they use the booster's internal evaluation on the attached validation
   set, which is already GPU-resident under `device_type=cuda`.
@@ -134,15 +143,17 @@ the source distribution vendors every dependency, so no `git clone` and no
 submodule dance.
 
 The build detects the GPU(s) in the machine and **compiles only for those**
-(the library compiles in about 50 s on a 24-thread desktop). CUDA 13 cannot
+(a clean build for the local GPU takes about 42 s on a 32-thread desktop with
+CUDA 13.3, ccache off; 21 Oct 2026 on `a82336d8`). CUDA 13 cannot
 compile for GPUs below sm_75: it skips such a GPU with a warning, and the build
 fails if no detected GPU is left, so use CUDA 12.x for those cards. When no GPU is
 visible at build time — docker build stages, CPU-only CI — it instead targets
 every architecture the toolkit supports (sm_60 upward on CUDA 11/12, sm_75
 upward on CUDA 13+, plus PTX for the newest so future cards still run), which
-takes about four times as long (about 3.5 minutes on the same machine with
-CUDA 13). To build for a card other than the one present, or to pick one
-explicitly:
+takes several times as long. That path was not timed for 1.1; for scale, the
+release wheel's seven architectures (sm_75 through sm_120, no PTX) take about
+2.5 minutes on the same machine. To build for a card other than the one
+present, or to pick one explicitly:
 
 ```bash
 # RTX 5090 = 120, RTX 4090 = 89, A100 = 80, T4 = 75
@@ -210,8 +221,10 @@ Compatibility with LightGBM
 Falcata began as a fork of LightGBM and deliberately stays interoperable at the
 data boundaries:
 
-- **Models** written by Falcata load in stock LightGBM (and vice versa) with
-  bit-identical predictions — verified in CI.
+- **Models** with scalar leaves written by Falcata load in stock LightGBM (and
+  vice versa) with bit-identical predictions — asserted by a production deploy
+  gate for scalar-leaf models, not by CI. Vector-leaf models use a format
+  extension stock LightGBM cannot read.
 - **Binary datasets** (`.dataset`) interchange in both directions.
 - **Parameter names** are unchanged; Falcata's additions (`quant_mode`,
   `cuda_precision`, `cuda_plan`) are new names that upstream simply ignores.

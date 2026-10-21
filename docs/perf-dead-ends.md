@@ -1,5 +1,10 @@
 # Performance dead ends
 
+Each entry records the build and date at the time it was written. Undated
+entries are from July–August 2026, except the madvise prefetch entry
+(8 October 2026) and the gen-bit aggregate fold (15 October 2026). None was
+re-checked for Falcata 1.1.
+
 Every performance idea we tried that did NOT earn its place, with the reason
 it failed and — crucially — the condition under which it would be worth
 trying again. Negatives are not absolute: most failed because of what the

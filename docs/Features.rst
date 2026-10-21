@@ -49,8 +49,9 @@ row-major bin matrix makes skipping unused columns free of nothing: unread
 columns still occupy the same memory sectors. Falcata gathers only the
 sampled columns into a dense per-tree compact matrix, so every level pass
 reads only what the tree can use. The win scales with the excluded fraction
-(measured ~3.4x end-to-end at ``feature_fraction=0.1`` on wide
-low-cardinality data, tapering to ~1.1x at 0.6).
+(on the Numerai deep regime, 2,000 trees, stochastic: 29.7x end-to-end at
+``feature_fraction=0.1``, 4.25x at 0.3 and 2.33x at 0.6, with the same model
+either way; 21 Oct 2026 on ``a82336d8``).
 
 GPU-Native Dataset Construction
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -73,11 +74,16 @@ two modes:
   with an internal outlier-robust gradient scale, so rare huge gradients do
   not crush the quantization range.
 
-Bin counts default to 4 and 64 respectively and can be overridden with
-``quant_bins``. Both modes are bit-reproducible run to run;
-``quant_mode=none`` is full precision. ``cuda_precision=fp32`` additionally
-halves global-histogram bandwidth for the non-quantized path (quality-gated,
-not bit-identical).
+Bin counts default to 4 and 64 respectively; stochastic raises itself to 16
+(64 for constant-hessian objectives) on datasets of at least 100k rows whose
+expected leaves hold fewer than 4,096 rows (not for multiclass or
+>=50:1-imbalanced binary). Both can be overridden with ``quant_bins``. Both
+modes are bit-reproducible run to run; ``quant_mode=none`` is full precision.
+``cuda_precision=fp32`` uses single-precision split-gain math; it halves
+global-histogram bandwidth for the non-quantized path only together with
+``cuda_plan=auto,nonquant_deterministic:off``, which gives up run-to-run
+determinism (quality-gated, not bit-identical). By default the histograms
+stay fp64 and deterministic.
 
 .. _The Execution Planner:
 
@@ -86,9 +92,11 @@ The Execution Planner
 
 Every shape-conditional kernel choice above is resolved once from the data
 and parameters by ``cuda_plan=auto`` -- not from environment variables or
-hidden heuristics scattered through the code. Each decision is guaranteed
-bit-identical (enforced by per-commit regression gates that flip every key
-and require identical models) and individually overridable, e.g.
+hidden heuristics scattered through the code. Each decision is bit-identical
+except where the ``cuda_plan`` parameter documents otherwise (``robust_scale``,
+and the tie order of ``batch_kernels``), enforced by local GPU regression
+gates that flip every key and require identical models, and individually
+overridable, e.g.
 ``cuda_plan=auto,hybrid:off,row_batch:off``, which also makes every
 feature's contribution measurable by leave-one-out ablation.
 
@@ -313,9 +321,9 @@ Falcata supports the following metrics:
 
 -  Multi-class error rate
 
--  AUC-mu ``(new in v3.0.0)``
+-  AUC-mu (LightGBM 3.0.0)
 
--  Average precision ``(new in v3.1.0)``
+-  Average precision (LightGBM 3.1.0)
 
 -  Fair
 

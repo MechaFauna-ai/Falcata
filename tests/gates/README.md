@@ -17,7 +17,7 @@ repo and tests it, so nothing inbound can trigger execution.
 
 | Detector | Mechanism |
 |---|---|
-| invalid trees / silent behavior change | **md5 lattice**: 43 fingerprinted deterministic cells across 16 path-engineered dataset profiles; baselines in `md5_lattice.json` |
+| invalid trees / silent behavior change | **md5 lattice**: 98 fingerprinted deterministic cells across 32 path-engineered dataset profiles (of 441 cells: 98 md5, 341 plan-flip equality, 2 metric; `lattice.py --list`); baselines in `md5_lattice.json` |
 | plan decision changes the model | **equality cells**: every `cuda_plan` key flipped vs its base cell must be bit-identical |
 | broken models | validity asserts in every cell: round-trip, finite preds, tree count |
 | quality regression | metric recorded per cell; nondeterministic (non-quant / fp32) cells gate on metric floor with 2% tolerance |
