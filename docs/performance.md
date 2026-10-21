@@ -2900,8 +2900,12 @@ transfer remain outside this interval. This key does not claim an entirely synch
 the resolved launch and row-grouping shape instead of preliminary per-partition maxima that are not kernel
 arguments. True kernel arguments, codec, sampled metadata buffers, task layouts and index-buffer parity remain
 keyed; other constructs retain the conservative maxima. The complete controller retains its bounded 256-entry
-cache across layout misses, without the prefix's nine-miss disable policy. The ordinary prefix retains its
-32-entry limit. Noncapturable layouts use direct device enqueues with the same single growth readback.
+cache across layout misses. The ordinary prefix retains its 32-entry limit. Noncapturable layouts use direct device
+enqueues with the same single growth readback. After `device_tree_capture_misses` (default 9) consecutive cache
+misses, a key that changes on every tree (for example a sampled compact layout at a small `feature_fraction`), the
+complete controller stops capturing and uses those direct device enqueues for the rest of the learner's training:
+no capture and instantiate per tree, still no host growth loop. `device_tree_capture_misses:0` captures every new
+key. Unlike the prefix's nine-miss rule, this never leaves the device. The model is the same either way.
 Diagnostics report completed levels/splits and cache
 hits/misses on every tree. The default's end-to-end measurements above include this caching.
 

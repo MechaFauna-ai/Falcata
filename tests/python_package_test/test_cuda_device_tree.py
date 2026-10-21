@@ -205,6 +205,37 @@ def test_device_tree_complete_cuda(case, graph):
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("misses", [0, 3, 9])
+def test_device_tree_capture_policy_cuda(misses):
+    # A sampled layout that changes every tree: after `misses` consecutive graph-cache misses the complete tree stops
+    # capturing and enqueues directly, still on the device, with the same model (the probe compares host and device).
+    data, diag = _run("layouts", base_plan=f"auto,device_tree_capture_misses:{misses}")
+    events = re.findall(
+        r"device_tree: complete depth=\d+ applied_levels=\d+ splits=\d+ "
+        r"growth_readbacks=1 host_tail=0 graph=(\d+) hits=(\d+) misses=(\d+)",
+        diag,
+    )
+    modes = re.findall(r"device_tree_launch: mode=(\w+) host_us=[0-9.]+", diag)
+    assert len(events) == len(modes) == data["rounds"], diag
+    stops = re.findall(r"device_tree: (\d+) consecutive graph misses \((\d+) misses, (\d+) hits\)", diag)
+    if misses == 0:
+        assert not stops
+        assert all(e[0] == "1" for e in events)
+        assert "direct" not in modes
+    else:
+        assert len(stops) == 1, diag
+        assert int(stops[0][0]) == misses, diag
+        first = modes.index("direct")
+        assert all(m != "direct" for m in modes[:first])
+        assert all(m == "direct" for m in modes[first:])
+        assert all(e[0] == "1" for e in events[:first])
+        assert all(e[0] == "0" for e in events[first:])
+        # the counters freeze at the stop: the stopping tree's miss is the last one counted
+        assert int(events[-1][2]) == int(stops[0][1])
+    assert "device_tree: host fallback" not in diag
+
+
+@_REQUIRES_CUDA
 @pytest.mark.parametrize("case", ["binding", "unbounded", "too_deep", "bynode", "nonquant", "two_leaf", "l1"])
 def test_device_tree_unsupported_cuda(case):
     _, diag = _run(case)

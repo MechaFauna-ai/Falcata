@@ -949,6 +949,12 @@ struct FalcataPlan {
   // layout can disable graph caching, but never the device controller itself. The same selector, kernels and order:
   // bit-identical.
   bool device_tree = true;          // key: device_tree
+  // device_tree's graph capture policy: after this many consecutive graph-cache misses (a new launch key on every
+  // tree, e.g. a sampled compact layout), stop capturing and enqueue the complete tree's kernels directly for the rest
+  // of the learner's training (no capture/instantiate per tree; still device-driven, one growth readback). 0 =
+  // always capture (the 1.2 behaviour). The prefix's own rule (graphs off after 9 misses outnumbering hits) is
+  // separate. The same enqueue and kernels: bit-identical.
+  int device_tree_capture_misses = 9;  // key: device_tree_capture_misses
   // device_levels' launches as one cached CUDA graph for the prefix (root work and the host tail remain). Trees
   // whose keys keep changing use the host loop after the cache-miss budget: the same model, bit-identical.
   bool device_level_graph = true;   // key: device_level_graph
@@ -1214,6 +1220,17 @@ struct FalcataPlan {
                      tile_rows_key ? "an even number in [2, 384]" : "a power of two in [32, 1024]");
         }
         (tile_rows_key ? plan.construct_tile_rows : plan.construct_tile_threads) = static_cast<int>(value);
+        overridden = true;
+        continue;
+      }
+      if (kv[0] == std::string("device_tree_capture_misses")) {
+        char* end = nullptr;
+        const long value = std::strtol(kv[1].c_str(), &end, 10);  // NOLINT(runtime/int)
+        if (end == kv[1].c_str() || *end != '\0' || value < 0 || value > 1000000) {
+          Log::Fatal("cuda_plan: bad value \"%s\" for key \"device_tree_capture_misses\" (expected an integer in "
+                     "[0, 1000000])", kv[1].c_str());
+        }
+        plan.device_tree_capture_misses = static_cast<int>(value);
         overridden = true;
         continue;
       }

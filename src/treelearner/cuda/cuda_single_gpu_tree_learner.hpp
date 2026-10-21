@@ -811,6 +811,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool device_level_graph_disabled_ = false;
   int device_level_graph_hits_ = 0;
   int device_level_graph_misses_ = 0;
+  /*! \brief consecutive graph-cache misses (cuda_plan key device_tree_capture_misses) */
+  int device_level_graph_miss_streak_ = 0;
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   std::vector<SelectiveApplied> sel_applied_;
   std::vector<SelectiveFrontier> sel_frontier_;
