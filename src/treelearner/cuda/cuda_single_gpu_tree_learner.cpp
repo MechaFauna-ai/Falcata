@@ -2766,7 +2766,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // not needed inside the graph. Any fallback (env off, unsupported driver,
   // capture failure, no usable feature) reverts to the classic (two-sync)
   // host loop below, bit-for-bit the previous behavior.
-  if (!FalcataPlan::Get().device_tree && config_->use_quantized_grad && use_hybrid_one_sync_ &&
+  if (!DeviceTreeRequested() && config_->use_quantized_grad && use_hybrid_one_sync_ &&
       use_batched_level_kernels && use_batched_level_apply &&
       HybridGraphPrefixUsable()) {
     // the quantized graph prefix reads the host root sums like the classic flow: a no-op unless BeforeTrain
@@ -2785,7 +2785,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels(device_levels)) {
     device_levels_disabled_ = true;
   }
-  const bool whole_device_tree = FalcataPlan::Get().device_tree && device_levels > 0 && device_levels_ready_;
+  const bool whole_device_tree = DeviceTreeRequested() && device_levels > 0 && device_levels_ready_;
   if (!whole_device_tree) {
     EnsureRootSumsReadBack(tree);
   }
@@ -3593,16 +3593,28 @@ void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
 void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
   if (FalcataDebug().diag && !device_levels_fallback_logged_) {
     device_levels_fallback_logged_ = true;
-    fprintf(stderr, "[hybrid-diag] %s: host fallback (%s)\n",
-            FalcataPlan::Get().device_tree ? "device_tree" : "device_levels", reason);
+    fprintf(stderr, "[hybrid-diag] %s: host fallback (%s)\n", DeviceTreeRequested() ? "device_tree" : "device_levels",
+            reason);
   }
 }
 
 // ---- cuda_plan key device_levels (see cuda_device_levels.hpp) ----
 
+bool CUDASingleGPUTreeLearner::DeviceTreeRequested() const {
+  // cuda_plan key device_tree (default on, with device_levels): only where the complete tree's depth bound holds, so
+  // no other shape loses the device_levels prefix or the host flow. Match HybridGrowthUsable's depth-limited regime:
+  // only the final depth-capped level can bind, and the device select applies its top-K candidates in the host
+  // arbitration order. Earlier levels still split leaf-ascending.
+  const FalcataPlan& plan = FalcataPlan::Get();
+  const int depth = config_->max_depth;
+  return plan.device_tree && plan.device_levels && depth >= 1 && depth <= 10 &&
+    (1LL << depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
+}
+
 int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels, const bool batched_level_apply) {
   const FalcataPlan& plan = FalcataPlan::Get();
-  if ((!plan.device_levels && !plan.device_tree) || device_levels_disabled_) {
+  const bool device_tree = DeviceTreeRequested();
+  if (!plan.device_levels || device_levels_disabled_) {
     return 0;
   }
   // Slot workers use thread-local stream ownership. Neither capture nor the plain device enqueue is supported here.
@@ -3611,7 +3623,7 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     return 0;
   }
   // When sampled layouts keep missing the graph cache, use the existing host loop on subsequent trees.
-  if (!plan.device_tree && plan.device_level_graph && device_level_graph_disabled_) {
+  if (!device_tree && plan.device_level_graph && device_level_graph_disabled_) {
     LogDeviceLevelsFallback("changing graph layouts");
     return 0;
   }
@@ -3628,15 +3640,8 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     LogDeviceLevelsFallback("unsupported prefix kernels or configuration");
     return 0;
   }
-  if (plan.device_tree) {
-    // Match HybridGrowthUsable's depth-limited regime: only the final depth-capped level can bind, and the device
-    // select applies its top-K candidates in the host arbitration order. Earlier levels still split leaf-ascending.
-    const int depth = config_->max_depth;
-    if (depth < 1 || depth > 10 || (1LL << depth) > static_cast<int64_t>(config_->num_leaves) + 1) {
-      LogDeviceLevelsFallback("depth bound or leaf budget");
-      return 0;
-    }
-    return depth;
+  if (device_tree) {
+    return config_->max_depth;
   }
   // levels L with 2^(L + 1) <= num_leaves and L + 1 < max_depth: every valid leaf splits and every child is searched
   int levels = 0;
@@ -3965,7 +3970,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.journal = cuda_device_level_journal_.RawData();
   cfg.max_depth = config_->max_depth;
   cfg.num_leaves_budget = config_->num_leaves;
-  cfg.whole_tree = FalcataPlan::Get().device_tree ? 1 : 0;
+  cfg.whole_tree = DeviceTreeRequested() ? 1 : 0;
   // No current-tree host tail exists for a completed whole tree. Plain unweighted L2 never renews its
   // outputs, and its next BeforeTrain rebuilds root counts/start/bits before any host search. All other
   // modes retain full child statistics; GPU split-info storage/production and full journal replay stay intact.
@@ -4975,7 +4980,12 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     }
   }
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  if (FalcataDebug().diag && (FalcataPlan::Get().device_levels || FalcataPlan::Get().device_tree)) {
+  if (FalcataDebug().diag && FalcataPlan::Get().device_levels) {
+    if (FalcataPlan::Get().device_tree && !DeviceTreeRequested() && !device_tree_fallback_logged_) {
+      // outside the complete tree's depth bound: the prefix flows (or the host flow) grow the tree, as before
+      device_tree_fallback_logged_ = true;
+      fprintf(stderr, "[hybrid-diag] device_tree: fallback to the prefix/host flow (depth bound or leaf budget)\n");
+    }
     if (!config_->use_quantized_grad) {
       LogDeviceLevelsFallback("nonquantized training");
     } else if (num_splits_done != 0 || !HybridGrowthUsable()) {

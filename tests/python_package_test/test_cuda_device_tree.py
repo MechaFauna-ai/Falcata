@@ -1,9 +1,10 @@
 # coding: utf-8
 """Complete bounded device trees must engage, including final depth and changing sampled layouts.
 
-Every comparison uses one binary and identical data/parameters. The host arm disables both device controllers;
-the complete arm disables the prefix to ensure the experimental key supplies the actual growth. Diagnostics
-prove engagement on every requested round, including after graph misses, rather than merely comparing a fallback.
+Every comparison uses one binary and identical data/parameters. The host arm disables both device controllers
+(device_levels:off); the complete arm is the default plan (device_tree on), whose shapes outside the depth bound fall
+back to the device_levels prefix. Diagnostics prove engagement on every eligible round, including after graph misses,
+rather than merely comparing a fallback.
 """
 
 import json
@@ -18,6 +19,8 @@ import pytest
 import falcata as flc
 
 _REQUIRES_CUDA = pytest.mark.skipif(os.environ.get("TASK", "") != "cuda", reason="requires CUDA-enabled Falcata")
+# the host flow vs the complete device tree (the default; outside its bound, the device_levels prefix)
+_CONTROLLER = {"off": "device_levels:off", "on": "device_tree:on"}
 
 
 def _case(name):
@@ -94,8 +97,8 @@ def _probe(name, base_plan, graph):
     depths = []
     roots = []
     reset_budgets = []
-    for suffix in [",device_tree:off", ",device_tree:on,device_level_graph:" + graph]:
-        p = {**params, "cuda_plan": base_plan + ",device_levels:off" + suffix}
+    for suffix in [",device_levels:off", ",device_tree:on,device_level_graph:" + graph]:
+        p = {**params, "cuda_plan": base_plan + suffix}
         ds = flc.Dataset(X, label=y, params=p)
         budgets = []
         if name in {"reset", "reset_auto_budget"}:
@@ -205,7 +208,9 @@ def test_device_tree_complete_cuda(case, graph):
 @pytest.mark.parametrize("case", ["binding", "unbounded", "too_deep", "bynode", "nonquant", "two_leaf", "l1"])
 def test_device_tree_unsupported_cuda(case):
     _, diag = _run(case)
-    assert "device_tree: host fallback" in diag
+    # outside the depth bound the prefix grows the tree; unsupported configurations use the host flow
+    bound = case in {"binding", "unbounded", "too_deep"}
+    assert ("device_tree: fallback to the prefix/host flow" if bound else "device_tree: host fallback") in diag
     assert "device_tree: complete" not in diag
 
 
@@ -268,7 +273,7 @@ def _end_readback_probe(graph, gate):
             "max_depth": first_depth,
             "min_gain_to_split": first_gain,
             "min_data_in_leaf": first_minleaf,
-            "cuda_plan": "auto,device_levels:off,device_tree:" + controller + ",device_level_graph:" + graph + gate,
+            "cuda_plan": "auto," + _CONTROLLER[controller] + ",device_level_graph:" + graph + gate,
         }
         booster = flc.Booster(p, train_set=flc.Dataset(X, label=y, params=p))
         previous = stages[0]
@@ -359,9 +364,10 @@ def _host_cache_probe(graph, scenario):
         weight = np.linspace(0.5, 1.5, len(y))
     elif scenario == "renewal":
         params["quant_train_renew_leaf"] = True
-    # A real host tree between complete device trees must rebuild all current child caches from its new root.
-    # cuda_plan is resolved at learner Init, not reset_parameter. Keep each arm's controller fixed, and use
-    # depth 11 at the same leaf budget to require genuine host growth between two eligible depth-10 trees.
+    # A real host-grown tree between complete device trees must rebuild all current child caches from its new root.
+    # cuda_plan is resolved at learner Init, not reset_parameter. Keep each arm's controller fixed, and use depth 11
+    # at the same leaf budget (outside the bound: the device_levels prefix, then host levels) between two eligible
+    # depth-10 trees.
     stages = [(1024, 10, 20, 0.0), (1024, 11, 20, 0.0), (1024, 10, 20, 0.0)]
     if scenario == "transition":
         stages += [
@@ -375,10 +381,7 @@ def _host_cache_probe(graph, scenario):
     for candidate in [False, True]:
         p = {
             **params,
-            "cuda_plan": "auto,device_levels:off,device_tree:"
-            + ("on" if candidate else "off")
-            + ",device_level_graph:"
-            + graph,
+            "cuda_plan": "auto," + _CONTROLLER["on" if candidate else "off"] + ",device_level_graph:" + graph,
         }
         booster = flc.Booster(p, train_set=flc.Dataset(X, label=y, weight=weight, params=p))
         arm = []
@@ -453,7 +456,7 @@ def test_device_tree_host_cache_cuda(graph, scenario):
     caches = re.findall(r"device_tree_host_cache: skipped=(\d+) split_info_bytes=(\d+) stale=(\d+)", diag)
     expected = 6 if scenario == "transition" else 3 if scenario == "refit" else 2
     assert len(events) == len(caches) == expected, diag
-    assert "device_tree: host fallback" in diag
+    assert "device_tree: fallback to the prefix/host flow" in diag
     skip = scenario not in {"weighted", "renewal"}
     for event, cache in zip(events, caches, strict=True):
         splits = int(event[2])
@@ -511,7 +514,7 @@ def _final_all_map_probe(graph, scenario, gate):
             "num_leaves": first_leaves,
             "max_depth": first_depth,
             "min_gain_to_split": first_gain,
-            "cuda_plan": "auto,device_levels:off,device_tree:" + controller + ",device_level_graph:" + graph + gate,
+            "cuda_plan": "auto," + _CONTROLLER[controller] + ",device_level_graph:" + graph + gate,
         }
         ds = flc.Dataset(X[:first_rows], label=y[:first_rows], weight=weight, params=p)
         booster = flc.Booster(p, train_set=ds)

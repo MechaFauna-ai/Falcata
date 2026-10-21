@@ -20,9 +20,9 @@ _REQUIRES_CUDA = pytest.mark.skipif(os.environ.get("TASK", "") != "cuda", reason
 
 _PLANS = {
     "classic": "auto,hybrid:off",
-    "host": "auto,device_levels:off,device_tree:off",
+    "host": "auto,device_levels:off",
     "device_levels": "auto,device_levels:on,device_tree:off",
-    "device_tree": "auto,device_levels:off,device_tree:on",
+    "device_tree": "auto,device_levels:on,device_tree:on",
 }
 
 

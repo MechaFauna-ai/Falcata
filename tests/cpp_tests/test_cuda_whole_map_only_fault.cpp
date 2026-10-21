@@ -198,7 +198,7 @@ Outcome Run(const Dataset* data, const std::vector<float>& x, bool defer, bool i
     {"num_leaves", "16"}, {"max_depth", "3"}, {"min_data_in_leaf", "2"}, {"min_gain_to_split", "100"},
     {"feature_fraction", "1"}, {"quant_train_renew_leaf", "false"}, {"boost_from_average", "false"},
     {"feature_pre_filter", "false"}, {"verbosity", "-1"},
-    {"cuda_plan", "auto,device_levels:off,device_tree:on,quant_ef:off,device_level_graph:" + graph +
+    {"cuda_plan", "auto,device_tree:on,quant_ef:off,device_level_graph:" + graph +
       ",leaf_map_small_blocks:off,final_map_only:" + (defer ? "on" : "off")}});
   CUDASingleGPUTreeLearner learner(&config, true);
   learner.Init(data, true);

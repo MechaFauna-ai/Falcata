@@ -361,6 +361,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int TrainLevelWisePrefixGraph(CUDATree* tree);
   void ReleaseHybridGraphs();
   // ---- cuda_plan key device_levels (cuda_device_levels.hpp) ----
+  /*! \brief cuda_plan key device_tree (with device_levels): the complete device tree runs for this config, i.e. its
+   *  depth bound holds (positive max_depth <= 10 and 2^max_depth <= num_leaves + 1) */
+  bool DeviceTreeRequested() const;
   // How many of the classic quantized prefix's first levels run device-driven for this tree: the levels L with
   // 2^(L + 1) <= num_leaves (the budget cannot bind) and L + 1 < max_depth (the children are searched), when every
   // kernel of the flow has a device-count variant; 0 = the host loop as before
@@ -785,6 +788,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool device_tree_completed_ = false;
   bool device_levels_logged_ = false;
   bool device_levels_fallback_logged_ = false;
+  /*! \brief cuda_plan key device_tree: its depth-bound fallback to the prefix was reported (FALCATA_DEBUG=diag) */
+  bool device_tree_fallback_logged_ = false;
   bool device_levels_ready_ = false;
   bool device_levels_disabled_ = false;
   CUDAVector<CUDADeviceLevelState> cuda_device_level_state_;

@@ -59,8 +59,8 @@ def _probe(graph):
     }
     models = []
     counts = []
-    for suffix in ["device_tree:off", "device_tree:on,device_level_graph:" + graph]:
-        p = {**params, "cuda_plan": "auto,device_levels:off," + suffix}
+    for suffix in ["device_levels:off", "device_tree:on,device_level_graph:" + graph]:
+        p = {**params, "cuda_plan": "auto," + suffix}
         booster = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=24)
         models.append("\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line))
         counts.append([t["num_leaves"] for t in booster.dump_model()["tree_info"]])
