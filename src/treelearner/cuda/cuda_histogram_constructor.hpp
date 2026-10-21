@@ -1173,6 +1173,31 @@ class CUDAHistogramConstructor {
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
     const CUDAHybridGraphLoopStateOpt gstate);
+  /*! \brief cuda_plan key device_tree_live_grid: grid rows of a live-pair launch whose rows have grid_x blocks: about
+   *  device_tree_live_grid blocks per SM in all, at least 1 and at most the level's worst-case num_pairs */
+  int LiveGridRows(const int grid_x, const int num_pairs) {
+    const int64_t budget = LiveGridBudget();
+    const int64_t rows = (budget + std::max(grid_x, 1) - 1) / std::max(grid_x, 1);
+    return static_cast<int>(std::max<int64_t>(1, std::min<int64_t>(rows, std::max(num_pairs, 1))));
+  }
+  /*! \brief whether a level launch of grid_x blocks per pair over num_pairs worst-case pairs exceeds the live grid's
+   *  block budget (only then do the live kernels run; below it the batched kernels' launch is already that small) */
+  bool LiveGridPays(const int grid_x, const int num_pairs) {
+    const int64_t budget = LiveGridBudget();
+    return budget > 0 && static_cast<int64_t>(grid_x) * static_cast<int64_t>(num_pairs) > budget;
+  }
+  /*! \brief device_tree_live_grid blocks per SM times the SM count (0 = off) */
+  int64_t LiveGridBudget() {
+    if (live_grid_sms_ == 0) {
+      int sms = 0;
+      if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, gpu_device_id_ < 0 ? 0 : gpu_device_id_) !=
+          cudaSuccess || sms <= 0) {
+        sms = 1;
+      }
+      live_grid_sms_ = sms;
+    }
+    return static_cast<int64_t>(FalcataPlan::Get().device_tree_live_grid) * live_grid_sms_;
+  }
 
   void LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
@@ -1310,6 +1335,8 @@ class CUDAHistogramConstructor {
   uint32_t count_max_partition_bins_ = 0;
   bool count_scratch_dirty_ = true;
   int count_num_sms_ = 0;
+  /*! \brief LiveGridRows' SM count (0 until first use) */
+  int live_grid_sms_ = 0;
   /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip), indexed by inner_feature_index
    *  (the fix/subtract kernels' need-fix features). */
   CUDAVector<int8_t> cuda_is_feature_used_bytree_;

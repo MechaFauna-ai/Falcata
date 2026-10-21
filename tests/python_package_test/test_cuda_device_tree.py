@@ -205,6 +205,19 @@ def test_device_tree_complete_cuda(case, graph):
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("live_grid", [0, 1, 4096])
+@pytest.mark.parametrize("case", ["full", "fivebin", "layouts"])
+def test_device_tree_live_grid_cuda(case, live_grid):
+    # cuda_plan key device_tree_live_grid: the level fix/subtract and bit-change copy over the live pairs. 1 block per
+    # SM runs the live kernels on every level wider than the SM count, each grid row striding over many pairs; 4096
+    # keeps these small fixtures' levels under the budget (the batched kernels); 0 is the batched kernels everywhere.
+    # The probe compares the complete tree's model bytes with the host flow's.
+    data, diag = _run(case, base_plan=f"auto,device_tree_live_grid:{live_grid}")
+    assert diag.count("device_tree: complete") == data["rounds"]
+    assert "device_tree: host fallback" not in diag
+
+
+@_REQUIRES_CUDA
 @pytest.mark.parametrize("case", ["binding", "unbounded", "too_deep", "bynode", "nonquant", "two_leaf", "l1"])
 def test_device_tree_unsupported_cuda(case):
     _, diag = _run(case)

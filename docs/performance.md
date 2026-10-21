@@ -2971,6 +2971,16 @@ cache across layout misses, without the prefix's nine-miss disable policy. The o
 Diagnostics report completed levels/splits and cache
 hits/misses on every tree. The default's end-to-end measurements above include this caching.
 
+A level's fix/subtract and bit-change copy are launched for the level's worst case (one block row per pair of
+2^level) because the graph fixes the grid. Rows past the device's live pairs exit at once, but on wide histograms
+(epsilon: 128k-512k total bins) that is millions of blocks per level. Where that worst-case launch exceeds
+`device_tree_live_grid` blocks per SM (default 32; 0 restores the worst-case launch), the complete controller runs
+these kernels with a bounded grid whose rows stride over the live pairs, read on the device. The copy keeps the
+per-pair bit-width gate. Every (pair, bin) element is computed as before. Measured on an RTX 5090 against master
+`ee84ba28`, same plan, 6 alternating pairs of 1000 rounds, md5-identical models on every arm: epsilon-sampled
+1.075, epsilon-fixedpoint 1.040, fraud-deep 1.016, covtype-deep 1.002, year 1.002 (12 pairs), higgs (1024 leaves /
+depth 10) 1.000.
+
 For the complete controller's slotted whole-row code-word construct, the physical worker grid is bounded by
 the resolved resident block slots. Workers still cover every virtual block row; row grouping, shared-memory
 flushes, occupancy selection and exact graph keys are unchanged. Other device-prefix and host constructs
