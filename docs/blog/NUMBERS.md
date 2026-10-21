@@ -262,7 +262,7 @@ controls at 500 rounds (30–45 minutes). The CPU half is not rerun.
 | `six-state-throughput.png`, `six-state-throughput.svg` | `plot_six_state.py --data six-state-data.json --commit <RC sha> --output-dir <dir>` (build, library hash and captions from the JSON; `--commit` must match its `runtime.build`) | New `six-state-data.json` |
 | `stability-data.json` | Same converter, appending RC CUDA records (keep the October records) | (d) |
 | `joint-histogram-codewords.*`, `gpu-coordination.*` | `plot_mechanisms.py` | No change needed (schematics) |
-| `lineage-*` | `build_lineage.py` | Optional: the export is dated 9 October |
+| `lineage-*` | `build_lineage.py` (data from the search repository's `agentic/lineage_export.py`) | The 21 October export (18 campaigns, 616 records, through open5) |
 
 Removed in this draft: `fp64-training-time.png`, `fp64-training-time.svg`,
 `plot_training_time.py`, `training-time-data.json` (PR #71 prototype).

@@ -284,9 +284,9 @@ search night the same way.
 
 [![Explore the connected kernel-evolution history and a candidate's hypothesis](falcata-1.1/lineage-preview.jpg)](falcata-1.1/lineage-explorer.html)
 
-The [interactive explorer](falcata-1.1/lineage-explorer.html) is a frozen 9 October
-export of **13 campaigns and 533 candidate/replay records**; later search nights
-are not included. Speed, checks and parent-relative verdicts have separate filters.
+The [interactive explorer](falcata-1.1/lineage-explorer.html) is a frozen 21 October
+export of **18 campaigns and 616 candidate/replay records**, through the open5 search
+night. Speed, checks and parent-relative verdicts have separate filters.
 Download the single HTML file and open it in a browser; the
 [coverage notes](falcata-1.1/benchmarks.md#kernel-evolution-history) explain it.
 

@@ -281,9 +281,10 @@ preserve every draw, bin count, parameter, fingerprint and the memory diagnosis.
 
 ## Kernel evolution history
 
-This history is a frozen **9 October** export. Later search nights (open1–open3 and
-the controller generations) and the pull requests from #94 on are not included;
-regenerating it is optional for the release.
+This history is a frozen **21 October** export of 18 campaigns, from the September
+replay searches through the open1–open5 search nights, with integration milestones
+up to PR #117. The controller generations are not search campaigns and are not
+included.
 
 The [offline lineage explorer](lineage-explorer.html) is a reader view of the
 search history behind the article. Download the HTML file and open it in a
@@ -300,21 +301,23 @@ The page focuses on how those searches developed; the article explains the
 resulting CUDA optimizations. A combined-parent edge identifies a second branch
 offered to the worker, without asserting that every change was incorporated.
 
-The frozen export contains **532 archived records**: 141 whole-library search
+The frozen export contains **615 archived records**: 224 whole-library search
 records and 391 isolated replay evaluations. One started, interrupted worker
-without a final archive brings the attempt-record count to **533**. These are
+without a final archive brings the attempt-record count to **616**. These are
 records, including duplicates, imported seeds and re-evaluations, rather than
-533 unique implementations. Thirteen campaign baselines, fourteen documented
-integration milestones and seven explicit references bring the graph to 567
+616 unique implementations. Eighteen campaign baselines, nineteen documented
+integration milestones and seven explicit references bring the graph to 660
 nodes. The references cover three retained best-program metadata records, three
 unavailable early parents and the missing predecessor named by the interrupted
 worker. Seven smoke/development/dry archive records are excluded; unrelated
 GEMM experiments and measurement-only folders are outside this Falcata scope.
 
-The 264 edges distinguish recorded starting-state parents, combinations, idea
-continuations, cross-branch reuse and documented integration. Twenty-three
-integration edges connect public implementation commits to later campaign
-baselines through verified Git ancestry. These establish code presence; they
+The 383 edges distinguish recorded starting-state parents, combinations, idea
+continuations, cross-branch reuse and documented integration. Thirty-two
+integration edges connect public implementation commits to the earliest later
+campaign baselines through verified Git ancestry, and 38 connect candidates to
+the milestones that integrated them; milestones link to their commit and pull
+request. These establish code presence; they
 do not assign a share of a performance gain. Original candidate hashes can be
 local search objects, so only verified public hashes receive GitHub links.
 
@@ -325,27 +328,27 @@ baseline. Imported `night3:c047`, `night5:c088` and `construct2:k007` retain ear
 measurements, explicitly scoped to their source campaigns. No cross-campaign
 ratios are multiplied or ranked as release speedups.
 
-The overview shows thirteen campaign cards rather than drawing every archive
-node at once. Library campaigns expand only local ancestor context, with marked
+The overview shows eighteen campaign cards, ordered by date with their date range,
+and four curated entry points rather than drawing every archive node at once. Library campaigns expand only local ancestor context, with marked
 boundary references for external code parents; the release-lineage view joins
 the documented integration paths. Replay campaigns use source groups and
 twelve-entry pages because their retained evaluations lack parent edges.
 Grouping by exact source hash within a campaign and measurement protocol reduces
 391 replay records to 319 entries, without merging distinct normalized sources.
-All 533 attempt records remain available in 461 grouped entries. A group's ratio
+All 616 attempt records remain available in 544 grouped entries. A group's ratio
 range includes every scored original record, including any outside an active
 filter; its member selector exposes the cached and failed records individually.
 No best draw is selected or new aggregate speed statistic calculated.
 
 The **Speed vs baseline** filter uses only scored ratios, separately from
-**Checks / review** and the original archive outcome. There are 399 above-baseline
-point estimates, of which 347 have no original `improved` label: 308 are valid or
-reused replays, 25 parent-neutral, five parent-regressed and nine review-rejected.
-389 above-baseline records passed the recorded checks; nine were review-rejected
+**Checks / review** and the original archive outcome. There are 450 above-baseline
+point estimates, of which 389 have no original `improved` label: 308 are valid or
+reused replays, 65 parent-neutral, five parent-regressed and 11 review-rejected.
+438 above-baseline records passed the recorded checks; 11 were review-rejected
 and one later failed expanded coverage. Passing these recorded checks establishes
 neither release integration nor a full-training speedup. Worker quick-check
-proxies stay outside the primary speed filter. Among all attempts, 434 have
-recorded passing checks, 54 have a failed gate or rejection, and 45 lack sufficient
+proxies stay outside the primary speed filter. Among all attempts, 488 have
+recorded passing checks, 56 have a failed gate or rejection, and 72 lack sufficient
 check evidence. A stopped identity gate is labeled as not passed rather than
 presented as a completed incorrect-model verdict.
 
@@ -360,12 +363,17 @@ their parents; evaluation chronology is never substituted for those edges.
 preserve the coverage and logical evidence references. The public view omits
 operational timestamps, worker budgets/costs, transcripts and local locations.
 Device command-queue terminology is expanded for clarity; the manifest records
-this wording change and retains the original source hashes.
+this wording change and retains the original source hashes. The 21 October
+export was produced by a rewritten exporter in the search repository; for the 13
+campaigns of the earlier 9 October export it regenerates the same nodes and edges
+from the same hashed sources.
 It leaves the existing live dashboard and experiment records intact.
 The [builder](build_lineage.py), [UI script](lineage-explorer.js),
 [styles](lineage-explorer.css) and [template](lineage-template.html) reproduce the
-single-file explorer from the frozen archive:
+single-file explorer from the frozen archive, and [`lineage_counts.py`](lineage_counts.py)
+recomputes the counts above with the explorer's own rules:
 
 ```bash
 python docs/blog/falcata-1.1/build_lineage.py
+python docs/blog/falcata-1.1/lineage_counts.py
 ```

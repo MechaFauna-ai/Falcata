@@ -12,6 +12,27 @@
   --neutral: #7d8479;
   --idea: #7460a4;
   --shadow: #172b2510;
+  /* Neutral edges: >= 3:1 against the page and the node surface (4.5:1 on #f8f8f4). */
+  --edge: #6b7267;
+}
+/* The system theme applies until the reader picks one with the theme button. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #141b18;
+    --surface: #1c2620;
+    --ink: #edf2e7;
+    --sub: #b7c3b4;
+    --border: #3d4b3e;
+    --wash: #29382d;
+    --accent: #97bb90;
+    --good: #85c37d;
+    --danger: #f2947f;
+    --neutral: #a2ad9d;
+    --idea: #bba0eb;
+    --shadow: #0003;
+    --edge: #95a090;
+  }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -27,6 +48,7 @@
   --neutral: #a2ad9d;
   --idea: #bba0eb;
   --shadow: #0003;
+  --edge: #95a090;
 }
 * {
   box-sizing: border-box;
@@ -352,7 +374,11 @@ h2 {
 }
 .line {
   width: 21px;
-  border-top: 1.5px solid var(--neutral);
+  border-top: 1.5px solid var(--edge);
+}
+.line.continuation {
+  border-color: var(--idea);
+  border-top-width: 2px;
 }
 .line.combine {
   border-top-style: dashed;
@@ -427,9 +453,8 @@ input[type="checkbox"] {
 }
 .edge {
   fill: none;
-  stroke: var(--neutral);
-  stroke-width: 1.25;
-  opacity: 0.6;
+  stroke: var(--edge);
+  stroke-width: 1.35;
 }
 .edge.combine {
   stroke-dasharray: 5 4;
@@ -478,7 +503,7 @@ input[type="checkbox"] {
 }
 .node .campaign {
   fill: var(--sub);
-  font-size: 9px;
+  font-size: 11px;
 }
 .node .name {
   font-weight: 650;
@@ -536,11 +561,51 @@ input[type="checkbox"] {
   border-radius: 8px;
   padding: 14px;
 }
+.campaign-card .campaign-dates {
+  margin: 0 0 6px;
+  color: var(--ink);
+  font-size: 12px;
+}
+.highlights {
+  margin-bottom: 14px;
+}
+.highlight-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.highlight-card {
+  background: var(--wash);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.highlight-card h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+.highlight-card p {
+  font-size: 12px;
+  margin: 0 0 8px;
+  color: var(--sub);
+}
+.highlight-nodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.highlight-nodes button,
+.highlight-open {
+  padding: 2px 7px;
+  font-size: 11px;
+}
 .campaign-card.no-matches {
   opacity: 0.6;
 }
 .campaign-kicker {
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.08em;
   color: var(--sub);
 }
