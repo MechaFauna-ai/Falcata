@@ -360,7 +360,9 @@ def _host_cache_probe(graph, scenario):
     if scenario == "transition":
         params["quant_mode"] = "stochastic"
     weight = None
-    if scenario == "weighted":
+    # weighted: the full host cache (device_tree_lean_end:off); weighted_lean: weights under the lean tree end
+    lean_gate = ",device_tree_lean_end:off" if scenario == "weighted" else ""
+    if scenario in {"weighted", "weighted_lean"}:
         weight = np.linspace(0.5, 1.5, len(y))
     elif scenario == "renewal":
         params["quant_train_renew_leaf"] = True
@@ -381,7 +383,11 @@ def _host_cache_probe(graph, scenario):
     for candidate in [False, True]:
         p = {
             **params,
-            "cuda_plan": "auto," + _CONTROLLER["on" if candidate else "off"] + ",device_level_graph:" + graph,
+            "cuda_plan": "auto,"
+            + _CONTROLLER["on" if candidate else "off"]
+            + ",device_level_graph:"
+            + graph
+            + lean_gate,
         }
         booster = flc.Booster(p, train_set=flc.Dataset(X, label=y, weight=weight, params=p))
         arm = []
@@ -435,7 +441,7 @@ def _host_cache_probe(graph, scenario):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["off", "on"])
-@pytest.mark.parametrize("scenario", ["transition", "weighted", "renewal", "refit"])
+@pytest.mark.parametrize("scenario", ["transition", "weighted", "weighted_lean", "renewal", "refit"])
 def test_device_tree_host_cache_cuda(graph, scenario):
     code = "import runpy,sys; runpy.run_path(sys.argv[1])['_host_cache_probe'](*sys.argv[2:])"
     result = subprocess.run(
@@ -488,7 +494,10 @@ def _final_all_map_probe(graph, scenario, gate):
         # Keep min_gain=10 above observed fixedpoint noise (host tree3 split feature8 at gain0.11094).
         # Intended X2 splits have gain>8000 even after the row-count shrink; retain the gap assertion.
         y = (1 + 7 * X[:, 0] + 3 * X[:, 1] + 2 * X[:, 0] * X[:, 2]).astype(np.float32)
-    weight = np.linspace(0.5, 1.5, len(y)) if scenario == "weighted" else None
+    weight = np.linspace(0.5, 1.5, len(y)) if scenario in {"weighted", "weighted_lean"} else None
+    # weighted: the full host cache (device_tree_lean_end:off); weighted_lean: weights under the lean tree end
+    if scenario == "weighted":
+        gate += ",device_tree_lean_end:off"
     if scenario == "renewal":
         params["quant_train_renew_leaf"] = True
     stages = [(1024, 10, 0.0, len(y))] if scenario == "full" else [(16, 3, 10.0, len(y))]
@@ -572,6 +581,7 @@ def _final_all_map_probe(graph, scenario, gate):
         ("history", ",async_tree_start:off"),
         ("history", ",final_readback_first:off,early_leaf_map:off"),
         ("weighted", ""),
+        ("weighted_lean", ""),
         ("renewal", ""),
     ],
 )
@@ -631,6 +641,8 @@ def test_device_tree_final_all_map_cuda(graph, scenario, gate):
         assert tuple(map(int, inline[6])) == (1, 1, 1, 2), "depth-one completion missed"
         if graph == "on":
             assert int(events[2][4]) > 0, "consecutive identical geometry did not reuse the graph"
+    elif scenario == "weighted_lean":
+        assert int(inline[0][0]) == 1, "device_tree_lean_end must give weighted trees the inline final map"
     else:
         assert int(inline[0][0]) == int(inline[0][1]) == 0
         assert routes[0][0] == "full"

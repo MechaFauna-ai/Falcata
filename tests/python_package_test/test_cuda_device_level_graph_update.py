@@ -29,9 +29,10 @@ def _model_md5(params, X, y, rounds):
 
 
 def _churn_data():
-    # columns of 2 to 31 distinct values: the sampled columns' bin total (part of the graph key) differs per tree
+    # 600 columns of 2 to 63 distinct values at feature_fraction 0.1: the sampled columns' bin total (part of the
+    # graph key) differs from tree to tree (28 of 30 trees miss; 300 columns of 2 to 31 values repeat their layouts)
     rng = np.random.default_rng(2)
-    X = (rng.integers(0, 1 << 20, size=(6000, 300)) % (2 + np.arange(300) % 30)).astype(np.float32)
+    X = (rng.integers(0, 1 << 20, size=(6000, 600)) % (2 + np.arange(600) % 62)).astype(np.float32)
     X[rng.random(X.shape) < 0.05] = np.nan
     y = (X[:, :10].sum(axis=1) + rng.normal(size=len(X))).astype(np.float32)
     return X, y
@@ -68,7 +69,7 @@ def test_device_level_graph_update_engages_cuda():
     code = (
         "import sys, json, numpy as np, falcata as flc\n"
         "rng = np.random.default_rng(2)\n"
-        "X = (rng.integers(0, 1 << 20, size=(6000, 300)) % (2 + np.arange(300) % 30)).astype(np.float32)\n"
+        "X = (rng.integers(0, 1 << 20, size=(6000, 600)) % (2 + np.arange(600) % 62)).astype(np.float32)\n"
         "y = (X[:, :10].sum(axis=1) + rng.normal(size=len(X))).astype(np.float32)\n"
         "p = dict(json.loads(sys.argv[2]), cuda_plan=sys.argv[1])\n"
         "flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=30)\n"
