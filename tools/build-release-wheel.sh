@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# Build the release wheel: prebuilt CUDA binary for the architectures users
-# actually train on. No PTX -- a device outside this list gets an actionable
-# error at first use (CheckCUDADeviceSupportsThisBuild) pointing at the sdist,
-# which auto-detects the local GPU. Run inside a manylinux container for a
-# publishable platform tag; see the release checklist.
+# Build the release wheel (CUDA 13): prebuilt CUDA binary for the architectures
+# users actually train on (sm_75 upward). No PTX -- a device outside this list
+# gets an actionable error at first use (CheckCUDADeviceSupportsThisBuild)
+# pointing at the sdist, which auto-detects the local GPU. Run inside a
+# manylinux container for a publishable platform tag; see the release checklist.
 #
 #   FALCATA_WHEEL_ARCHS  override the architecture list
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-# 60-real, not 61-real: an sm_60 cubin runs on every Pascal device (CUDA
-# binary compatibility is upward within a major), so one slot covers P100 AND
-# GTX 10xx; the codebase uses no sm_61-only features (no dp4a).
-ARCHS="${FALCATA_WHEEL_ARCHS:-60-real;70-real;75-real;80-real;86-real;89-real;90-real;100-real;120-real}"
+# CUDA 13 cannot emit pre-Turing code (sm_50..sm_72), so the list starts at 75.
+# Cubins are upward-compatible within a major: 80/86/89 cover all Ampere and
+# Ada, 100 covers GB200/GB300 (sm_103), 120 covers RTX 50xx and sm_121.
+# Pascal/Volta (P100, GTX 10xx, V100) users build from source with CUDA 12.x.
+# PTX would be useless until CheckCUDADeviceSupportsThisBuild accepts an
+# unknown major that a -virtual entry can JIT; follow-up, not 1.1.
+ARCHS="${FALCATA_WHEEL_ARCHS:-75-real;80-real;86-real;89-real;90-real;100-real;120-real}"
 
 cd "$HERE"
 CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=${ARCHS} -DUSE_NCCL=ON -DFALCATA_CUDA_LINEINFO=OFF" \
