@@ -13,6 +13,7 @@
 #include <Falcata/meta.h>
 #include <Falcata/tree.h>
 
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -227,6 +228,15 @@ class CUDADataPartition: public NCCLInfo {
   /*! \brief cuda_plan key device_level_graph: the host half of a replayed graph's levels (one swap per level) */
   void SwapIndexBuffers(const int times) {
     for (int i = 0; i < times; ++i) {
+      cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+    }
+  }
+  /*! \brief cuda_plan key index_parity_canonical: the lower-address index buffer as the main array, before the main
+   *  array is rewritten (the identity fill or a new bag), so every tree starts with the same graph key pointers */
+  void CanonicalizeIndexBuffers() {
+    if (FalcataPlan::Get().index_parity_canonical &&
+        reinterpret_cast<uintptr_t>(cuda_data_indices_.RawData()) >
+          reinterpret_cast<uintptr_t>(cuda_out_data_indices_in_leaf_.RawData())) {
       cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
     }
   }
