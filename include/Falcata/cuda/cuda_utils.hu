@@ -204,8 +204,6 @@ void DeallocateCUDAMemory(T** ptr, const char* file, const int line) {
   }
 }
 
-void PrintLastCUDAError();
-
 template <typename T>
 class CUDAVector {
  public:

@@ -945,7 +945,6 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
     }
   }
   if (!host_score_nodes.empty()) {
-    restore_tree_structure = false;
     CUDAVector<uint8_t>* scratch = cuda_column_data->score_node_scratch();
     const size_t table_bytes = host_score_nodes.size() * sizeof(CUDAScoreNode);
     if (scratch->Size() < table_bytes) {

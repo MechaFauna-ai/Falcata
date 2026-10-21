@@ -22,11 +22,6 @@ void SynchronizeCUDAStream(cudaStream_t cuda_stream, const char* file, const int
   gpuAssert(cudaStreamSynchronize(cuda_stream), file, line);
 }
 
-void PrintLastCUDAError() {
-  const char* error_name = cudaGetErrorName(cudaGetLastError());
-  Log::Fatal(error_name);
-}
-
 void SetCUDADevice(int gpu_device_id, const char* file, int line) {
   int cur_gpu_device_id = 0;
   CUDASUCCESS_OR_FATAL_OUTER(cudaGetDevice(&cur_gpu_device_id));

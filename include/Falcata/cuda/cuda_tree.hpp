@@ -269,8 +269,6 @@ class CUDATree : public Tree {
 
   const int* cuda_split_feature_inner() const { return cuda_split_feature_inner_.RawData(); }
 
-  const int* cuda_split_feature() const { return cuda_split_feature_.RawData(); }
-
   const uint32_t* cuda_threshold_in_bin() const { return cuda_threshold_in_bin_.RawData(); }
 
   const double* cuda_threshold() const { return cuda_threshold_.RawData(); }

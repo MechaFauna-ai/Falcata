@@ -372,18 +372,6 @@ inline int PackValuesPerWord(PackCodecId id) {
   }
 }
 
-/*! \brief max representable bins for a codec id */
-inline int PackMaxBins(PackCodecId id) {
-  switch (id) {
-    case PackCodecId::kBit3x32: return PackBit3x32::kMaxBins;
-    case PackCodecId::kRadix5x32: return PackRadix5x32::kMaxBins;
-    case PackCodecId::kRadix6x32: return PackRadix6x32::kMaxBins;
-    case PackCodecId::kRadix7x32: return PackRadix7x32::kMaxBins;
-    case PackCodecId::kNibble4:
-    default: return PackNibble4::kMaxBins;
-  }
-}
-
 #undef FALCATA_PACK_FN
 
 }  // namespace Falcata

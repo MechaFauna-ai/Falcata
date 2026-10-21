@@ -207,11 +207,6 @@ __global__ void HistTC2(const uint8_t* __restrict__ colmajor,
       : "+r"(d0), "+r"(d1), "+r"(d2), "+r"(d3)
       : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(bb0), "r"(bb1));
   }
-  // ragged tail: plain scalar adds into the same D layout via global atomics later
-  int tail_g[2] = {0, 0}, tail_h[2] = {0, 0};  // per (col, my bin g)
-  for (int r = full_end + lane; r < row_end_full; r += 32) {
-    // handled cooperatively below via atomics; rare path (only last strip)
-  }
   // D layout: d0 = [row g][cols tg*2, tg*2+1]; d2/d3 = row g+8.
   // rows of D = slots: slot g -> (col0, bin g); slot g+8 -> (col1, bin g).
   // cols of D = n: 0 = grad, 1 = hess.

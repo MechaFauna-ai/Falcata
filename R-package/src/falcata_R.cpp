@@ -218,14 +218,6 @@ SEXP wrapped_R_raw(void *len) {
   return Rf_allocVector(RAWSXP, *(reinterpret_cast<R_xlen_t*>(len)));
 }
 
-SEXP wrapped_R_int(void *len) {
-  return Rf_allocVector(INTSXP, *(reinterpret_cast<R_xlen_t*>(len)));
-}
-
-SEXP wrapped_R_real(void *len) {
-  return Rf_allocVector(REALSXP, *(reinterpret_cast<R_xlen_t*>(len)));
-}
-
 SEXP wrapped_Rf_mkChar(void *txt) {
   return Rf_mkChar(reinterpret_cast<char*>(txt));
 }
@@ -243,14 +235,6 @@ SEXP safe_R_string(R_xlen_t len, SEXP *cont_token) {
 
 SEXP safe_R_raw(R_xlen_t len, SEXP *cont_token) {
   return R_UnwindProtect(wrapped_R_raw, reinterpret_cast<void*>(&len), throw_R_memerr, cont_token, *cont_token);
-}
-
-SEXP safe_R_int(R_xlen_t len, SEXP *cont_token) {
-  return R_UnwindProtect(wrapped_R_int, reinterpret_cast<void*>(&len), throw_R_memerr, cont_token, *cont_token);
-}
-
-SEXP safe_R_real(R_xlen_t len, SEXP *cont_token) {
-  return R_UnwindProtect(wrapped_R_real, reinterpret_cast<void*>(&len), throw_R_memerr, cont_token, *cont_token);
 }
 
 SEXP safe_R_mkChar(char *txt, SEXP *cont_token) {

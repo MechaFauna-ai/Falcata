@@ -2078,22 +2078,6 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   }
 }
 
-int CUDAHistogramConstructor::DeviceLevelConstructBlockDimY() {
-  // LaunchConstructHistogramBatchedKernelInner0's block y (block dims depend on the tree's columns only)
-  int grid_dim_x = 0;
-  int grid_dim_y = 0;
-  int block_dim_x = 0;
-  int block_dim_y = 0;
-  CalcConstructHistogramBatchedKernelDim(&grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y, 1, 1);
-  if (use_compact_view_) {
-    const int cc = std::max(1, max_num_compact_cols_per_partition_);
-    block_dim_x = cc > NUM_THREADS_PER_BLOCK ? (cc + 1) / 2 : cc;
-    block_dim_y = std::max(1, NUM_THREADS_PER_BLOCK / block_dim_x);
-    block_dim_y = HybridQuantConstructBlockDimY(block_dim_y, use_quantized_grad_ ? num_grad_quant_bins_ : 0);
-  }
-  return block_dim_y;
-}
-
 bool CUDAHistogramConstructor::DeviceLevelConstructSupported() {
   // the dense batched kernel and the pair-joint family both take the device block map
   return use_quantized_grad_ && SupportsBatchedLevel();

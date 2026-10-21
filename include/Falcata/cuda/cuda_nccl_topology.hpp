@@ -240,10 +240,6 @@ class NCCLTopology {
 
   int num_gpu() const { return num_gpu_; }
 
-  int master_gpu_index() const { return master_gpu_index_; }
-
-  int master_gpu_device_id() const { return master_gpu_device_id_; }
-
   const std::vector<int>& gpu_list() const { return gpu_list_; }
 
  private:

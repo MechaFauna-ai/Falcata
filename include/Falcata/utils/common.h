@@ -141,30 +141,6 @@ inline static std::vector<std::string> SplitBrackets(const char* c_str, char lef
   return ret;
 }
 
-inline static std::vector<std::string> SplitLines(const char* c_str) {
-  std::vector<std::string> ret;
-  std::string str(c_str);
-  size_t i = 0;
-  size_t pos = 0;
-  while (pos < str.length()) {
-    if (str[pos] == '\n' || str[pos] == '\r') {
-      if (i < pos) {
-        ret.push_back(str.substr(i, pos - i));
-      }
-      // skip the line endings
-      while (str[pos] == '\n' || str[pos] == '\r') ++pos;
-      // new begin
-      i = pos;
-    } else {
-      ++pos;
-    }
-  }
-  if (i < pos) {
-    ret.push_back(str.substr(i));
-  }
-  return ret;
-}
-
 inline static std::vector<std::string> Split(const char* c_str, const char* delimiters) {
   std::vector<std::string> ret;
   std::string str(c_str);
@@ -400,13 +376,6 @@ inline static const char* SkipSpaceAndTab(const char* p) {
   return p;
 }
 
-inline static const char* SkipReturn(const char* p) {
-  while (*p == '\n' || *p == '\r' || *p == ' ') {
-    ++p;
-  }
-  return p;
-}
-
 template<typename T, typename T2>
 inline static std::vector<T2> ArrayCast(const std::vector<T>& arr) {
   std::vector<T2> ret(arr.size());
@@ -561,17 +530,6 @@ inline static std::string Join(const std::vector<T>& strs, size_t start, size_t 
     str_buf << strs[i];
   }
   return str_buf.str();
-}
-
-inline static int64_t Pow2RoundUp(int64_t x) {
-  int64_t t = 1;
-  for (int i = 0; i < 64; ++i) {
-    if (t >= x) {
-      return t;
-    }
-    t <<= 1;
-  }
-  return 0;
 }
 
 /*!

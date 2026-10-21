@@ -687,8 +687,6 @@ class CUDAHistogramConstructor {
   /*! \brief cuda_plan key device_levels: whether this tree's multi-pair level constructs take the dense batched
    *  kernel (the one with the device block map), not the pair-joint family */
   bool DeviceLevelConstructSupported();
-  /*! \brief cuda_plan key device_levels: the dense batched construct's block y for this tree (as launched) */
-  int DeviceLevelConstructBlockDimY();
   /*! \brief cuda_plan key device_level_graph: the pointers and per-tree shape a captured level search bakes in */
   void DeviceLevelGraphKey(std::vector<const void*>* key,
                            const CUDADeviceLevelConstructShape* shape = nullptr) const {

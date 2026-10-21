@@ -1164,8 +1164,6 @@ TrainingShareStates* Dataset::GetShareStates(
     share_state->is_constant_hessian = is_constant_hessian;
     return share_state;
   } else {
-    std::unique_ptr<MultiValBin> sparse_bin;
-    std::unique_ptr<MultiValBin> all_bin;
     std::unique_ptr<TrainingShareStates> col_wise_state;
     std::unique_ptr<TrainingShareStates> row_wise_state;
     col_wise_state.reset(new TrainingShareStates());

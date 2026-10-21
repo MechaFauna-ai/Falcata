@@ -180,19 +180,6 @@ class Metadata {
   }
 
   /*!
-  * \brief Set initial scores for one record.  Note that init_score might have multiple columns and is stored in column format.
-  * \param idx Index of this record
-  * \param values Initial score values for this record, one per class
-  */
-  inline void SetInitScoreAt(data_size_t idx, const double* values) {
-    const auto nclasses = num_init_score_classes();
-    const double* val_ptr = values;
-    for (int i = idx; i < nclasses * num_data_; i += num_data_, ++val_ptr) {
-      init_score_[i] = *val_ptr;
-    }
-  }
-
-  /*!
   * \brief Set Query Id for one record
   * \param idx Index of this record
   * \param value Query Id value of this record
@@ -746,9 +733,6 @@ class Dataset {
   inline uint64_t GroupBinBoundary(int group_idx) const {
     return group_bin_boundaries_[group_idx];
   }
-  inline uint64_t NumTotalBin() const {
-    return group_bin_boundaries_.back();
-  }
 
   inline std::vector<int> ValidFeatureIndices() const {
     std::vector<int> ret;
@@ -910,15 +894,6 @@ class Dataset {
         cnt, lte_indices, gt_indices);
   }
 
-  inline int SubFeatureBinOffset(int i) const {
-    const int sub_feature = feature2subfeature_[i];
-    if (sub_feature == 0) {
-      return 1;
-    } else {
-      return 0;
-    }
-  }
-
   inline int FeatureNumBin(int i) const {
     const int group = feature2group_[i];
     const int sub_feature = feature2subfeature_[i];
@@ -987,12 +962,6 @@ class Dataset {
     const int group = feature2group_[i];
     const int sub_feature = feature2subfeature_[i];
     return feature_groups_[group]->bin_mappers_[sub_feature]->ValueToBin(threshold_double);
-  }
-
-  inline int MaxRealCatValue(int i) const {
-    const int group = feature2group_[i];
-    const int sub_feature = feature2subfeature_[i];
-    return feature_groups_[group]->bin_mappers_[sub_feature]->MaxCatValue();
   }
 
   /*!
@@ -1111,21 +1080,6 @@ class Dataset {
   /*! \brief Get pointer to raw_data_ feature */
   inline const float* raw_index(int feat_ind) const {
     return raw_data_[numeric_feature_map_[feat_ind]].data();
-  }
-
-  /*! \brief Whether raw_index(feat_ind) is safe to call.
-   *
-   * raw_index indirects twice -- through numeric_feature_map_ and then into
-   * raw_data_ -- and the map holds -1 for a feature with no numeric column,
-   * which a refit on a narrower dataset can produce. Callers holding feature
-   * indices from a DIFFERENT dataset (a tree's leaf regressions, say) must ask
-   * this first. */
-  inline bool HasRawIndex(int feat_ind) const {
-    if (!has_raw_ || feat_ind < 0 || feat_ind >= static_cast<int>(numeric_feature_map_.size())) {
-      return false;
-    }
-    const int col = numeric_feature_map_[feat_ind];
-    return col >= 0 && col < static_cast<int>(raw_data_.size());
   }
 
   inline uint32_t feature_max_bin(const int inner_feature_index) const {
