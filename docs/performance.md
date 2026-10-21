@@ -32,7 +32,8 @@ archive, which was not re-run, the same geometric means are **5.8× (XGBoost),
 FAIL / incomplete in the archive (accuracy .499); without it the 1.1 LightGBM
 mean is 34.9×. Numerai input differs: float32 at launch, int8 for 1.1.
 Quality exceptions: stochastic fraud-deep (AUC .9564 at launch, .9630 for 1.1)
-and covtype-deep (accuracy .9581, launch snapshot and 1.1 alike) are below
+and covtype-deep (accuracy .9581 in the committed snapshot's 8 October re-run
+and in 1.1; the untouched August snapshot had .9649, above XGBoost) are below
 XGBoost's .9747 and .9631, which
 only fixed point matches; no falcata mode matches XGBoost's epsilon-deep .9440,
 at launch (.9429) or for 1.1 (best .9432); 1.1's fixed-point fraud-deep model
