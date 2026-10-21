@@ -30,7 +30,7 @@ Categorical Feature Support
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Falcata can use categorical features directly (without one-hot encoding).
-The experiment on `Expo data`_ shows about 8x speed-up compared with one-hot encoding.
+Upstream LightGBM's CPU experiment on `Expo data`_ showed about 8x speed-up compared with one-hot encoding; Falcata has not re-measured it.
 
 For the setting details, please refer to the ``categorical_feature`` `parameter <./Parameters.rst#categorical_feature>`__.
 

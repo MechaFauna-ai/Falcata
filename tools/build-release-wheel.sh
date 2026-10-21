@@ -10,7 +10,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # CUDA 13 cannot emit pre-Turing code (sm_50..sm_72), so the list starts at 75.
 # Cubins are upward-compatible within a major: 80/86/89 cover all Ampere and
-# Ada, 100 covers GB200/GB300 (sm_103), 120 covers RTX 50xx and sm_121.
+# Ada, 100 covers sm_100 (B200/GB200) and sm_103 (GB300), 120 covers RTX 50xx and sm_121.
 # Pascal/Volta (P100, GTX 10xx, V100) users build from source with CUDA 12.x.
 # PTX would be useless until CheckCUDADeviceSupportsThisBuild accepts an
 # unknown major that a -virtual entry can JIT; follow-up, not 1.1.

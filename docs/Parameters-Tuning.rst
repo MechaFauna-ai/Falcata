@@ -45,11 +45,15 @@ training loop was built for it (see `Features
 <./Features.rst#the-cuda-native-training-pipeline>`__). On top of it:
 
 - ``quant_mode=stochastic`` typically adds another large speedup by
-  quantizing gradients into 4 bins; on suitable data it reaches quality
+  quantizing gradients into 4 bins (raised automatically to 16 or 64 on large
+  data with small leaves); on suitable data it reaches quality
   parity with full precision. ``quant_mode=fixedpoint`` is the near-lossless
   alternative. Both are bit-reproducible.
-- ``cuda_precision=fp32`` halves global-histogram bandwidth for
-  *non-quantized* training (quality-gated, not bit-identical).
+- ``cuda_precision=fp32`` together with
+  ``cuda_plan=auto,nonquant_deterministic:off`` halves global-histogram
+  bandwidth for *non-quantized* training, at the cost of run-to-run
+  determinism (quality-gated, not bit-identical). ``fp32`` alone only switches
+  the split-gain math; the histograms stay fp64 and deterministic.
 - Leave ``cuda_plan=auto`` alone: the planner already resolves the fastest
   kernel choices from your data shape; the override keys exist for
   experiments, not tuning.
