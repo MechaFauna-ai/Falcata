@@ -769,9 +769,11 @@ distribution, so ``USE_NCCL`` stays ``OFF`` on Windows.)
    ``unsupported Microsoft Visual Studio version!``. Either install a matching
    MSVC toolset, or override the check by adding
    ``-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler`` to the first ``cmake``
-   command. (Overriding works in practice — non-quantized CUDA training results
-   are verified bit-for-bit against the CPU path — but is unsupported by NVIDIA,
-   so prefer a matching toolset for production.)
+   command. (Overriding works in practice — CUDA training is deterministic run
+   to run, quantized and, since 1.1, non-quantized, and the nightly gates
+   compare CUDA with the CPU path within a metric tolerance, not bit-for-bit —
+   but it is unsupported by NVIDIA, so prefer a matching toolset for
+   production.)
 
 3. Build and install the Python-package against the compiled DLL:
 

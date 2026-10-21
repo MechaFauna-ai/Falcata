@@ -32,7 +32,8 @@ archive, which was not re-run, the same geometric means are **5.8× (XGBoost),
 FAIL / incomplete in the archive (accuracy .499); without it the 1.1 LightGBM
 mean is 34.9×. Numerai input differs: float32 at launch, int8 for 1.1.
 Quality exceptions: stochastic fraud-deep (AUC .9564 at launch, .9630 for 1.1)
-and covtype-deep (accuracy .9581) are below XGBoost's .9747 and .9631, which
+and covtype-deep (accuracy .9581, launch snapshot and 1.1 alike) are below
+XGBoost's .9747 and .9631, which
 only fixed point matches; no falcata mode matches XGBoost's epsilon-deep .9440,
 at launch (.9429) or for 1.1 (best .9432); 1.1's fixed-point fraud-deep model
 (AUC .9774, changed by #146 and #154) is below CatBoost's .9785, as are year
@@ -72,7 +73,10 @@ competitor; quality in parentheses):
 Each dataset has a launch row (August 2026 sweep) and a 1.1 row (measured
 21 October 2026 on `1408ee79`, from the
 [framework table](blog/falcata-1.1/framework-table.md)); the competitor times
-and quality are the August archive in both.
+and quality are the August archive in both. Where the framework table gives
+the archive's LightGBM quality as a range (higgs .8499–.8505, covtype
+.4461–.5346), the launch rows quote the upper end and the 1.1 rows the
+framework table's central value.
 
 | dataset | build | falcata | vs XGBoost | vs upstream LightGBM (CUDA) | vs CatBoost |
 |---|---|---|---|---|---|
@@ -331,7 +335,7 @@ for its slow baseline run, see [How this was measured](#how-this-was-measured)):
 
 | numerai-deep | covtype-deep | numerai-example | covtype-shallow | fraud-deep | year | epsilon | higgs |
 |---|---|---|---|---|---|---|---|
-| +3086% | +2929% | +1828% | +878% | +703% | +580% | +205% | +194% |
+| +3085% | +2929% | +1828% | +878% | +703% | +580% | +205% | +194% |
 
 The August 2026 battery on the pre-launch build had +1239% covtype-deep, +386%
 fraud-deep, +382% numerai-deep, +370% covtype-shallow, +251% numerai-example,
@@ -349,7 +353,7 @@ huge rows make each kernel long enough that launch latency matters less).
 Two sub-features extend the same idea (1.1 battery, 21 Oct 2026 on `a82336d8`):
 
 - **Batched split kernels (`batch_kernels`)** — one find/sync launch per
-  level instead of per pair: +2371% numerai-deep, +1419% numerai-example,
+  level instead of per pair: +2370% numerai-deep, +1419% numerai-example,
   +710% covtype-deep, +207% fraud-deep, +190% covtype-shallow, +132% year,
   +114% epsilon, +33% higgs (August 2026: +28% to +254%).
 - **Batched apply (`batch_apply`)** — the split-application phase batched the
@@ -411,7 +415,7 @@ because unused columns share the same cache lines.
 costs one pass; the histogram kernels run 11+ passes per tree over the
 result.
 
-**Measured (leave-one-out battery, 21 Oct 2026 on `a82336d8`):** +1988% on
+**Measured (leave-one-out battery, 21 Oct 2026 on `a82336d8`):** +1987% on
 numerai-deep, +1394% on numerai-example — the two feature-sampled workloads;
 neutral elsewhere (it only activates when sampling is on). August 2026:
 +249% and +177%. The win scales with the excluded fraction. On the numerai-deep
@@ -1392,13 +1396,13 @@ deep; catboost from the prior pass, not re-run at 925.6s/1838.3s):
 The 1.1 row is one timed run after a warmup (`bench.py`), 500 rounds, 1023
 leaves, depth 10; the competitor columns were not re-run.
 
-† Treat the launch table's non-quantized airline-cat times as not
-reproducible rather than as a baseline that 1.1 regressed from. 1.1's 255.2 s
+† Treat the launch table's non-quantized airline-cat times as suspect (not
+reproduced) rather than as a baseline that 1.1 regressed from. 1.1's 255.2 s
 is 7× the 36.7 s above, but the checked-in August archive
-(`perf-plots/data/runs.jsonl`, plain airline deep, falcata-noquant) has
-136–147 s on the launch sweep, and the October A/B found no full-precision
-slowdown on airline deep between 12 October and the release candidate
-(133 s against 141 s, [mode appendix](blog/falcata-1.1/appendix-table.md)).
+(`perf-plots/data/runs.jsonl`, plain airline deep without categorical columns,
+falcata-noquant) has 136–147 s on the launch sweep, and the October A/B found
+only a 6% full-precision slowdown on airline deep (133 s -> 141 s), nowhere near
+7× ([mode appendix](blog/falcata-1.1/appendix-table.md)).
 
 Time-to-quality (report/aircat_time_to_quality.png in the bench workspace;
 curve cells + extended falcata runs): falcata-stoch rides the top envelope at
@@ -1553,7 +1557,7 @@ A fourth overnight agentic search took about 18% off that round with four `cuda_
 | peak device memory (per process) | 11,348 MiB | 11,348 MiB | |
 
 - **Same model, every run:** tree md5 `1c68bf82…` at 30k trees, holdout corr 0.0239, sharpe 1.40; switching any one key off, or all four, trains the same model.
-- **On 1.1** (leave-one-out battery, 21 Oct 2026 on `a82336d8`): `pair_code5` off costs +65% on numerai-deep and +31% on numerai-example, `pair_code5_words` +19% / +9% (numerai-deep corrected for that cell's slow baseline run, see [How this was measured](#how-this-was-measured)); the other two keys are within noise.
+- **On 1.1** (leave-one-out battery, 21 Oct 2026 on `a82336d8`): `pair_code5` off costs +65% on numerai-deep and +31% on numerai-example, `pair_code5_words` +19% / +9% (numerai-deep corrected for that cell's slow baseline run, see [How this was measured](#how-this-was-measured)); `pair_code5_pack2` is within noise on both cells, and `pair_code5_l2_store`, which has no numerai-deep run, is within noise on numerai-example (−0.5%).
 - **Only Numerai-shaped data takes the view:** a 4-bit compact view under feature sampling with at most 32 cells per byte pair. Of the evaluator's five guard workloads, covtype, year, higgs and missing build no compact view and numerai53-example's trees decline the view; all five run at master's speed (0.994-1.003x per round, 3 pairs each; covtype's 0.996x came from the two arms' different tuner picks: 0.999x with the tuner off in both).
 - **The search's lineage:** c079 (the view and the code-word construct) 1.194x against master cf10b79a, c077 (an independent implementation of the view on master) 1.058x, c088 (c077's fill pack, stores and gate ported into c079, the fill's slot loop) 1.224x; at 30k trees c079 238.8 and c088 251.4 trees/s against master's 202.2 in the search's single runs.
 

@@ -32,7 +32,8 @@ What makes it fast
   outlier-robust gradient scale. Stochastic raises its 4 bins to 16 (64 for
   constant-hessian objectives) on large data with small leaves; bin counts are
   overridable with ``quant_bins``; both modes are bit-reproducible run to run
-  and across GPU models.
+  and across GPU models (verified sm_89 vs sm_120 on a pre-launch build; the
+  integer-only Philox stream keeps the guarantee by construction).
 - **GPU inference via NVIDIA FIL** — with cuML installed (``cuml-cu13`` for
   the prebuilt CUDA 13 wheel), ``Booster.predict()`` transparently runs on the
   Forest Inference Library; CuPy arrays stay on the device end to end. The
