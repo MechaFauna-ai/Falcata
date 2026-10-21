@@ -11,6 +11,10 @@ bind), max_depth below and above log2(num_leaves), min_data_in_leaf large enough
 levels, min_gain_to_split stumps, bagging, GOSS, feature_fraction (the compact column view), few-bin and wide data,
 and missing values; the configurations the key leaves to the host loop (per-node feature masks, categorical
 features, interaction constraints) must still train the same model.
+
+Where its depth bound holds, the complete device tree (cuda_plan key device_tree, default on) replaces the prefix, so
+the prefix arms below set device_tree:off; _same also trains the default plan (the complete tree where the bound holds,
+else the prefix), which must match too.
 """
 
 import hashlib
@@ -74,13 +78,23 @@ def _params(objective, leaves, depth, quant, seed=3, **extra):
 def _same(params, X, y, rounds, categorical=None, base_plan="auto"):
     off = _model_md5({**params, "cuda_plan": base_plan + ",device_levels:off"}, X, y, rounds, categorical)
     on = _model_md5(
-        {**params, "cuda_plan": base_plan + ",device_levels:on,device_level_graph:off"}, X, y, rounds, categorical
+        {**params, "cuda_plan": base_plan + ",device_levels:on,device_tree:off,device_level_graph:off"},
+        X,
+        y,
+        rounds,
+        categorical,
     )
     graph = _model_md5(
-        {**params, "cuda_plan": base_plan + ",device_levels:on,device_level_graph:on"}, X, y, rounds, categorical
+        {**params, "cuda_plan": base_plan + ",device_levels:on,device_tree:off,device_level_graph:on"},
+        X,
+        y,
+        rounds,
+        categorical,
     )
+    default = _model_md5({**params, "cuda_plan": base_plan}, X, y, rounds, categorical)
     assert on == off
     assert graph == off
+    assert default == off
 
 
 @_REQUIRES_CUDA
@@ -161,7 +175,7 @@ def test_device_levels_engage_cuda():
         "X = rng.standard_normal((20000, 10)).astype(np.float32)\n"
         "y = (X[:, 0] + X[:, 1] > 0).astype(np.float32)\n"
         "p = {'device_type': 'cuda', 'objective': 'binary', 'num_leaves': 255, 'max_depth': 8, 'verbose': -1,\n"
-        "     'quant_mode': 'stochastic', 'cuda_plan': 'auto,device_levels:on'}\n"
+        "     'quant_mode': 'stochastic', 'cuda_plan': 'auto,device_levels:on,device_tree:off'}\n"
         "flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=3)\n"
     )
     env = dict(os.environ, FALCATA_DEBUG="diag")
@@ -178,12 +192,12 @@ def test_device_levels_first_tree_stump_cuda(max_bin, graph):
     X, y = _data(12000, 24, "regression", 73)
     p = _params("regression", 255, 8, "fixedpoint", min_gain_to_split=1e12, max_bin=max_bin)
     models = []
-    for plan in ["auto,device_levels:off", "auto,device_levels:on,device_level_graph:" + graph]:
+    for plan in ["auto,device_levels:off", "auto,device_tree:off,device_level_graph:" + graph, "auto"]:
         b = flc.train({**p, "cuda_plan": plan}, flc.Dataset(X, label=y, params=p), num_boost_round=3)
         assert b.num_trees() == 1
         assert b.dump_model()["tree_info"][0]["num_leaves"] == 1
         models.append("\n".join(line for line in b.model_to_string().splitlines() if "cuda_plan" not in line))
-    assert models[0] == models[1]
+    assert models[0] == models[1] == models[2]
 
 
 @_REQUIRES_CUDA
@@ -247,7 +261,8 @@ def test_device_levels_reset_cuda(graph, reset):
         ).hexdigest()
 
     off = train("auto,device_levels:off")
-    assert train("auto,device_levels:on,device_level_graph:" + graph) == off
+    assert train("auto,device_levels:on,device_tree:off,device_level_graph:" + graph) == off
+    assert train("auto,device_level_graph:" + graph) == off
 
 
 @_REQUIRES_CUDA
@@ -261,8 +276,9 @@ def test_device_levels_sampledwide_uncapped_cuda(graph):
     plan = "auto,pair_code5_words:off,pair_capped_rows:off"
     off = _model_md5({**p, "cuda_plan": plan + ",device_levels:off"}, X, y, 25)
     for _ in range(3):
-        on = _model_md5({**p, "cuda_plan": plan + ",device_levels:on,device_level_graph:" + graph}, X, y, 25)
+        on = _model_md5({**p, "cuda_plan": plan + ",device_tree:off,device_level_graph:" + graph}, X, y, 25)
         assert on == off
+        assert _model_md5({**p, "cuda_plan": plan + ",device_level_graph:" + graph}, X, y, 25) == off
 
 
 @_REQUIRES_CUDA
@@ -280,7 +296,8 @@ def test_device_levels_nonquant_fallback_cuda(graph):
     p = _params("binary", 63, 6, "none", num_threads=1)
     plan = "auto,graph_loop:off"
     off = _model_md5({**p, "cuda_plan": plan + ",device_levels:off"}, X, y, 6)
-    assert _model_md5({**p, "cuda_plan": plan + ",device_levels:on,device_level_graph:" + graph}, X, y, 6) == off
+    assert _model_md5({**p, "cuda_plan": plan + ",device_tree:off,device_level_graph:" + graph}, X, y, 6) == off
+    assert _model_md5({**p, "cuda_plan": plan + ",device_level_graph:" + graph}, X, y, 6) == off
 
 
 @_REQUIRES_CUDA
@@ -305,8 +322,8 @@ def test_device_levels_single_stream_fallback_cuda():
         "p = dict(device_type='cuda', objective='binary', num_leaves=63, max_depth=6, verbose=-1,\n"
         "         quant_mode='fixedpoint', seed=7)\n"
         "out = []\n"
-        "for plan in ['auto,device_levels:off', 'auto,device_levels:on,device_level_graph:off',\n"
-        "             'auto,device_levels:on,device_level_graph:on']:\n"
+        "for plan in ['auto,device_levels:off', 'auto,device_tree:off,device_level_graph:off',\n"
+        "             'auto,device_tree:off,device_level_graph:on', 'auto']:\n"
         " p['cuda_plan'] = plan\n"
         " b = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=5)\n"
         " text = '\\n'.join(s for s in b.model_to_string().splitlines() if 'cuda_plan' not in s)\n"

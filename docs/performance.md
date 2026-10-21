@@ -2860,12 +2860,34 @@ it produces is the quantized classic loop's to the bit
 quantized training as ground truth in
 `test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).
 
-## Experimental complete bounded device trees (`device_tree`)
+## Complete bounded device trees by default (`device_tree`)
 
-`cuda_plan=auto,device_tree:on` (default OFF) requests the complete quantized device controller for scalar,
-numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves`. The key supplies
-its own growth even with `device_levels:off`; unsupported kernels, constraints and data retain the existing
-host flow and report the fallback under `FALCATA_DEBUG=diag`. No training parameters or split rules change.
+`device_tree` (default ON, with `device_levels`) runs the complete quantized device controller for scalar,
+numerical single-GPU trees wherever its depth bound holds: positive `max_depth <= 10` and
+`2^max_depth <= num_leaves + 1`, i.e. every level but the depth-capped last one may split every valid leaf.
+Every level's select, apply and search plus the final apply run on the GPU, with one growth readback and no host
+growth tail. Against the `device_levels` prefix (section 10w) it removes, once per tree, the prefix readback, the
+host replay and the host-driven final level (its uploads, launches and readbacks). Elsewhere (unlimited or deeper
+trees, smaller leaf budgets) the prefix flows and the host flow run exactly as before, and `FALCATA_DEBUG=diag`
+reports `device_tree: fallback to the prefix/host flow (depth bound or leaf budget)`; unsupported kernels,
+constraints and data keep the host flow and report the fallback as the prefix does. There is no automatic
+selector: `cuda_plan=auto,device_tree:off` restores the prefix flow everywhere, `cuda_plan=auto,device_levels:off`
+the host flow (in 1.1 the opt-in spelling was `auto,device_levels:off,device_tree:on`; that string now selects the
+host flow). No training parameters or split rules change: the same selector, kernels and order, bit-identical
+models.
+
+Measured (RTX 5090, one binary, `device_tree:off` vs the default, 2 alternating pairs, T = first call + steady ms
+per round x 29999, every run md5-identical and equal to the previous default's model): numerai53bench-deep-stoch
+1.007 (3.310 -> 3.286 ms per round), numerai53bench-nan-deep-stoch 1.002 (3.552 -> 3.547), covtype-deep-fixed
+1.068 (3.481 -> 3.260), higgs-deep-stoch 1.025 (1.658 -> 1.618); four generated shapes: few-value regression
+(2.47M x 270, 1023 leaves) 1.024, binary with missing values (3.09M x 185, 255 leaves / depth 8,
+feature_fraction 0.5, bagging 0.8) 1.042, epsilon-like (338k x 2425, bagged 0.5) 1.008, year-like (3.10M x 73
+floats, fixed point, bagged 0.5) 1.029; geometric mean 1.025. Shapes outside the bound are unchanged: covtype at
+depth 11 / 2048 leaves 1.000, at unlimited depth / 1023 leaves 1.002. The open5 search measured the same change
+(as `device_tree_auto`) at 1.0257 [1.0247, 1.0268] against master `1408ee79`. Before it became the default, the
+search's same-binary checks also covered bagged, feature-sampled, shallower (255 / 8, 63 / 6) and `max_bin 15`
+shapes (1.024-1.091) and feature-sampled Numerai with missing values, which pays a graph capture per tree (its
+whole-tree keys change every tree): 0.994 over 4 pairs there, inside the 1.5% band (this run: 1.002).
 
 After the root search, the existing device reset copies the initialized fixed root struct's output into tree
 leaf 0 before the record stream can save it as the root internal value. Device selectors and apply kernels then
@@ -2881,7 +2903,7 @@ keyed; other constructs retain the conservative maxima. The complete controller 
 cache across layout misses, without the prefix's nine-miss disable policy. The ordinary prefix retains its
 32-entry limit. Noncapturable layouts use direct device enqueues with the same single growth readback.
 Diagnostics report completed levels/splits and cache
-hits/misses on every tree. Performance validation is pending.
+hits/misses on every tree. The default's end-to-end measurements above include this caching.
 
 For the complete controller's slotted whole-row code-word construct, the physical worker grid is bounded by
 the resolved resident block slots. Workers still cover every virtual block row; row grouping, shared-memory
@@ -2891,13 +2913,14 @@ Device pair-joint kernels whose virtual map fits the physical grid process one v
 larger maps retain the claim loop. Both routes use the same per-row body and device geometry.
 The complete controller runs each level's selector in its own kernel after the leaf-best sync; the ordinary
 prefix retains its fused selector. Both call the same device selection routine before apply, without an
-intermediate host readback. The extra launches and removed sync coordination still need actual timing.
+intermediate host readback. The extra launches and removed sync coordination are not timed in isolation; the
+default's end-to-end measurements above include them.
 With `final_readback_first`, mapped readback staging and asynchronous tree start enabled, the complete controller
 can queue the final pooled slab and maximum exact-count prefix on the find stream before its growth fence.
 Capacity is reserved before growth, and the existing tree-end copy consumes only the synchronized actual prefix.
 Stumps recover the root and use the original copy path; leaf renewal, linear and distributed flows retain their
-existing paths. This changes transfer placement, with no graph-key, growth, map or split-rule change. Performance
-validation is pending. Separate `device_tree_end_readback` diagnostics report readiness and consumption.
+existing paths. This changes transfer placement, with no graph-key, growth, map or split-rule change. It is not
+timed in isolation (the default's end-to-end measurements above include it). Separate `device_tree_end_readback` diagnostics report readiness and consumption.
 
 For plain, unweighted canonical L2 (`objective=regression`, `boosting=gbdt`), the complete controller can
 omit the split-info transfer and host child-statistic/bit-width bookkeeping. It retains the full journal,
@@ -2909,7 +2932,8 @@ After an eligible positive tree, learner host count/start/gradient/hessian and d
 caches are stale and must not feed host growth or CPU renewal. Checked consumers enforce that contract.
 The next `BeforeTrain` refreshes the sole active root (including its bit width); subsequent ordinary splits
 write every newly active child's statistics before use. Root-sum deferral and stump recovery keep their
-existing rules. Refit uses device partition/stat buffers. This bounded experiment still needs actual timing.
+existing rules. Refit uses device partition/stat buffers. It is not timed in isolation (the default's end-to-end
+measurements above include it).
 
 The conservative whole L2 subset maps split children and terminal gaps at the static final depth.
 When the host-cache exclusions hold, the root spans all rows, the map exists, pooled tree-end count staging
@@ -2935,6 +2959,9 @@ Eligible quantized, numerical, scalar, single-GPU two-sync depth-limited trees e
 smaller-child rule; worst-case launches guard on device counts. One prefix-boundary readback replays the journal
 and resumes host growth. Root work, the remaining host levels/tail, score updates, metrics and final tree transfer
 remain. This is a prefix optimization; it does not build an arbitrary whole tree without host synchronization.
+Where the complete device tree's depth bound holds (positive `max_depth <= 10`, `2^max_depth <= num_leaves + 1`),
+the default runs `device_tree` instead of this prefix; the prefix is the default flow for the other eligible shapes,
+and `device_tree:off` makes it the flow for all of them.
 
 `device_level_graph` caches the prefix launches. Cache identity includes resizable buffers, task/layout values,
 packing codec and GOSS's changing ridge. Repeated cache misses switch subsequent trees to the host path. Both

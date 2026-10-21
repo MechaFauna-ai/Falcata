@@ -52,7 +52,11 @@ def _active_readback_probe(graph, setting):
             "num_leaves": first_L,
             "max_depth": first_depth,
             "min_gain_to_split": first_gain,
-            "cuda_plan": "auto,device_levels:off,device_tree:" + controller + ",device_level_graph:" + graph + gate,
+            "cuda_plan": "auto,"
+            + ("device_levels:off" if controller == "off" else "device_tree:on")
+            + ",device_level_graph:"
+            + graph
+            + gate,
         }
         ds = flc.Dataset(X[:first_rows], label=y[:first_rows], params=p)
         booster = flc.Booster(p, train_set=ds)

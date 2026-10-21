@@ -35,7 +35,7 @@ std::vector<std::string> Run(const Dataset* data, const std::vector<float>& x,
     {"num_leaves", "16"}, {"max_depth", "3"}, {"feature_fraction", "1"}, {"min_data_in_leaf", "2"},
     {"min_gain_to_split", "10"}, {"quant_train_renew_leaf", "false"}, {"verbosity", "-1"},
     {"boost_from_average", "false"}, {"feature_pre_filter", "false"},
-    {"cuda_plan", std::string("auto,device_levels:off,device_tree:on,final_map_only:") + (defer ? "on" : "off")}});
+    {"cuda_plan", std::string("auto,device_tree:on,final_map_only:") + (defer ? "on" : "off")}});
   Config smooth_config = config;  // outlives learner even after ResetConfig takes its address
   CUDASingleGPUTreeLearner learner(&config, true);
   learner.Init(data, true);

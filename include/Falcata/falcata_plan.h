@@ -38,6 +38,11 @@ namespace Falcata {
  * is ``:`` (not ``=``) because the surrounding parameter string already uses
  * ``=`` -- a nested ``=`` would be split by the parameter tokenizer.
  *
+ * Growth flows of single-GPU quantized trees, by default: the complete device
+ * tree (``device_tree``) wherever its depth bound holds, else the device-driven
+ * prefix (``device_levels``) followed by the host loop. ``device_tree:off``
+ * restores the prefix flow everywhere, ``device_levels:off`` the host flow.
+ *
  * Fields WITHOUT an override key are measured-invariant winners: they won on
  * every benchmarked shape and are baked; the bool remains only as a one-line
  * debugging lever for developers.
@@ -926,19 +931,24 @@ struct FalcataPlan {
   // bit-identical.
   bool dense_wide_hist = true;      // key: dense_wide_hist
   // quantized two-sync level prefix: K = min(floor(log2(num_leaves)), max_depth - 1, 10), with no depth cap when
-  // max_depth is unlimited. Only eligible depth-limited host flows use this prefix. Where the
-  // leaf budget cannot bind, run device-driven: the host enqueues every level's apply and children's search without
-  // reading anything back. The level sync's last block selects the splittable leaves and writes the next level's
-  // apply descriptors and tree record; the apply's offset aggregate writes the children's search descriptors (the
-  // host's exact counts, sums, validity gates and bit widths); launches are sized for the worst case of their level
-  // and blocks past the device's live counts exit. The split records, split infos and leaf best splits are read
-  // back once after level K, the host replays its bookkeeping and the classic loop continues. Same descriptors,
-  // same kernels' sums: bit-identical.
+  // max_depth is unlimited. Only eligible depth-limited host flows use this prefix (where device_tree's depth bound
+  // holds, the complete device tree replaces it). Where the leaf budget cannot bind, run device-driven: the host enqueues
+  // every level's apply and children's search without reading anything back. The level sync's last block selects the
+  // splittable leaves and writes the next level's apply descriptors and tree record; the apply's offset aggregate writes
+  // the children's search descriptors (the host's exact counts, sums, validity gates and bit widths); launches are sized
+  // for the worst case of their level and blocks past the device's live counts exit. The split records, split infos and
+  // leaf best splits are read back once after level K, the host replays its bookkeeping and the classic loop continues.
+  // Same descriptors, same kernels' sums: bit-identical.
   bool device_levels = true;        // key: device_levels
-  // Experimental complete depth-bounded quantized tree: 2^max_depth <= num_leaves, depth <= 10. Includes the
-  // final apply without its unnecessary child search; one growth journal readback and no host growth tail.
-  // A changing sampled layout can disable graph caching, but never the device controller itself.
-  bool device_tree = false;         // key: device_tree
+  // The complete depth-bounded quantized tree on the device (default; requires device_levels): wherever positive
+  // max_depth <= 10 and 2^max_depth <= num_leaves + 1 (every level but the depth-capped last one may split every
+  // valid leaf), every level's select, apply and search plus the final apply without its unnecessary child search
+  // run device-driven; one growth journal readback and no host growth tail, instead of the device_levels prefix,
+  // its readback, the host's replay and the host-driven final level. Other shapes keep the prefix and the host flow
+  // (FALCATA_DEBUG=diag reports the fallback); device_tree:off restores the prefix everywhere. A changing sampled
+  // layout can disable graph caching, but never the device controller itself. The same selector, kernels and order:
+  // bit-identical.
+  bool device_tree = true;          // key: device_tree
   // device_levels' launches as one cached CUDA graph for the prefix (root work and the host tail remain). Trees
   // whose keys keep changing use the host loop after the cache-miss budget: the same model, bit-identical.
   bool device_level_graph = true;   // key: device_level_graph

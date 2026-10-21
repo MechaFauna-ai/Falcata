@@ -26,9 +26,9 @@ def _probe(arm, model_path):
     y = np.nan_to_num(X[:, :16]) @ rng.standard_normal(16) + rng.standard_normal(len(X))
     # The fill still writes six-bit codes, but the per-byte descendant reader supports five-bit codes only.
     # Fix this reader choice in ALL arms so the fixture requires deferred nibbles, regardless of device occupancy.
-    plan = "auto,view_mode:compact,pair_code_radix:off,pair_code5_words:off,device_levels:off"
+    plan = "auto,view_mode:compact,pair_code_radix:off,pair_code5_words:off"
     plan += (
-        ",device_tree:off,device_level_graph:off" if arm == "host" else (",device_tree:on,device_level_graph:" + arm)
+        ",device_levels:off,device_level_graph:off" if arm == "host" else (",device_tree:on,device_level_graph:" + arm)
     )
     params = {
         "objective": "regression",
