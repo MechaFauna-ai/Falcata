@@ -29,9 +29,10 @@ What makes it fast
   inner loop on shallow trees.
 - **Per-tree compact column view.** With any `feature_fraction < 1`, only the
   sampled columns are materialized and gathered for histogram construction.
-  The win scales with the excluded fraction: ~3.4× end-to-end training at
-  `feature_fraction = 0.1` on wide, low-cardinality data, tapering to ~1.1×
-  at 0.6 (Numerai deep, measured 30 July 2026 on a pre-launch build).
+  The win scales with the excluded fraction: on the Numerai deep regime
+  (2,000 trees, stochastic) it is 29.7× end-to-end training at
+  `feature_fraction = 0.1`, 4.25× at 0.3 and 2.33× at 0.6, with the same model
+  either way (21 Oct 2026 on `a82336d8`).
 - **GPU-native dataset construction.** Dense binning, row-data build, and EFB
   pre-checking run on the device; CuPy and `__cuda_array_interface__` inputs are
   ingested without a host round-trip.
@@ -114,10 +115,9 @@ preds = model.predict(cupy_X)          # device in -> device out, no host round-
   silently falls back to the regular CPU predictor.
 - `FALCATA_FIL_PRECISION=single` (default) evaluates thresholds in fp32 —
   rows near a split threshold can route differently than the exact predictor
-  (~0.01% of rows in a July 2026 check on a pre-launch build;
-  {{NUM:fil_single_routing_fraction}} on 1.1); `double` restores exact routing
-  (differences ~1e-13 in July 2026; {{NUM:fil_double_max_abs}} on 1.1),
-  `native` uses the model's own precision.
+  (~0.01% of rows; July 2026, pre-launch build; not re-measured for 1.1);
+  `double` restores exact routing (differences ~1e-13; same check, not
+  re-measured for 1.1), `native` uses the model's own precision.
 - Training-time validation metrics (and early stopping) do **not** go through
   FIL: they use the booster's internal evaluation on the attached validation
   set, which is already GPU-resident under `device_type=cuda`.
@@ -143,16 +143,17 @@ the source distribution vendors every dependency, so no `git clone` and no
 submodule dance.
 
 The build detects the GPU(s) in the machine and **compiles only for those**
-(the library compiles in about 50 s on a 24-thread desktop; measured
-18 October 2026 with CUDA 13). CUDA 13 cannot
+(a clean build for the local GPU takes about 42 s on a 32-thread desktop with
+CUDA 13.3, ccache off; 21 Oct 2026 on `a82336d8`). CUDA 13 cannot
 compile for GPUs below sm_75: it skips such a GPU with a warning, and the build
 fails if no detected GPU is left, so use CUDA 12.x for those cards. When no GPU is
 visible at build time — docker build stages, CPU-only CI — it instead targets
 every architecture the toolkit supports (sm_60 upward on CUDA 11/12, sm_75
 upward on CUDA 13+, plus PTX for the newest so future cards still run), which
-takes about four times as long (about 3.5 minutes on the same machine with
-CUDA 13). To build for a card other than the one present, or to pick one
-explicitly:
+takes several times as long. That path was not timed for 1.1; for scale, the
+release wheel's seven architectures (sm_75 through sm_120, no PTX) take about
+2.5 minutes on the same machine. To build for a card other than the one
+present, or to pick one explicitly:
 
 ```bash
 # RTX 5090 = 120, RTX 4090 = 89, A100 = 80, T4 = 75

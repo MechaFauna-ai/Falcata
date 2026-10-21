@@ -235,8 +235,16 @@ Two instruments, both shipped in this repository:
   auto plan, then turn each feature off one at a time. "+300%" below means
   *turning the feature off makes training 4× slower*, i.e. the feature is worth
   4×. Because every mechanical feature is required to produce bit-identical
-  models, the ablation doubles as a correctness gate. Raw data: the newest
-  `benchmarks/ablation_*.txt` battery.
+  models, the ablation doubles as a correctness gate. The figures quoted in
+  §1–§4 are the 1.1 battery, measured 21 Oct 2026 on `a82336d8`
+  (`benchmarks/ablation_2026-10-21.txt`): 97 keys on seven cells and the 47
+  keys that apply on numerai-deep, 73 min of GPU time (the August 2026 battery,
+  `benchmarks/ablation_2026-08-09.txt`, had 19 keys and took 13.6 min; the
+  plots in §1–§4 still render the August battery). No identity key changes a
+  model when flipped. The numerai-deep cell's baseline run, the first run in
+  the cell, came out 7% slow (1.792 s against a 1.675 s median over 38
+  no-effect keys), so its percentages below are corrected for that, and its
+  raw −7% readings on keys with no effect are zero, not speedups.
 
 Datasets: **covtype** (581k×54, 7-class), **year** (515k×90 regression),
 **fraud** (285k×28, imbalanced binary), **higgs** (11M×28 binary), **epsilon**
@@ -317,34 +325,46 @@ models match).
 
 ![how hybrid growth works](perf-plots/hybrid_growth_diagram.png)
 
-**Measured (leave-one-out battery of 9 August 2026 on the pre-launch build,
-`benchmarks/ablation_2026-08-09.txt`; not re-run for 1.1. "What turning it off
-costs"; values within ±5% are run-to-run noise):**
+**Measured (leave-one-out battery, 21 Oct 2026 on `a82336d8`; "what turning
+it off costs"; values within ±5% are run-to-run noise; numerai-deep corrected
+for its slow baseline run, see [How this was measured](#how-this-was-measured)):**
 
-| covtype-deep | fraud-deep | numerai-deep | covtype-shallow | numerai-example | year | higgs | epsilon |
+| numerai-deep | covtype-deep | numerai-example | covtype-shallow | fraud-deep | year | epsilon | higgs |
 |---|---|---|---|---|---|---|---|
-| +1239% | +386% | +382% | +370% | +251% | +235% | +80% | +78% |
+| +3086% | +2929% | +1828% | +878% | +703% | +580% | +205% | +194% |
+
+The August 2026 battery on the pre-launch build had +1239% covtype-deep, +386%
+fraud-deep, +382% numerai-deep, +370% covtype-shallow, +251% numerai-example,
++235% year, +80% higgs and +78% epsilon: the rest of the pipeline has since
+become fast enough that the per-split launches the hybrid flow removes are a
+much larger share of what remains.
 
 Deep trees benefit most (more levels, more launches saved); higgs least (its
 huge rows make each kernel long enough that launch latency matters less).
 
 ![hybrid ablation](perf-plots/hybrid_ablation.png)
 
-Two sub-features extend the same idea (same 9 August 2026 battery):
+(The plot is the August 2026 battery.)
+
+Two sub-features extend the same idea (1.1 battery, 21 Oct 2026 on `a82336d8`):
 
 - **Batched split kernels (`batch_kernels`)** — one find/sync launch per
-  level instead of per pair: +254% covtype-deep, +248% numerai-deep, +181%
-  numerai-example, +115% fraud-deep, +28–50% year/covtype-shallow.
+  level instead of per pair: +2371% numerai-deep, +1419% numerai-example,
+  +710% covtype-deep, +207% fraud-deep, +190% covtype-shallow, +132% year,
+  +114% epsilon, +33% higgs (August 2026: +28% to +254%).
 - **Batched apply (`batch_apply`)** — the split-application phase batched the
-  same way: +716% covtype-deep, +178% covtype-shallow, +191% fraud-deep,
-  +69% year, +49% numerai-deep. (The batched path numbers new leaves
+  same way: +1627% covtype-deep, +428% covtype-shallow, +305% numerai-deep,
+  +300% fraud-deep, +168% year, +148% numerai-example, +82% higgs, +12%
+  epsilon (August 2026: +49% to +716%). (The batched path numbers new leaves
   level-wise, the per-split fallback in split order — equivalent trees,
   verified prediction-bit-identical, but different file md5; the ablation
   classifies it as a renumber key.)
 - **Selective grow-then-prune (`selective`)** and the **speculative one-sync
   pipeline (`one_sync`)** extend level batching to budget-limited and
   non-quantized configurations; on shapes where they don't apply they cost
-  nothing (±2% noise in every cell), which is exactly why they can default on.
+  nothing (1.1 battery: −2.8% to +3.2% in every cell, numerai-deep within
+  noise after the baseline correction), which is exactly why they can default
+  on.
 
   Selective is what keeps the batching exact once the budget *can* bind — the
   case the diagram above explicitly sets aside. A whole level is grown
@@ -366,14 +386,13 @@ returns.
 sequence and lets a device-side controller replay it, removing the CPU from
 the inner loop entirely.
 
-**Measured (leave-one-out battery of 9 August 2026 on the pre-launch build):**
-nothing clears the noise floor. The
-largest readings are +9.3% on covtype-deep and +4.5% on both numerai cells,
-against noise bands of 12% and 5% respectively (§7 methodology note) — every
-other cell is inside ±2%. The direction is consistently positive on the big
-cells, which is what you would expect from a real but small effect, but this
-suite cannot resolve it, so no number here is quotable and the section carries
-no plot.
+**Measured (leave-one-out battery, 21 Oct 2026 on `a82336d8`):** nothing
+clears the noise floor. Every cell reads between −2.3% and +1.0% (numerai-deep
+within noise after the baseline correction), so no number here is quotable
+and the section carries no plot. In the August 2026 battery the largest
+readings were +9.3% on covtype-deep and +4.5% on both numerai cells, against
+noise bands of 12% and 5% (§7 methodology note); the 1.1 battery does not
+reproduce even that direction.
 
 The graph's job today is simply smaller than when it landed: the one-sync and
 batched flows already removed most of the host round-trips it was built to
@@ -392,35 +411,45 @@ because unused columns share the same cache lines.
 costs one pass; the histogram kernels run 11+ passes per tree over the
 result.
 
-**Measured (leave-one-out battery of 9 August 2026 on the pre-launch build;
-not re-run for 1.1):** +249% on numerai-deep, +177% on numerai-example — the
-two feature-sampled workloads; neutral elsewhere (it only activates when
-sampling is on). The win scales with the excluded fraction: ~3.4× at
-`feature_fraction=0.1`, tapering to ~1.1× at 0.6 (Numerai deep, measured
-30 July 2026 on a pre-launch build, before the pair-code views of §10d and
-§10g).
+**Measured (leave-one-out battery, 21 Oct 2026 on `a82336d8`):** +1988% on
+numerai-deep, +1394% on numerai-example — the two feature-sampled workloads;
+neutral elsewhere (it only activates when sampling is on). August 2026:
++249% and +177%. The win scales with the excluded fraction. On the numerai-deep
+regime truncated to 2,000 trees (stochastic, medians of 2 interleaved
+fresh-process pairs, 21 Oct 2026 on `a82336d8`) the compact view is 29.7×
+faster end to end at `feature_fraction=0.1`, 4.25× at 0.3 and 2.33× at 0.6,
+with the same model on and off. (July 2026, before the pair-code views of §10d
+and §10g: ~3.4× at 0.1, ~1.1× at 0.6.)
 
 ![compact view ablation](perf-plots/ablation_compact_quant.png)
+
+(The plot is the August 2026 battery.)
 
 ## 4. GPU-native ingestion (`gpu_construct`, `fast_rowdata`, `efb_precheck`, `rowdata_4bit`)
 
 **The problem.** Before training starts, raw features must be binned and laid
 out for the GPU. Upstream does this on the CPU, then uploads — minutes of
 setup for large datasets (numerai Booster creation was 13.9s even after
-earlier fixes, July 2026; originally far worse). The figures in this
-subsection up to the host-array construct below are July–August 2026
-measurements on pre-launch builds.
+earlier fixes, July 2026; originally far worse). Except for the `fast_rowdata`
+battery figures, the figures in this subsection up to the host-array
+construct below are July–August 2026 measurements on pre-launch builds.
 
 **The ideas.**
 - **`gpu_construct`**: dense binning runs on the device; CuPy /
   `__cuda_array_interface__` inputs never round-trip through host memory.
 - **`fast_rowdata`**: build the row-major training matrix directly from
-  column bins, skipping the CPU multi-value-bin machinery: +342% on
-  numerai-example, +49% epsilon, +39% fraud-deep, +29% year, +24% higgs
-  (throughput effect via construct-time inclusion; 9 August 2026 battery,
-  pre-launch build).
+  column bins, skipping the CPU multi-value-bin machinery. 1.1 battery
+  (21 Oct 2026 on `a82336d8`), training throughput only: +1932% on
+  numerai-example, +89% epsilon, +25% fraud-deep, +21% higgs, +12% year;
+  construct time is reported separately (key off: 2.30 s faster on
+  numerai-example, within 0.02 s elsewhere). The August 2026 figures (+342%
+  numerai-example, +49% epsilon, +39% fraud-deep, +29% year, +24% higgs)
+  folded construct time into the throughput, so the two are not directly
+  comparable.
 
   ![fast rowdata ablation](perf-plots/ablation_fast_rowdata.png)
+
+  (The plot is the August 2026 battery.)
 - **`efb_precheck`**: a cheap density check that skips Exclusive Feature
   Bundling's ~7.7s no-op search on provably-unbundlable dense data.
 - **`rowdata_4bit`**: datasets whose features all fit 16 bins store two
@@ -566,8 +595,12 @@ lets the md5 regression gates exist and makes them portable to any machine
 integer math and inherits the guarantee).
 
 **Measured (numerai-deep regime; launch rows from the August 2026 cross-library
-sweep with float32 input, 1.1 rows measured 21 October 2026 on `1408ee79` with
-int8 input, from the [benchmark companion](blog/falcata-1.1/benchmarks.md)):**
+sweep with float32 input; 1.1 rows with int8 input, the quantized ones measured
+21 October 2026 on `1408ee79` for the
+[benchmark companion](blog/falcata-1.1/benchmarks.md), the non-quantized one
+21 Oct 2026 on `a82336d8`, which differs from `1408ee79` only by
+non-model-changing PRs (#139 code move, #145 dead code, #157 wheel
+architectures, docs); the same job's stochastic run took 105.9 s):**
 
 | build | mode | train | trees/s | holdout corr | sharpe |
 |---|---|---|---|---|---|
@@ -576,11 +609,14 @@ int8 input, from the [benchmark companion](blog/falcata-1.1/benchmarks.md)):**
 | launch (Aug 2026) | none | 26.1 min | 19.2 | 0.0238 | 1.402 |
 | 1.1 (21 Oct 2026) | stochastic | 1.8 min (105.8 s) | — | 0.02385 | — |
 | 1.1 (21 Oct 2026) | fixedpoint | 2.1 min (127.4 s) | — | 0.02332 | — |
-| 1.1 | none | {{NUM:numerai_deep_none_rc}} | — | — | — |
+| 1.1 (21 Oct 2026, `a82336d8`) | none | 25.3 min (1518 s) | 19.8 | — | — |
 
-At launch, quantized training ran at 2× the speed of full precision at equal
-quality. On 1.1 the gap is mostly wider: non-quantized over stochastic time is
-10.4× on Numerai example and 5.0× by geometric mean over the
+At launch, quantized training ran at 2× (2.1×) the speed of full precision at
+equal quality on Numerai deep. On 1.1 it is 14.3×. Full precision itself takes
+about what it took at launch (25.3 against 26.1 min); the gap widened because
+stochastic training got faster, not because full precision got slower.
+Elsewhere on 1.1 the gap is mostly wider than 2× as well: non-quantized over
+stochastic time is 10.4× on Numerai example and 5.0× by geometric mean over the
 six classic deep workloads (3.9× over all thirteen measured rows of the
 [framework table](blog/falcata-1.1/framework-table.md)). The outlier-robust scale is
 what makes fixedpoint safe on imbalanced data: without it, fraud/deep AUC
@@ -645,14 +681,16 @@ alone no longer changes the histogram layout.
 
 Unless a bullet names its own master or date, the percentages in this section
 are leave-one-out ablations of July–August 2026 on pre-launch builds
-(`benchmarks/ablation_*.txt` and dedicated batteries of that period); none was
-re-run for 1.1.
+(`benchmarks/ablation_*.txt` and dedicated batteries of that period). Where a
+bullet adds a figure from the 1.1 battery (21 Oct 2026 on `a82336d8`,
+numerai-deep corrected for its slow baseline run) it says so.
 
 - **`gh_interleave`** — gradient and hessian interleaved as one float2 so a
   row costs one scattered 32-byte read instead of two: +21% numerai-deep.
 - **`split_packed_read`** — split kernels read the 4-bit packed matrix
   directly instead of materializing a ~1.5GB per-tree column copy: +12%
-  numerai-deep. Sparse-encoded columns are served per column from their own
+  numerai-deep when introduced (the 1.1 battery, 21 Oct 2026 on `a82336d8`:
+  +163% numerai-deep, +130% numerai-example). Sparse-encoded columns are served per column from their own
   materialized buffer (their encoding spells the most-frequent bin as 0, which
   never matches the row matrix); a per-tree fallback here is a trap — with the
   sparse columns concentrated in one EFB bundle, `feature_fraction` 0.15
@@ -701,7 +739,8 @@ bit-identical in every cell):
 - **`colmajor_fill`** — a one-time column-major copy of the packed bin matrix
   serves as the compact-fill gather source, so the per-tree fill reads
   contiguous columns instead of dragging ~10× its bytes through row-major
-  cache lines: +2.2% numerai-deep. The per-cell fill kernel that reads it moves
+  cache lines: +2.2% numerai-deep when introduced (the 1.1 battery, 21 Oct 2026
+  on `a82336d8`: +280% numerai-deep, +265% numerai-example). The per-cell fill kernel that reads it moves
   one byte per thread and runs at ~24% of DRAM bandwidth, latency-bound rather
   than bandwidth-bound; `tiled_fill` below is the kernel that uses the
   contiguous columns fully. The copy is as large as the 4-bit row data and
@@ -1219,8 +1258,8 @@ order-dependent atomic one (the default graph loop); see `perf-dead-ends.md`.
 `Booster.predict()` on a CUDA-trained model routes through cuML's Forest
 Inference Library when available: numerai predict 0.90s → **0.046s** (CuPy
 in/out), higgs 0.37s → 0.004s (July 2026, pre-launch build; no recorded run
-is checked in, pending re-measurement on 1.1). See the README for precision
-notes and the opt-out.
+is checked in; not re-measured for 1.1). See the README for precision notes
+and the opt-out.
 
 ## 8b. Model size: the FALB binary format
 
@@ -1338,8 +1377,7 @@ the lattice fingerprints caught) and skips a wasted next-level search; and
 the one-sync prefix admits categorical datasets. A third pass replaced the
 gen/aggregate byte hand-off with packed ballot bits.
 
-**Official numbers of the 1 August 2026 build** (pending a 1.1 re-run:
-{{NUM:airline_cat_rc_time}}; FAIR interleaved protocol: quiet
+**Official numbers of the 1 August 2026 build** (FAIR interleaved protocol: quiet
 desktop, per regime one warmup round-robin then 3 timed rounds with the four
 engines interleaved per round — earlier mixed-condition numbers had up to
 +-10% desktop-GPU-contention noise, spreads now 0.0-0.5% shallow / 2.5-9.8%
@@ -1347,8 +1385,20 @@ deep; catboost from the prior pass, not re-run at 925.6s/1838.3s):
 
 | regime | falcata-stoch | falcata-noquant | xgboost | lightgbm CUDA | margin vs best other |
 |---|---|---|---|---|---|
-| shallow | **18.8s** | 20.4s | 22.6s | 35.4s | **19.8% faster** |
-| deep | **33.9s** | 36.7s | 44.8s | 144.6s | **31.9% faster** |
+| shallow | **18.8s** | 20.4s† | 22.6s | 35.4s | **19.8% faster** |
+| deep | **33.9s** | 36.7s† | 44.8s | 144.6s | **31.9% faster** |
+| deep, 1.1 (21 Oct 2026 on `a82336d8`) | **26.68s** (AUC 0.8722) | 255.2s (AUC 0.8727) | not re-run | not re-run | |
+
+The 1.1 row is one timed run after a warmup (`bench.py`), 500 rounds, 1023
+leaves, depth 10; the competitor columns were not re-run.
+
+† Treat the launch table's non-quantized airline-cat times as not
+reproducible rather than as a baseline that 1.1 regressed from. 1.1's 255.2 s
+is 7× the 36.7 s above, but the checked-in August archive
+(`perf-plots/data/runs.jsonl`, plain airline deep, falcata-noquant) has
+136–147 s on the launch sweep, and the October A/B found no full-precision
+slowdown on airline deep between 12 October and the release candidate
+(133 s against 141 s, [mode appendix](blog/falcata-1.1/appendix-table.md)).
 
 Time-to-quality (report/aircat_time_to_quality.png in the bench workspace;
 curve cells + extended falcata runs): falcata-stoch rides the top envelope at
@@ -1503,6 +1553,7 @@ A fourth overnight agentic search took about 18% off that round with four `cuda_
 | peak device memory (per process) | 11,348 MiB | 11,348 MiB | |
 
 - **Same model, every run:** tree md5 `1c68bf82…` at 30k trees, holdout corr 0.0239, sharpe 1.40; switching any one key off, or all four, trains the same model.
+- **On 1.1** (leave-one-out battery, 21 Oct 2026 on `a82336d8`): `pair_code5` off costs +65% on numerai-deep and +31% on numerai-example, `pair_code5_words` +19% / +9% (numerai-deep corrected for that cell's slow baseline run, see [How this was measured](#how-this-was-measured)); the other two keys are within noise.
 - **Only Numerai-shaped data takes the view:** a 4-bit compact view under feature sampling with at most 32 cells per byte pair. Of the evaluator's five guard workloads, covtype, year, higgs and missing build no compact view and numerai53-example's trees decline the view; all five run at master's speed (0.994-1.003x per round, 3 pairs each; covtype's 0.996x came from the two arms' different tuner picks: 0.999x with the tuner off in both).
 - **The search's lineage:** c079 (the view and the code-word construct) 1.194x against master cf10b79a, c077 (an independent implementation of the view on master) 1.058x, c088 (c077's fill pack, stores and gate ported into c079, the fill's slot loop) 1.224x; at 30k trees c079 238.8 and c088 251.4 trees/s against master's 202.2 in the search's single runs.
 

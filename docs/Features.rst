@@ -49,9 +49,9 @@ row-major bin matrix makes skipping unused columns free of nothing: unread
 columns still occupy the same memory sectors. Falcata gathers only the
 sampled columns into a dense per-tree compact matrix, so every level pass
 reads only what the tree can use. The win scales with the excluded fraction
-(measured ~3.4x end-to-end at ``feature_fraction=0.1`` on wide
-low-cardinality data, tapering to ~1.1x at 0.6; Numerai deep, 30 July 2026,
-pre-launch build).
+(on the Numerai deep regime, 2,000 trees, stochastic: 29.7x end-to-end at
+``feature_fraction=0.1``, 4.25x at 0.3 and 2.33x at 0.6, with the same model
+either way; 21 Oct 2026 on ``a82336d8``).
 
 GPU-Native Dataset Construction
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

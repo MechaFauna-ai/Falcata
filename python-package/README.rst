@@ -20,9 +20,9 @@ What makes it fast
   replayed by a device-side controller, removing host round-trips.
 - **Per-tree compact column view** — with any ``feature_fraction < 1``, only
   the sampled columns are materialized for histogram construction; the win
-  scales with the excluded fraction (~3.4× end-to-end at
-  ``feature_fraction = 0.1`` on wide, low-cardinality data; Numerai deep,
-  measured 30 July 2026 on a pre-launch build).
+  scales with the excluded fraction (29.7× end-to-end at
+  ``feature_fraction = 0.1``, 2.33× at 0.6, on the Numerai deep regime;
+  21 Oct 2026 on ``a82336d8``).
 - **GPU-native dataset construction** — dense binning, row-data build and EFB
   pre-checking run on the device; CuPy and ``__cuda_array_interface__`` inputs
   are ingested without a host round-trip.
@@ -68,10 +68,12 @@ CUDA 12.x for those.
 Everywhere else (and with ``pip install --no-binary falcata falcata``), pip
 builds from source, which needs the CUDA toolkit (>= 11.0), CMake >= 3.28, a
 C++17 compiler and Python >= 3.10. The source distribution vendors every
-dependency. The build compiles only for the GPU(s) in the machine (about 50 s
-on a 24-thread desktop, measured 18 October 2026 with CUDA 13); with no GPU
-visible it targets every architecture the toolkit supports (about 3.5 minutes
-on the same machine). To pick an architecture explicitly:
+dependency. The build compiles only for the GPU(s) in the machine (a clean
+build takes about 42 s on a 32-thread desktop with CUDA 13.3; 21 Oct 2026 on
+``a82336d8``); with no GPU visible it targets every architecture the toolkit
+supports, plus PTX, which takes several times as long (not timed for 1.1; the
+release wheel's seven architectures without PTX take about 2.5 minutes). To
+pick an architecture explicitly:
 
 .. code:: sh
 
