@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Everything that must be true BEFORE building release artifacts, checked
-# mechanically. Exits non-zero on the first unmet condition and names it.
+# mechanically. Runs every check, names each unmet one and exits non-zero if any failed.
 #
 #   tools/release-preflight.sh             # check and report
 #   tools/release-preflight.sh --wait      # additionally wait for in-flight CI
@@ -120,6 +120,8 @@ if [ "$FAIL" = 0 ] && [ "$RELEASED" = 1 ]; then
 elif [ "$FAIL" = 0 ]; then
   echo "PREFLIGHT GREEN: build with tools/build-release-wheel.sh + build-python.sh sdist,"
   echo "validate on TestPyPI per the release policy, then upload the identical files to prod."
+elif [ "$RELEASED" = 1 ]; then
+  echo "PREFLIGHT FAILED: fix the items above before tagging the release."
 else
   echo "PREFLIGHT FAILED: fix the items above before building release artifacts."
 fi

@@ -1,8 +1,11 @@
 # Link checks.
 #
 # There is deliberately no schedule. The former daily online check (08:00 UTC)
-# failed in 6 of its last 8 runs on external hosts that went down or blocked
-# runners, never on a link we control, and every fix was one more exclusion.
+# failed in 6 of its last 8 runs: three only on a broken local link
+# (docs/Parameters.rst -> ./performance.md, which Sphinx does not render; fixed
+# with this change), the others on external hosts or GitHub 503s, and every
+# external fix was one more exclusion. A PR-time offline check catches the local
+# kind when it is introduced, so the schedule bought only the external noise.
 # Now:
 #   - pull requests that touch docs run lychee --offline over the sources and
 #     the built HTML: local file links and fragments only, no network;
