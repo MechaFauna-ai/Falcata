@@ -958,6 +958,10 @@ struct FalcataPlan {
   // device_levels' launches as one cached CUDA graph for the prefix (root work and the host tail remain). Trees
   // whose keys keep changing use the host loop after the cache-miss budget: the same model, bit-identical.
   bool device_level_graph = true;   // key: device_level_graph
+  // device_tree graphs whose keys keep changing (more than 8 misses and more misses than hits, e.g. a sampled feature
+  // set every tree): the new capture updates the least recently used cached exec in place (cudaGraphExecUpdate)
+  // instead of a new instantiation; a refused update (topology change) instantiates as before. Bit-identical.
+  bool device_level_graph_update = true;  // key: device_level_graph_update
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
@@ -1122,6 +1126,7 @@ struct FalcataPlan {
     if (key == "device_tree") return &device_tree;
     if (key == "device_tree_lean_end") return &device_tree_lean_end;
     if (key == "device_level_graph") return &device_level_graph;
+    if (key == "device_level_graph_update") return &device_level_graph_update;
     return nullptr;
   }
 

@@ -3588,6 +3588,9 @@ void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
   device_level_graph_disabled_ = false;
   device_level_graph_hits_ = 0;
   device_level_graph_misses_ = 0;
+  device_level_graph_update_failed_ = false;
+  device_level_graph_update_hits_ = 0;
+  device_level_graph_update_misses_ = 0;
 }
 
 void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
@@ -3848,7 +3851,9 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   }
   // a new key: capture this tree's enqueue (its host halves run now; the graph runs right after)
   ++device_level_graph_misses_;
-  if (!cfg.whole_tree && device_level_graph_misses_ > 8 && device_level_graph_misses_ > device_level_graph_hits_) {
+  const bool churning = device_level_graph_misses_ > 8 && device_level_graph_misses_ > device_level_graph_hits_;
+  const bool update = FalcataPlan::Get().device_level_graph_update && !device_level_graph_update_failed_;
+  if (!cfg.whole_tree && churning) {
     // per-tree keys keep changing (e.g. a sampled feature set every tree): the plain enqueue from here on
     device_level_graph_disabled_ = true;
     if (FalcataDebug().diag) {
@@ -3921,6 +3926,26 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
               bytes, incoming, outgoing);
     }
     CHECK_EQ(clears, 1);
+  }
+  // cuda_plan key device_level_graph_update: whole-tree keys that keep changing (a sampled feature set every tree)
+  // retarget the least recently used exec to this capture in place: the same launches and parameters as a new
+  // instantiation, without its instantiate, upload and destroy. A topology change fails the update: instantiate.
+  if (cfg.whole_tree && update && churning && !device_level_graphs_.empty()) {
+    DeviceLevelGraph* lru = device_level_graphs_.front().get();
+    cudaGraphExecUpdateResultInfo info = {};
+    if (cudaGraphExecUpdate(lru->exec, graph->graph, &info) == cudaSuccess) {
+      ++device_level_graph_update_hits_;
+      std::swap(lru->graph, graph->graph);
+      lru->key.swap(graph->key);
+      std::rotate(device_level_graphs_.begin(), device_level_graphs_.begin() + 1, device_level_graphs_.end());
+      CUDASUCCESS_OR_FATAL(cudaGraphLaunch(lru->exec, find_stream));
+      return true;  // graph (the old capture) is destroyed here
+    }
+    cudaGetLastError();  // a refused update is not an error: instantiate below
+    // topologies that keep changing: no more update attempts
+    ++device_level_graph_update_misses_;
+    device_level_graph_update_failed_ = device_level_graph_update_misses_ > 8 &&
+      device_level_graph_update_misses_ > device_level_graph_update_hits_;
   }
   CUDASUCCESS_OR_FATAL(cudaGraphInstantiate(&graph->exec, graph->graph, 0));
   CUDASUCCESS_OR_FATAL(cudaGraphUpload(graph->exec, find_stream));
@@ -4257,6 +4282,10 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
               "growth_readbacks=1 host_tail=%d graph=%d hits=%d misses=%d\n", num_levels, levels_applied,
               total_splits, device_tree_root_tail_ ? 1 : 0, launched ? 1 : 0, device_level_graph_hits_,
               device_level_graph_misses_);
+      // cuda_plan key device_level_graph_update: in-place exec updates under key churn (separate line, see above)
+      fprintf(stderr, "[hybrid-diag] device_level_graph_update: updates=%d refused=%d stopped=%d\n",
+              device_level_graph_update_hits_, device_level_graph_update_misses_,
+              device_level_graph_update_failed_ ? 1 : 0);
     }
   } else {
     // the last search's result, as the host loop's own readback leaves it

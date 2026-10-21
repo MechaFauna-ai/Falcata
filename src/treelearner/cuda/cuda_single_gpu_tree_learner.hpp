@@ -811,6 +811,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool device_level_graph_disabled_ = false;
   int device_level_graph_hits_ = 0;
   int device_level_graph_misses_ = 0;
+  // cuda_plan key device_level_graph_update: a cached exec refused an in-place update (a topology change)
+  bool device_level_graph_update_failed_ = false;
+  int device_level_graph_update_hits_ = 0;
+  int device_level_graph_update_misses_ = 0;
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   std::vector<SelectiveApplied> sel_applied_;
   std::vector<SelectiveFrontier> sel_frontier_;

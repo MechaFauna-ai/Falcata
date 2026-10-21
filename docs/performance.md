@@ -2913,6 +2913,17 @@ Numerai cells 0.9995-1.0005; bagging_fraction 0.5 / freq 1, 300 rounds x 3 pairs
 Numerai (L2) bagged 0.5: 1.006; weighted higgs: 1.011; L1 bagged covtype 1.003 and quantile higgs 1.002 (their renewal
 dominates the round).
 
+`device_level_graph_update` (default ON): complete device trees whose graph keys keep changing (more than 8 misses
+and more misses than hits; feature-sampled wide data such as feature_fraction 0.1 Numerai, where the sampled bin
+totals enter the key) update the least recently used cached exec in place with `cudaGraphExecUpdate` instead of a
+new instantiation (measured per tree: instantiate 184-274 us + upload 36 us + exec destroy 91 us -> update 21 us); a
+refused update instantiates as before (after more than 8 refusals, and more refusals than updates, it stops trying).
+Same-binary A/B, 4 pairs: numerai53bench-nan-deep-stoch 1.0064 (every pair, 3.533 -> 3.511 ms/round; 1.0072 over 2
+pairs on the final build), numerai53bench-deep-stoch 1.001 (2 pairs), bagged (0.5) NaN-Numerai with the
+bagged host-cache skip (e080's `whole_host_cache_bagged`, now part of `device_tree_lean_end`) 1.010, feature_fraction 0.05 / 0.3 Numerai 1.001 / ~1.00. Unbagged covtype/higgs graphs hit: unchanged. The prefix (`device_levels` without
+device_tree) keeps its nine-miss policy: per-tree capture plus update measured slower than its host loop there
+(covtype 255 leaves / unlimited depth / ff 0.5: 0.87).
+
 After the root search, the existing device reset copies the initialized fixed root struct's output into tree
 leaf 0 before the record stream can save it as the root internal value. Device selectors and apply kernels then
 handle every level, including early exhaustion and the final depth. The final apply skips its child histogram/search. One end-of-growth fence reads the journal
