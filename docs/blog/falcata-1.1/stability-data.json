@@ -42523,44 +42523,6 @@
         "num_class": 7,
         "cuda_plan": "auto,hybrid:off"
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-alternate-2026-None.case.json",
-      "original_record_sha256": "c7cb72f33f04d51d709f95571cdd0fa3d90667c9a731e5e81bbe59e0bfed85ef",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "alternate",
-        "seed": 2026,
-        "split": null,
-        "id": "cuda-covtype-alternate-2026-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 2026,
-        "data_random_seed": 2026,
-        "feature_fraction_seed": 12026,
-        "bagging_seed": 22026,
-        "drop_seed": 32026,
-        "extra_seed": 42026,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "cuda_plan": "auto,hybrid:off"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -42787,43 +42749,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-alternate-2026-None.json",
       "original_record_sha256": "cf320fa480a61da62b63868ce75539a5a0958764d7d9c7919cf855f15b75e2ef",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "base",
-        "seed": 0,
-        "split": null,
-        "id": "cuda-covtype-base-0-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 0,
-        "data_random_seed": 0,
-        "feature_fraction_seed": 10000,
-        "bagging_seed": 20000,
-        "drop_seed": 30000,
-        "extra_seed": 40000,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-base-0-None.case.json",
-      "original_record_sha256": "10f81857591b95c51a1df1179730edeeac19bd40ca8bc01758526af4e4910e2b",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -43120,43 +43045,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-base-1-None.case.json",
-      "original_record_sha256": "d20f70985b812cf3a287d2a91371073b187dfae3a3c2c1d0557fd737a20abf65",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "base",
-        "seed": 1,
-        "split": null,
-        "id": "cuda-covtype-base-1-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 1,
-        "data_random_seed": 1,
-        "feature_fraction_seed": 10001,
-        "bagging_seed": 20001,
-        "drop_seed": 30001,
-        "extra_seed": 40001,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -43383,43 +43271,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-base-1-None.json",
       "original_record_sha256": "38c1b19ad5f8a649acd0375eb5cad7eacd927090a96f48dc930b0895a78a603a",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "base",
-        "seed": 11,
-        "split": null,
-        "id": "cuda-covtype-base-11-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 11,
-        "data_random_seed": 11,
-        "feature_fraction_seed": 10011,
-        "bagging_seed": 20011,
-        "drop_seed": 30011,
-        "extra_seed": 40011,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-base-11-None.case.json",
-      "original_record_sha256": "60fc0ea7e07cabd020c813c377162ae39ee182accee92d997411b5f46d2eef1e",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -43716,43 +43567,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-base-19-None.case.json",
-      "original_record_sha256": "a9b0439399adcbad1675bc940c97da191ffd387d282a5dd12350d3bff8cd2d3d",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "base",
-        "seed": 19,
-        "split": null,
-        "id": "cuda-covtype-base-19-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 19,
-        "data_random_seed": 19,
-        "feature_fraction_seed": 10019,
-        "bagging_seed": 20019,
-        "drop_seed": 30019,
-        "extra_seed": 40019,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -43979,43 +43793,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-base-19-None.json",
       "original_record_sha256": "ee4a19460d16441c3d4d22a28dff41dcbfaec85864a1e49d722ad25c1484d194",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "base",
-        "seed": 2,
-        "split": null,
-        "id": "cuda-covtype-base-2-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 2,
-        "data_random_seed": 2,
-        "feature_fraction_seed": 10002,
-        "bagging_seed": 20002,
-        "drop_seed": 30002,
-        "extra_seed": 40002,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-base-2-None.case.json",
-      "original_record_sha256": "a5290448799570902ec9adc326ed4b0fe8eb4f9c5988e3b62939501c14536b14",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -44312,43 +44089,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-base-23-None.case.json",
-      "original_record_sha256": "7f4a5454e39e9f84af8656eb8a1ab86222933ffd7fd457aa42c779a57cade904",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "base",
-        "seed": 23,
-        "split": null,
-        "id": "cuda-covtype-base-23-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 23,
-        "data_random_seed": 23,
-        "feature_fraction_seed": 10023,
-        "bagging_seed": 20023,
-        "drop_seed": 30023,
-        "extra_seed": 40023,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -44575,43 +44315,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-base-23-None.json",
       "original_record_sha256": "c96a105cad4bc057a8167f20463140f421794e6dbc2442aadbaeb427212b35b5",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "base",
-        "seed": 3,
-        "split": null,
-        "id": "cuda-covtype-base-3-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 3,
-        "data_random_seed": 3,
-        "feature_fraction_seed": 10003,
-        "bagging_seed": 20003,
-        "drop_seed": 30003,
-        "extra_seed": 40003,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-base-3-None.case.json",
-      "original_record_sha256": "ef7ad397d3c193bd08113b2504c0bd3761babebd85b946d7688c503257d370ba",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -44908,43 +44611,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-base-4-None.case.json",
-      "original_record_sha256": "a32b05135b9403bba99a9c99e37455d03d55a0162a5f32428da83e7a9351238e",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "base",
-        "seed": 4,
-        "split": null,
-        "id": "cuda-covtype-base-4-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 4,
-        "data_random_seed": 4,
-        "feature_fraction_seed": 10004,
-        "bagging_seed": 20004,
-        "drop_seed": 30004,
-        "extra_seed": 40004,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -45171,43 +44837,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-base-4-None.json",
       "original_record_sha256": "015b9fd48ac75ea39b16a4f12beda9c3494d81c1d80ec258e03bea228119999a",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "base",
-        "seed": 5,
-        "split": null,
-        "id": "cuda-covtype-base-5-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 5,
-        "data_random_seed": 5,
-        "feature_fraction_seed": 10005,
-        "bagging_seed": 20005,
-        "drop_seed": 30005,
-        "extra_seed": 40005,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-base-5-None.case.json",
-      "original_record_sha256": "d30621932f09ff1cc75a62c896d765247d48ff3e80d6521c521f023ba941a9e9",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -45504,43 +45133,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-base-7-None.case.json",
-      "original_record_sha256": "367f9c139a0a129bfeeb880ee2c910178b4f944dae4ad9b6c7033985819a4238",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "base",
-        "seed": 7,
-        "split": null,
-        "id": "cuda-covtype-base-7-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 7,
-        "data_random_seed": 7,
-        "feature_fraction_seed": 10007,
-        "bagging_seed": 20007,
-        "drop_seed": 30007,
-        "extra_seed": 40007,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -45802,43 +45394,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-bins15-101-None.case.json",
-      "original_record_sha256": "0db39bdf60deca4ca301ec99e496f1aef1d9019cb07540dbfb560969178df2a5",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "bins15",
-        "seed": 101,
-        "split": null,
-        "id": "cuda-covtype-bins15-101-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 15,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 101,
-        "data_random_seed": 101,
-        "feature_fraction_seed": 10101,
-        "bagging_seed": 20101,
-        "drop_seed": 30101,
-        "extra_seed": 40101,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -46065,46 +45620,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-bins15-101-None.json",
       "original_record_sha256": "11db30d0d36cfb6602dbcc68794f800e4a53b622cad47b32316e3e26644733b0",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "dart",
-        "seed": 997,
-        "split": null,
-        "id": "cuda-covtype-dart-997-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 997,
-        "data_random_seed": 997,
-        "feature_fraction_seed": 10997,
-        "bagging_seed": 20997,
-        "drop_seed": 30997,
-        "extra_seed": 40997,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "boosting_type": "dart",
-        "drop_rate": 0.1,
-        "skip_drop": 0.5
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-dart-997-None.case.json",
-      "original_record_sha256": "5ef55a0443977b3d184bf654f51a06a4754fdf010495fbef8f97d63f0616ad36",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -46407,46 +45922,6 @@
         "top_rate": 0.2,
         "other_rate": 0.1
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-goss-509-None.case.json",
-      "original_record_sha256": "3e3303d459803d84bf6d8b70a52d837f7e185e0f98d33221a64b67e3f2beac57",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "goss",
-        "seed": 509,
-        "split": null,
-        "id": "cuda-covtype-goss-509-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 509,
-        "data_random_seed": 509,
-        "feature_fraction_seed": 10509,
-        "bagging_seed": 20509,
-        "drop_seed": 30509,
-        "extra_seed": 40509,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "data_sample_strategy": "goss",
-        "top_rate": 0.2,
-        "other_rate": 0.1
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -46709,44 +46184,6 @@
         "num_class": 7,
         "max_delta_step": 0
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-legacy_control-42-None.case.json",
-      "original_record_sha256": "82f18bb04c6666fcf417ddebb80d513b70ea74423034a0623a9fe98c6f95b655",
-      "outcome": "reproduced_instability",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "legacy_control",
-        "seed": 42,
-        "split": null,
-        "id": "cuda-covtype-legacy_control-42-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 42,
-        "data_random_seed": 42,
-        "feature_fraction_seed": 10042,
-        "bagging_seed": 20042,
-        "drop_seed": 30042,
-        "extra_seed": 40042,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "max_delta_step": 0
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -46914,43 +46351,6 @@
       "record_id": "rc_1408ee79/results/cuda-covtype-legacy_control-42-None.json",
       "original_record_sha256": "318c3e5e865af85a35c92e1bfd8a40b168c1a2125626cb93eed512525442f334",
       "outcome": "reproduced_instability",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "lr003",
-        "seed": 42,
-        "split": null,
-        "id": "cuda-covtype-lr003-42-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.03,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 42,
-        "data_random_seed": 42,
-        "feature_fraction_seed": 10042,
-        "bagging_seed": 20042,
-        "drop_seed": 30042,
-        "extra_seed": 40042,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-lr003-42-None.case.json",
-      "original_record_sha256": "94f3957a2d719d8b04708dae5f0c7b2faacfdae364b135252708585e3e7a7310",
-      "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
     {
@@ -47211,43 +46611,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-lr003-42-None.json",
       "original_record_sha256": "b51eb2e6051d3526c37c9377a653e9b12d7b8f1a5f89b6f9b79a19ac7199261b",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "lr05",
-        "seed": 67,
-        "split": null,
-        "id": "cuda-covtype-lr05-67-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.5,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 67,
-        "data_random_seed": 67,
-        "feature_fraction_seed": 10067,
-        "bagging_seed": 20067,
-        "drop_seed": 30067,
-        "extra_seed": 40067,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-lr05-67-None.case.json",
-      "original_record_sha256": "a13d819109568af0a0c9e8f36ec1f531ae9b2bd19b77998804d5a2500909806d",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -47544,43 +46907,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-resplit-10013-13.case.json",
-      "original_record_sha256": "323c0c1441553f5cf53b853ced8eb61ee6550d2086fc513d21f746878d74ef28",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "resplit",
-        "seed": 10013,
-        "split": 13,
-        "id": "cuda-covtype-resplit-10013-13"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 10013,
-        "data_random_seed": 10013,
-        "feature_fraction_seed": 20013,
-        "bagging_seed": 30013,
-        "drop_seed": 40013,
-        "extra_seed": 50013,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -47588,7 +46914,7 @@
         "split_seed": 13,
         "train_indices_sha256": "29897417eb8ba63950b199233b724d4a8173809781740e26a06a7c9040beda2d",
         "test_indices_sha256": "a3bd03ccc190e88dca9bcc237bbae42cb075c6a77ca3324189394b9d8a9135c6",
-        "indices_source": "/data/archive/2026-10-ubuntu-migration/migration-archive/home/felixjk/.codex/visualizations/2026/10/11/01a12b7a-bbcd-7be1-a5f1-7544c2a0cceb/broad-stability-coverage/splits/covtype-13.npz"
+        "indices_source": "evidence://broad-stability-coverage-20261011/splits/covtype-13.npz"
       },
       "train_shape": [
         464809,
@@ -47846,43 +47172,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-resplit-10037-37.case.json",
-      "original_record_sha256": "a2cae2c77e31509ef66b8d407e8e760bd4a970a539d74df6b455e4ecedd9be2e",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "resplit",
-        "seed": 10037,
-        "split": 37,
-        "id": "cuda-covtype-resplit-10037-37"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 10037,
-        "data_random_seed": 10037,
-        "feature_fraction_seed": 20037,
-        "bagging_seed": 30037,
-        "drop_seed": 40037,
-        "extra_seed": 50037,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -47890,7 +47179,7 @@
         "split_seed": 37,
         "train_indices_sha256": "9dee88dd702b4226cc97ae2d8963d0ed68862575d8a9195b656e8e7b6a81487a",
         "test_indices_sha256": "3fc348607773d314f145a3230f0b9cfc8ee35ba85a8e203a015bdbe422146e69",
-        "indices_source": "/data/archive/2026-10-ubuntu-migration/migration-archive/home/felixjk/.codex/visualizations/2026/10/11/01a12b7a-bbcd-7be1-a5f1-7544c2a0cceb/broad-stability-coverage/splits/covtype-37.npz"
+        "indices_source": "evidence://broad-stability-coverage-20261011/splits/covtype-37.npz"
       },
       "train_shape": [
         464809,
@@ -48148,43 +47437,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-resplit-10083-83.case.json",
-      "original_record_sha256": "3993e338d7c39b9d610ac7d8a0cea9e05f0f372eb649c4822913c7891a5e193d",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "resplit",
-        "seed": 10083,
-        "split": 83,
-        "id": "cuda-covtype-resplit-10083-83"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 10083,
-        "data_random_seed": 10083,
-        "feature_fraction_seed": 20083,
-        "bagging_seed": 30083,
-        "drop_seed": 40083,
-        "extra_seed": 50083,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -48192,7 +47444,7 @@
         "split_seed": 83,
         "train_indices_sha256": "50d7dc03c25ef82fea3daab73d15822b7b0296b825c491ae79097892c2ec7fab",
         "test_indices_sha256": "8b6838836acc433fc35942a2a5d1b2165d90a8d9792226ff056ff80a9e5442ff",
-        "indices_source": "/data/archive/2026-10-ubuntu-migration/migration-archive/home/felixjk/.codex/visualizations/2026/10/11/01a12b7a-bbcd-7be1-a5f1-7544c2a0cceb/broad-stability-coverage/splits/covtype-83.npz"
+        "indices_source": "evidence://broad-stability-coverage-20261011/splits/covtype-83.npz"
       },
       "train_shape": [
         464809,
@@ -48450,43 +47702,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-resplit-10211-211.case.json",
-      "original_record_sha256": "b2a33abab4320455512e3bb90aa0fc9a1438033a194e790f3c9825b7a44fc73e",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "resplit",
-        "seed": 10211,
-        "split": 211,
-        "id": "cuda-covtype-resplit-10211-211"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 10211,
-        "data_random_seed": 10211,
-        "feature_fraction_seed": 20211,
-        "bagging_seed": 30211,
-        "drop_seed": 40211,
-        "extra_seed": 50211,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -48494,7 +47709,7 @@
         "split_seed": 211,
         "train_indices_sha256": "6ff467fce2c859b66ffb03e3d214ea1e1926a3908ad8a024e23f105ba253af92",
         "test_indices_sha256": "9dd54313cc55514e50df1a4b6505bfd12539534fbebeb80ee1738c49fc9cad4c",
-        "indices_source": "/data/archive/2026-10-ubuntu-migration/migration-archive/home/felixjk/.codex/visualizations/2026/10/11/01a12b7a-bbcd-7be1-a5f1-7544c2a0cceb/broad-stability-coverage/splits/covtype-211.npz"
+        "indices_source": "evidence://broad-stability-coverage-20261011/splits/covtype-211.npz"
       },
       "train_shape": [
         464809,
@@ -48752,43 +47967,6 @@
         "metric": "multi_logloss",
         "num_class": 7
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-resplit-11009-1009.case.json",
-      "original_record_sha256": "0862d4122247c9fe5f014c7d4393959a66b3c9aafb9c4080560edfb6ce08c2d5",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "resplit",
-        "seed": 11009,
-        "split": 1009,
-        "id": "cuda-covtype-resplit-11009-1009"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 11009,
-        "data_random_seed": 11009,
-        "feature_fraction_seed": 21009,
-        "bagging_seed": 31009,
-        "drop_seed": 41009,
-        "extra_seed": 51009,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -48796,7 +47974,7 @@
         "split_seed": 1009,
         "train_indices_sha256": "c5f05406eab81f1433c377211a2c45c63f7000b423afa9404d17c2221c6f67b5",
         "test_indices_sha256": "6fa7277aa4d9c921224dd5228ecd40131fe5cbc5dc6d3f96675ac6dd4e1871eb",
-        "indices_source": "/data/archive/2026-10-ubuntu-migration/migration-archive/home/felixjk/.codex/visualizations/2026/10/11/01a12b7a-bbcd-7be1-a5f1-7544c2a0cceb/broad-stability-coverage/splits/covtype-1009.npz"
+        "indices_source": "evidence://broad-stability-coverage-20261011/splits/covtype-1009.npz"
       },
       "train_shape": [
         464809,
@@ -49019,46 +48197,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-resplit-11009-1009.json",
       "original_record_sha256": "7324b95db81c1d1c12c915fac066bdc455df45faaf46611f1ffd52ea2fa8eef8",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sampled",
-        "seed": 101,
-        "split": null,
-        "id": "cuda-covtype-sampled-101-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 101,
-        "data_random_seed": 101,
-        "feature_fraction_seed": 10101,
-        "bagging_seed": 20101,
-        "drop_seed": 30101,
-        "extra_seed": 40101,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sampled-101-None.case.json",
-      "original_record_sha256": "e8833c0f468d721046b14aafb1b886c9edb77d0be11753251037d8fb74216d31",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -49361,46 +48499,6 @@
         "bagging_freq": 1,
         "feature_fraction": 0.8
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sampled-123-None.case.json",
-      "original_record_sha256": "8263283d43fd483baa34dbac531dbeef6fcbc01f1fe475241e222b6653417140",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sampled",
-        "seed": 123,
-        "split": null,
-        "id": "cuda-covtype-sampled-123-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 123,
-        "data_random_seed": 123,
-        "feature_fraction_seed": 10123,
-        "bagging_seed": 20123,
-        "drop_seed": 30123,
-        "extra_seed": 40123,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -49627,46 +48725,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-sampled-123-None.json",
       "original_record_sha256": "1c075037afa53fad27aa43200aaabe0eb4257d641c6969618166617fe9578e29",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sampled",
-        "seed": 2026,
-        "split": null,
-        "id": "cuda-covtype-sampled-2026-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 2026,
-        "data_random_seed": 2026,
-        "feature_fraction_seed": 12026,
-        "bagging_seed": 22026,
-        "drop_seed": 32026,
-        "extra_seed": 42026,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sampled-2026-None.case.json",
-      "original_record_sha256": "baf619e169e94526f5430daf759aa4c8c63912a2463d76be1d0c244cb157334a",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -49969,46 +49027,6 @@
         "bagging_freq": 1,
         "feature_fraction": 0.8
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sampled-271-None.case.json",
-      "original_record_sha256": "0f78d845246b7881061fc8243c8af0d50c5f3e0dfd5b78832ec97d6920a460b9",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sampled",
-        "seed": 271,
-        "split": null,
-        "id": "cuda-covtype-sampled-271-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 271,
-        "data_random_seed": 271,
-        "feature_fraction_seed": 10271,
-        "bagging_seed": 20271,
-        "drop_seed": 30271,
-        "extra_seed": 40271,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -50235,46 +49253,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-sampled-271-None.json",
       "original_record_sha256": "2d5aec3ac4ab272c9a285f4a15084f3e74a1e7bd20d93bdb5ca58ddc707c1f76",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sampled",
-        "seed": 4099,
-        "split": null,
-        "id": "cuda-covtype-sampled-4099-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 4099,
-        "data_random_seed": 4099,
-        "feature_fraction_seed": 14099,
-        "bagging_seed": 24099,
-        "drop_seed": 34099,
-        "extra_seed": 44099,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sampled-4099-None.case.json",
-      "original_record_sha256": "46adce0ca89521e8944ae38d06132091993b5fe83c3e4e8edfcb3178da5696ea",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -50577,46 +49555,6 @@
         "bagging_freq": 1,
         "feature_fraction": 0.8
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sampled-42-None.case.json",
-      "original_record_sha256": "358e5b5cce05d34830f5acff2b4813fbbb01ca231905c63780af660375f193c9",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sampled",
-        "seed": 42,
-        "split": null,
-        "id": "cuda-covtype-sampled-42-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 42,
-        "data_random_seed": 42,
-        "feature_fraction_seed": 10042,
-        "bagging_seed": 20042,
-        "drop_seed": 30042,
-        "extra_seed": 40042,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -50843,46 +49781,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-sampled-42-None.json",
       "original_record_sha256": "8fcc739e6e917bc519c2d9ae35831716cb1fd1eacf8d9b9e8336ef6692b691ba",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sampled",
-        "seed": 509,
-        "split": null,
-        "id": "cuda-covtype-sampled-509-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 509,
-        "data_random_seed": 509,
-        "feature_fraction_seed": 10509,
-        "bagging_seed": 20509,
-        "drop_seed": 30509,
-        "extra_seed": 40509,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sampled-509-None.case.json",
-      "original_record_sha256": "1999e2baa59fcbe33b3f1b96b01f56d23b8dbdac84f35e57eb1eb7570a672d2f",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -51185,46 +50083,6 @@
         "bagging_freq": 1,
         "feature_fraction": 0.8
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sampled-65521-None.case.json",
-      "original_record_sha256": "3e4de9b2459a5429cb24063e10502584b5c59524ea7c2105fc1bd63d3c22f2f5",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sampled",
-        "seed": 65521,
-        "split": null,
-        "id": "cuda-covtype-sampled-65521-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 65521,
-        "data_random_seed": 65521,
-        "feature_fraction_seed": 75521,
-        "bagging_seed": 85521,
-        "drop_seed": 95521,
-        "extra_seed": 105521,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -51451,46 +50309,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-sampled-65521-None.json",
       "original_record_sha256": "f1c6ffea628265f3e83d3d9b10fd5280ab659f9b4dbfb91b7aff764145c44b92",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sampled",
-        "seed": 67,
-        "split": null,
-        "id": "cuda-covtype-sampled-67-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 67,
-        "data_random_seed": 67,
-        "feature_fraction_seed": 10067,
-        "bagging_seed": 20067,
-        "drop_seed": 30067,
-        "extra_seed": 40067,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sampled-67-None.case.json",
-      "original_record_sha256": "c24783dc3eee6c19771ba85e60598d0334718893648358536b69935459631d7a",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -51793,46 +50611,6 @@
         "bagging_freq": 1,
         "feature_fraction": 0.8
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sampled-997-None.case.json",
-      "original_record_sha256": "09b7889bb9c04b1adbc0f92c2eb5970260e8a1a25a8a009755b0c2c072369a9b",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sampled",
-        "seed": 997,
-        "split": null,
-        "id": "cuda-covtype-sampled-997-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 997,
-        "data_random_seed": 997,
-        "feature_fraction_seed": 10997,
-        "bagging_seed": 20997,
-        "drop_seed": 30997,
-        "extra_seed": 40997,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -52095,44 +50873,6 @@
         "num_class": 7,
         "sigmoid": 2.0
       },
-      "record_id": "rc_1408ee79/results/cuda-covtype-sigmoid_ova-271-None.case.json",
-      "original_record_sha256": "4805f7d716d5acc8a1718d18f632e94fde3e0c4a0ec326305c175dd1c11d30c5",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "sigmoid_ova",
-        "seed": 271,
-        "split": null,
-        "id": "cuda-covtype-sigmoid_ova-271-None"
-      },
-      "params": {
-        "objective": "multiclassova",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 271,
-        "data_random_seed": 271,
-        "feature_fraction_seed": 10271,
-        "bagging_seed": 20271,
-        "drop_seed": 30271,
-        "extra_seed": 40271,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7,
-        "sigmoid": 2.0
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -52347,43 +51087,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-covtype-sigmoid_ova-271-None.json",
       "original_record_sha256": "63423936bd0faf703755df0ae8382ff6e108aa468bc83ced186049b8665da522",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "covtype",
-        "profile": "tiny_leaves",
-        "seed": 123,
-        "split": null,
-        "id": "cuda-covtype-tiny_leaves-123-None"
-      },
-      "params": {
-        "objective": "multiclass",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 1,
-        "min_sum_hessian_in_leaf": 0,
-        "lambda_l2": 0,
-        "seed": 123,
-        "data_random_seed": 123,
-        "feature_fraction_seed": 10123,
-        "bagging_seed": 20123,
-        "drop_seed": 30123,
-        "extra_seed": 40123,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "multi_logloss",
-        "num_class": 7
-      },
-      "record_id": "rc_1408ee79/results/cuda-covtype-tiny_leaves-123-None.case.json",
-      "original_record_sha256": "12dd19ccfde1a561f16186c050a9eff241ed98c16e6ebfa1aad4bfed95a9e759",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -52680,43 +51383,6 @@
         "metric": "binary_logloss",
         "cuda_plan": "auto,hybrid:off"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-alternate-2026-None.case.json",
-      "original_record_sha256": "5f2ca367b9e80cd89ced2a277818ac5b5afd929f04aabd4e6af9eeb3e0a7e92d",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "alternate",
-        "seed": 2026,
-        "split": null,
-        "id": "cuda-fraud-alternate-2026-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 2026,
-        "data_random_seed": 2026,
-        "feature_fraction_seed": 12026,
-        "bagging_seed": 22026,
-        "drop_seed": 32026,
-        "extra_seed": 42026,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "cuda_plan": "auto,hybrid:off"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -52926,42 +51592,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-alternate-2026-None.json",
       "original_record_sha256": "94d5599b47fc641a938be6902da43f2301d7eff9d5faf2ae5293abf4b8b6ac21",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "base",
-        "seed": 0,
-        "split": null,
-        "id": "cuda-fraud-base-0-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 0,
-        "data_random_seed": 0,
-        "feature_fraction_seed": 10000,
-        "bagging_seed": 20000,
-        "drop_seed": 30000,
-        "extra_seed": 40000,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-base-0-None.case.json",
-      "original_record_sha256": "44c04ea98c647ef842e21666cf66c737c7e0f3440c94689b5f471e2c02244750",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -53239,42 +51869,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-base-1-None.case.json",
-      "original_record_sha256": "c2269041cec5d834307c6f5da1ad308c1cc9ce5717af8bac63a7d7d0744801c5",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "base",
-        "seed": 1,
-        "split": null,
-        "id": "cuda-fraud-base-1-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 1,
-        "data_random_seed": 1,
-        "feature_fraction_seed": 10001,
-        "bagging_seed": 20001,
-        "drop_seed": 30001,
-        "extra_seed": 40001,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -53484,42 +52078,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-base-1-None.json",
       "original_record_sha256": "8927f5ff5001e460cc99b16560739970f60b24141591f6ec57385dce13335db2",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "base",
-        "seed": 11,
-        "split": null,
-        "id": "cuda-fraud-base-11-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 11,
-        "data_random_seed": 11,
-        "feature_fraction_seed": 10011,
-        "bagging_seed": 20011,
-        "drop_seed": 30011,
-        "extra_seed": 40011,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-base-11-None.case.json",
-      "original_record_sha256": "d7bebebf4ec9271f92396361c4467e02996ab3dfe31b55f8f95e92ad5d6f8441",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -53797,42 +52355,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-base-19-None.case.json",
-      "original_record_sha256": "32d4870232f9b687024dd207616f970fd7cc96e1455b72d04f2b1494a7c4eb3f",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "base",
-        "seed": 19,
-        "split": null,
-        "id": "cuda-fraud-base-19-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 19,
-        "data_random_seed": 19,
-        "feature_fraction_seed": 10019,
-        "bagging_seed": 20019,
-        "drop_seed": 30019,
-        "extra_seed": 40019,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -54042,42 +52564,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-base-19-None.json",
       "original_record_sha256": "1a3dc2015c51255b45ed891c949f48d8c6291bdcaaa698006a18e344ca121eed",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "base",
-        "seed": 2,
-        "split": null,
-        "id": "cuda-fraud-base-2-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 2,
-        "data_random_seed": 2,
-        "feature_fraction_seed": 10002,
-        "bagging_seed": 20002,
-        "drop_seed": 30002,
-        "extra_seed": 40002,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-base-2-None.case.json",
-      "original_record_sha256": "a8d47587c0166c5f4fe82722a26d08baf8c65f842598cac0bb7fecf863b76de3",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -54355,42 +52841,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-base-23-None.case.json",
-      "original_record_sha256": "d8dccec596844171d013f7684db53ababfe2a20491245035c1133de3b5f43c15",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "base",
-        "seed": 23,
-        "split": null,
-        "id": "cuda-fraud-base-23-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 23,
-        "data_random_seed": 23,
-        "feature_fraction_seed": 10023,
-        "bagging_seed": 20023,
-        "drop_seed": 30023,
-        "extra_seed": 40023,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -54600,42 +53050,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-base-23-None.json",
       "original_record_sha256": "9565fe0fa349dbce34377e83732fa92fe4e5cad6bb6ccb02a32c061a464152aa",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "base",
-        "seed": 3,
-        "split": null,
-        "id": "cuda-fraud-base-3-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 3,
-        "data_random_seed": 3,
-        "feature_fraction_seed": 10003,
-        "bagging_seed": 20003,
-        "drop_seed": 30003,
-        "extra_seed": 40003,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-base-3-None.case.json",
-      "original_record_sha256": "2b84c8c6aa021f1ebf3f7e63c776434378870ba34627b13d20381806a382fdcf",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -54913,42 +53327,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-base-4-None.case.json",
-      "original_record_sha256": "5f61ba8fd538508957b8c84f26ca7a1c09bd7262478feeb0a7e924040fca03e7",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "base",
-        "seed": 4,
-        "split": null,
-        "id": "cuda-fraud-base-4-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 4,
-        "data_random_seed": 4,
-        "feature_fraction_seed": 10004,
-        "bagging_seed": 20004,
-        "drop_seed": 30004,
-        "extra_seed": 40004,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -55158,42 +53536,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-base-4-None.json",
       "original_record_sha256": "dbb0be8bedb76d563451700d72f8642e6a8e703bd9d8118c15ee429e93a56a23",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "base",
-        "seed": 5,
-        "split": null,
-        "id": "cuda-fraud-base-5-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 5,
-        "data_random_seed": 5,
-        "feature_fraction_seed": 10005,
-        "bagging_seed": 20005,
-        "drop_seed": 30005,
-        "extra_seed": 40005,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-base-5-None.case.json",
-      "original_record_sha256": "220b685e5b133130ba8e9601ad25f462ae363d166fd3eb73d6fd43cb56a2018c",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -55471,42 +53813,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-base-7-None.case.json",
-      "original_record_sha256": "72dcb06e74a53ca49922d8340efe06f52144724042d696ad8ec42093def299e7",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "base",
-        "seed": 7,
-        "split": null,
-        "id": "cuda-fraud-base-7-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 7,
-        "data_random_seed": 7,
-        "feature_fraction_seed": 10007,
-        "bagging_seed": 20007,
-        "drop_seed": 30007,
-        "extra_seed": 40007,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -55750,42 +54056,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-bins15-101-None.case.json",
-      "original_record_sha256": "df7f368d27bdef502f3b65c53f4c71e83d394795f769495096f3e1e9d587148b",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "bins15",
-        "seed": 101,
-        "split": null,
-        "id": "cuda-fraud-bins15-101-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 15,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 101,
-        "data_random_seed": 101,
-        "feature_fraction_seed": 10101,
-        "bagging_seed": 20101,
-        "drop_seed": 30101,
-        "extra_seed": 40101,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -55995,45 +54265,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-bins15-101-None.json",
       "original_record_sha256": "b5a785d33b439779982257fc29c48a06c4caecb885faa84828b58e82ff3c7271",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "dart",
-        "seed": 997,
-        "split": null,
-        "id": "cuda-fraud-dart-997-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 997,
-        "data_random_seed": 997,
-        "feature_fraction_seed": 10997,
-        "bagging_seed": 20997,
-        "drop_seed": 30997,
-        "extra_seed": 40997,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "boosting_type": "dart",
-        "drop_rate": 0.1,
-        "skip_drop": 0.5
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-dart-997-None.case.json",
-      "original_record_sha256": "32cf7bb93e65fd055d800316630e6de5753344b3da898a54af358c4dca19a63e",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -56317,45 +54548,6 @@
         "top_rate": 0.2,
         "other_rate": 0.1
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-goss-509-None.case.json",
-      "original_record_sha256": "09447b4d483b20356c1248d4e3a2feffa8883faffdc46f218644df5bb954aa21",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "goss",
-        "seed": 509,
-        "split": null,
-        "id": "cuda-fraud-goss-509-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 509,
-        "data_random_seed": 509,
-        "feature_fraction_seed": 10509,
-        "bagging_seed": 20509,
-        "drop_seed": 30509,
-        "extra_seed": 40509,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "data_sample_strategy": "goss",
-        "top_rate": 0.2,
-        "other_rate": 0.1
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -56600,43 +54792,6 @@
         "metric": "binary_logloss",
         "max_delta_step": 0
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-legacy_control-42-None.case.json",
-      "original_record_sha256": "b9231e5eadb3264aa11c91a3e0ad4b36efd8f3466af682b005c49fa6b7a95d84",
-      "outcome": "reproduced_instability",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "legacy_control",
-        "seed": 42,
-        "split": null,
-        "id": "cuda-fraud-legacy_control-42-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 42,
-        "data_random_seed": 42,
-        "feature_fraction_seed": 10042,
-        "bagging_seed": 20042,
-        "drop_seed": 30042,
-        "extra_seed": 40042,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "max_delta_step": 0
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -56777,42 +54932,6 @@
       "record_id": "rc_1408ee79/results/cuda-fraud-legacy_control-42-None.json",
       "original_record_sha256": "f067bfb696b00dc55a9e3092f63a75047319a870785222f7f627b7d70731836e",
       "outcome": "reproduced_instability",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "lr003",
-        "seed": 42,
-        "split": null,
-        "id": "cuda-fraud-lr003-42-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.03,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 42,
-        "data_random_seed": 42,
-        "feature_fraction_seed": 10042,
-        "bagging_seed": 20042,
-        "drop_seed": 30042,
-        "extra_seed": 40042,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-lr003-42-None.case.json",
-      "original_record_sha256": "2da7f605ca7bd1d03f784e6536267fb508b478375020e98cbd037fa572238152",
-      "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
     {
@@ -57055,42 +55174,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-lr003-42-None.json",
       "original_record_sha256": "7b1d2513f0275c75ad2428d88152decf0a984099c5da531ddbce70aa8cced223",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "lr05",
-        "seed": 67,
-        "split": null,
-        "id": "cuda-fraud-lr05-67-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.5,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 67,
-        "data_random_seed": 67,
-        "feature_fraction_seed": 10067,
-        "bagging_seed": 20067,
-        "drop_seed": 30067,
-        "extra_seed": 40067,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-lr05-67-None.case.json",
-      "original_record_sha256": "884914e4b2a4554ba0285f15d47eab4cd2c111b727887ffcac87961c64293d8c",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -57368,42 +55451,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-resplit-10013-13.case.json",
-      "original_record_sha256": "f91460c26a3c8882af7cfefc60f2505049c4a7a4fb262d948a93793ac3177b80",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "resplit",
-        "seed": 10013,
-        "split": 13,
-        "id": "cuda-fraud-resplit-10013-13"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 10013,
-        "data_random_seed": 10013,
-        "feature_fraction_seed": 20013,
-        "bagging_seed": 30013,
-        "drop_seed": 40013,
-        "extra_seed": 50013,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -57411,7 +55458,7 @@
         "split_seed": 13,
         "train_indices_sha256": "a0c1c2a657491b200a8d8fadc9560d03379cbe0fb64fb1e4bbb9e9055b52fc23",
         "test_indices_sha256": "69e5836771d08206311bc4047ac3d62cbeb9a5867144eeee5a0239143c63b37a",
-        "indices_source": "/data/archive/2026-10-ubuntu-migration/migration-archive/home/felixjk/.codex/visualizations/2026/10/11/01a12b7a-bbcd-7be1-a5f1-7544c2a0cceb/broad-stability-coverage/splits/fraud-13.npz"
+        "indices_source": "evidence://broad-stability-coverage-20261011/splits/fraud-13.npz"
       },
       "train_shape": [
         227845,
@@ -57651,42 +55698,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-resplit-10037-37.case.json",
-      "original_record_sha256": "394374aea496d0c5423f8ab7a448a3b340a8d79a2ffe81ed8ff3bbd167eec34f",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "resplit",
-        "seed": 10037,
-        "split": 37,
-        "id": "cuda-fraud-resplit-10037-37"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 10037,
-        "data_random_seed": 10037,
-        "feature_fraction_seed": 20037,
-        "bagging_seed": 30037,
-        "drop_seed": 40037,
-        "extra_seed": 50037,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -57694,7 +55705,7 @@
         "split_seed": 37,
         "train_indices_sha256": "b852504b34a46aa87e8effdfc8f217916533952a51fc700e6467a3498bb90974",
         "test_indices_sha256": "852fc50b1ad60558b208585412f586bf1b3730e89aaeec96211cb01dc3960cd9",
-        "indices_source": "/data/archive/2026-10-ubuntu-migration/migration-archive/home/felixjk/.codex/visualizations/2026/10/11/01a12b7a-bbcd-7be1-a5f1-7544c2a0cceb/broad-stability-coverage/splits/fraud-37.npz"
+        "indices_source": "evidence://broad-stability-coverage-20261011/splits/fraud-37.npz"
       },
       "train_shape": [
         227845,
@@ -57934,42 +55945,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-resplit-10083-83.case.json",
-      "original_record_sha256": "1830531ab3171f42724323b6415b40e3d1961dbe7448a41a65d7871799929316",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "resplit",
-        "seed": 10083,
-        "split": 83,
-        "id": "cuda-fraud-resplit-10083-83"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 10083,
-        "data_random_seed": 10083,
-        "feature_fraction_seed": 20083,
-        "bagging_seed": 30083,
-        "drop_seed": 40083,
-        "extra_seed": 50083,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -57977,7 +55952,7 @@
         "split_seed": 83,
         "train_indices_sha256": "8a6f41cbaa1860a1fa2e732e96edfa3272065a5347bb9f95fd3953d1b1ce7073",
         "test_indices_sha256": "8f63899ce3feb553b407fe2530ffbccb5c00d0d694fb9e392d2045b6e1a8012d",
-        "indices_source": "/data/archive/2026-10-ubuntu-migration/migration-archive/home/felixjk/.codex/visualizations/2026/10/11/01a12b7a-bbcd-7be1-a5f1-7544c2a0cceb/broad-stability-coverage/splits/fraud-83.npz"
+        "indices_source": "evidence://broad-stability-coverage-20261011/splits/fraud-83.npz"
       },
       "train_shape": [
         227845,
@@ -58217,42 +56192,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-resplit-10211-211.case.json",
-      "original_record_sha256": "36f0400522f1ceeca6587e79f3de9e1e9e2137e6b9e91bd4aa211be43ad532ac",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "resplit",
-        "seed": 10211,
-        "split": 211,
-        "id": "cuda-fraud-resplit-10211-211"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 10211,
-        "data_random_seed": 10211,
-        "feature_fraction_seed": 20211,
-        "bagging_seed": 30211,
-        "drop_seed": 40211,
-        "extra_seed": 50211,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -58260,7 +56199,7 @@
         "split_seed": 211,
         "train_indices_sha256": "a7ea5d931c76b1146082a3c18c9e9e411f68eeeab9cb172db76811098b52286c",
         "test_indices_sha256": "313a4d2cd1dccad6b94f5a7c315b410d217afe32b8de6e10633b6b35b710d43b",
-        "indices_source": "/data/archive/2026-10-ubuntu-migration/migration-archive/home/felixjk/.codex/visualizations/2026/10/11/01a12b7a-bbcd-7be1-a5f1-7544c2a0cceb/broad-stability-coverage/splits/fraud-211.npz"
+        "indices_source": "evidence://broad-stability-coverage-20261011/splits/fraud-211.npz"
       },
       "train_shape": [
         227845,
@@ -58500,42 +56439,6 @@
         "cuda_precision": "fp64",
         "metric": "binary_logloss"
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-resplit-11009-1009.case.json",
-      "original_record_sha256": "dfea8846223b8ca40a30ff66d710167f484e8bb416be60808760aaf026073641",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "resplit",
-        "seed": 11009,
-        "split": 1009,
-        "id": "cuda-fraud-resplit-11009-1009"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 11009,
-        "data_random_seed": 11009,
-        "feature_fraction_seed": 21009,
-        "bagging_seed": 31009,
-        "drop_seed": 41009,
-        "extra_seed": 51009,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -58543,7 +56446,7 @@
         "split_seed": 1009,
         "train_indices_sha256": "1cba905821b603f5fee1a1bf1040da1a21e54e7883e793ca9dbf6adf7b1da027",
         "test_indices_sha256": "f821eef23c71284ab7d5210f38f061b8a44265ef9dc901e6f0a33c485862b2a6",
-        "indices_source": "/data/archive/2026-10-ubuntu-migration/migration-archive/home/felixjk/.codex/visualizations/2026/10/11/01a12b7a-bbcd-7be1-a5f1-7544c2a0cceb/broad-stability-coverage/splits/fraud-1009.npz"
+        "indices_source": "evidence://broad-stability-coverage-20261011/splits/fraud-1009.npz"
       },
       "train_shape": [
         227845,
@@ -58749,45 +56652,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-resplit-11009-1009.json",
       "original_record_sha256": "ef2fe3e221ff19fc8538b8697eedc8b87eec222db06355459fa2fcca8444130f",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sampled",
-        "seed": 101,
-        "split": null,
-        "id": "cuda-fraud-sampled-101-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 101,
-        "data_random_seed": 101,
-        "feature_fraction_seed": 10101,
-        "bagging_seed": 20101,
-        "drop_seed": 30101,
-        "extra_seed": 40101,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sampled-101-None.case.json",
-      "original_record_sha256": "8e768769af21b48d5dadb7eae53825f447fcd01e3b602716b1a522669ac7aa97",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -59071,45 +56935,6 @@
         "bagging_freq": 1,
         "feature_fraction": 0.8
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sampled-123-None.case.json",
-      "original_record_sha256": "345a90cf7adcba959bceafd8a6f5fe8e4455de681c977d6a16c2cc64d3677840",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sampled",
-        "seed": 123,
-        "split": null,
-        "id": "cuda-fraud-sampled-123-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 123,
-        "data_random_seed": 123,
-        "feature_fraction_seed": 10123,
-        "bagging_seed": 20123,
-        "drop_seed": 30123,
-        "extra_seed": 40123,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -59319,45 +57144,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-sampled-123-None.json",
       "original_record_sha256": "f84bf661fc0177f27417fd5da1903390290dec240f1a7a58d60a0f86c348a491",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sampled",
-        "seed": 2026,
-        "split": null,
-        "id": "cuda-fraud-sampled-2026-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 2026,
-        "data_random_seed": 2026,
-        "feature_fraction_seed": 12026,
-        "bagging_seed": 22026,
-        "drop_seed": 32026,
-        "extra_seed": 42026,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sampled-2026-None.case.json",
-      "original_record_sha256": "c3ae2d1319b3bffc5d95ca976f403b1a7cdf563f16a2a1a3f5f992a19f6d6e65",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -59641,45 +57427,6 @@
         "bagging_freq": 1,
         "feature_fraction": 0.8
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sampled-271-None.case.json",
-      "original_record_sha256": "abf615389f778262c84f762bf966400b6786c09b891c86237540dcc5308718da",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sampled",
-        "seed": 271,
-        "split": null,
-        "id": "cuda-fraud-sampled-271-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 271,
-        "data_random_seed": 271,
-        "feature_fraction_seed": 10271,
-        "bagging_seed": 20271,
-        "drop_seed": 30271,
-        "extra_seed": 40271,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -59889,45 +57636,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-sampled-271-None.json",
       "original_record_sha256": "0490d1bb3862e27e15d2fbc76ed9ace54841765537c907e838164ade2c9bf0f4",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sampled",
-        "seed": 4099,
-        "split": null,
-        "id": "cuda-fraud-sampled-4099-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 4099,
-        "data_random_seed": 4099,
-        "feature_fraction_seed": 14099,
-        "bagging_seed": 24099,
-        "drop_seed": 34099,
-        "extra_seed": 44099,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sampled-4099-None.case.json",
-      "original_record_sha256": "5cb79183632079c6b2206306b567736ae88bb815693884a8d7a6a9e664a28a45",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -60211,45 +57919,6 @@
         "bagging_freq": 1,
         "feature_fraction": 0.8
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sampled-42-None.case.json",
-      "original_record_sha256": "1d0843dbb2c02583212e2263490f174d9900025b360a6aa2cfd4882950617af5",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sampled",
-        "seed": 42,
-        "split": null,
-        "id": "cuda-fraud-sampled-42-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 42,
-        "data_random_seed": 42,
-        "feature_fraction_seed": 10042,
-        "bagging_seed": 20042,
-        "drop_seed": 30042,
-        "extra_seed": 40042,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -60459,45 +58128,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-sampled-42-None.json",
       "original_record_sha256": "99ab35f14d3ae161b0c7d878c4bb9c9c725b711a9ab936a3feaacdf1c2b0721e",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sampled",
-        "seed": 509,
-        "split": null,
-        "id": "cuda-fraud-sampled-509-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 509,
-        "data_random_seed": 509,
-        "feature_fraction_seed": 10509,
-        "bagging_seed": 20509,
-        "drop_seed": 30509,
-        "extra_seed": 40509,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sampled-509-None.case.json",
-      "original_record_sha256": "8cc811b10d1e0d50dd71c79047c0d1e288a6f5fafde867651cb6d8a469e6b023",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -60781,45 +58411,6 @@
         "bagging_freq": 1,
         "feature_fraction": 0.8
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sampled-65521-None.case.json",
-      "original_record_sha256": "5f719cabfbec4daa8f95ad2aaf22b0fceb355d638d67eb7f916a653ee85dac93",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sampled",
-        "seed": 65521,
-        "split": null,
-        "id": "cuda-fraud-sampled-65521-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 65521,
-        "data_random_seed": 65521,
-        "feature_fraction_seed": 75521,
-        "bagging_seed": 85521,
-        "drop_seed": 95521,
-        "extra_seed": 105521,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -61029,45 +58620,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-sampled-65521-None.json",
       "original_record_sha256": "1540b0ed9228235d9d2881839195290fa0e0c81225e41ec1d92dd074692a3b14",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sampled",
-        "seed": 67,
-        "split": null,
-        "id": "cuda-fraud-sampled-67-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 67,
-        "data_random_seed": 67,
-        "feature_fraction_seed": 10067,
-        "bagging_seed": 20067,
-        "drop_seed": 30067,
-        "extra_seed": 40067,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sampled-67-None.case.json",
-      "original_record_sha256": "913a3e8f2fc1da7669e7e13d110a3a6a36689a9e75f0a1bde81e6067f754da51",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -61351,45 +58903,6 @@
         "bagging_freq": 1,
         "feature_fraction": 0.8
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sampled-997-None.case.json",
-      "original_record_sha256": "e33f13b95772bdfdd5a1944cfd1228e43928f8522d1b258699e7afbf95fb2bc9",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sampled",
-        "seed": 997,
-        "split": null,
-        "id": "cuda-fraud-sampled-997-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 997,
-        "data_random_seed": 997,
-        "feature_fraction_seed": 10997,
-        "bagging_seed": 20997,
-        "drop_seed": 30997,
-        "extra_seed": 40997,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -61634,43 +59147,6 @@
         "metric": "binary_logloss",
         "sigmoid": 2.0
       },
-      "record_id": "rc_1408ee79/results/cuda-fraud-sigmoid_ova-271-None.case.json",
-      "original_record_sha256": "ced1c9f8f33365b7fcdfdbbcd1ca086c8e48926b632d8cbf66a1188cec5bb95f",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "sigmoid_ova",
-        "seed": 271,
-        "split": null,
-        "id": "cuda-fraud-sigmoid_ova-271-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 0.001,
-        "lambda_l2": 0,
-        "seed": 271,
-        "data_random_seed": 271,
-        "feature_fraction_seed": 10271,
-        "bagging_seed": 20271,
-        "drop_seed": 30271,
-        "extra_seed": 40271,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss",
-        "sigmoid": 2.0
-      },
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "version": "1.0.6",
       "split": {
@@ -61880,42 +59356,6 @@
       },
       "record_id": "rc_1408ee79/results/cuda-fraud-sigmoid_ova-271-None.json",
       "original_record_sha256": "473707d88de6f86c0cc337888c111debf4f6e749a21d24a25644837314386213",
-      "outcome": "guarded_pass",
-      "measurement": "rc_1408ee79"
-    },
-    {
-      "case": {
-        "backend": "cuda",
-        "dataset": "fraud",
-        "profile": "tiny_leaves",
-        "seed": 123,
-        "split": null,
-        "id": "cuda-fraud-tiny_leaves-123-None"
-      },
-      "params": {
-        "objective": "binary",
-        "learning_rate": 0.1,
-        "num_leaves": 1023,
-        "max_depth": 10,
-        "max_bin": 255,
-        "num_threads": 8,
-        "min_data_in_leaf": 1,
-        "min_sum_hessian_in_leaf": 0,
-        "lambda_l2": 0,
-        "seed": 123,
-        "data_random_seed": 123,
-        "feature_fraction_seed": 10123,
-        "bagging_seed": 20123,
-        "drop_seed": 30123,
-        "extra_seed": 40123,
-        "verbosity": -1,
-        "device_type": "cuda",
-        "quant_mode": "none",
-        "cuda_precision": "fp64",
-        "metric": "binary_logloss"
-      },
-      "record_id": "rc_1408ee79/results/cuda-fraud-tiny_leaves-123-None.case.json",
-      "original_record_sha256": "72185625c2c68e4c51f10c8bb79362ba3fe21f939b6789b98b863d29f3aae2a9",
       "outcome": "guarded_pass",
       "measurement": "rc_1408ee79"
     },
@@ -62437,7 +59877,7 @@
       "runtime_build": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
       "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
       "driver": "runs/release_1_1/stability_cuda.py + stability_child.py",
-      "records_appended": 136,
+      "records_appended": 68,
       "outcomes": {
         "guarded_pass": 66,
         "reproduced_instability": 2
@@ -62501,6 +59941,82 @@
         "stability_cuda_fresh_fraud_auc_range": "0.9647\u20130.9849",
         "stability_cuda_fresh_covtype_acc_range": "0.9702\u20130.9710",
         "stability_rc_records": 68
+      }
+    },
+    {
+      "measurement": "rc_1408ee79_cpu",
+      "date": "2026-10-21",
+      "backend": "cpu",
+      "runtime_build": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+      "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
+      "driver": "runs/release_1_1/stability_cuda.py --cpu + stability_child.py (device_type=cpu on the CUDA-enabled build; October used a CPU-only build)",
+      "records_appended": 0,
+      "records_note": "Per-case CPU records are not appended; the October CPU records remain the published per-case evidence. Outcomes, ranges and placeholders of the rerun are below.",
+      "guarded_passed": 74,
+      "guarded_total": 74,
+      "outcomes": {
+        "guarded_pass": 74,
+        "reproduced_instability": 2
+      },
+      "table": {
+        "fraud": {
+          "seeds20_new": {
+            "min": 0.9722438356321708,
+            "max": 0.9839561703972529,
+            "n": 20
+          },
+          "seeds20_recorded": {
+            "min": 0.9722438356321708,
+            "max": 0.9839561703972529,
+            "n": 20
+          },
+          "resplit_new": {
+            "min": 0.9611958141444534,
+            "max": 0.9857529745156364,
+            "n": 5
+          },
+          "resplit_recorded": {
+            "min": 0.9611958141444534,
+            "max": 0.9857529745156364,
+            "n": 5
+          },
+          "lr003_new": 0.9755817317078773,
+          "bins15_new": 0.9657489261883707
+        },
+        "covtype": {
+          "seeds20_new": {
+            "min": 0.9691574227859866,
+            "max": 0.9702073096219547,
+            "n": 20
+          },
+          "seeds20_recorded": {
+            "min": 0.9691574227859866,
+            "max": 0.9702159152517577,
+            "n": 20
+          },
+          "resplit_new": {
+            "min": 0.9702503377709698,
+            "max": 0.9710764782320594,
+            "n": 5
+          },
+          "resplit_recorded": {
+            "min": 0.9702503377709698,
+            "max": 0.9710764782320594,
+            "n": 5
+          },
+          "lr003_new": 0.9390205072158206,
+          "bins15_new": 0.9468430247067632
+        }
+      },
+      "tree_fingerprints_same_as_october": 3,
+      "placeholders": {
+        "stability_cpu_guarded_pass": 74,
+        "stability_cpu_controls_reproduced": 2,
+        "stability_cpu_fraud_auc_range": "0.9722\u20130.9840",
+        "stability_cpu_covtype_acc_range": "0.9692\u20130.9702",
+        "stability_cpu_fresh_fraud_auc_range": "0.9612\u20130.9858",
+        "stability_cpu_fresh_covtype_acc_range": "0.9703\u20130.9711",
+        "stability_rc_cpu_records": 76
       }
     }
   ]

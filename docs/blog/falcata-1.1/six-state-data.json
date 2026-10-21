@@ -110,12 +110,12 @@
         ]
     },
     "representations": {
-        "five": "/home/felixjk/Projects/kernel-evo/work/falcata/data/numerai_v53_benchtrain_r1226_int8.npy",
-        "six": "/home/felixjk/Projects/kernel-evo/work/falcata/data/numerai_v53_benchtrain_r1226_int8m1.npy",
-        "label": "/home/felixjk/Projects/kernel-evo/work/falcata/data/numerai_v53_benchtrain_r1226_int8.label.npy",
+        "five": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.npy",
+        "six": "external://falcata-data/numerai_v53_benchtrain_r1226_int8m1.npy",
+        "label": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.label.npy",
         "six_sidecar": {
             "file": "numerai_v53_benchtrain_r1226_int8m1.npy",
-            "path": "/home/felixjk/Projects/kernel-evo/work/falcata/data/numerai_v53_benchtrain_r1226_int8m1.npy",
+            "path": "external://falcata-data/numerai_v53_benchtrain_r1226_int8m1.npy",
             "shape": [
                 5463797,
                 3555
@@ -135,10 +135,10 @@
             "rule": "missing where every row of the era has the value 2 (Numerai int8nan)",
             "rows_prefix_only": false,
             "input_int8": {
-                "path": "/home/felixjk/Projects/kernel-evo/work/falcata/data/numerai_v53_benchtrain_r1226_int8.npy",
+                "path": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.npy",
                 "sidecar": {
                     "file": "numerai_v53_benchtrain_r1226_int8.npy",
-                    "path": "/media/felixjk/data/kernel-evo/falcata-data/numerai_v53_benchtrain_r1226_int8.npy",
+                    "path": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.npy",
                     "bytes": 19423798463,
                     "md5": "3bd27cabe9f52bf5ea6648bdd9625094",
                     "dtype": "int8",
@@ -170,7 +170,7 @@
                     "label": "y.npy[:train_end] (float32)",
                     "label_mean": 0.4999535083770752,
                     "split": "bench.load_data('numerai') train rows x[:train_end], y[:train_end]: the rows of $KEVO_NUMERAI_BENCH_DATASET, as int8 instead of the cache's float32",
-                    "cache_dir": "/home/felixjk/Documents/exaboost-bench/data/cache/numerai",
+                    "cache_dir": "external://exaboost-bench/data/cache/numerai",
                     "cache_meta": {
                         "n_rows": 6753184,
                         "n_features": 3555,
@@ -178,7 +178,7 @@
                         "test_start": 5463797,
                         "n_test_eras": 200,
                         "embargo_eras": 10,
-                        "source": "/home/felixjk/Documents/numerai/data/1226.parquet"
+                        "source": "external://numerai/data/1226.parquet"
                     },
                     "int8_twin_checked": true,
                     "seconds": 114.3,
@@ -196,9 +196,9 @@
                 }
             },
             "mask": {
-                "path": "/home/felixjk/Projects/kernel-evo/work/falcata/data/numerai_v53_benchtrain_r1226_int8nan_b255_dense.nanmask.npz",
+                "path": "external://falcata-data/numerai_v53_benchtrain_r1226_int8nan_b255_dense.nanmask.npz",
                 "meta": {
-                    "int8": "/home/felixjk/Documents/kernel-evo/work/falcata/data/numerai_v53_benchtrain_r1226_int8.npy",
+                    "int8": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.npy",
                     "int8_md5": "3bd27cabe9f52bf5ea6648bdd9625094",
                     "rows": 5463797,
                     "features": 3555,
@@ -215,17 +215,17 @@
                     "built": "2026-10-07T12:56:55+02:00"
                 },
                 "verified": {
-                    "parquet": "/home/felixjk/Documents/numerai/data/1230_int8nan.parquet",
+                    "parquet": "external://numerai/data/1230_int8nan.parquet",
                     "rows_checked": 5463797,
                     "values_checked": 19423798335,
                     "mismatches": 0,
                     "missing_values": 1538805167,
-                    "feature_order_equals": "/home/felixjk/Documents/numerai/data/1227.parquet",
+                    "feature_order_equals": "external://numerai/data/1227.parquet",
                     "seconds": 41.2,
                     "checked": "2026-10-07T12:59:34+02:00"
                 }
             },
-            "label": "/home/felixjk/Projects/kernel-evo/work/falcata/data/numerai_v53_benchtrain_r1226_int8.label.npy",
+            "label": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.label.npy",
             "md5x64M": "447938c2b14f06f9dc92600006150c3d",
             "bytes": 19423798463,
             "pr72_reference": "docs/2026-10-10_numerai-six-state-throughput.md: build 1230, target_ender_20, 5,502,748 train rows; here: bench split round 1226 `target`, 5,463,797 rows",
@@ -255,7 +255,7 @@
     "endpoints": {
         "diag-recipe-fixed-fp32-five": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "4c994d3be23d3009365ef64aa94d4096",
             "train_s": 4.1238308229949325,
             "first_call_s": 0.9808329090010375,
@@ -323,7 +323,7 @@
         },
         "diag-recipe-fixed-fp32-six": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "39bc5eb32fc732062ab5af33106f94c9",
             "train_s": 19.752728868974373,
             "first_call_s": 1.1487185069127008,
@@ -393,7 +393,7 @@
         },
         "diag-standard-fixed-five": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "1dfe65b369e612a2a9cd4791b3fa6604",
             "train_s": 1.5722283800132573,
             "first_call_s": 0.7027700539911166,
@@ -463,7 +463,7 @@
         },
         "diag-standard-fixed-six": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "d7ba44c2653bb34b9ef4b6ed1ea4793c",
             "train_s": 1.6001070840284228,
             "first_call_s": 0.6829961410257965,
@@ -533,7 +533,7 @@
         },
         "diag-standard-stoch-five": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "e1ff3cf57ce7ffd13634415f31747480",
             "train_s": 1.4332921699387953,
             "first_call_s": 0.7067474729847163,
@@ -603,7 +603,7 @@
         },
         "diag-standard-stoch-six": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "b6746d9123db6cedee6a5e83a084956d",
             "train_s": 1.6613701590104029,
             "first_call_s": 0.8967093710089102,
@@ -673,7 +673,7 @@
         },
         "full-standard-stoch-five": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "58727dde8c3b6133c3326e67e0786ebc",
             "train_s": 105.24421954597346,
             "first_call_s": 0.6880298409378156,
@@ -735,7 +735,7 @@
         },
         "full-standard-stoch-six": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "4c8649e0168f9ada797456a433dc89bd",
             "train_s": 112.02990752400365,
             "first_call_s": 0.7020116780186072,
@@ -799,7 +799,7 @@
         },
         "gate-sentinel-equivalence": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "reps": {
                 "int8": {
                     "tree_sha256": "aca41550e77b8b15cdcb159791b69910063f7b65e5b2bfae5bd01df504941a02",
@@ -852,7 +852,7 @@
         },
         "probe-recipe-fixed-fp32-five-d0": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "5307352efcdb5ce1055f889d7fa746a4",
             "train_s": 31.081602367921732,
             "first_call_s": 1.0693553279852495,
@@ -900,7 +900,7 @@
         },
         "probe-recipe-fixed-fp32-five-d1": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "5307352efcdb5ce1055f889d7fa746a4",
             "train_s": 31.062194318976253,
             "first_call_s": 1.0547381560318172,
@@ -948,7 +948,7 @@
         },
         "probe-recipe-fixed-fp32-five-d2": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "5307352efcdb5ce1055f889d7fa746a4",
             "train_s": 31.096422930946574,
             "first_call_s": 1.0589572779135779,
@@ -996,7 +996,7 @@
         },
         "probe-recipe-fixed-fp32-six-d0": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "ab85fa3bb423235f5eae0b249d9051ac",
             "train_s": 185.9557393520372,
             "first_call_s": 1.2123745640274137,
@@ -1046,7 +1046,7 @@
         },
         "probe-recipe-fixed-fp32-six-d1": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "ab85fa3bb423235f5eae0b249d9051ac",
             "train_s": 185.92329001391772,
             "first_call_s": 1.1968454709276557,
@@ -1096,7 +1096,7 @@
         },
         "probe-recipe-fixed-fp32-six-d2": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "ab85fa3bb423235f5eae0b249d9051ac",
             "train_s": 186.00890342099592,
             "first_call_s": 1.2709802630124614,
@@ -1146,7 +1146,7 @@
         },
         "probe-standard-fixed-five-d0": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "6feb126b94c88d47944fd6e607a3fdee",
             "train_s": 9.062126497970894,
             "first_call_s": 0.7022654849570245,
@@ -1190,7 +1190,7 @@
         },
         "probe-standard-fixed-five-d1": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "6feb126b94c88d47944fd6e607a3fdee",
             "train_s": 9.058432981953956,
             "first_call_s": 0.6903173900209367,
@@ -1234,7 +1234,7 @@
         },
         "probe-standard-fixed-five-d2": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "6feb126b94c88d47944fd6e607a3fdee",
             "train_s": 9.064192660036497,
             "first_call_s": 0.6967075651045889,
@@ -1278,7 +1278,7 @@
         },
         "probe-standard-fixed-six-d0": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "9c807c8d10c24004d231e80204613396",
             "train_s": 9.553525376017205,
             "first_call_s": 0.6952301380224526,
@@ -1324,7 +1324,7 @@
         },
         "probe-standard-fixed-six-d1": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "9c807c8d10c24004d231e80204613396",
             "train_s": 9.554070141050033,
             "first_call_s": 0.6834846670972183,
@@ -1370,7 +1370,7 @@
         },
         "probe-standard-fixed-six-d2": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "9c807c8d10c24004d231e80204613396",
             "train_s": 9.560989656019956,
             "first_call_s": 0.7014999699313194,
@@ -1416,7 +1416,7 @@
         },
         "probe-standard-stoch-five-d0": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "3975f5fe8e9ec19e30a4812d41e6f573",
             "train_s": 7.656695625046268,
             "first_call_s": 0.7023656870005652,
@@ -1460,7 +1460,7 @@
         },
         "probe-standard-stoch-five-d1": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "3975f5fe8e9ec19e30a4812d41e6f573",
             "train_s": 7.739483259967528,
             "first_call_s": 0.8083915750030428,
@@ -1504,7 +1504,7 @@
         },
         "probe-standard-stoch-five-d2": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "3975f5fe8e9ec19e30a4812d41e6f573",
             "train_s": 7.611847902066074,
             "first_call_s": 0.6967240100493655,
@@ -1548,7 +1548,7 @@
         },
         "probe-standard-stoch-six-d0": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "09ce076eaca062521487d766c2e9bae6",
             "train_s": 8.071087960037403,
             "first_call_s": 0.7002674180548638,
@@ -1594,7 +1594,7 @@
         },
         "probe-standard-stoch-six-d1": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "09ce076eaca062521487d766c2e9bae6",
             "train_s": 8.083457135013305,
             "first_call_s": 0.6979572229320183,
@@ -1640,7 +1640,7 @@
         },
         "probe-standard-stoch-six-d2": {
             "version": "1.0.6",
-            "file": "/home/felixjk/Projects/kernel-evo/work/falcata/wt/m1408/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
             "md5": "09ce076eaca062521487d766c2e9bae6",
             "train_s": 8.096568061038852,
             "first_call_s": 0.6904694139957428,

@@ -4,12 +4,12 @@ Every Falcata workload and mode of the [benchmark matrix](benchmark-matrix.json)
 updated 21 October 2026. The first table is the controlled release comparison:
 `a65d34e8` (12 October master) against the release candidate, measured on
 `1408ee79` ([checklist](../NUMBERS.md)), two interleaved fresh-process pairs
-per row, training seconds as medians of the two runs per arm; speedup is `a65d34e8`
+per row (Numerai deep: three), training seconds as medians of each arm's runs; speedup is `a65d34e8`
 seconds over release-candidate seconds. "Same model" compares the two builds' model
 MD5s for quantized rows. For `none` rows it says whether the release candidate's two
 runs agree: `a65d34e8`'s non-quantized runs differed from run to run, so its models
 differ from the release candidate's on every `none` row (#122). Fraud fixed point
-differs because of #146; the deep run stops at 357
+differs because of a fixed-point accumulation change since `a65d34e8` (most likely #146, which keeps the quantized CUDA root reduction's packed totals in int64); the deep run stops at 357
 trees. Launch
 times are the August archive. Numerai rows use native int8 input; the launch Numerai
 deep and leaf-limited rows used float32.

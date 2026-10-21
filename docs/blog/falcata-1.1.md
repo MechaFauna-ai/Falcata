@@ -25,10 +25,14 @@ measured in the same session, the release candidate takes
 5.370 s (launch archive: 31.0 s); Epsilon deep
 takes 9.822 s (launch archive: 39.3 s). Across the
 article's fifteen workloads, quantized training is 1.189×
-(stochastic) and 1.216× (fixed point) faster than `a65d34e8`
+(stochastic) and 1.202× (fixed point) faster than `a65d34e8`
 by geometric mean, with identical models in 28 of 30
 quantized comparisons (the two exceptions, fixed-point fraud, are
-[explained below](#models-that-change)).
+[explained below](#models-that-change)).[^fixed-mean]
+
+[^fixed-mean]: The fixed-point mean leaves out fraud deep, whose release-candidate
+    model stops at 357 of 500 trees. All fifteen rows:
+    1.216×; without both fixed-point fraud rows: 1.195×.
 
 Speed is half of this release. Non-quantized CUDA training now produces the same
 model on every run; random forests train on the device; bounded parts of a tree grow
@@ -220,10 +224,11 @@ On the article's thirteen non-quantized workloads the cost was 0.96–1.08× in
 training time, geometric mean 1.010 (*interim*, 16 October, same binary, key off
 versus on); Higgs deep is the costliest. On the release candidate, non-quantized
 training runs at 1.006× the speed of `a65d34e8` by geometric mean,
-with one model per shape in 13 of 13 workloads. The deep
-shapes pay for it: Higgs deep runs at 0.889×, Epsilon deep
-0.890×, Year deep 0.929× and Airline
-deep 0.944×. Linear
+with one model per shape in 13 of 13 workloads. Four of the six
+deep shapes are slower (Higgs 0.889×, Epsilon
+0.890×, Year 0.929×, Airline
+0.944×); Higgs deep is outside #122's measured cost, and the
+cause of the difference is not isolated. Linear
 trees, ranking objectives, multi-GPU training and non-quantized vector leaves
 remain nondeterministic.
 
@@ -313,7 +318,7 @@ configurations plus eight tiny-leaf seed cases, 12 October) passed all 500 round
 and again on `1408ee79` (74 of 74).
 The FP64 CUDA half was rerun on `1408ee79`, because #122 and #154 change
 its models: **66 of 66** passed, and
-2 of two uncapped controls reproduced
+2 of 2 uncapped controls reproduced
 runaway margins. Tree fingerprints match October's in only
 2 of 68 CUDA cases, as those fixes predict; the
 claim is the gates, not bit identity. `0` restores unbounded updates; regression, custom objectives and
@@ -333,17 +338,18 @@ random forests are outside the automatic bound. The
   every plan ([#154](https://github.com/MechaFauna-ai/Falcata/pull/154)).
 - **Categorical `extra_trees`** drew its random threshold on every thread
   ([#135](https://github.com/MechaFauna-ai/Falcata/pull/135)), and **quantized root
-  sums** could lose Hessian bits above 2^53
+  sums** are now reduced as packed int64 totals
   ([#146](https://github.com/MechaFauna-ai/Falcata/pull/146)).
 
 ### Models that change
 
-These fixes change some CUDA model outputs versus 1.0.5:
+These fixes change some model outputs versus 1.0.5, on CUDA and, for #91, on CPU:
 
 | Change | Affected inputs | Before |
 | --- | --- | --- |
 | #122 deterministic non-quantized construct | `quant_mode=none` with depth-limited trees, `feature_fraction < 1` or levels wider than the ordered kernels' buffer; `cuda_precision=fp32` | A different model per run |
-| #146 integer root statistics | Quantized training whose packed 64-bit root statistic exceeds 2^53; in the release comparison also fixed-point fraud (below) | Low Hessian bits lost at the root |
+| #146 integer root statistics (most likely; see below) | Quantized training whose packed root totals lost precision in floating-point accumulation; of the 43 measured workloads, only the two fixed-point fraud shapes changed | Low bits of the root sums lost |
+| #91 automatic classification step limit | Non-quantized binary, softmax and one-vs-all classification with GBDT, GOSS or DART, on CPU and CUDA | Unbounded Newton steps (`max_delta_step=0` restores them) |
 | #154 column sampling | Data with bundled features (for example one-hot blocks, as in covtype) and `feature_fraction < 1`, every plan | The wrong columns sampled |
 | #135 categorical extra trees | `extra_trees=true` with more categories than `max_cat_to_onehot` | Run-to-run variation; now the most common former model |
 
@@ -353,13 +359,15 @@ elements ([#102](https://github.com/MechaFauna-ai/Falcata/pull/102)), quantized
 ([#107](https://github.com/MechaFauna-ai/Falcata/pull/107); node samples come from
 per-node generators since [#113](https://github.com/MechaFauna-ai/Falcata/pull/113)),
 weighted L1/quantile initialization ([#124](https://github.com/MechaFauna-ai/Falcata/pull/124)),
+non-quantized CUDA columns with more than 6,144 bins
+([#132](https://github.com/MechaFauna-ai/Falcata/pull/132)),
 and non-quantized forests deeper than 12 levels or with sampled features
 ([#121](https://github.com/MechaFauna-ai/Falcata/pull/121)). The Numerai benchmark's
 quantized model is identical to `a65d34e8`'s.
 
 In the release comparison every quantized classic and Numerai model is byte-identical
-to `a65d34e8`'s except fraud shallow and deep in fixed-point mode. #146 keeps the
-quantized root reduction totals in 64-bit integers: the first tree is identical, then
+to `a65d34e8`'s except fraud shallow and deep in fixed-point mode. The cause is
+a fixed-point accumulation change since `a65d34e8` (most likely #146, which keeps the quantized CUDA root reduction's packed totals in int64): the first tree is identical, then
 one leaf's Hessian sum differs in the seventh significant digit (tree 1 deep, tree 2
 shallow) and the fixed-point models diverge. The deep run stops at
 357 of 500 trees because no leaf can be split

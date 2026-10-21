@@ -156,7 +156,8 @@ That establishes the tested deterministic comparison, not universal identity.
 [stability-data.json](stability-data.json) retains 146 compact October observations:
 136 original observations (132 guarded configurations and four controls), two final
 reruns and eight extra seed cases. The release-candidate CUDA records are
-68 further observations in the same schema. It keeps every case's parameters, checkpoints,
+68 further observations, one per case, in the same schema; the CPU rerun on
+`1408ee79` is summarized under `rc_reruns` without per-case records. It keeps every case's parameters, checkpoints,
 model fingerprint, loss summary, original-record hash and native-library hash,
 plus summary groups, retained compatibility failures and final CI provenance.
 Full 500-round trajectories, model files and prediction arrays are retained in

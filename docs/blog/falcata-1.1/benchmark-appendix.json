@@ -1,6 +1,6 @@
 {
     "schema": 1,
-    "matrix_sha256": "1cdfebacbed573435a82a0bc984141ffbaecd70edfa18f082d31270115010519",
+    "matrix_sha256": "48839b9f159a68916f5586454e85f86c6729dc6ac3b57307b482b0515c6dced5",
     "selection_rule": "Latest relevant actual measurement, not the fastest record/build. Historical duplicate kinds use the last record to reconstruct the figure while retaining prior failures. All finite timed endpoints, including failed models, enter displayed intervals. Warmups/curves are preserved but excluded from timing medians.",
     "sources": {
         "launch": {
@@ -269,27 +269,27 @@
             ]
         },
         "rc_1408ee79": {
-            "path": "kevo://runs/release_1_1/results/ab_1408ee79.json",
+            "path": "evidence://falcata-1.1-release-20261021/results/ab_1408ee79.json",
             "sha256": "e65cfdea01fec0415f23c20860d9af04cd065485de017c1e4856db1ff6832607",
-            "quality_path": "kevo://runs/release_1_1/results/quality_1408ee79.json",
+            "quality_path": "evidence://falcata-1.1-release-20261021/results/quality_1408ee79.json",
             "quality_sha256": "de136fe2245883ea7d51b53220c843f8fd797390bf759a509a052bdb60704dfc",
             "measurement_identity": "Falcata 1.1 release A/B (runs/release_1_1/release_ab.py over runs/since_1_1/article_ab.py), new arm, 2026-10-21; held-out metrics by runs/release_1_1/score.py (bench.py a65d34e8 metrics, CPU predictions)",
             "runtime_build": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
             "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a",
-            "quiet_provenance": "strict gpuq jobs (--exclusive) with GPUQ_CONTENTION_LOG; a contended shape is marked strict_quiet_verified=false",
+            "quiet_provenance": "exclusive GPU timing jobs with a contention log; a contended shape is marked strict_quiet_verified=false",
             "caveats": [
                 "two_interleaved_draws"
             ]
         },
         "a65_1408ee79": {
-            "path": "kevo://runs/release_1_1/results/ab_1408ee79.json",
+            "path": "evidence://falcata-1.1-release-20261021/results/ab_1408ee79.json",
             "sha256": "e65cfdea01fec0415f23c20860d9af04cd065485de017c1e4856db1ff6832607",
-            "quality_path": "kevo://runs/release_1_1/results/quality_1408ee79.json",
+            "quality_path": "evidence://falcata-1.1-release-20261021/results/quality_1408ee79.json",
             "quality_sha256": "de136fe2245883ea7d51b53220c843f8fd797390bf759a509a052bdb60704dfc",
             "measurement_identity": "Falcata 1.1 release A/B (runs/release_1_1/release_ab.py over runs/since_1_1/article_ab.py), old arm, 2026-10-21; held-out metrics by runs/release_1_1/score.py (bench.py a65d34e8 metrics, CPU predictions)",
             "runtime_build": "a65d34e80a7c337342fba6886d0a1cbd69eda079",
             "library_sha256": "60b3776e050aa76695a46619765458226491701c5015e68e8509408ea68fa08f",
-            "quiet_provenance": "strict gpuq jobs (--exclusive) with GPUQ_CONTENTION_LOG; a contended shape is marked strict_quiet_verified=false",
+            "quiet_provenance": "exclusive GPU timing jobs with a contention log; a contended shape is marked strict_quiet_verified=false",
             "caveats": [
                 "two_interleaved_draws"
             ]

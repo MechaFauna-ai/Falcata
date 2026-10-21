@@ -70,9 +70,11 @@ equal-quality result.
 The release-candidate library SHA256 is `c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a`. Across all
 quantized workloads and both quantized modes, 28 of 30
 comparisons produced the same model on both builds; geometric-mean speedups are
-1.189× (stochastic) and 1.216× (fixed point).
-The two exceptions are fraud shallow and deep in fixed-point mode, where #146's
-64-bit root totals change one leaf's Hessian sum in the seventh digit in the second
+1.189× (stochastic) and 1.202× (fixed point, without
+fraud deep; all fifteen rows 1.216×, without both fixed-point fraud rows
+1.195×).
+The two exceptions are fraud shallow and deep in fixed-point mode. The cause is
+a fixed-point accumulation change since `a65d34e8` (most likely #146, which keeps the quantized CUDA root reduction's packed totals in int64): one leaf's Hessian sum changes in the seventh digit in the second
 or third tree and the models diverge from there. The deep run stops at
 357 of 500 trees (no leaf can be split further), so its
 1.433× is not a like-for-like speedup. Held-out AUC:
@@ -96,10 +98,12 @@ thirteen non-quantized workloads, key off versus on on the same binary cost
 1.084, covtype deep 0.957). Against `a65d34e8`, whose non-quantized models differed
 from run to run, the release candidate measures 1.006× by
 geometric mean and produced one model per workload in
-13 of 13 workloads. It is slower on the deep shapes: Higgs
+13 of 13 workloads. Four of the six deep shapes are slower: Higgs
 0.889×, Epsilon 0.890×, Year
 0.929× and Airline 0.944× (speedup =
-`a65d34e8` seconds / release-candidate seconds). Fraud's non-quantized AUC is now
+`a65d34e8` seconds / release-candidate seconds); Covtype deep (1.040×)
+and Fraud deep (1.099×) are faster. Higgs deep is outside the range
+#122 cost on its own, so the cause of the slowdown is not isolated. Fraud's non-quantized AUC is now
 0.9771 (shallow) and 0.9695 (deep);
 the October matrix recorded 0.515 and 0.739 there, before the automatic step limit
 (#91). Numerai deep and leaf-limited are not run
