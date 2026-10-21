@@ -1,0 +1,2196 @@
+{
+    "schema": 1,
+    "configs": {
+        "standard-stoch": {
+            "library": "falcata-stoch",
+            "resolved_cuda_precision": "fp64",
+            "parameters": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic"
+            },
+            "label": "standard Numerai-deep, library FP64 default, stochastic4"
+        },
+        "standard-fixed": {
+            "library": "falcata-fixed",
+            "resolved_cuda_precision": "fp64",
+            "parameters": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "fixedpoint"
+            },
+            "label": "standard Numerai-deep, library FP64 default, fixedpoint64"
+        },
+        "recipe-fixed-fp32": {
+            "library": "falcata-fixed",
+            "resolved_cuda_precision": "fp32",
+            "parameters": {
+                "objective": "regression",
+                "boosting_type": "gbdt",
+                "verbosity": -1,
+                "bagging_freq": 1,
+                "quant_mode": "fixedpoint",
+                "cuda_precision": "fp32",
+                "learning_rate": 0.003375,
+                "max_depth": 15,
+                "num_leaves": 16384,
+                "min_data_in_leaf": 101079,
+                "max_bin": 255,
+                "num_threads": 16,
+                "device_type": "cuda",
+                "feature_fraction": 0.15,
+                "seed": 42,
+                "metric": "None"
+            },
+            "declared_recipe_rounds": 15000,
+            "label": "current best.textproto recipe probe; explicit FP32; floor101079 as declared, no production row rescaling"
+        }
+    },
+    "device": "RTX 5090",
+    "n_features": 3555,
+    "limitations": [
+        "One full30k stochastic pair, no precision/confidence claims from it",
+        "Five and six arms differ in missing representation and may train different models",
+        "Five-era partial canonical CORR is a finite/nonconstant sanity check, not selection evidence",
+        "Current best recipe probe holds declaredfloor101079 without production scaling",
+        "Warmup diagnostic logging is excluded from timed draws; actual bin metadata remains recorded",
+        "Shared system wisdom is read/copied before/after each worker; initial cache/tuner effects remain inside train timing",
+        "Warmup diagnostics prove observed engagement only for that warmup; timed draws do not emit diagnostic logging",
+        "All finite canonical metrics remain in raw records, including incomplete/failed models; headline timings require complete sane uncontended models",
+        "Release-candidate rebuild: bench split (round 1226 target, 5,463,797 rows) instead of the PR's build-1230 target_ender_20 rows, same era-constant-2 -> missing rule and bin layout; absolute trees/s are not the October rows; five vs six and old vs new are comparable"
+    ],
+    "path_normalization_note": "Absolute machine paths are normalized to portable logical references (external://, evidence://, and build-artifact://). Any source SHA-256 values in this artifact identify the original, unmodified source bytes before path normalization.",
+    "status": "measured_complete",
+    "measurement_dates_europe_zurich": [
+        "2026-10-21"
+    ],
+    "runtime": {
+        "build": "1408ee798bf2d3b3899df09737cf81fda7a9de41",
+        "library_sha256": "c1902dce58ac356c9964a708e700e438062c596104617f4d91d243bcce26839a"
+    },
+    "source_summary": {
+        "file": "six_state_1408ee79.json",
+        "sha256": "d51c5a312373e7d300c1dba7e6d70ba22900262668c7910aae435b4ea6d8bc0e"
+    },
+    "source_driver": {
+        "six_state.py": "46967281cc4770ec8fd26187962f3a3da3bf8626d0d220d8a1ef6d7c733c1522",
+        "prepare_six_state.py": "85d644d06f24272fa3003f7cfb444a6358935bb487f48b64d147244bd69dcbae"
+    },
+    "target": {
+        "name": "target",
+        "note": "bench split round 1226 label (PR #72: target_ender_20, build 1230)"
+    },
+    "n_train": 5463797,
+    "split": {
+        "kind": "benchmarks/bench.py load_data('numerai') train rows [:train_end], eras 1-1016",
+        "holdout_sanity_eras": [
+            1222,
+            1223,
+            1224,
+            1225,
+            1226
+        ]
+    },
+    "representations": {
+        "five": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.npy",
+        "six": "external://falcata-data/numerai_v53_benchtrain_r1226_int8m1.npy",
+        "label": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.label.npy",
+        "six_sidecar": {
+            "file": "numerai_v53_benchtrain_r1226_int8m1.npy",
+            "path": "external://falcata-data/numerai_v53_benchtrain_r1226_int8m1.npy",
+            "shape": [
+                5463797,
+                3555
+            ],
+            "dtype": "int8",
+            "order": "C",
+            "values": [
+                -1,
+                0,
+                1,
+                2,
+                3,
+                4
+            ],
+            "sentinel": -1,
+            "sentinel_values": 1538805167,
+            "rule": "missing where every row of the era has the value 2 (Numerai int8nan)",
+            "rows_prefix_only": false,
+            "input_int8": {
+                "path": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.npy",
+                "sidecar": {
+                    "file": "numerai_v53_benchtrain_r1226_int8.npy",
+                    "path": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.npy",
+                    "bytes": 19423798463,
+                    "md5": "3bd27cabe9f52bf5ea6648bdd9625094",
+                    "dtype": "int8",
+                    "order": "C",
+                    "shape": [
+                        5463797,
+                        3555
+                    ],
+                    "num_data": 5463797,
+                    "num_feature": 3555,
+                    "feature_values": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "rows": [
+                        0,
+                        5463797
+                    ],
+                    "eras": [
+                        1,
+                        1016
+                    ],
+                    "label_file": "numerai_v53_benchtrain_r1226_int8.label.npy",
+                    "label_bytes": 21855316,
+                    "label_md5": "6550718bf90d08e91e7583b3f4a3281e",
+                    "label": "y.npy[:train_end] (float32)",
+                    "label_mean": 0.4999535083770752,
+                    "split": "bench.load_data('numerai') train rows x[:train_end], y[:train_end]: the rows of $KEVO_NUMERAI_BENCH_DATASET, as int8 instead of the cache's float32",
+                    "cache_dir": "external://exaboost-bench/data/cache/numerai",
+                    "cache_meta": {
+                        "n_rows": 6753184,
+                        "n_features": 3555,
+                        "train_end": 5463797,
+                        "test_start": 5463797,
+                        "n_test_eras": 200,
+                        "embargo_eras": 10,
+                        "source": "external://numerai/data/1226.parquet"
+                    },
+                    "int8_twin_checked": true,
+                    "seconds": 114.3,
+                    "built": "2026-10-06T02:15:01+02:00",
+                    "argv": [
+                        "runs/bench_split/build_train_int8.py"
+                    ],
+                    "construct_check": {
+                        "what": "flc.Dataset(X, label=y, params=numerai53bench-deep-stoch's).construct().save_binary() on the master build (cf10b79a, falcata/fill/construct_e2e.py, 2026-10-06 03:15-03:23, 18 constructs)",
+                        "binary_bytes": 9652593616,
+                        "binary_md5x64M": "e9892816de243fc70b08d9de55203f6f",
+                        "equals": "numerai_v53_benchtrain_r1226_f32_b255_dense.dataset (KEVO_NUMERAI_BENCH_DATASET, built from the float32 cache): same bytes, same md5x64M (md5 of the md5s of its 64 MiB chunks)",
+                        "model_md5_50_rounds": "0988bf2fbec07ffae9fd22880ef49469"
+                    }
+                }
+            },
+            "mask": {
+                "path": "external://falcata-data/numerai_v53_benchtrain_r1226_int8nan_b255_dense.nanmask.npz",
+                "meta": {
+                    "int8": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.npy",
+                    "int8_md5": "3bd27cabe9f52bf5ea6648bdd9625094",
+                    "rows": 5463797,
+                    "features": 3555,
+                    "eras": [
+                        1,
+                        1016
+                    ],
+                    "n_eras": 1016,
+                    "nan_features": 1972,
+                    "nan_era_features": 351357,
+                    "nan_values": 1538805167,
+                    "rule": "missing where every row of the era has the value 2 (Numerai int8nan)",
+                    "seconds": 1.5,
+                    "built": "2026-10-07T12:56:55+02:00"
+                },
+                "verified": {
+                    "parquet": "external://numerai/data/1230_int8nan.parquet",
+                    "rows_checked": 5463797,
+                    "values_checked": 19423798335,
+                    "mismatches": 0,
+                    "missing_values": 1538805167,
+                    "feature_order_equals": "external://numerai/data/1227.parquet",
+                    "seconds": 41.2,
+                    "checked": "2026-10-07T12:59:34+02:00"
+                }
+            },
+            "label": "external://falcata-data/numerai_v53_benchtrain_r1226_int8.label.npy",
+            "md5x64M": "447938c2b14f06f9dc92600006150c3d",
+            "bytes": 19423798463,
+            "pr72_reference": "docs/2026-10-10_numerai-six-state-throughput.md: build 1230, target_ender_20, 5,502,748 train rows; here: bench split round 1226 `target`, 5,463,797 rows",
+            "seconds": 110.9,
+            "built": "2026-10-21T01:29:14+02:00",
+            "argv": [
+                "../prepare_six_state.py"
+            ]
+        },
+        "data_gap": "bench split round 1226 `target`, 5,463,797 rows; PR: build 1230 target_ender_20, 5,502,748 rows (memmaps no longer on disk)"
+    },
+    "expected_records": 27,
+    "recorded_records": 27,
+    "status_counts": {
+        "ok": 27,
+        "error": 0
+    },
+    "failed_record_ids": [],
+    "pending_record_ids": [],
+    "terminal_contention": {
+        "standard-stoch": false,
+        "standard-fixed": false,
+        "recipe-fixed-fp32": false,
+        "full30000": false
+    },
+    "sentinel_equivalence_passed": true,
+    "endpoints": {
+        "diag-recipe-fixed-fp32-five": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "4c994d3be23d3009365ef64aa94d4096",
+            "train_s": 4.1238308229949325,
+            "first_call_s": 0.9808329090010375,
+            "steady_ms": 14.798666525166482,
+            "load_s": 0.0016470919363200665,
+            "construct_s": 3.8928814510582015,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 200,
+            "iterations": 200,
+            "trees_per_s": 48.49859477376668,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "diag": {
+                "pack_codec_trees": 0,
+                "code_view_trees": 0,
+                "codec_counts": {},
+                "compact_fill_lines": 200,
+                "pair_code5_lines": 0,
+                "mask_lines": 1,
+                "row_batch_lines": 0,
+                "view_verdict": "compact",
+                "distinct_lines": [
+                    "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                    "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 1392 + split view 0 + reserve 10701 MiB, 24959 MiB available",
+                    "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.15, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9184 MiB); no row-major matrix on the device",
+                    "[Falcata] [Info] compact fill: per-cell 4-bit kernel, 265 byte slots in 4 partitions",
+                    "[Falcata] [Info] quantized construct: pair_hist kernel",
+                    "[Falcata] [Info] split finder: block kernel for this tree's quantized levels",
+                    "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1",
+                    "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)"
+                ]
+            },
+            "record": "diag-recipe-fixed-fp32-five",
+            "kind": "diag",
+            "recipe": "recipe-fixed-fp32",
+            "arm": "five",
+            "rounds": 200,
+            "params": {
+                "objective": "regression",
+                "boosting_type": "gbdt",
+                "verbosity": 1,
+                "bagging_freq": 1,
+                "quant_mode": "fixedpoint",
+                "cuda_precision": "fp32",
+                "learning_rate": 0.003375,
+                "max_depth": 15,
+                "num_leaves": 16384,
+                "min_data_in_leaf": 101079,
+                "max_bin": 255,
+                "num_threads": 16,
+                "device_type": "cuda",
+                "feature_fraction": 0.15,
+                "seed": 42,
+                "metric": "None",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 9.459384146961384
+        },
+        "diag-recipe-fixed-fp32-six": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "39bc5eb32fc732062ab5af33106f94c9",
+            "train_s": 19.752728868974373,
+            "first_call_s": 1.1487185069127008,
+            "steady_ms": 91.24222950777039,
+            "load_s": 0.0016859750030562282,
+            "construct_s": 4.167746783001348,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 200,
+            "iterations": 200,
+            "trees_per_s": 10.125183276025226,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "diag": {
+                "pack_codec_trees": 0,
+                "code_view_trees": 0,
+                "codec_counts": {},
+                "compact_fill_lines": 0,
+                "pair_code5_lines": 0,
+                "mask_lines": 2,
+                "row_batch_lines": 1,
+                "view_verdict": "not compact (mask / row_batch?)",
+                "distinct_lines": [
+                    "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                    "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 1392 + split view 0 + reserve 15921 MiB, 24455 MiB available",
+                    "[Falcata] [Info] colmajor_direct: the compact regime does not fit (store 9184 + compact view 1392 + split view 0 + reserve 15921 MiB > 24455 MiB available): mask regime",
+                    "[Falcata] [Info] colmajor_direct: mask regime (the compact regime does not fit; feature_fraction 0.15, view_mode auto, view_mask_ff 0.85): full view filled from the Dataset's columns (9187 MiB); no column-major store on the device",
+                    "[Falcata] [Info] quantized construct: row_batch kernel",
+                    "[Falcata] [Info] split finder: block kernel for this tree's quantized levels",
+                    "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=0 bit_type=8 batch_wide=1",
+                    "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)"
+                ]
+            },
+            "record": "diag-recipe-fixed-fp32-six",
+            "kind": "diag",
+            "recipe": "recipe-fixed-fp32",
+            "arm": "six",
+            "rounds": 200,
+            "params": {
+                "objective": "regression",
+                "boosting_type": "gbdt",
+                "verbosity": 1,
+                "bagging_freq": 1,
+                "quant_mode": "fixedpoint",
+                "cuda_precision": "fp32",
+                "learning_rate": 0.003375,
+                "max_depth": 15,
+                "num_leaves": 16384,
+                "min_data_in_leaf": 101079,
+                "max_bin": 255,
+                "num_threads": 16,
+                "device_type": "cuda",
+                "feature_fraction": 0.15,
+                "seed": 42,
+                "metric": "None",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 25.488598532043397
+        },
+        "diag-standard-fixed-five": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "1dfe65b369e612a2a9cd4791b3fa6604",
+            "train_s": 1.5722283800132573,
+            "first_call_s": 0.7027700539911166,
+            "steady_ms": 4.004919494036585,
+            "load_s": 0.022730252938345075,
+            "construct_s": 4.992497102008201,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 200,
+            "iterations": 200,
+            "trees_per_s": 127.20798234052586,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "diag": {
+                "pack_codec_trees": 0,
+                "code_view_trees": 0,
+                "codec_counts": {},
+                "compact_fill_lines": 400,
+                "pair_code5_lines": 200,
+                "mask_lines": 1,
+                "row_batch_lines": 0,
+                "view_verdict": "compact",
+                "distinct_lines": [
+                    "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                    "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 933 + split view 0 + reserve 990 MiB, 29121 MiB available",
+                    "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9184 MiB); no row-major matrix on the device",
+                    "[Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions",
+                    "[Falcata] [Info] compact fill: pair_code5 on (178 byte slots, 32 words per row, 5 bits per code)",
+                    "[Falcata] [Info] split finder: warp kernel for this tree's quantized levels (tier: few-position)",
+                    "[Falcata] [Info] quantized construct: pair_code5_words (device levels) kernel",
+                    "[Falcata] [Info] quantized construct: pair_hist kernel",
+                    "[Falcata] [Info] quantized construct: pair_code5_words kernel",
+                    "[Falcata] [Info] compact fill: pair_code5 on (177 byte slots, 32 words per row, mixed radix, 6 codes per word)",
+                    "[Falcata] [Info] quantized construct: pair_code5_words (mixed radix) kernel",
+                    "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1",
+                    "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)"
+                ]
+            },
+            "record": "diag-standard-fixed-five",
+            "kind": "diag",
+            "recipe": "standard-fixed",
+            "arm": "five",
+            "rounds": 200,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "verbosity": 1
+            },
+            "wall_s": 7.835879373014905
+        },
+        "diag-standard-fixed-six": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "d7ba44c2653bb34b9ef4b6ed1ea4793c",
+            "train_s": 1.6001070840284228,
+            "first_call_s": 0.6829961410257965,
+            "steady_ms": 4.237068525981158,
+            "load_s": 0.0015811179764568806,
+            "construct_s": 4.586529042106122,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 200,
+            "iterations": 200,
+            "trees_per_s": 124.99163462015358,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "diag": {
+                "pack_codec_trees": 0,
+                "code_view_trees": 0,
+                "codec_counts": {},
+                "compact_fill_lines": 400,
+                "pair_code5_lines": 200,
+                "mask_lines": 1,
+                "row_batch_lines": 0,
+                "view_verdict": "compact",
+                "distinct_lines": [
+                    "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                    "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 933 + split view 0 + reserve 1317 MiB, 29075 MiB available",
+                    "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9184 MiB); no row-major matrix on the device",
+                    "[Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions",
+                    "[Falcata] [Info] compact fill: pair_code5 on (178 byte slots, 32 words per row, mixed radix, 6 codes per word)",
+                    "[Falcata] [Info] split finder: warp kernel for this tree's quantized levels (tier: few-position)",
+                    "[Falcata] [Info] quantized construct: pair_code5_words (device levels) kernel",
+                    "[Falcata] [Info] quantized construct: pair_hist kernel",
+                    "[Falcata] [Info] quantized construct: pair_code5_words (mixed radix) kernel",
+                    "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1",
+                    "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)"
+                ]
+            },
+            "record": "diag-standard-fixed-six",
+            "kind": "diag",
+            "recipe": "standard-fixed",
+            "arm": "six",
+            "rounds": 200,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1,
+                "verbosity": 1
+            },
+            "wall_s": 7.549381862045266
+        },
+        "diag-standard-stoch-five": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "e1ff3cf57ce7ffd13634415f31747480",
+            "train_s": 1.4332921699387953,
+            "first_call_s": 0.7067474729847163,
+            "steady_ms": 3.305996477138251,
+            "load_s": 0.028954862034879625,
+            "construct_s": 18.00962550402619,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 200,
+            "iterations": 200,
+            "trees_per_s": 139.53889108913532,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "diag": {
+                "pack_codec_trees": 0,
+                "code_view_trees": 0,
+                "codec_counts": {},
+                "compact_fill_lines": 400,
+                "pair_code5_lines": 200,
+                "mask_lines": 1,
+                "row_batch_lines": 0,
+                "view_verdict": "compact",
+                "distinct_lines": [
+                    "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                    "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 933 + split view 0 + reserve 990 MiB, 29133 MiB available",
+                    "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9184 MiB); no row-major matrix on the device",
+                    "[Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions",
+                    "[Falcata] [Info] compact fill: pair_code5 on (178 byte slots, 32 words per row, 5 bits per code)",
+                    "[Falcata] [Info] split finder: warp kernel for this tree's quantized levels (tier: few-position)",
+                    "[Falcata] [Info] quantized construct: pair_code5_words (device levels) kernel",
+                    "[Falcata] [Info] quantized construct: pair_hist kernel",
+                    "[Falcata] [Info] quantized construct: pair_code5_words kernel",
+                    "[Falcata] [Info] compact fill: pair_code5 on (177 byte slots, 32 words per row, mixed radix, 6 codes per word)",
+                    "[Falcata] [Info] quantized construct: pair_code5_words (mixed radix) kernel",
+                    "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1",
+                    "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)"
+                ]
+            },
+            "record": "diag-standard-stoch-five",
+            "kind": "diag",
+            "recipe": "standard-stoch",
+            "arm": "five",
+            "rounds": 200,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "verbosity": 1
+            },
+            "wall_s": 20.827713847975247
+        },
+        "diag-standard-stoch-six": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "b6746d9123db6cedee6a5e83a084956d",
+            "train_s": 1.6613701590104029,
+            "first_call_s": 0.8967093710089102,
+            "steady_ms": 3.525833075400442,
+            "load_s": 0.0016718680271878839,
+            "construct_s": 12.797314001014456,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 200,
+            "iterations": 200,
+            "trees_per_s": 120.38256430411043,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "diag": {
+                "pack_codec_trees": 0,
+                "code_view_trees": 0,
+                "codec_counts": {},
+                "compact_fill_lines": 400,
+                "pair_code5_lines": 200,
+                "mask_lines": 1,
+                "row_batch_lines": 0,
+                "view_verdict": "compact",
+                "distinct_lines": [
+                    "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                    "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 933 + split view 0 + reserve 1317 MiB, 29087 MiB available",
+                    "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9184 MiB); no row-major matrix on the device",
+                    "[Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions",
+                    "[Falcata] [Info] compact fill: pair_code5 on (178 byte slots, 32 words per row, mixed radix, 6 codes per word)",
+                    "[Falcata] [Info] split finder: warp kernel for this tree's quantized levels (tier: few-position)",
+                    "[Falcata] [Info] quantized construct: pair_code5_words (device levels) kernel",
+                    "[Falcata] [Info] quantized construct: pair_hist kernel",
+                    "[Falcata] [Info] quantized construct: pair_code5_words (mixed radix) kernel",
+                    "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1",
+                    "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)"
+                ]
+            },
+            "record": "diag-standard-stoch-six",
+            "kind": "diag",
+            "recipe": "standard-stoch",
+            "arm": "six",
+            "rounds": 200,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1,
+                "verbosity": 1
+            },
+            "wall_s": 15.868278338923119
+        },
+        "full-standard-stoch-five": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "58727dde8c3b6133c3326e67e0786ebc",
+            "train_s": 105.24421954597346,
+            "first_call_s": 0.6880298409378156,
+            "steady_ms": 3.393895458430052,
+            "load_s": 0.0016623800620436668,
+            "construct_s": 4.4991016869898885,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 30000,
+            "iterations": 30000,
+            "trees_per_s": 285.0512848061475,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "holdout": {
+                "eras": [
+                    1222,
+                    1226
+                ],
+                "rows": 35401,
+                "finite": true,
+                "nonconstant": true,
+                "numerai_corr_per_era": [
+                    0.012763131090354424,
+                    0.011479255248087142,
+                    0.03348416582090433,
+                    0.05280118723608819,
+                    0.06325224918224043
+                ],
+                "numerai_corr_mean": 0.034755997715534906,
+                "nan_cells": 0
+            },
+            "record": "full-standard-stoch-five",
+            "kind": "full",
+            "recipe": "standard-stoch",
+            "arm": "five",
+            "rounds": 30000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 149.81918718491215
+        },
+        "full-standard-stoch-six": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "4c8649e0168f9ada797456a433dc89bd",
+            "train_s": 112.02990752400365,
+            "first_call_s": 0.7020116780186072,
+            "steady_ms": 3.6168385413475335,
+            "load_s": 0.0017358280019834638,
+            "construct_s": 4.436169633991085,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 30000,
+            "iterations": 30000,
+            "trees_per_s": 267.7856356667274,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "holdout": {
+                "eras": [
+                    1222,
+                    1226
+                ],
+                "rows": 35401,
+                "finite": true,
+                "nonconstant": true,
+                "numerai_corr_per_era": [
+                    0.011468733928154798,
+                    0.011156656606787349,
+                    0.03520991858097251,
+                    0.05247066848346719,
+                    0.06572921045629505
+                ],
+                "numerai_corr_mean": 0.03520703761113538,
+                "nan_cells": 0
+            },
+            "record": "full-standard-stoch-six",
+            "kind": "full",
+            "recipe": "standard-stoch",
+            "arm": "six",
+            "rounds": 30000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 153.86790664703585
+        },
+        "gate-sentinel-equivalence": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "reps": {
+                "int8": {
+                    "tree_sha256": "aca41550e77b8b15cdcb159791b69910063f7b65e5b2bfae5bd01df504941a02",
+                    "pred_sha256": "c10211464901e563913dbeca1297c922fe6e18fd4b67498a3166cbcb87a87526",
+                    "num_trees": 8,
+                    "finite": true,
+                    "nonconstant": true
+                },
+                "float16": {
+                    "tree_sha256": "aca41550e77b8b15cdcb159791b69910063f7b65e5b2bfae5bd01df504941a02",
+                    "pred_sha256": "c10211464901e563913dbeca1297c922fe6e18fd4b67498a3166cbcb87a87526",
+                    "num_trees": 8,
+                    "finite": true,
+                    "nonconstant": true
+                },
+                "float32": {
+                    "tree_sha256": "aca41550e77b8b15cdcb159791b69910063f7b65e5b2bfae5bd01df504941a02",
+                    "pred_sha256": "c10211464901e563913dbeca1297c922fe6e18fd4b67498a3166cbcb87a87526",
+                    "num_trees": 8,
+                    "finite": true,
+                    "nonconstant": true
+                }
+            },
+            "rows": 32768,
+            "missing_cells": 63983870,
+            "identical": true,
+            "record": "gate-sentinel-equivalence",
+            "kind": "gate",
+            "recipe": null,
+            "arm": null,
+            "rounds": 8,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "max_bin": 255,
+                "learning_rate": 0.1,
+                "num_leaves": 31,
+                "max_depth": 6,
+                "min_data_in_leaf": 50,
+                "feature_fraction": 0.15,
+                "quant_mode": "fixedpoint",
+                "cuda_precision": "fp32",
+                "verbosity": -1,
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 2.3241462430451065
+        },
+        "probe-recipe-fixed-fp32-five-d0": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "5307352efcdb5ce1055f889d7fa746a4",
+            "train_s": 31.081602367921732,
+            "first_call_s": 1.0693553279852495,
+            "steady_ms": 14.8916044854559,
+            "load_s": 0.001777095953002572,
+            "construct_s": 3.8873978450428694,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 64.34674687377547,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-recipe-fixed-fp32-five-d0",
+            "kind": "probe",
+            "recipe": "recipe-fixed-fp32",
+            "arm": "five",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "boosting_type": "gbdt",
+                "verbosity": -1,
+                "bagging_freq": 1,
+                "quant_mode": "fixedpoint",
+                "cuda_precision": "fp32",
+                "learning_rate": 0.003375,
+                "max_depth": 15,
+                "num_leaves": 16384,
+                "min_data_in_leaf": 101079,
+                "max_bin": 255,
+                "num_threads": 16,
+                "device_type": "cuda",
+                "feature_fraction": 0.15,
+                "seed": 42,
+                "metric": "None",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 36.53003668598831
+        },
+        "probe-recipe-fixed-fp32-five-d1": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "5307352efcdb5ce1055f889d7fa746a4",
+            "train_s": 31.062194318976253,
+            "first_call_s": 1.0547381560318172,
+            "steady_ms": 14.896473498083651,
+            "load_s": 0.0016839910531416535,
+            "construct_s": 4.080845152959228,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 64.38695152899024,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-recipe-fixed-fp32-five-d1",
+            "kind": "probe",
+            "recipe": "recipe-fixed-fp32",
+            "arm": "five",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "boosting_type": "gbdt",
+                "verbosity": -1,
+                "bagging_freq": 1,
+                "quant_mode": "fixedpoint",
+                "cuda_precision": "fp32",
+                "learning_rate": 0.003375,
+                "max_depth": 15,
+                "num_leaves": 16384,
+                "min_data_in_leaf": 101079,
+                "max_bin": 255,
+                "num_threads": 16,
+                "device_type": "cuda",
+                "feature_fraction": 0.15,
+                "seed": 42,
+                "metric": "None",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 36.73176105006132
+        },
+        "probe-recipe-fixed-fp32-five-d2": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "5307352efcdb5ce1055f889d7fa746a4",
+            "train_s": 31.096422930946574,
+            "first_call_s": 1.0589572779135779,
+            "steady_ms": 14.89975897129625,
+            "load_s": 0.001630521030165255,
+            "construct_s": 3.9051442049676552,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 64.31607919795938,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-recipe-fixed-fp32-five-d2",
+            "kind": "probe",
+            "recipe": "recipe-fixed-fp32",
+            "arm": "five",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "boosting_type": "gbdt",
+                "verbosity": -1,
+                "bagging_freq": 1,
+                "quant_mode": "fixedpoint",
+                "cuda_precision": "fp32",
+                "learning_rate": 0.003375,
+                "max_depth": 15,
+                "num_leaves": 16384,
+                "min_data_in_leaf": 101079,
+                "max_bin": 255,
+                "num_threads": 16,
+                "device_type": "cuda",
+                "feature_fraction": 0.15,
+                "seed": 42,
+                "metric": "None",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 36.600898862001486
+        },
+        "probe-recipe-fixed-fp32-six-d0": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "ab85fa3bb423235f5eae0b249d9051ac",
+            "train_s": 185.9557393520372,
+            "first_call_s": 1.2123745640274137,
+            "steady_ms": 92.22654503537342,
+            "load_s": 0.0018751079915091395,
+            "construct_s": 4.100939559051767,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 10.75524749582347,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-recipe-fixed-fp32-six-d0",
+            "kind": "probe",
+            "recipe": "recipe-fixed-fp32",
+            "arm": "six",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "boosting_type": "gbdt",
+                "verbosity": -1,
+                "bagging_freq": 1,
+                "quant_mode": "fixedpoint",
+                "cuda_precision": "fp32",
+                "learning_rate": 0.003375,
+                "max_depth": 15,
+                "num_leaves": 16384,
+                "min_data_in_leaf": 101079,
+                "max_bin": 255,
+                "num_threads": 16,
+                "device_type": "cuda",
+                "feature_fraction": 0.15,
+                "seed": 42,
+                "metric": "None",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 191.70590705401264
+        },
+        "probe-recipe-fixed-fp32-six-d1": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "ab85fa3bb423235f5eae0b249d9051ac",
+            "train_s": 185.92329001391772,
+            "first_call_s": 1.1968454709276557,
+            "steady_ms": 92.1936605591327,
+            "load_s": 0.0016656870720908046,
+            "construct_s": 3.873294411925599,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 10.757124617632817,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-recipe-fixed-fp32-six-d1",
+            "kind": "probe",
+            "recipe": "recipe-fixed-fp32",
+            "arm": "six",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "boosting_type": "gbdt",
+                "verbosity": -1,
+                "bagging_freq": 1,
+                "quant_mode": "fixedpoint",
+                "cuda_precision": "fp32",
+                "learning_rate": 0.003375,
+                "max_depth": 15,
+                "num_leaves": 16384,
+                "min_data_in_leaf": 101079,
+                "max_bin": 255,
+                "num_threads": 16,
+                "device_type": "cuda",
+                "feature_fraction": 0.15,
+                "seed": 42,
+                "metric": "None",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 191.4551797870081
+        },
+        "probe-recipe-fixed-fp32-six-d2": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "ab85fa3bb423235f5eae0b249d9051ac",
+            "train_s": 186.00890342099592,
+            "first_call_s": 1.2709802630124614,
+            "steady_ms": 92.19920949544758,
+            "load_s": 0.001683881040662527,
+            "construct_s": 4.085109657025896,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 10.752173488563495,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-recipe-fixed-fp32-six-d2",
+            "kind": "probe",
+            "recipe": "recipe-fixed-fp32",
+            "arm": "six",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "boosting_type": "gbdt",
+                "verbosity": -1,
+                "bagging_freq": 1,
+                "quant_mode": "fixedpoint",
+                "cuda_precision": "fp32",
+                "learning_rate": 0.003375,
+                "max_depth": 15,
+                "num_leaves": 16384,
+                "min_data_in_leaf": 101079,
+                "max_bin": 255,
+                "num_threads": 16,
+                "device_type": "cuda",
+                "feature_fraction": 0.15,
+                "seed": 42,
+                "metric": "None",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 191.73865259299055
+        },
+        "probe-standard-fixed-five-d0": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "6feb126b94c88d47944fd6e607a3fdee",
+            "train_s": 9.062126497970894,
+            "first_call_s": 0.7022654849570245,
+            "steady_ms": 4.055649042129517,
+            "load_s": 0.0018164190696552396,
+            "construct_s": 4.308403066010214,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 220.6987510544927,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-fixed-five-d0",
+            "kind": "probe",
+            "recipe": "standard-fixed",
+            "arm": "five",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 14.963771765003912
+        },
+        "probe-standard-fixed-five-d1": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "6feb126b94c88d47944fd6e607a3fdee",
+            "train_s": 9.058432981953956,
+            "first_call_s": 0.6903173900209367,
+            "steady_ms": 4.062101012095809,
+            "load_s": 0.0017306780209764838,
+            "construct_s": 4.34005119104404,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 220.78873950763486,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-fixed-five-d1",
+            "kind": "probe",
+            "recipe": "standard-fixed",
+            "arm": "five",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 14.979510068078525
+        },
+        "probe-standard-fixed-five-d2": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "6feb126b94c88d47944fd6e607a3fdee",
+            "train_s": 9.064192660036497,
+            "first_call_s": 0.6967075651045889,
+            "steady_ms": 4.0610384894534945,
+            "load_s": 0.0016708759358152747,
+            "construct_s": 4.438958017970435,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 220.64844327701513,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-fixed-five-d2",
+            "kind": "probe",
+            "recipe": "standard-fixed",
+            "arm": "five",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 15.086032372084446
+        },
+        "probe-standard-fixed-six-d0": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "9c807c8d10c24004d231e80204613396",
+            "train_s": 9.553525376017205,
+            "first_call_s": 0.6952301380224526,
+            "steady_ms": 4.305010486859828,
+            "load_s": 0.001704129041172564,
+            "construct_s": 4.412365374038927,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 209.3468035392172,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-fixed-six-d0",
+            "kind": "probe",
+            "recipe": "standard-fixed",
+            "arm": "six",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 15.636479135020636
+        },
+        "probe-standard-fixed-six-d1": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "9c807c8d10c24004d231e80204613396",
+            "train_s": 9.554070141050033,
+            "first_call_s": 0.6834846670972183,
+            "steady_ms": 4.307636001612991,
+            "load_s": 0.001672780024819076,
+            "construct_s": 4.4017403840553015,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 209.33486676079514,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-fixed-six-d1",
+            "kind": "probe",
+            "recipe": "standard-fixed",
+            "arm": "six",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 15.604919782024808
+        },
+        "probe-standard-fixed-six-d2": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "9c807c8d10c24004d231e80204613396",
+            "train_s": 9.560989656019956,
+            "first_call_s": 0.7014999699313194,
+            "steady_ms": 4.3064680066891015,
+            "load_s": 0.0016686520539224148,
+            "construct_s": 4.395305320969783,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 209.18336615297198,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-fixed-six-d2",
+            "kind": "probe",
+            "recipe": "standard-fixed",
+            "arm": "six",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 15.617104472010396
+        },
+        "probe-standard-stoch-five-d0": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "3975f5fe8e9ec19e30a4812d41e6f573",
+            "train_s": 7.656695625046268,
+            "first_call_s": 0.7023656870005652,
+            "steady_ms": 3.3317740308120847,
+            "load_s": 0.0016987690469250083,
+            "construct_s": 4.2945857549784705,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 261.20928634771406,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-stoch-five-d0",
+            "kind": "probe",
+            "recipe": "standard-stoch",
+            "arm": "five",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 13.530339463963173
+        },
+        "probe-standard-stoch-five-d1": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "3975f5fe8e9ec19e30a4812d41e6f573",
+            "train_s": 7.739483259967528,
+            "first_call_s": 0.8083915750030428,
+            "steady_ms": 3.335456014610827,
+            "load_s": 0.0016348289791494608,
+            "construct_s": 4.410408493014984,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 258.4151852029965,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-stoch-five-d1",
+            "kind": "probe",
+            "recipe": "standard-stoch",
+            "arm": "five",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 13.747425541980192
+        },
+        "probe-standard-stoch-five-d2": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "3975f5fe8e9ec19e30a4812d41e6f573",
+            "train_s": 7.611847902066074,
+            "first_call_s": 0.6967240100493655,
+            "steady_ms": 3.3294400200247765,
+            "load_s": 0.0018870809581130743,
+            "construct_s": 4.367986526922323,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 262.7482873714729,
+            "feature_bins": {
+                "0": 30,
+                "5": 3525
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-stoch-five-d2",
+            "kind": "probe",
+            "recipe": "standard-stoch",
+            "arm": "five",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "wall_s": 13.568137989961542
+        },
+        "probe-standard-stoch-six-d0": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "09ce076eaca062521487d766c2e9bae6",
+            "train_s": 8.071087960037403,
+            "first_call_s": 0.7002674180548638,
+            "steady_ms": 3.5529134911485016,
+            "load_s": 0.0016449879622086883,
+            "construct_s": 4.440725757041946,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 247.7980676090577,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-stoch-six-d0",
+            "kind": "probe",
+            "recipe": "standard-stoch",
+            "arm": "six",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 14.199571536039002
+        },
+        "probe-standard-stoch-six-d1": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "09ce076eaca062521487d766c2e9bae6",
+            "train_s": 8.083457135013305,
+            "first_call_s": 0.6979572229320183,
+            "steady_ms": 3.5560039686970413,
+            "load_s": 0.0016593040199950337,
+            "construct_s": 4.4037864309502766,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 247.41889102585168,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-stoch-six-d1",
+            "kind": "probe",
+            "recipe": "standard-stoch",
+            "arm": "six",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 14.153012922033668
+        },
+        "probe-standard-stoch-six-d2": {
+            "version": "1.0.6",
+            "file": "build-artifact://falcata-1408ee79/venv/lib/python3.12/site-packages/falcata/__init__.py",
+            "md5": "09ce076eaca062521487d766c2e9bae6",
+            "train_s": 8.096568061038852,
+            "first_call_s": 0.6904694139957428,
+            "steady_ms": 3.56275646481663,
+            "load_s": 0.0017394250025972724,
+            "construct_s": 4.377184142940678,
+            "rows": 5463797,
+            "cols": 3555,
+            "num_trees": 2000,
+            "iterations": 2000,
+            "trees_per_s": 247.01824092903192,
+            "feature_bins": {
+                "0": 30,
+                "5": 1583,
+                "6": 1942
+            },
+            "cuda_plan": [
+                "[cuda_plan: auto]"
+            ],
+            "record": "probe-standard-stoch-six-d2",
+            "kind": "probe",
+            "recipe": "standard-stoch",
+            "arm": "six",
+            "rounds": 2000,
+            "params": {
+                "objective": "regression",
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "metric": "None",
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "wall_s": 14.164969893055968
+        }
+    },
+    "chart": [
+        {
+            "group": "standard-stoch",
+            "label": "Standard stochastic",
+            "detail": "FP64 \u00b7 4 gradient levels \u00b7 depth 10",
+            "rounds": 2000,
+            "statistic": "median of three timed draws; range is observed min\u2013max",
+            "arms": {
+                "five": {
+                    "eligible": true,
+                    "draws": [
+                        261.20928634771406,
+                        258.4151852029965,
+                        262.7482873714729
+                    ],
+                    "median": 261.20928634771406,
+                    "range": [
+                        258.4151852029965,
+                        262.7482873714729
+                    ],
+                    "endpoint_ids": [
+                        "probe-standard-stoch-five-d0",
+                        "probe-standard-stoch-five-d1",
+                        "probe-standard-stoch-five-d2"
+                    ]
+                },
+                "six": {
+                    "eligible": true,
+                    "draws": [
+                        247.7980676090577,
+                        247.41889102585168,
+                        247.01824092903192
+                    ],
+                    "median": 247.41889102585168,
+                    "range": [
+                        247.01824092903192,
+                        247.7980676090577
+                    ],
+                    "endpoint_ids": [
+                        "probe-standard-stoch-six-d0",
+                        "probe-standard-stoch-six-d1",
+                        "probe-standard-stoch-six-d2"
+                    ]
+                }
+            }
+        },
+        {
+            "group": "standard-fixed",
+            "label": "Standard fixed point",
+            "detail": "FP64 \u00b7 64 gradient levels \u00b7 depth 10",
+            "rounds": 2000,
+            "statistic": "median of three timed draws; range is observed min\u2013max",
+            "arms": {
+                "five": {
+                    "eligible": true,
+                    "draws": [
+                        220.6987510544927,
+                        220.78873950763486,
+                        220.64844327701513
+                    ],
+                    "median": 220.6987510544927,
+                    "range": [
+                        220.64844327701513,
+                        220.78873950763486
+                    ],
+                    "endpoint_ids": [
+                        "probe-standard-fixed-five-d0",
+                        "probe-standard-fixed-five-d1",
+                        "probe-standard-fixed-five-d2"
+                    ]
+                },
+                "six": {
+                    "eligible": true,
+                    "draws": [
+                        209.3468035392172,
+                        209.33486676079514,
+                        209.18336615297198
+                    ],
+                    "median": 209.33486676079514,
+                    "range": [
+                        209.18336615297198,
+                        209.3468035392172
+                    ],
+                    "endpoint_ids": [
+                        "probe-standard-fixed-six-d0",
+                        "probe-standard-fixed-six-d1",
+                        "probe-standard-fixed-six-d2"
+                    ]
+                }
+            }
+        },
+        {
+            "group": "recipe-fixed-fp32",
+            "label": "Current recipe probe",
+            "detail": "FP32 \u00b7 fixed point 64 \u00b7 depth 15",
+            "rounds": 2000,
+            "statistic": "median of three timed draws; range is observed min\u2013max",
+            "arms": {
+                "five": {
+                    "eligible": true,
+                    "draws": [
+                        64.34674687377547,
+                        64.38695152899024,
+                        64.31607919795938
+                    ],
+                    "median": 64.34674687377547,
+                    "range": [
+                        64.31607919795938,
+                        64.38695152899024
+                    ],
+                    "endpoint_ids": [
+                        "probe-recipe-fixed-fp32-five-d0",
+                        "probe-recipe-fixed-fp32-five-d1",
+                        "probe-recipe-fixed-fp32-five-d2"
+                    ]
+                },
+                "six": {
+                    "eligible": true,
+                    "draws": [
+                        10.75524749582347,
+                        10.757124617632817,
+                        10.752173488563495
+                    ],
+                    "median": 10.75524749582347,
+                    "range": [
+                        10.752173488563495,
+                        10.757124617632817
+                    ],
+                    "endpoint_ids": [
+                        "probe-recipe-fixed-fp32-six-d0",
+                        "probe-recipe-fixed-fp32-six-d1",
+                        "probe-recipe-fixed-fp32-six-d2"
+                    ]
+                }
+            }
+        },
+        {
+            "group": "full30000",
+            "label": "Full stochastic run",
+            "detail": "FP64 \u00b7 4 gradient levels \u00b7 depth 10",
+            "rounds": 30000,
+            "statistic": "one complete draw per arm; no uncertainty estimate",
+            "arms": {
+                "five": {
+                    "eligible": true,
+                    "draws": [
+                        285.0512848061475
+                    ],
+                    "median": 285.0512848061475,
+                    "range": null,
+                    "endpoint_ids": [
+                        "full-standard-stoch-five"
+                    ]
+                },
+                "six": {
+                    "eligible": true,
+                    "draws": [
+                        267.7856356667274
+                    ],
+                    "median": 267.7856356667274,
+                    "range": null,
+                    "endpoint_ids": [
+                        "full-standard-stoch-six"
+                    ]
+                }
+            }
+        }
+    ],
+    "warmup_observed": {
+        "diag-standard-stoch-five": {
+            "pack_codec_trees": 0,
+            "code_view_trees": 200,
+            "code_view_source": "compact fill: pair_code lines (one per tree)",
+            "codec_counts": {},
+            "compact_fill_lines": 400,
+            "pair_code5_lines": 200,
+            "mask_lines": 1,
+            "row_batch_lines": 0,
+            "view_verdict": "compact",
+            "distinct_lines": [
+                "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 933 + split view 0 + reserve 990 MiB, 29133 MiB available",
+                "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9184 MiB); no row-major matrix on the device",
+                "[Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions",
+                "[Falcata] [Info] compact fill: pair_code5 on (178 byte slots, 32 words per row, 5 bits per code)",
+                "[Falcata] [Info] split finder: warp kernel for this tree's quantized levels (tier: few-position)",
+                "[Falcata] [Info] quantized construct: pair_code5_words (device levels) kernel",
+                "[Falcata] [Info] quantized construct: pair_hist kernel",
+                "[Falcata] [Info] quantized construct: pair_code5_words kernel",
+                "[Falcata] [Info] compact fill: pair_code5 on (177 byte slots, 32 words per row, mixed radix, 6 codes per word)",
+                "[Falcata] [Info] quantized construct: pair_code5_words (mixed radix) kernel",
+                "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1",
+                "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)"
+            ]
+        },
+        "diag-standard-stoch-six": {
+            "pack_codec_trees": 0,
+            "code_view_trees": 200,
+            "code_view_source": "compact fill: pair_code lines (one per tree)",
+            "codec_counts": {},
+            "compact_fill_lines": 400,
+            "pair_code5_lines": 200,
+            "mask_lines": 1,
+            "row_batch_lines": 0,
+            "view_verdict": "compact",
+            "distinct_lines": [
+                "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 933 + split view 0 + reserve 1317 MiB, 29087 MiB available",
+                "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9184 MiB); no row-major matrix on the device",
+                "[Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions",
+                "[Falcata] [Info] compact fill: pair_code5 on (178 byte slots, 32 words per row, mixed radix, 6 codes per word)",
+                "[Falcata] [Info] split finder: warp kernel for this tree's quantized levels (tier: few-position)",
+                "[Falcata] [Info] quantized construct: pair_code5_words (device levels) kernel",
+                "[Falcata] [Info] quantized construct: pair_hist kernel",
+                "[Falcata] [Info] quantized construct: pair_code5_words (mixed radix) kernel",
+                "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1",
+                "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)"
+            ]
+        },
+        "diag-standard-fixed-five": {
+            "pack_codec_trees": 0,
+            "code_view_trees": 200,
+            "code_view_source": "compact fill: pair_code lines (one per tree)",
+            "codec_counts": {},
+            "compact_fill_lines": 400,
+            "pair_code5_lines": 200,
+            "mask_lines": 1,
+            "row_batch_lines": 0,
+            "view_verdict": "compact",
+            "distinct_lines": [
+                "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 933 + split view 0 + reserve 990 MiB, 29121 MiB available",
+                "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9184 MiB); no row-major matrix on the device",
+                "[Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions",
+                "[Falcata] [Info] compact fill: pair_code5 on (178 byte slots, 32 words per row, 5 bits per code)",
+                "[Falcata] [Info] split finder: warp kernel for this tree's quantized levels (tier: few-position)",
+                "[Falcata] [Info] quantized construct: pair_code5_words (device levels) kernel",
+                "[Falcata] [Info] quantized construct: pair_hist kernel",
+                "[Falcata] [Info] quantized construct: pair_code5_words kernel",
+                "[Falcata] [Info] compact fill: pair_code5 on (177 byte slots, 32 words per row, mixed radix, 6 codes per word)",
+                "[Falcata] [Info] quantized construct: pair_code5_words (mixed radix) kernel",
+                "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1",
+                "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)"
+            ]
+        },
+        "diag-standard-fixed-six": {
+            "pack_codec_trees": 0,
+            "code_view_trees": 200,
+            "code_view_source": "compact fill: pair_code lines (one per tree)",
+            "codec_counts": {},
+            "compact_fill_lines": 400,
+            "pair_code5_lines": 200,
+            "mask_lines": 1,
+            "row_batch_lines": 0,
+            "view_verdict": "compact",
+            "distinct_lines": [
+                "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 933 + split view 0 + reserve 1317 MiB, 29075 MiB available",
+                "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9184 MiB); no row-major matrix on the device",
+                "[Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions",
+                "[Falcata] [Info] compact fill: pair_code5 on (178 byte slots, 32 words per row, mixed radix, 6 codes per word)",
+                "[Falcata] [Info] split finder: warp kernel for this tree's quantized levels (tier: few-position)",
+                "[Falcata] [Info] quantized construct: pair_code5_words (device levels) kernel",
+                "[Falcata] [Info] quantized construct: pair_hist kernel",
+                "[Falcata] [Info] quantized construct: pair_code5_words (mixed radix) kernel",
+                "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1",
+                "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)"
+            ]
+        },
+        "diag-recipe-fixed-fp32-five": {
+            "pack_codec_trees": 0,
+            "code_view_trees": 0,
+            "code_view_source": "compact fill: pair_code lines (one per tree)",
+            "codec_counts": {},
+            "compact_fill_lines": 200,
+            "pair_code5_lines": 0,
+            "mask_lines": 1,
+            "row_batch_lines": 0,
+            "view_verdict": "compact",
+            "distinct_lines": [
+                "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 1392 + split view 0 + reserve 10701 MiB, 24959 MiB available",
+                "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.15, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9184 MiB); no row-major matrix on the device",
+                "[Falcata] [Info] compact fill: per-cell 4-bit kernel, 265 byte slots in 4 partitions",
+                "[Falcata] [Info] quantized construct: pair_hist kernel",
+                "[Falcata] [Info] split finder: block kernel for this tree's quantized levels",
+                "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1",
+                "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)"
+            ]
+        },
+        "diag-recipe-fixed-fp32-six": {
+            "pack_codec_trees": 0,
+            "code_view_trees": 0,
+            "code_view_source": "compact fill: pair_code lines (one per tree)",
+            "codec_counts": {},
+            "compact_fill_lines": 0,
+            "pair_code5_lines": 0,
+            "mask_lines": 2,
+            "row_batch_lines": 1,
+            "view_verdict": "full-width mask",
+            "distinct_lines": [
+                "[Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.26 GB). Caller must invoke SetCompactColumnView per tree.",
+                "[Falcata] [Info] colmajor_direct: the compact regime needs store 9184 + compact view 1392 + split view 0 + reserve 15921 MiB, 24455 MiB available",
+                "[Falcata] [Info] colmajor_direct: the compact regime does not fit (store 9184 + compact view 1392 + split view 0 + reserve 15921 MiB > 24455 MiB available): mask regime",
+                "[Falcata] [Info] colmajor_direct: mask regime (the compact regime does not fit; feature_fraction 0.15, view_mode auto, view_mask_ff 0.85): full view filled from the Dataset's columns (9187 MiB); no column-major store on the device",
+                "[Falcata] [Info] quantized construct: row_batch kernel",
+                "[Falcata] [Info] split finder: block kernel for this tree's quantized levels",
+                "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=0 bit_type=8 batch_wide=1",
+                "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)"
+            ]
+        }
+    },
+    "score_era_codes": [
+        1222,
+        1223,
+        1224,
+        1225,
+        1226
+    ],
+    "chart_eligible": true,
+    "placeholders": {
+        "sixstate_std_stoch_2k_five_trees_s": 261.21,
+        "sixstate_std_stoch_2k_six_trees_s": 247.42,
+        "sixstate_std_stoch_2k_six_over_five_time": 1.056,
+        "sixstate_std_fixed_2k_five_trees_s": 220.7,
+        "sixstate_std_fixed_2k_six_trees_s": 209.33,
+        "sixstate_std_fixed_2k_six_over_five_time": 1.054,
+        "sixstate_16k_fp32_2k_five_trees_s": 64.35,
+        "sixstate_16k_fp32_2k_six_trees_s": 10.76,
+        "sixstate_16k_fp32_2k_six_over_five_time": 5.983,
+        "sixstate_std_stoch_30k_five_trees_s": 285.05,
+        "sixstate_std_stoch_30k_six_trees_s": 267.79,
+        "sixstate_std_stoch_30k_six_over_five_time": 1.064,
+        "sixstate_16k_view_six": "full-width mask",
+        "sixstate_std_six_code_view_trees": "200 of 200"
+    },
+    "october_pr72_chart": [
+        {
+            "group": "standard-stoch",
+            "label": "Standard stochastic",
+            "detail": "FP64 \u00b7 4 gradient levels \u00b7 depth 10",
+            "rounds": 2000,
+            "statistic": "median of three timed draws; range is observed min\u2013max",
+            "arms": {
+                "five": {
+                    "eligible": true,
+                    "draws": [
+                        246.28135587811585,
+                        243.23590764637015,
+                        248.1589524386242
+                    ],
+                    "median": 246.28135587811585,
+                    "range": [
+                        243.23590764637015,
+                        248.1589524386242
+                    ],
+                    "endpoint_ids": [
+                        "standard-stoch-five-timed1",
+                        "standard-stoch-five-timed2",
+                        "standard-stoch-five-timed3"
+                    ]
+                },
+                "six": {
+                    "eligible": true,
+                    "draws": [
+                        179.84834540083992,
+                        180.3630262041847,
+                        182.2450873896975
+                    ],
+                    "median": 180.3630262041847,
+                    "range": [
+                        179.84834540083992,
+                        182.2450873896975
+                    ],
+                    "endpoint_ids": [
+                        "standard-stoch-six-timed1",
+                        "standard-stoch-six-timed2",
+                        "standard-stoch-six-timed3"
+                    ]
+                }
+            }
+        },
+        {
+            "group": "standard-fixed",
+            "label": "Standard fixed point",
+            "detail": "FP64 \u00b7 64 gradient levels \u00b7 depth 10",
+            "rounds": 2000,
+            "statistic": "median of three timed draws; range is observed min\u2013max",
+            "arms": {
+                "five": {
+                    "eligible": true,
+                    "draws": [
+                        211.76703486174492,
+                        211.79880492679126,
+                        208.60689437383851
+                    ],
+                    "median": 211.76703486174492,
+                    "range": [
+                        208.60689437383851,
+                        211.79880492679126
+                    ],
+                    "endpoint_ids": [
+                        "standard-fixed-five-timed1",
+                        "standard-fixed-five-timed2",
+                        "standard-fixed-five-timed3"
+                    ]
+                },
+                "six": {
+                    "eligible": true,
+                    "draws": [
+                        173.67074765560375,
+                        174.99354056197308,
+                        176.43989163821797
+                    ],
+                    "median": 174.99354056197308,
+                    "range": [
+                        173.67074765560375,
+                        176.43989163821797
+                    ],
+                    "endpoint_ids": [
+                        "standard-fixed-six-timed1",
+                        "standard-fixed-six-timed2",
+                        "standard-fixed-six-timed3"
+                    ]
+                }
+            }
+        },
+        {
+            "group": "recipe-fixed-fp32",
+            "label": "Current recipe probe",
+            "detail": "FP32 \u00b7 fixed point 64 \u00b7 depth 15",
+            "rounds": 2000,
+            "statistic": "median of three timed draws; range is observed min\u2013max",
+            "arms": {
+                "five": {
+                    "eligible": true,
+                    "draws": [
+                        88.35246842160664,
+                        88.10535618158971,
+                        88.20776837761314
+                    ],
+                    "median": 88.20776837761314,
+                    "range": [
+                        88.10535618158971,
+                        88.35246842160664
+                    ],
+                    "endpoint_ids": [
+                        "recipe-fixed-fp32-five-timed1",
+                        "recipe-fixed-fp32-five-timed2",
+                        "recipe-fixed-fp32-five-timed3"
+                    ]
+                },
+                "six": {
+                    "eligible": true,
+                    "draws": [
+                        10.288548724219824,
+                        10.279150652821569,
+                        10.285621581841342
+                    ],
+                    "median": 10.285621581841342,
+                    "range": [
+                        10.279150652821569,
+                        10.288548724219824
+                    ],
+                    "endpoint_ids": [
+                        "recipe-fixed-fp32-six-timed1",
+                        "recipe-fixed-fp32-six-timed2",
+                        "recipe-fixed-fp32-six-timed3"
+                    ]
+                }
+            }
+        },
+        {
+            "group": "full30000",
+            "label": "Full stochastic run",
+            "detail": "FP64 \u00b7 4 gradient levels \u00b7 depth 10",
+            "rounds": 30000,
+            "statistic": "one complete draw per arm; no uncertainty estimate",
+            "arms": {
+                "five": {
+                    "eligible": true,
+                    "draws": [
+                        266.187908219353
+                    ],
+                    "median": 266.187908219353,
+                    "range": null,
+                    "endpoint_ids": [
+                        "standard-stoch-five-full30000"
+                    ]
+                },
+                "six": {
+                    "eligible": true,
+                    "draws": [
+                        192.65164758371625
+                    ],
+                    "median": 192.65164758371625,
+                    "range": null,
+                    "endpoint_ids": [
+                        "standard-stoch-six-full30000"
+                    ]
+                }
+            }
+        }
+    ],
+    "october_pr72_runtime": {
+        "build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c"
+    }
+}
