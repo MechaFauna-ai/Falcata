@@ -10,5 +10,7 @@ RUN dnf config-manager --add-repo \
     dnf install -y cuda-nvcc-13-3 cuda-cudart-devel-13-3 cuda-driver-devel-13-3 libnvjitlink-devel-13-3 && \
     dnf clean all
 
-ENV PATH=/usr/local/cuda-13.3/bin:$PATH \
+# The manylinux image has no bare `python` on PATH (interpreters live under
+# /opt/python); build-python.sh and tools/build-release-wheel.sh call `python`.
+ENV PATH=/opt/python/cp312-cp312/bin:/usr/local/cuda-13.3/bin:$PATH \
     CUDACXX=/usr/local/cuda-13.3/bin/nvcc
