@@ -787,7 +787,7 @@ Learning Control Parameters
 
    -  ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
 
-   -  ``none``: non-quantized gradients/hessians; on CUDA, deterministic fixed-point histogram accumulation with fp64 storage, or ordered fp64 kernels (see `performance <./performance.md>`__ for precision bounds and fallbacks)
+   -  ``none``: non-quantized gradients/hessians; on CUDA, deterministic fixed-point histogram accumulation with fp64 storage, or ordered fp64 kernels (see `performance <https://github.com/MechaFauna-ai/Falcata/blob/master/docs/performance.md>`__ for precision bounds and fallbacks)
 
    -  ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
 
