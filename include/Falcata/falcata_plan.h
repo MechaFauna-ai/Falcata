@@ -949,9 +949,26 @@ struct FalcataPlan {
   // layout can disable graph caching, but never the device controller itself. The same selector, kernels and order:
   // bit-identical.
   bool device_tree = true;          // key: device_tree
+  // the complete device tree's lean tree end (no split-batch readback or host leaf bookkeeping, the final level's
+  // inline leaf map (the map-only pass when every row is in the tree) and the one-kernel slab readback) for every
+  // objective boosted on the device (binary, multiclass, ranking, L1 / quantile / MAPE renewed on the device, ...),
+  // with weights and under row bagging (not by query), not only unweighted, unbagged constant-hessian L2; for trees of
+  // two or more levels only (a one-level tree measured slower on the lean end and keeps the full tree end). The same
+  // kernels write the same map and leaf values: bit-identical.
+  bool device_tree_lean_end = true;  // key: device_tree_lean_end
   // device_levels' launches as one cached CUDA graph for the prefix (root work and the host tail remain). Trees
   // whose keys keep changing use the host loop after the cache-miss budget: the same model, bit-identical.
   bool device_level_graph = true;   // key: device_level_graph
+  // device_tree graphs whose keys keep changing (more than 8 misses and more misses than hits, e.g. a sampled feature
+  // set every tree): the new capture updates the least recently used cached exec in place (cudaGraphExecUpdate)
+  // instead of a new instantiation; a refused update (topology change) instantiates as before. Bit-identical.
+  bool device_level_graph_update = true;  // key: device_level_graph_update
+  // each tree starts with the index buffers in one canonical role (the lower address is the main array): a tree of odd
+  // depth swaps the two buffers an odd number of times, so the next tree's graph key (which holds both pointers) would
+  // alternate and every graph layout would be captured twice. Unbagged trees swap before the identity fill rewrites
+  // the main array; bagged trees before the bag is copied into it (a new bag, or RestoreBagOrder's copy at every score
+  // update, which also covers a bag kept for several trees). No row is read from the swapped-out buffer: bit-identical.
+  bool index_parity_canonical = true;  // key: index_parity_canonical
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
@@ -1114,7 +1131,10 @@ struct FalcataPlan {
     if (key == "dense_wide_hist") return &dense_wide_hist;
     if (key == "device_levels") return &device_levels;
     if (key == "device_tree") return &device_tree;
+    if (key == "device_tree_lean_end") return &device_tree_lean_end;
     if (key == "device_level_graph") return &device_level_graph;
+    if (key == "device_level_graph_update") return &device_level_graph_update;
+    if (key == "index_parity_canonical") return &index_parity_canonical;
     return nullptr;
   }
 

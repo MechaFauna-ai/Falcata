@@ -27,6 +27,7 @@ def _map_only_probe(graph, setting):
         "history_pdl_off": ("history", ",pdl_level_chain:off,apply_row_batch:off"),
         "end_gate": ("history", ",final_readback_first:off"),
         "weighted": ("weighted", ""),
+        "weighted_lean": ("weighted_lean", ""),
         "renewal": ("renewal", ""),
     }
     scenario, gate = cases[setting]
@@ -36,7 +37,9 @@ def _map_only_probe(graph, setting):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["off", "on"])
-@pytest.mark.parametrize("setting", ["full", "history", "history_pdl_off", "end_gate", "weighted", "renewal"])
+@pytest.mark.parametrize(
+    "setting", ["full", "history", "history_pdl_off", "end_gate", "weighted", "weighted_lean", "renewal"]
+)
 def test_device_tree_final_map_only_cuda(graph, setting):
     code = "import runpy,sys; runpy.run_path(sys.argv[1])['_map_only_probe'](*sys.argv[2:])"
     result = subprocess.run(

@@ -3588,6 +3588,10 @@ void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
   device_level_graph_disabled_ = false;
   device_level_graph_hits_ = 0;
   device_level_graph_misses_ = 0;
+  device_level_graph_update_failed_ = false;
+  device_level_graph_update_hits_ = 0;
+  device_level_graph_update_misses_ = 0;
+  device_level_graph_update_last_refusal_ = -1;
 }
 
 void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
@@ -3848,7 +3852,9 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   }
   // a new key: capture this tree's enqueue (its host halves run now; the graph runs right after)
   ++device_level_graph_misses_;
-  if (!cfg.whole_tree && device_level_graph_misses_ > 8 && device_level_graph_misses_ > device_level_graph_hits_) {
+  const bool churning = device_level_graph_misses_ > 8 && device_level_graph_misses_ > device_level_graph_hits_;
+  const bool update = FalcataPlan::Get().device_level_graph_update && !device_level_graph_update_failed_;
+  if (!cfg.whole_tree && churning) {
     // per-tree keys keep changing (e.g. a sampled feature set every tree): the plain enqueue from here on
     device_level_graph_disabled_ = true;
     if (FalcataDebug().diag) {
@@ -3922,6 +3928,38 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     }
     CHECK_EQ(clears, 1);
   }
+  // cuda_plan key device_level_graph_update: whole-tree keys that keep changing (a sampled feature set every tree)
+  // retarget the least recently used exec to this capture in place: the same launches and parameters as a new
+  // instantiation, without its instantiate, upload and destroy. A topology change fails the update: instantiate.
+  if (cfg.whole_tree && update && churning && !device_level_graphs_.empty()) {
+    DeviceLevelGraph* lru = device_level_graphs_.front().get();
+    cudaGraphExecUpdateResultInfo info = {};
+    const cudaError_t updated = cudaGraphExecUpdate(lru->exec, graph->graph, &info);
+    if (updated == cudaSuccess) {
+      ++device_level_graph_update_hits_;
+      std::swap(lru->graph, graph->graph);
+      lru->key.swap(graph->key);
+      std::rotate(device_level_graphs_.begin(), device_level_graphs_.begin() + 1, device_level_graphs_.end());
+      CUDASUCCESS_OR_FATAL(cudaGraphLaunch(lru->exec, find_stream));
+      return true;  // graph (the old capture) is destroyed here
+    }
+    // only a refused update (cudaErrorGraphExecUpdateFailure: the capture's topology or node parameters do not fit
+    // this exec) falls back to a new instantiation; any other error (an invalid argument, a fault from earlier queued
+    // work) is fatal
+    if (updated != cudaErrorGraphExecUpdateFailure) {
+      CUDASUCCESS_OR_FATAL(updated);
+    }
+    cudaGetLastError();  // clear the refusal: instantiate below
+    device_level_graph_update_last_refusal_ = static_cast<int>(info.result);
+    if (FalcataDebug().diag) {
+      fprintf(stderr, "[hybrid-diag] device_level_graph_update: refused result=%d (cudaGraphExecUpdateResult)\n",
+              static_cast<int>(info.result));
+    }
+    // topologies that keep changing: no more update attempts
+    ++device_level_graph_update_misses_;
+    device_level_graph_update_failed_ = device_level_graph_update_misses_ > 8 &&
+      device_level_graph_update_misses_ > device_level_graph_update_hits_;
+  }
   CUDASUCCESS_OR_FATAL(cudaGraphInstantiate(&graph->exec, graph->graph, 0));
   CUDASUCCESS_OR_FATAL(cudaGraphUpload(graph->exec, find_stream));
   CUDASUCCESS_OR_FATAL(cudaGraphLaunch(graph->exec, find_stream));
@@ -3974,13 +4012,22 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // No current-tree host tail exists for a completed whole tree. Plain unweighted L2 never renews its
   // outputs, and its next BeforeTrain rebuilds root counts/start/bits before any host search. All other
   // modes retain full child statistics; GPU split-info storage/production and full journal replay stay intact.
-  bool skip_host_cache = cfg.whole_tree && config_->boosting == "gbdt" && config_->objective == "regression" &&
-    boosting_on_cuda_ && share_state_->is_constant_hessian && train_data_->metadata().weights() == nullptr &&
+  // cuda_plan key device_tree_lean_end: every objective boosted on the device, not only constant-hessian L2 (the
+  // skipped cache is read only by host searches/tails and the host RenewTreeOutput, which CHECK it; the device renewal
+  // of L1 / quantile / MAPE reads the device leaf windows), with weights and under row bagging. Trees of two or more
+  // levels only: a one-level tree (a stump shape, max_depth 1) measured slower on the lean end (fraud stumps, binary:
+  // 0.090 -> 0.094 ms per tree, same binary, 1000 rounds); it keeps the full tree end (constant-hessian L2 as before).
+  const bool lean_end = FalcataPlan::Get().device_tree_lean_end && num_levels >= 2;
+  bool skip_host_cache = cfg.whole_tree && config_->boosting == "gbdt" &&
+    (lean_end || (config_->objective == "regression" && share_state_->is_constant_hessian)) &&
+    boosting_on_cuda_ && (lean_end || train_data_->metadata().weights() == nullptr) &&
     config_->use_quantized_grad && vec_num_targets_ <= 1 && !has_categorical_feature_ &&
     nccl_communicator_ == nullptr && fp_merge_state_ == nullptr && !forest_slot_ &&
-    config_->data_sample_strategy == "bagging" && config_->bagging_freq == 0 &&
-    config_->bagging_fraction == 1.0 && config_->pos_bagging_fraction == 1.0 &&
-    config_->neg_bagging_fraction == 1.0 && !config_->bagging_by_query && !cuda_data_partition_->use_bagging() &&
+    config_->data_sample_strategy == "bagging" && !config_->bagging_by_query &&
+    // device_tree_lean_end: under row bagging too (the bag is partitioned on the device; the cache is not read)
+    (lean_end ||
+     (config_->bagging_freq == 0 && config_->bagging_fraction == 1.0 && config_->pos_bagging_fraction == 1.0 &&
+      config_->neg_bagging_fraction == 1.0 && !cuda_data_partition_->use_bagging())) &&
     !config_->quant_train_renew_leaf && !config_->linear_tree && !select_features_by_node_ &&
     config_->interaction_constraints_vector.empty() && config_->monotone_constraints.empty() &&
     !use_monotone_constraints_ && config_->monotone_penalty == 0.0 && config_->feature_contri.empty() &&
@@ -3992,7 +4039,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   skip_host_cache = false;  // CheckSplitValid consumes the host statistics/windows.
 #endif  // DEBUG
   // Same conservative whole-L2 subset as V10; one mode feeds capture identity and both enqueue routes.
-  const bool inline_all_map = skip_host_cache && cuda_data_partition_->root_num_data() == num_data_ &&
+  // cuda_plan key device_tree_lean_end: a row bag's windows too (the tree-end full pass writes the same in-bag rows)
+  const bool all_rows_root = cuda_data_partition_->root_num_data() == num_data_;
+  const bool inline_all_map = skip_host_cache && (all_rows_root || lean_end) &&
     cuda_data_partition_->cuda_data_index_to_leaf_index() != nullptr;
   cfg.gap_block_dim = CUDADataPartition::DeviceLevelGapBlockDim();
   cfg.min_data_in_leaf = static_cast<data_size_t>(config_->min_data_in_leaf);
@@ -4030,7 +4079,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   }
   // Count staging must already be reserved: the validated journal + exact final counts own all repair metadata.
   // No intermediate readback, new DMA/kernel, plan key or speculative host readiness is introduced.
-  const bool final_map_only = inline_all_map && prefetch_tree_end && end_plan.final_map_only &&
+  const bool final_map_only = inline_all_map && all_rows_root && prefetch_tree_end && end_plan.final_map_only &&
     end_plan.skip_empty_tail;
   // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
   // pointer key, replayed on the next ones); otherwise enqueued as they are
@@ -4248,6 +4297,10 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
               "growth_readbacks=1 host_tail=%d graph=%d hits=%d misses=%d\n", num_levels, levels_applied,
               total_splits, device_tree_root_tail_ ? 1 : 0, launched ? 1 : 0, device_level_graph_hits_,
               device_level_graph_misses_);
+      // cuda_plan key device_level_graph_update: in-place exec updates under key churn (separate line, see above)
+      fprintf(stderr, "[hybrid-diag] device_level_graph_update: updates=%d refused=%d stopped=%d last_refusal=%d\n",
+              device_level_graph_update_hits_, device_level_graph_update_misses_,
+              device_level_graph_update_failed_ ? 1 : 0, device_level_graph_update_last_refusal_);
     }
   } else {
     // the last search's result, as the host loop's own readback leaves it

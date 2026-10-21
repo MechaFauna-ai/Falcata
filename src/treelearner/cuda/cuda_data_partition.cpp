@@ -130,6 +130,7 @@ void CUDADataPartition::BeforeTrain() {
   level_partition_pending_ = false;  // the index fill below rewrites the main array
   level_shared_gaps_valid_ = false;  // a new tree: the index fill writes the main buffer only
   if (!use_bagging_) {
+    CanonicalizeIndexBuffers();  // cuda_plan key index_parity_canonical: the fill below rewrites the main array
     LaunchFillDataIndicesBeforeTrain();
   }
   if (FalcataPlan::Get().tree_meta_batch && AsyncTreeStart()) {
@@ -755,6 +756,11 @@ void CUDADataPartition::SplitInner(
 
 void CUDADataPartition::RestoreBagOrder() {
   if (use_bagging_) {
+    // cuda_plan key index_parity_canonical: the copy below rewrites the main array (a pending deferred partition
+    // still owns its buffer roles: leave them)
+    if (!level_partition_pending_) {
+      CanonicalizeIndexBuffers();
+    }
     // we need restore the order of indices in cuda_data_indices_
     CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_data_indices_.RawData(), used_indices_, static_cast<size_t>(num_used_indices_), __FILE__, __LINE__);
   }
@@ -816,6 +822,7 @@ void CUDADataPartition::SetUsedDataIndices(const data_size_t* used_indices, cons
   use_bagging_ = true;
   num_used_indices_ = num_used_indices;
   used_indices_ = used_indices;
+  CanonicalizeIndexBuffers();  // cuda_plan key index_parity_canonical: the copy below rewrites the main array
   CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_data_indices_.RawData(), used_indices, static_cast<size_t>(num_used_indices), __FILE__, __LINE__);
   if (!leaf_map_zero_dead_) {  // cuda_plan key leaf_map_no_zero: see SetLeafMapZeroDead
     LaunchFillDataIndexToLeafIndex();
