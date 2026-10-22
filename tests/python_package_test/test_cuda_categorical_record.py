@@ -14,7 +14,13 @@ Per shape, the test checks that
   prediction of the final model, i.e. every retained tree's device record matches its host record.
 The shapes cover one-hot and many-vs-many splits, a high-cardinality feature whose per-tree record exceeds the
 1 MiB presize (so the buffers grow while a tree records), multiclass, DART, bagging and a random forest grown on
-concurrent forest slots (one learner, so one arena, per slot and host thread).
+concurrent forest slots (one learner, so one arena, per slot and host thread) and solo (one-tree groups).
+
+cuda_plan key cat_level_record (default on) records a level's categorical splits with one kernel at offsets
+summed on the device and reads the record back once per tree; every shape is also trained with the key off (the
+per-split loop) and must give the same model text and predictions. A binding leaf budget (budget_tail) leaves the
+last splits to the per-split leaf-wise tail after level records; max_cat_32 has a categorical feature whose largest
+value is a multiple of 32 (its bitset needs max_cat_value / 32 + 1 words).
 """
 
 import hashlib
@@ -34,9 +40,12 @@ _REQUIRES_CUDA = pytest.mark.skipif(
 _PRESIZE_CAP_WORDS = 1 << 18
 
 
-def _data(rows, seed, cards=(12, 40, 200), high=None, num_class=2):
+def _data(rows, seed, cards=(12, 40, 200), high=None, num_class=2, exact_max=None):
     rng = np.random.default_rng(seed)
     cols = [rng.integers(0, c, rows).astype(np.float64) for c in cards]
+    if exact_max is not None:
+        # every value 0..exact_max occurs
+        cols.append(rng.integers(0, exact_max + 1, rows).astype(np.float64))
     if high is not None:
         # 200 distinct category values spread up to `high`: the real-value bitset of a split holding the largest
         # ones is ~high/32 words long
@@ -98,6 +107,13 @@ SHAPES = {
         {},
         12,
     ),
+    "rf_solo": (
+        {"boosting": "rf", "bagging_fraction": 0.632, "bagging_freq": 1, "cuda_plan": "auto,forest_group:1"},
+        {},
+        12,
+    ),
+    "budget_tail": ({"num_leaves": 20, "max_depth": 6}, {}, 20),
+    "max_cat_32": ({"max_cat_to_onehot": 1}, {"cards": (12, 40), "exact_max": 32}, 20),
 }
 
 
@@ -149,6 +165,12 @@ def test_cuda_categorical_record(shape):
     if shape == "high_cardinality":
         # one tree's real-value record is longer than the presize, so the buffer grew while that tree recorded
         assert max(_per_tree_words(text, "cat_threshold")) > _PRESIZE_CAP_WORDS
+    # cuda_plan key cat_level_record off: the per-split record loop gives the same model
+    plan = params.get("cuda_plan", "auto")
+    per_split, _, _ = _train({**params, "cuda_plan": plan + ",cat_level_record:off"}, data_kw, rounds)
+    assert _md5(per_split.model_to_string()) == _md5(text)
+    np.testing.assert_array_equal(per_split.predict(xv), bst.predict(xv))
+
     if shape == "rf_forest_slots":
         # concurrent slots grow the same forest as sequential training
         seq, _, _ = _train({**params, "cuda_plan": "auto,forest_batched:off"}, data_kw, rounds)
