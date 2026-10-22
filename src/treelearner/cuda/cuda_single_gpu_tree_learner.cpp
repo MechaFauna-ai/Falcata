@@ -5047,7 +5047,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   std::unique_ptr<CUDATree> tree(new CUDATree(config_->num_leaves, track_branch_features,
     config_->linear_tree, gpu_device_id_, has_categorical_feature_,
-    cuda_tree_pool_buffer_.RawData(), std::max(1, vec_num_targets_)));
+    cuda_tree_pool_buffer_.RawData(), std::max(1, vec_num_targets_), &cuda_tree_cat_arena_));
   // set the root value by hand, as it is not handled by splits. When the root
   // sums were deferred (single-sync hybrid growth), this happens lazily in
   // EnsureRootSumsReadBack -- the root value only survives when the tree ends
@@ -6037,6 +6037,13 @@ void CUDASingleGPUTreeLearner::AllocateBitset() {
     batch_cat_bitset_inner_stride_ = cuda_bitset_inner_max_size;
     AllocateCUDAMemory<uint32_t>(&cuda_bitset_, cuda_bitset_max_size, __FILE__, __LINE__);
     AllocateCUDAMemory<uint32_t>(&cuda_bitset_inner_, cuda_bitset_inner_max_size, __FILE__, __LINE__);
+    // presize the trees' categorical record buffers to the per-tree bound (num_leaves - 1 categorical splits of
+    // at most the per-split bitset words), capped at 1 MiB each; past the cap they grow by doubling
+    const size_t max_cat_splits = static_cast<size_t>(std::max(config_->num_leaves - 1, 1));
+    const size_t kCatArenaReserveCapWords = static_cast<size_t>(1) << 18;
+    cuda_tree_cat_arena_.bitset.Reserve(std::min(max_cat_splits * cuda_bitset_max_size, kCatArenaReserveCapWords));
+    cuda_tree_cat_arena_.bitset_inner.Reserve(
+      std::min(max_cat_splits * cuda_bitset_inner_max_size, kCatArenaReserveCapWords));
     const int max_cat_in_split = std::min(config_->max_cat_threshold, max_cat_num_bin / 2);
     const int num_blocks = (max_cat_in_split + CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE - 1) / CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE;
     AllocateCUDAMemory<size_t>(&cuda_block_bitset_len_buffer_, num_blocks, __FILE__, __LINE__);

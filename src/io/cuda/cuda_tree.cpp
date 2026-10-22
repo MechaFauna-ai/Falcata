@@ -17,7 +17,7 @@ namespace Falcata {
 
 CUDATree::CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
   const int gpu_device_id, const bool has_categorical_feature,
-  uint8_t* pooled_device_buffer, int leaf_value_dim):
+  uint8_t* pooled_device_buffer, int leaf_value_dim, CUDATreeCatArena* cat_arena):
 Tree(max_leaves, track_branch_features, is_linear, leaf_value_dim),
 num_threads_per_block_add_prediction_to_score_(1024) {
   is_cuda_tree_ = true;
@@ -26,7 +26,23 @@ num_threads_per_block_add_prediction_to_score_(1024) {
   } else {
     SetCUDADevice(0, __FILE__, __LINE__);
   }
-  if (has_categorical_feature) {
+  if (has_categorical_feature && cat_arena != nullptr) {
+    // take over the learner's growth buffers (capacity kept from earlier trees); the bitsets restart empty and the
+    // boundaries need max_leaves entries (SplitCategoricalKernel writes [num_cat + 1], the stale rest is never read)
+    cat_arena_ = cat_arena;
+    cuda_bitset_.Swap(&cat_arena->bitset);
+    cuda_bitset_inner_.Swap(&cat_arena->bitset_inner);
+    cuda_cat_boundaries_.Swap(&cat_arena->boundaries);
+    cuda_cat_boundaries_inner_.Swap(&cat_arena->boundaries_inner);
+    cuda_bitset_.ClearKeepCapacity();
+    cuda_bitset_inner_.ClearKeepCapacity();
+    if (cuda_cat_boundaries_.Size() < static_cast<size_t>(max_leaves)) {
+      cuda_cat_boundaries_.ResizeDiscard(max_leaves);
+    }
+    if (cuda_cat_boundaries_inner_.Size() < static_cast<size_t>(max_leaves)) {
+      cuda_cat_boundaries_inner_.ResizeDiscard(max_leaves);
+    }
+  } else if (has_categorical_feature) {
     cuda_cat_boundaries_.Resize(max_leaves);
     cuda_cat_boundaries_inner_.Resize(max_leaves);
   }
@@ -391,12 +407,21 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
   }
 
   if (num_cat_ > 0) {
-    cuda_cat_boundaries_inner_.Resize(num_cat_ + 1);
-    cuda_cat_boundaries_.Resize(num_cat_ + 1);
-    cat_boundaries_ = cuda_cat_boundaries_.ToHost();
-    cat_boundaries_inner_ = cuda_cat_boundaries_inner_.ToHost();
+    // the first num_cat_ + 1 boundaries are the record (the buffers hold max_leaves or more)
+    const size_t num_boundaries = static_cast<size_t>(num_cat_) + 1;
+    cat_boundaries_.resize(num_boundaries);
+    cat_boundaries_inner_.resize(num_boundaries);
+    CopyFromCUDADeviceToHost<int>(cat_boundaries_.data(), cuda_cat_boundaries_.RawData(), num_boundaries,
+                                  __FILE__, __LINE__);
+    CopyFromCUDADeviceToHost<int>(cat_boundaries_inner_.data(), cuda_cat_boundaries_inner_.RawData(),
+                                  num_boundaries, __FILE__, __LINE__);
     cat_threshold_ = cuda_bitset_.ToHost();
     cat_threshold_inner_ = cuda_bitset_inner_.ToHost();
+    if (cat_arena_ == nullptr) {
+      // no arena: shrink to the record as before (the retained inner copies are what prediction reads)
+      cuda_cat_boundaries_inner_.Resize(num_boundaries);
+      cuda_cat_boundaries_.Resize(num_boundaries);
+    }
   }
 
   if (leaf_value_dim_ > 1) {
@@ -493,12 +518,51 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
   cuda_internal_count_.Clear();
   cuda_split_gain_.Clear();
   cuda_batch_splits_.Clear();
+  ReturnCategoricalArena();
 
   // Destroy the per-tree CUDA stream — only used during construction.
   if (cuda_stream_ != nullptr) {
     gpuAssert(cudaStreamDestroy(cuda_stream_), __FILE__, __LINE__);
     cuda_stream_ = nullptr;
   }
+}
+
+void CUDATree::ReturnCategoricalArena() {
+  if (cat_arena_ == nullptr) {
+    return;
+  }
+  // AddPredictionToScore traverses this tree's categorical nodes through the inner bitsets for the tree's whole
+  // lifetime: copy the record into exact-size owned buffers (two allocations, no free). The copies are ordered on
+  // the default stream before the next tree's writes to the arena (tree streams are blocking streams). A tree
+  // whose device record is empty (the selective flow builds categorical splits on the host) keeps none, as before:
+  // prediction uploads them from the host vectors.
+  CUDAVector<uint32_t> kept_bitset_inner;
+  CUDAVector<int> kept_boundaries_inner;
+  if (num_cat_ > 0 && cuda_bitset_inner_.Size() > 0) {
+    const size_t num_words = cuda_bitset_inner_.Size();
+    const size_t num_boundaries = static_cast<size_t>(num_cat_) + 1;
+    uint32_t* words = nullptr;
+    AllocateCUDAMemory<uint32_t>(&words, num_words, __FILE__, __LINE__);
+    CopyFromCUDADeviceToCUDADevice<uint32_t>(words, cuda_bitset_inner_.RawData(), num_words, __FILE__, __LINE__);
+    kept_bitset_inner.Adopt(words, num_words);
+    int* boundaries = nullptr;
+    AllocateCUDAMemory<int>(&boundaries, num_boundaries, __FILE__, __LINE__);
+    CopyFromCUDADeviceToCUDADevice<int>(boundaries, cuda_cat_boundaries_inner_.RawData(), num_boundaries,
+                                        __FILE__, __LINE__);
+    kept_boundaries_inner.Adopt(boundaries, num_boundaries);
+  }
+  cuda_bitset_.Swap(&cat_arena_->bitset);
+  cuda_bitset_inner_.Swap(&cat_arena_->bitset_inner);
+  cuda_cat_boundaries_.Swap(&cat_arena_->boundaries);
+  cuda_cat_boundaries_inner_.Swap(&cat_arena_->boundaries_inner);
+  // what the arena held is empty unless another tree took and returned it meanwhile; never keep it
+  cuda_bitset_.Clear();
+  cuda_bitset_inner_.Clear();
+  cuda_cat_boundaries_.Clear();
+  cuda_cat_boundaries_inner_.Clear();
+  cuda_bitset_inner_.Swap(&kept_bitset_inner);
+  cuda_cat_boundaries_inner_.Swap(&kept_boundaries_inner);
+  cat_arena_ = nullptr;
 }
 
 void CUDATree::RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits) {
