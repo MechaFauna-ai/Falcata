@@ -3170,7 +3170,9 @@ run of every arm md5-identical):
 | covtype-deep (1024 leaves, depth 10: complete device tree, not selective) | - | 3.9687 | 3.9820 | | 0.997x | |
 | epsilon-fixedpoint (512 leaves, depth 9: complete device tree) | - | 8.4983 | 8.5079 | | 0.999x | |
 
-The gain is below the idle share the prefix levels held (the prefix's launches are sized for each level's worst
+Both bagged cells (binding-budget 0.65, unbounded-fewbin 0.75) keep the prefix on every tree: against master
+`c3c59d2d` with a 1000-round diagnostic run, 1000 of 1000 trees took it, with 994 and 999 graph hits (the first trees
+capture a few keys), at 1.073x and 1.064x. The gain is below the idle share the prefix levels held (the prefix's launches are sized for each level's worst
 case, as in section 10w); the deep levels after the prefix keep their two readbacks per level.
 
 

@@ -85,14 +85,18 @@ def _train_diag(params, X, y, rounds):
     return res["md5"], res["trees"], [tuple(int(v) for v in m.groups()) for m in _LINE.finditer(out.stderr)]
 
 
-def _same(params, X, y, rounds=8, plans=("auto", "auto" + _OFF, "auto,device_levels:off"), engaged=True):
-    # the same model under every plan; the first plan (the default) took the prefix on every tree iff engaged, the
-    # others never did
+def _same(params, X, y, rounds=8, plans=("auto", "auto" + _OFF, "auto,device_levels:off"), engaged=True, trained=None):
+    # the same model under every plan; the first plan (the default) took the prefix on every trained tree iff engaged
+    # (trained: trees grown when the model keeps fewer, e.g. stumps), the others never did. Returns its lines.
     md5 = {}
+    first = []
     for i, plan in enumerate(plans):
         md5[plan], trees, lines = _train_diag({**params, "cuda_plan": plan}, X, y, rounds)
-        assert len(lines) == (trees if engaged and i == 0 else 0), (plan, trees, len(lines))
+        expected = (trained if trained is not None else trees) if engaged and i == 0 else 0
+        assert len(lines) == expected, (plan, trees, len(lines))
+        first = first or lines
     assert len(set(md5.values())) == 1, md5
+    return first
 
 
 _SHAPES = [
@@ -129,8 +133,11 @@ def test_selective_device_prefix_graph_same_model_cuda(graph):
 @_REQUIRES_CUDA
 def test_selective_device_prefix_stump_same_model_cuda():
     # the root has no valid split: the prefix applies no level and the host loop reports a stump, as before
-    X, y = _data("regression", rows=600)
-    _same(_params("regression", 31, -1, min_data_in_leaf=400), X, y, rounds=3)
+    # (a gain gate no split passes: the root is searched, so the prefix runs and applies no level)
+    X, y = _data("regression", rows=2000)
+    # (the booster keeps one constant tree; each of the 3 rounds grew a stump)
+    lines = _same(_params("regression", 31, -1, min_gain_to_split=1e9), X, y, rounds=3, trained=3)
+    assert all(applied == 0 and splits == 0 for _, applied, splits, _, _ in lines), lines
 
 
 _ENGAGE = (
