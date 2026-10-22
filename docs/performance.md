@@ -1985,7 +1985,9 @@ constraints the level flows run with per-node masks:
   (`test_masks_do_not_depend_on_the_flow`).
 - *What stays on the per-split loop:* interaction constraints (their masks depend on the branch's features; shared
   stream as before), vector leaves, multi-GPU and feature-parallel (single-GPU level flows only), and the graph loop
-  is not used with per-node masks (its device controller assigns the leaves; the host-driven loops run instead).
+  is not used with per-node masks (its device controller assigns the leaves; the host-driven loops run instead). The
+  complete device tree draws the same keyed masks on the device (`device_bynode_masks`, see "Complete bounded device
+  trees by default"); the `device_levels` prefix does not run with them.
 - *Models.* bynode < 1 models differ from the shared-stream draws (key off) and from the CPU learner: same sample size
   per node, other masks; holdout metrics agree within noise (`test_key_on_and_off_same_metric_other_model`, the forest
   benchmark rows in `runs/forest/REPORT_stage1.md`). They are run-to-run md5-stable under quantized gradients. bynode = 1
@@ -2865,6 +2867,8 @@ quantized training as ground truth in
 `device_tree` (default ON, with `device_levels`) runs the complete quantized device controller for scalar,
 numerical single-GPU trees wherever its depth bound holds: positive `max_depth <= 12` and
 `2^max_depth <= num_leaves + 1`, i.e. every level but the depth-capped last one may split every valid leaf.
+Per-node feature masks (`feature_fraction_bynode < 1` without interaction constraints) are eligible too: the device
+draws them (`device_bynode_masks`, below); forest slots (`boosting=rf` under `forest_batched`) are not.
 The controller presizes its per-level scratch for the deepest level it searches (2^(max_depth-2) pairs: split-finder
 output and the quantized bit-change histograms, which grow with the total bin count); where that estimate exceeds
 half of the free device memory at the first tree, the prefix flow grows the trees instead (`FALCATA_DEBUG=diag`
@@ -2892,6 +2896,25 @@ depth 11 / 2048 leaves 1.000, at unlimited depth / 1023 leaves 1.002. The open5 
 search's same-binary checks also covered bagged, feature-sampled, shallower (255 / 8, 63 / 6) and `max_bin 15`
 shapes (1.024-1.091) and feature-sampled Numerai with missing values, which pays a graph capture per tree (its
 whole-tree keys change every tree): 0.994 over 4 pairs there, inside the 1.5% band (this run: 1.002).
+
+`device_bynode_masks` (default ON) admits per-node feature masks (`feature_fraction_bynode < 1`, no interaction
+constraints, the keyed masks of `level_bynode_masks`, section 10n) to the complete device tree. Until now such trees
+ran the host two-sync level loop: per level a host draw of every searched leaf's mask from its keyed generator and two
+uploads (rows and task lists), then the level's readbacks; no graph level. A node's sample depends only on (seed,
+tree count, the node's path) and the tree's candidates, so a device kernel draws the same one: the same generator
+(the integer LCG of `Random`), `Random::Sample`'s branch chosen on the host (`K > N / log2(K)`: the selection scan or
+Floyd's draw, or every candidate), the selection scan's `NextFloat() < (K - taken) / (N - i)` evaluated as the exactly
+equivalent integer compare `r (N - i) < (K - taken) 2^15` (r / 2^15 is exact and the quotient's rounding cannot cross
+it), Floyd's set as a shared bitmap, and the task list as the tasks of the sampled features in ascending task index.
+Each non-final level forks one block per child onto a side stream right after the apply (keys from the parent's,
+as `BynodeKeySplit`), beside the children's histogram construct, and the find waits for it; the root's mask is drawn
+the same way before the root search. Rows, task lists and two key generations sit at fixed per-leaf offsets, so the
+level finders read them through a static row table and the whole sequence is captured in the tree's graph. The lean
+tree end applies to these trees as well. `device_bynode_masks:off` restores the host loop. Same samples, task lists
+and kernels: md5-identical models (`test_cuda_device_bynode.py`: the selection scan (bynode 0.3 / 0.5 / 0.8) with and
+without bagging for regression, binary and multiclass against the key off, `device_tree:off` and `device_levels:off`;
+Floyd's draw (0.1, 0.02), every candidate (0.99), `feature_fraction` samples, a binding final level, depth 1 and 10
+and a shape outside the complete tree's bound for binary against the key off). Measured: see the 1.2 release notes.
 
 `device_tree_lean_end` (default ON) gives the complete device tree's lean tree end, until now only for unweighted,
 unbagged, constant-hessian L2, to every objective boosted on the device (binary, multiclass(ova),

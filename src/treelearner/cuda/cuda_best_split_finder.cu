@@ -2295,7 +2295,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
   if (num_used_tasks_ == 0) {
     return;  // no usable feature this tree; the sync masks every lane not-found
   }
-  dim3 grid_dim(LevelNodeTaskLists(gstate) != nullptr ? level_node_max_tasks_ :
+  dim3 grid_dim(LevelNodeTaskLists(gstate) != nullptr ? LevelNodeGridX() :
                 compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
   if (grid_dim.x == 0) {
     return;  // no leaf of the level has a task: the sync writes every leaf not-found
@@ -3131,7 +3131,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
     return;
   }
 #endif
-  dim3 grid_dim(LevelNodeTaskLists(gstate) != nullptr ? level_node_max_tasks_ :
+  dim3 grid_dim(LevelNodeTaskLists(gstate) != nullptr ? LevelNodeGridX() :
                 compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
   if (grid_dim.x == 0) {
     return;  // no leaf of the level has a task: the sync writes every leaf not-found
