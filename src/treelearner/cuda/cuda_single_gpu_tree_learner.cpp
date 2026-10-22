@@ -2556,10 +2556,19 @@ void CUDASingleGPUTreeLearner::FinishLevelBookkeeping(
     const std::vector<int>& batch_info,
     std::vector<HybridPendingPair>* next_pairs,
     int* num_splits) {
+  CHECK_GE(batch_info.size(), 18 * applied.size());
+  FinishLevelBookkeeping(applied, batch_info.data(), next_pairs, num_splits);
+}
+
+void CUDASingleGPUTreeLearner::FinishLevelBookkeeping(
+    const std::vector<HybridAppliedSplit>& applied,
+    const int* batch_info,
+    std::vector<HybridPendingPair>* next_pairs,
+    int* num_splits) {
   CHECK(!whole_host_leaf_cache_stale_);
   for (size_t k = 0; k < applied.size(); ++k) {
     const HybridAppliedSplit& a = applied[k];
-    const int* info = batch_info.data() + 18 * k;
+    const int* info = batch_info + 18 * k;
     const double* dinfo = reinterpret_cast<const double*>(info + 8);
     leaf_num_data_[a.left] = info[1];
     leaf_data_start_[a.left] = info[2];
@@ -4016,20 +4025,30 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   // The prefix can select in the previous sync's last block; whole trees select in a standalone launch.
   bool select_ran = false;
   const CUDADeviceLevelConfig* cfg_device = cuda_device_level_config_.RawDataReadOnly();
+  // the selective prefix records no tree on the device (nothing reads it;
+  // the selective flow rebuilds the tree from its own records), so the tree stream never joins the levels
+  const bool record_tree = cfg.skip_tree_record == 0;
+  CHECK(record_tree || (!cfg.whole_tree && cfg.split_info_journal != nullptr));
   for (int level = 0; level < num_levels; ++level) {
     const int max_splits = 1 << level;
     // the level's host decisions (after its search on this stream), then the apply and the tree record behind them
     if (!select_ran) {
       LaunchDeviceLevelSelect(cfg, level, max_splits, find_stream);
     }
-    CUDASUCCESS_OR_FATAL(cudaEventRecord(device_level_select_event_, find_stream));
-    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(tree_stream, device_level_select_event_, 0));
+    if (record_tree) {
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(device_level_select_event_, find_stream));
+      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(tree_stream, device_level_select_event_, 0));
+    }
     // (the apply's last block writes the children's descriptors and block map: DeviceLevelPairsBlock)
+    // the selective prefix's partition launch takes the whole tree's joint
+    // worker bound (a level of a root-start tree partitions at most every row: the same bound holds)
     cuda_data_partition_->LaunchDeviceLevelApply(max_splits, dls, cfg_device,
       inline_all_map && cfg.whole_tree && level + 1 == num_levels,
-      final_map_only && level + 1 == num_levels, cfg.whole_tree != 0);
-    tree->LaunchSplitBatchKernelDevice(max_splits, &dls->live_splits);
-    CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree_stream));
+      final_map_only && level + 1 == num_levels, cfg.whole_tree != 0 || cfg.joint_grid_bound != 0);
+    if (record_tree) {
+      tree->LaunchSplitBatchKernelDevice(max_splits, &dls->live_splits);
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree_stream));
+    }
     if (cfg.whole_tree && level + 1 == num_levels) {
       // The apply has produced the final partition and tree records. No final child histogram or best-split
       // search can affect a depth-bounded tree. Join the record stream before the single end-of-tree journal.
@@ -4046,7 +4065,8 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     cuda_histogram_constructor_->ConstructHistogramsForLevel(
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, /*max_num_data_in_smaller_leaf=*/0,
       /*any_pair_needs_bit_change_copy=*/true);
-    cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, tree_record_done_event_);
+    // (the record reads the split leaves' best-split entries, which this level's sync overwrites)
+    cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, record_tree ? tree_record_done_event_ : nullptr);
     JoinDeviceBynode();
     cuda_best_split_finder_->SetDeviceLevelSelect(!cfg.whole_tree && level + 1 < num_levels ? cfg_device : nullptr);
     cuda_best_split_finder_->FindBestSplitsForLevel(
@@ -4309,6 +4329,10 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
       pinned_selective_prefix_split_infos_count_ = static_cast<size_t>(max_prefix_splits);
     }
     cfg.split_info_journal = cuda_selective_prefix_split_infos_.RawData();
+    // the selective prefix: no device tree record and the joint partition bound (falcata_plan.h,
+    // selective_device_prefix)
+    cfg.skip_tree_record = 1;
+    cfg.joint_grid_bound = 1;
   }
   // No current-tree host tail exists for a completed whole tree. Plain unweighted L2 never renews its
   // outputs, and its next BeforeTrain rebuilds root counts/start/bits before any host search. All other
@@ -4451,6 +4475,11 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   int num_splits = 0;
   int cursor = 0;
   pairs->clear();
+  // the selective prefix: no device record to mirror (the selective flow starts its tree from the
+  // constructor state; before, the mirrors replayed here were undone right after)
+  const bool replay_mirrors = cfg.skip_tree_record == 0;
+  // the selective prefix: the level bookkeeping reads the split-batch readback in place
+  const bool lean_batch = record_split_infos;
   for (int level = 0; level < levels_applied; ++level) {
     const int level_splits = journal[kDeviceLevelJournalLevels + level];
     CHECK_GE(level_splits, 1);
@@ -4464,8 +4493,12 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     for (int k = 0; k < level_splits; ++k) {
       const int left_leaf = journal[kDeviceLevelJournalHeader + 2 * (cursor + k)];
       const int inner_feature = journal[kDeviceLevelJournalHeader + 2 * (cursor + k) + 1];
-      const int right_leaf = tree->num_leaves();
-      tree->ReplaySplitHostMirrors(left_leaf, train_data_->RealFeatureIndex(inner_feature));
+      // the device numbers the level's right children after the leaves before it, in split order
+      const int right_leaf = cursor + k + 1;
+      if (replay_mirrors) {
+        CHECK_EQ(tree->num_leaves(), right_leaf);
+        tree->ReplaySplitHostMirrors(left_leaf, train_data_->RealFeatureIndex(inner_feature));
+      }
       // the host's node keys follow the device's (a no-op without keyed per-node masks)
       BynodeKeySplit(left_leaf, right_leaf);
       if (!skip_host_cache) {
@@ -4474,15 +4507,20 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
       }
     }
     if (!skip_host_cache) {
-      device_level_batch_slice_.assign(device_level_batch_info_.begin() + 18 * static_cast<size_t>(cursor),
-                                       device_level_batch_info_.begin() + 18 * static_cast<size_t>(cursor + level_splits));
       pairs->clear();
-      FinishLevelBookkeeping(device_level_applied_, device_level_batch_slice_, pairs, &num_splits);
+      if (lean_batch) {
+        FinishLevelBookkeeping(device_level_applied_, device_level_batch_info_.data() + 18 * static_cast<size_t>(cursor),
+                               pairs, &num_splits);
+      } else {
+        device_level_batch_slice_.assign(device_level_batch_info_.begin() + 18 * static_cast<size_t>(cursor),
+                                         device_level_batch_info_.begin() + 18 * static_cast<size_t>(cursor + level_splits));
+        FinishLevelBookkeeping(device_level_applied_, device_level_batch_slice_, pairs, &num_splits);
+      }
     }
     cursor += level_splits;
   }
   CHECK_EQ(cursor, total_splits);
-  CHECK_EQ(tree->num_leaves(), total_splits + 1);
+  CHECK_EQ(tree->num_leaves(), replay_mirrors ? total_splits + 1 : 1);
   const bool all_map_complete = inline_all_map && levels_applied == num_levels &&
     journal[kDeviceLevelJournalLevels + num_levels - 1] > 0;
   const bool deferred_final = final_map_only && all_map_complete;
@@ -4617,7 +4655,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     }
   } else {
     // the last search's result, as the host loop's own readback leaves it
-    cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(tree->num_leaves(), &host_leaf_best_splits_);
+    cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(total_splits + 1, &host_leaf_best_splits_);
   }
   global_timer.Stop("CUDASingleGPUTreeLearner::TrainDeviceLevels");
   return num_splits;
@@ -5148,7 +5186,8 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
   const int* journal = pinned_device_level_journal_;
   const int levels_applied = journal[0];
   CHECK_EQ(journal[1], num_splits);
-  CHECK_EQ(tree->num_leaves(), num_splits + 1);
+  // (no tree mirrors were replayed: the selective prefix records no device tree)
+  CHECK_EQ(tree->num_leaves(), 1);
   // ---- the selective records, level by level as RunSelectiveLevel would have created them (every candidate
   // selected, no collapse, right-child indices fresh). Within a level the device numbers right children in
   // leaf-ascending order where the host numbers them in greedy order; which hybrid index (and histogram slot) a leaf
@@ -5174,8 +5213,17 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
       CHECK_EQ(batch[1] + batch[4], window_num[left]);
       CHECK_EQ(batch[5], batch[2] + batch[1]);
       const int new_id = static_cast<int>(sel_applied_.size());
-      SelectiveApplied node;
-      node.parent = sel_leaf_parent_[left];
+      const int parent = sel_leaf_parent_[left];
+      // the record written in place (one copy of the journaled record); CUDASplitInfo's assignment copies
+      // the fields and never the device pointers (a default-constructed destination keeps them null), which is
+      // what the host's own scrubbed best-split readback (ReadPrefetchedLeafBestSplits) hands over
+      const CUDASplitInfo& raw = raw_infos[s];
+      CHECK(raw.is_valid);
+      CHECK_EQ(raw.inner_feature_index, journal[kDeviceLevelJournalHeader + 2 * s + 1]);
+      CHECK_EQ(raw.num_cat_threshold, 0);
+      sel_applied_.emplace_back();
+      SelectiveApplied& node = sel_applied_.back();
+      node.parent = parent;
       node.left_leaf = left;
       node.right_leaf = right;
       node.kid_left = -1;
@@ -5184,20 +5232,10 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
       node.selected = true;
       node.data_start = window_start[left];
       node.num_data = window_num[left];
-      // the bytes SyncAllLeafBestSplitsToHost would have read for this leaf, scrubbed the same way
-      CUDASplitInfo info;
-      std::memcpy(reinterpret_cast<void*>(&info), reinterpret_cast<const void*>(raw_infos + s), sizeof(CUDASplitInfo));
-      info.cat_threshold = nullptr;
-      info.cat_threshold_real = nullptr;
-      info.vec_payload = nullptr;
-      CHECK(info.is_valid);
-      CHECK_EQ(info.inner_feature_index, journal[kDeviceLevelJournalHeader + 2 * s + 1]);
-      CHECK_EQ(info.num_cat_threshold, 0);
-      node.gain = info.gain;
-      node.info = info;
-      sel_applied_.push_back(node);
-      if (node.parent >= 0) {
-        SelectiveApplied& p = sel_applied_[node.parent];
+      node.info = raw;
+      node.gain = node.info.gain;
+      if (parent >= 0) {
+        SelectiveApplied& p = sel_applied_[parent];
         if (p.left_leaf == left) {
           p.kid_left = new_id;
         } else {
@@ -5223,8 +5261,8 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
   sel_num_splits_ = num_splits;
   sel_stat_applied_ += num_splits;
   sel_stat_levels_ += levels_applied;
-  // the tree is rebuilt from the records (SelectiveFinalize); the prefix's device records are never read
-  tree->UndoReplayedHostMirrors();
+  // the tree is rebuilt from the records (SelectiveFinalize); the prefix recorded no device tree and replayed no host
+  // mirrors, so the tree is still in its constructor state
   if (levels_applied == 0) {
     // the root found no valid split: the host loop's first readback, with its root pair
     pairs->assign(1, root_pair);

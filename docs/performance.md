@@ -3278,6 +3278,51 @@ Both bagged cells (binding-budget 0.65, unbounded-fewbin 0.75) keep the prefix o
 capture a few keys), at 1.073x and 1.064x. The gain is below the idle share the prefix levels held (the prefix's launches are sized for each level's worst
 case, as in section 10w); the deep levels after the prefix keep their two readbacks per level.
 
+#### Prefix trim
+
+A per-level nsys profile of the selective prefix showed that it added 8-10 µs of GPU time per level against the host
+levels it replaced. Most of that came from two parts: the select that runs in the last block of each level's
+best-split sync kernel (a serial tail after every pair block; 14-17 µs per sync kernel instead of 7, 43 µs at 512
+splits) and a device tree record that selective growth never reads. The selective prefix is now trimmed in four ways
+(no keys). The faster select also serves the plain `device_levels` prefix; the complete device tree keeps every
+launch and its own select:
+
+- **No device tree record.** Selective growth rebuilds its tree on the host from its own records
+  (`RebuildFromHostSplits` uploads every leaf value), so it never reads the device tree record:
+  - no `SplitBatchKernel` per level, no select / record events, and the tree stream stays out of the captured graph;
+  - no host mirror replay that the hand-off would undo.
+- **A faster fused select:**
+  - it stages the config in shared memory (it was read through a global pointer and reloaded after every store);
+  - each thread loads its leaves and splits into registers before any store;
+  - the slot offsets come from the flat scan (one block scan fewer per select);
+  - the journaled split records are copied by the whole block, eight independent word loads per thread.
+
+  It makes the same leaf-ascending valid scan and writes the same descriptors and bytes; the per-leaf winner is decided
+  by the unchanged sync body.
+- **A lean hand-off:** the host's selective records are built in place, one copy of each journaled record instead of
+  three, and the level bookkeeping runs on the split-batch readback without per-level slices.
+- **A joint partition bound:** each prefix level's fused partition launch takes the complete device tree's worker
+  bound, `ceil(rows / 1024) + 2 * 2^level - 1` (plus the descriptor block), instead of three worst-case extents. The
+  kernel's grid-stride loop visits every chunk at any grid.
+
+Per prefix level (nsys, unbounded 1024 leaves): the sync kernel takes 10-11 µs instead of 14-17 µs (L9: 32 instead
+of 43 µs), and the 3 µs `SplitBatchKernel` is gone. Strict A/B against master `5bec2574`: exclusive runs, 6
+alternating pairs of fresh processes, 1000 rounds. During development each part had a temporary switch, so each part
+was measured alone. That measurement predates the plain prefix and the standalone prefix select taking the fast body.
+Every run of every arm was md5-identical.
+
+| cell | record | select | hand-off | grid | all four |
+|---|---:|---:|---:|---:|---:|
+| binding-budget (151 leaves, depth 10, binary) | 1.009x | 1.020x | 0.997x | 0.999x | 1.034x |
+| unbounded-fewbin (1024 leaves, unlimited, regression) | 1.010x | 1.027x | 1.010x | 1.007x | 1.035x |
+| higgs (255 leaves, depth 10, binary) | 1.003x | 1.013x | 1.000x | 1.002x | 1.027x |
+| fraud (255 leaves, unlimited, binary) | 1.005x | 1.024x | 1.004x | 1.005x | 1.025x |
+| covtype-deep (complete device tree) | | | | | 1.002x |
+| epsilon-fixedpoint (complete device tree) | | | | | 1.001x |
+
+The fused select still costs about 3.5 µs per level on small levels and about 18 µs at 512 splits. What remains
+there is the last block's fence, count and scans, and the copy of every split's record.
+
 
 Whole-tree fused apply bounds only its physical workers by the joint split/gap row extent:
 `min(8192, max(1, ceil(N / 1024) + 2 * max_splits - 1))`, plus the controller CTA.

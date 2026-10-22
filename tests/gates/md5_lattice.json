@@ -367,6 +367,176 @@
    "metric": 0.495432,
    "metric_name": "mlogloss"
   },
+  "route/r01-depth13": {
+   "md5": "f28954936a7c716b6a35066f14da6d11",
+   "metric": 2.954486,
+   "metric_name": "rmse"
+  },
+  "route/r02-memgate": {
+   "md5": "aa01bb49163918079469c370fa04ca34",
+   "metric": 2.980236,
+   "metric_name": "rmse"
+  },
+  "route/r03a-budget": {
+   "md5": "39053e1bbe5f1e584500e41e21d6fc75",
+   "metric": 1.706468,
+   "metric_name": "rmse"
+  },
+  "route/r03b-unbounded": {
+   "md5": "5f873a4780547ae71406c68d7c5274a1",
+   "metric": 1.681626,
+   "metric_name": "rmse"
+  },
+  "route/r04a-nq-l15": {
+   "md5": "376d3b967fa1a369d1d9232358b142d0",
+   "metric": 2.090219,
+   "metric_name": "rmse"
+  },
+  "route/r04b-nq-onesync": {
+   "md5": "f741597cbd0c92b6de966b12440d4663",
+   "metric": 2.985054,
+   "metric_name": "rmse"
+  },
+  "route/r05-nq-selective": {
+   "md5": "ff718e75c31aae4024864f96deaecda4",
+   "metric": 2.129366,
+   "metric_name": "rmse"
+  },
+  "route/r06a-cat": {
+   "md5": "48e5385e5da6d3b286954de97c1196d7",
+   "metric": 2.57789,
+   "metric_name": "rmse"
+  },
+  "route/r06b-cat-mc": {
+   "md5": "76db4a58745c183a8c11a4d161c6a8f1",
+   "metric": 0.340239,
+   "metric_name": "mlogloss"
+  },
+  "route/r06c-cat-unbounded": {
+   "md5": "c284acdce9f5cc7c29ea765945be055e",
+   "metric": 2.577822,
+   "metric_name": "rmse"
+  },
+  "route/r07a-bynode-sel": {
+   "md5": "5325f81603d2b84eee13534651227b7c",
+   "metric": 2.046214,
+   "metric_name": "rmse"
+  },
+  "route/r07b-bynode-d13": {
+   "md5": "63ab78a874d55a3858cdd3aee01053bf",
+   "metric": 2.961766,
+   "metric_name": "rmse"
+  },
+  "route/r08a-ic": {
+   "md5": "43cbc1fe83af2da98307178e05ac184e",
+   "metric": 2.150513,
+   "metric_name": "rmse"
+  },
+  "route/r08b-ic-bynode": {
+   "md5": "645ac831ea080ea65f269a0d416a184c",
+   "metric": 2.124751,
+   "metric_name": "rmse"
+  },
+  "route/r09a-rf-g4": {
+   "md5": "691897f6f1b013343f394f5999e7bf31",
+   "metric": 0.965921,
+   "metric_name": "auc"
+  },
+  "route/r09b-rf-mc": {
+   "md5": "7ad4ae030aad97f2084096494e54d873",
+   "metric": 1.061927,
+   "metric_name": "mlogloss"
+  },
+  "route/r12-vector": {
+   "md5": "a9255e5f6bafbcebd1b7724d0bb1f6ed",
+   "metric": 0.206432,
+   "metric_name": "max_nrmse"
+  },
+  "route/r13a-l1": {
+   "md5": "30b6de23e6e61cf6b3f928621e4bf9e3",
+   "metric": 1.984883,
+   "metric_name": "rmse"
+  },
+  "route/r13b-smooth": {
+   "md5": "3a61c27be032e0918d08c396c2a572b4",
+   "metric": 1.97173,
+   "metric_name": "rmse"
+  },
+  "route/r13c-extra": {
+   "md5": "42f25655822efd4490be22853bc6ce1e",
+   "metric": 2.027846,
+   "metric_name": "rmse"
+  },
+  "route/r13d-catrand": {
+   "md5": "a7d58c98743299416073f3127af64f08",
+   "metric": 6.37232,
+   "metric_name": "rmse"
+  },
+  "route/r14a-sparse": {
+   "md5": "8b9000498bfbe0dc7b8c78975c5caf83",
+   "metric": 0.130565,
+   "metric_name": "mlogloss"
+  },
+  "route/r14b-compact16": {
+   "md5": "2267a847ee0ec8dfad3f166df9887d4e",
+   "metric": 2.127975,
+   "metric_name": "rmse"
+  },
+  "route/r15-widebin": {
+   "md5": "184fd13cee9ae949bc5667e2f28151a0",
+   "metric": 0.951895,
+   "metric_name": "rmse"
+  },
+  "route/r17-monotone": {
+   "md5": "be97ee4b872612038c54a784e286ab5a",
+   "metric": 2.144122,
+   "metric_name": "rmse"
+  },
+  "route/r17b-monotone-sel": {
+   "md5": "264e1d54c0f8fa212f08b2f312933811",
+   "metric": 2.178066,
+   "metric_name": "rmse"
+  },
+  "route/r18-cegb": {
+   "md5": "df8e82c54b2fe59d6c7fda301e2a3cd7",
+   "metric": 1.964002,
+   "metric_name": "rmse"
+  },
+  "route/r19-forced": {
+   "md5": "5b6533bbc82cb56e65d55977166a8fa4",
+   "metric": 2.002375,
+   "metric_name": "rmse"
+  },
+  "route/r20-linear-sel": {
+   "md5": "f07578bcdf7471947963501ecac681e2",
+   "metric": 1.627,
+   "metric_name": "rmse"
+  },
+  "route/r21-stump": {
+   "md5": "6437b015d1cbfa558b618a6c09d6fa6b",
+   "metric": 3.204811,
+   "metric_name": "rmse"
+  },
+  "route/r22-roottail": {
+   "md5": "51af8251c0555098b25979dd90d5c4fe",
+   "metric": 11.087863,
+   "metric_name": "rmse"
+  },
+  "route/r24-churn": {
+   "md5": "11f0ee81723a8cb65e59208c47afecaa",
+   "metric": 5.352947,
+   "metric_name": "rmse"
+  },
+  "route/r27a-goss": {
+   "md5": "6c46377bd0be8a33c63e24bf3494fe81",
+   "metric": 2.038312,
+   "metric_name": "rmse"
+  },
+  "route/r27b-renew": {
+   "md5": "8b89cdcaabc1aebebe77b3260f749a30",
+   "metric": 2.225095,
+   "metric_name": "rmse"
+  },
   "sampled-oddrows/quant": {
    "md5": "84f88a78959802d5f8d4b39f819e39d4",
    "metric": 39.23652,

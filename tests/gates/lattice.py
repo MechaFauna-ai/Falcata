@@ -24,12 +24,14 @@ Usage:
   python tests/gates/lattice.py --check              # CI: diff vs fingerprints
   python tests/gates/lattice.py --baseline           # (re)write all fingerprints
   python tests/gates/lattice.py --update ID [ID..]   # re-baseline specific cells
+  python tests/gates/lattice.py --update 'route/*' --only 'route/*'   # ids are fnmatch patterns
   python tests/gates/lattice.py --list               # print the cell matrix
 Cells run sequentially in chunked worker subprocesses (crash isolation: a
 crashing cell fails alone and the runner respawns for the rest).
 """
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -62,6 +64,12 @@ METRIC_TOLERANCE = 0.02  # relative; only applied to non-fingerprinted (nondeter
 #            set of the group's captures over the run must be exactly these
 #            values (e.g. every tree's compact fill logs "pair_code5 on"); such a
 #            cell runs alone in a worker like a finder_tier cell
+#   debug    extra FALCATA_DEBUG tokens (e.g. ["vramfree=1"]); FALCATA_DEBUG is
+#            read once per process, so such a cell runs alone in a worker
+#   forced_splits  a forced-split JSON object: the worker writes it to a temp
+#            file and passes it as forcedsplits_filename
+#   fingerprint_strip  model-text line prefixes left out of the md5 (e.g. the
+#            linear leaf fit's leaf_const= / leaf_coeff= and tree_sizes=)
 # --------------------------------------------------------------------------- #
 
 
@@ -79,6 +87,9 @@ def build_cells():
         leaf_bound=None,
         finder_tier=None,
         diag_set=None,
+        debug=None,
+        forced_splits=None,
+        fingerprint_strip=None,
     ):
         cells.append(
             {
@@ -92,6 +103,9 @@ def build_cells():
                 "leaf_bound": leaf_bound,
                 "finder_tier": finder_tier,
                 "diag_set": diag_set,
+                "debug": debug,
+                "forced_splits": forced_splits,
+                "fingerprint_strip": fingerprint_strip,
             }
         )
 
@@ -1335,6 +1349,113 @@ def build_cells():
                 equal_to=base,
             )
 
+    # --- route goldens (FULL_DEVICE_PLAN P0) --------------------------------------------------------------------- #
+    # One cell per refusal route of the CUDA learner on master 5bec2574 (runs/device_default/FULL_DEVICE_PLAN.md
+    # section 1, rows rNN; a/b/c are variants): each configuration the complete device tree refuses today, recorded on
+    # the route that serves it now (the device_levels prefix + host two-sync loop, the selective device prefix + host
+    # selective loop, the non-quantized L1.5 graph / one-sync loops, forest slots, the per-pair search, the classic
+    # per-split loop). The full-device-controller PRs port these routes onto the device controller and delete host
+    # paths; each must keep every md5 below unless it is marked as a model change (CEGB: level-wise on the device, a
+    # documented change; re-baseline with --update route/r18-cegb). Not here: multi-GPU (rows 10-11, the vast.ai
+    # 2-GPU check), low shared memory (row 16, not reproducible on this GPU), the empty task list (row 23, a unit
+    # test in P6), debug hooks and routing keys (rows 25-26, deleted). Bagging by query (r27c) needs a ranking
+    # profile; the lattice has none.
+    route_ic = {"interaction_constraints": [[0, 1, 2, 3, 4], [5, 6, 7, 8, 9], list(range(10, 20))]}
+    # monotone constraints are refused with quantized gradients on CUDA (Fatal): non-quantized, the classic loop
+    route_mono = {"monotone_constraints": [1, -1, *([0] * 17), 1], "quant_mode": "none"}
+    route_rf = {"boosting": "rf", "bagging_fraction": 0.632, "bagging_freq": 1}
+    for cid, profile, params, rounds, extra in [
+        ("r01-depth13", "dense", {"num_leaves": 8191, "max_depth": 13, "min_data_in_leaf": 1}, 5, {}),
+        # vramfree=1 caps every free-memory check, the histogram constructor's (view regime, column-major fill
+        # reserves) as well as the device tree's scratch gate
+        (
+            "r02-memgate",
+            "dense",
+            {"num_leaves": 1023, "max_depth": 10, "min_data_in_leaf": 2},
+            5,
+            {"debug": ["vramfree=1"]},
+        ),
+        ("r03a-budget", "dense", {"num_leaves": 151, "max_depth": 10}, 25, {}),
+        ("r03b-unbounded", "dense", {"num_leaves": 255, "max_depth": -1, "min_data_in_leaf": 5}, 25, {}),
+        ("r04a-nq-l15", "dense", {"quant_mode": "none"}, 25, {}),
+        (
+            "r04b-nq-onesync",
+            "dense",
+            {"quant_mode": "none", "num_leaves": 4095, "max_depth": 12, "min_data_in_leaf": 1},
+            5,
+            {},
+        ),
+        ("r05-nq-selective", "dense", {"quant_mode": "none", "num_leaves": 31, "max_depth": -1}, 25, {}),
+        ("r06a-cat", "categorical", {"num_leaves": 255, "max_depth": 8}, 25, {}),
+        ("r06b-cat-mc", "categorical-mc", {}, 25, {}),
+        ("r06c-cat-unbounded", "categorical", {"num_leaves": 63, "max_depth": -1}, 25, {}),
+        ("r07a-bynode-sel", "dense", {"feature_fraction_bynode": 0.5, "num_leaves": 31, "max_depth": -1}, 25, {}),
+        (
+            "r07b-bynode-d13",
+            "dense",
+            {"feature_fraction_bynode": 0.5, "num_leaves": 8191, "max_depth": 13, "min_data_in_leaf": 1},
+            5,
+            {},
+        ),
+        ("r08a-ic", "dense", route_ic, 25, {}),
+        ("r08b-ic-bynode", "dense", {**route_ic, "feature_fraction_bynode": 0.6}, 25, {}),
+        ("r09a-rf-g4", "imbalanced", {**route_rf, "cuda_plan": "auto,forest_group:4"}, 25, {}),
+        ("r09b-rf-mc", "rare-mc-b", route_rf, 10, {}),
+        ("r12-vector", "vector-leaf", {"num_leaves": 31, "max_depth": -1}, 25, {}),
+        ("r13a-l1", "dense", {"lambda_l1": 1.0}, 25, {}),
+        ("r13b-smooth", "dense", {"path_smooth": 5.0}, 25, {}),
+        ("r13c-extra", "dense", {"extra_trees": True}, 25, {}),
+        ("r13d-catrand", "categorical", {"cat_random_search": 4}, 25, {}),
+        # sparse row data: quantized sparse-mc trains on the dense row-wise bin (dense_rowdata) and takes the complete
+        # device tree; non-quantized it keeps the sparse (CSR) row data, which the batched level construct refuses
+        ("r14a-sparse", "sparse-mc", {"num_leaves": 31, "max_depth": 5, "quant_mode": "none"}, 25, {}),
+        # r14b and r15 pin the non-quantized route only: on 5bec2574 the non-quantized flows print no histogram or
+        # finder gate line, so diag confirms neither the 16-bit compact read nor the global-memory finder (job 7042)
+        ("r14b-compact16", "dense", {"max_bin": 511, "feature_fraction": 0.5, "quant_mode": "none"}, 25, {}),
+        ("r15-widebin", "missing-mfb0-wide", {"quant_mode": "none", "max_bin": 511}, 25, {}),
+        ("r17-monotone", "dense", route_mono, 25, {}),
+        ("r17b-monotone-sel", "dense", {**route_mono, "num_leaves": 31, "max_depth": -1}, 25, {}),
+        # planned model change: CEGB becomes level-wise on the device controller (Felix 2026-10-23); that PR
+        # re-baselines this cell with --update route/r18-cegb
+        (
+            "r18-cegb",
+            "dense",
+            {"cegb_penalty_split": 0.05, "cegb_penalty_feature_coupled": [1.0] * 20, "cegb_tradeoff": 0.5},
+            25,
+            {},
+        ),
+        (
+            "r19-forced",
+            "dense",
+            {},
+            25,
+            {"forced_splits": {"feature": 0, "threshold": 0.0, "left": {"feature": 1, "threshold": 0.0}}},
+        ),
+        # the linear leaf fit is not run-to-run deterministic on 5bec2574 (job 7021: leaf_const / leaf_coeff of every
+        # tree differ between runs, at num_threads 8 and 1; structure and leaf values repeat): the md5 pins the tree
+        # text without those lines (and tree_sizes, which follows their lengths)
+        (
+            "r20-linear-sel",
+            "dense",
+            {"linear_tree": True, "num_leaves": 31, "max_depth": -1},
+            25,
+            {"fingerprint_strip": ["leaf_const=", "leaf_coeff=", "tree_sizes="]},
+        ),
+        ("r21-stump", "dense", {"num_leaves": 2, "max_depth": -1}, 25, {}),
+        # the device-tree root tail needs the batched level root to find no valid split while the classic root search
+        # finds a positive-gain one; no known shape reaches it on 5bec2574 (host_tail=0 on every tree at
+        # feature_fraction 0.05 / 0.03 / 0.02 / 0.01 and seeds 42, 1, 2, 3, job 7007: the compact-view feature-mask fix
+        # made both root searches agree). The cell pins the plan's sampled-compact complete tree.
+        ("r22-roottail", "sampledwide", {"feature_fraction": 0.05, "num_leaves": 63, "max_depth": 6}, 25, {}),
+        # sampledwide-mixbins: each tree's column sample gives another joint-table size (part of the graph key), so the
+        # selective prefix misses its graph cache every tree: diag "device_level_graph: 9 misses, 0 hits: graphs off",
+        # then "host fallback (changing graph layouts)" (job 7042; `sampled` hits the cache every tree)
+        ("r24-churn", "sampledwide-mixbins", {"num_leaves": 31, "max_depth": -1}, 40, {}),
+        ("r27a-goss", "dense", {"data_sample_strategy": "goss"}, 25, {}),
+        ("r27b-renew", "dense", {"objective": "l1", "quant_train_renew_leaf": True}, 25, {}),
+    ]:
+        cell(f"route/{cid}", profile, params, rounds=rounds, **extra)
+
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}
@@ -1350,7 +1471,7 @@ def build_cells():
 # --------------------------------------------------------------------------- #
 
 _WORKER_SOURCE = r"""
-import hashlib, json, sys, time
+import hashlib, json, os, sys, tempfile, time
 import numpy as np
 import falcata as lgb
 
@@ -1672,18 +1793,28 @@ def run_cell(cell):
     params.update(cell["params"])
     X_tr, y_tr, X_te, y_te = _split(X, y)
     w_tr = None if w is None else w[:len(y_tr)]
-    t0 = time.monotonic()
-    ds = lgb.Dataset(X_tr, label=y_tr, weight=w_tr, params=params)
-    ds.construct()
-    t_construct = time.monotonic() - t0
-    t1 = time.monotonic()
-    bst = lgb.train(params, ds, num_boost_round=cell["rounds"])
-    t_train = time.monotonic() - t1
+    with tempfile.TemporaryDirectory() as tmp:
+        if cell.get("forced_splits") is not None:
+            # the path lands in the parameters block only, which the fingerprint excludes
+            params["forcedsplits_filename"] = os.path.join(tmp, "forced_splits.json")
+            with open(params["forcedsplits_filename"], "w") as f:
+                json.dump(cell["forced_splits"], f)
+        t0 = time.monotonic()
+        ds = lgb.Dataset(X_tr, label=y_tr, weight=w_tr, params=params)
+        ds.construct()
+        t_construct = time.monotonic() - t0
+        t1 = time.monotonic()
+        bst = lgb.train(params, ds, num_boost_round=cell["rounds"])
+        t_train = time.monotonic() - t1
     model_str = bst.model_to_string()
     # fingerprint ONLY the trees: the trailing "parameters:" dump moves whenever
     # a config param is added/renamed (it did in the 2026-07 planner refactor
     # with zero behavior change) -- tree bytes are the actual behavior signature
-    md5 = hashlib.md5(model_str.split("\nparameters:")[0].encode()).hexdigest()
+    trees_str = model_str.split("\nparameters:")[0]
+    if cell.get("fingerprint_strip"):
+        strip = tuple(cell["fingerprint_strip"])
+        trees_str = "\n".join(line for line in trees_str.splitlines() if not line.startswith(strip))
+    md5 = hashlib.md5(trees_str.encode()).hexdigest()
     # validity: round-trip + finite predictions + tree count
     is_vector_leaf = str(params.get("tree_mode", "scalar")).strip().lower() == "vector_leaf"
     expected_trees = cell["rounds"] if is_vector_leaf else cell["rounds"] * params.get("num_class", 1)
@@ -1722,16 +1853,21 @@ for cell in json.loads(sys.argv[1]):
 """
 
 
+def _runs_alone(cell):
+    return bool(cell.get("finder_tier") or cell.get("diag_set") or cell.get("debug"))
+
+
 def run_tier_cell(cell):
-    """A finder_tier or diag_set cell, alone in a worker with FALCATA_DEBUG=diag: its result, failed unless every
-    logged level split finder is the expected one (finder_tier), or the set of the diag pattern's captures is exactly
-    the expected one (diag_set)."""
+    """A finder_tier, diag_set or debug cell, alone in a worker with FALCATA_DEBUG=diag (finder_tier, diag_set) plus
+    the cell's debug tokens: its result, failed unless every logged level split finder is the expected one
+    (finder_tier), or the set of the diag pattern's captures is exactly the expected one (diag_set)."""
+    tokens = (["diag"] if cell.get("finder_tier") or cell.get("diag_set") else []) + list(cell.get("debug") or [])
     proc = subprocess.run(
         [sys.executable, "-c", _WORKER_SOURCE, json.dumps([cell])],
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "FALCATA_DEBUG": "diag"},
+        env={**os.environ, "FALCATA_DEBUG": ",".join(tokens)},
     )
     recs = [json.loads(line[5:]) for line in proc.stdout.splitlines() if line.startswith("CELL ")]
     if not recs:
@@ -1747,6 +1883,8 @@ def run_tier_cell(cell):
                 "error": f"diag {pattern!r}: logged {seen}, expected exactly {values}",
             }
         return rec
+    if not cell.get("finder_tier"):
+        return rec
     finders = re.findall(r"split finder: (.*) kernel for this tree's quantized levels(.*)", proc.stdout)
     finders = sorted({f"{kernel}{rest}".strip() for kernel, rest in finders})
     expected = sorted(cell["finder_tier"]) if isinstance(cell["finder_tier"], list) else [cell["finder_tier"]]
@@ -1757,8 +1895,8 @@ def run_tier_cell(cell):
 
 def run_cells(cells):
     """Run cells in chunked subprocesses; crash-isolate and collect results."""
-    results = {c["id"]: run_tier_cell(c) for c in cells if c.get("finder_tier") or c.get("diag_set")}
-    pending = [c for c in cells if not (c.get("finder_tier") or c.get("diag_set"))]
+    results = {c["id"]: run_tier_cell(c) for c in cells if _runs_alone(c)}
+    pending = [c for c in cells if not _runs_alone(c)]
     while pending:
         chunk, pending = pending[:WORKER_CHUNK], pending[WORKER_CHUNK:]
         proc = subprocess.run(
@@ -1863,6 +2001,21 @@ def main():
     args = ap.parse_args()
 
     cells = build_cells()
+
+    def expand(patterns):
+        # cell ids or fnmatch patterns ('route/*'); a pattern that matches nothing is an error
+        ids = set()
+        for pattern in patterns:
+            hits = {c["id"] for c in cells if fnmatch.fnmatchcase(c["id"], pattern)}
+            if not hits:
+                ap.error(f"no cell matches {pattern!r}")
+            ids |= hits
+        return ids
+
+    if args.update:
+        args.update = sorted(expand(args.update))
+    if args.only:
+        args.only = sorted(expand(args.only))
     if args.list:
         for c in cells:
             kind = "equal_to:" + c["equal_to"] if c["equal_to"] else ("md5" if c["fingerprint"] else "metric")
