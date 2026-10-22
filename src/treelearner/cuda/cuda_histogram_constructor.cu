@@ -15,6 +15,7 @@
 #include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1185,6 +1186,102 @@ __global__ void FixSubtractDiscretizedMaskedBatchedKernel(
     desc->smaller_struct, desc->larger_struct, larger_exists, parent_num_bits, smaller_num_bits, larger_num_bits,
     reinterpret_cast<int32_t*>(num_bit_change_buffer) + static_cast<size_t>(blockIdx.y) * static_cast<size_t>(num_total_bin),
     bin_used, feature_used);
+}
+
+// cuda_plan key device_tree_live_grid: the complete device tree's level fix/subtract/copy with work proportional to
+// the level's live pairs. The batched kernels above launch one block row per pair of the level's worst case
+// (2^level) and the rows past the live pairs exit; on wide histograms (num_total_bin / block x 2^level) those are
+// millions of blocks per level. These take a bounded grid y and stride over the live pairs (dls->live_pairs, read
+// from device memory at kernel start); the copy applies the batched kernel's per-pair bit-width gate. Each
+// (pair, bin) element is computed by the same code as in the batched kernels (blockIdx.x keeps its role), so the
+// results are bit-identical; only which block row handles a pair changes.
+__global__ void FixSubtractDiscretizedMaskedLiveKernel(
+  const int num_total_bin,
+  const int num_subtract_blocks,
+  const uint32_t* cuda_feature_num_bins,
+  const uint32_t* cuda_feature_hist_offsets,
+  const uint32_t* cuda_feature_most_freq_bins,
+  const int* cuda_need_fix_histogram_features,
+  const uint32_t* cuda_need_fix_histogram_features_num_bin_aligned,
+  const uint8_t* fix_mfb_mask,
+  const CUDAHybridPairDescriptor* pair_descs,
+  hist_t* num_bit_change_buffer,
+  const uint8_t* bin_used,
+  const int8_t* feature_used,
+  const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the construct's histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
+  const unsigned int live_pairs = static_cast<unsigned int>(dls->live_pairs);
+  for (unsigned int p = blockIdx.y; p < live_pairs; p += gridDim.y) {
+    const CUDAHybridPairDescriptor* desc = pair_descs + p;
+    FixSubtractDiscretizedMaskedPair(
+      num_total_bin, num_subtract_blocks, cuda_feature_num_bins, cuda_feature_hist_offsets,
+      cuda_feature_most_freq_bins, cuda_need_fix_histogram_features, cuda_need_fix_histogram_features_num_bin_aligned,
+      fix_mfb_mask, desc->smaller_struct, desc->larger_struct, desc->larger_struct->leaf_index >= 0,
+      desc->parent_num_bits, desc->smaller_num_bits, desc->larger_num_bits,
+      reinterpret_cast<int32_t*>(num_bit_change_buffer) + static_cast<size_t>(p) * static_cast<size_t>(num_total_bin),
+      bin_used, feature_used);
+    __syncthreads();  // a fix block's shared reduction scratch is reused by its next pair
+  }
+}
+
+__global__ void SubtractHistogramDiscretizedLiveKernel(
+  const int num_total_bin,
+  const CUDAHybridPairDescriptor* pair_descs,
+  hist_t* num_bit_change_buffer,
+  const uint8_t* bin_used,
+  const CUDADeviceLevelState* dls) {
+  const unsigned int global_thread_index_gate = threadIdx.x + blockIdx.x * blockDim.x;
+  if (bin_used != nullptr && global_thread_index_gate < static_cast<unsigned int>(num_total_bin) &&
+      !bin_used[global_thread_index_gate]) {
+    return;  // as SubtractHistogramDiscretizedBatchedKernel: a dead bin for every pair (no barrier below)
+  }
+  const unsigned int live_pairs = static_cast<unsigned int>(dls->live_pairs);
+  for (unsigned int p = blockIdx.y; p < live_pairs; p += gridDim.y) {
+    const CUDAHybridPairDescriptor* desc = pair_descs + p;
+    int32_t* buffer = reinterpret_cast<int32_t*>(num_bit_change_buffer) +
+      static_cast<size_t>(p) * static_cast<size_t>(num_total_bin);
+    if (desc->parent_num_bits <= 16) {
+      SubtractHistogramDiscretizedInner<true, true, true>(
+        num_total_bin, desc->smaller_struct, desc->larger_struct, buffer);
+    } else if (desc->larger_num_bits <= 16) {
+      SubtractHistogramDiscretizedInner<true, true, false>(
+        num_total_bin, desc->smaller_struct, desc->larger_struct, buffer);
+    } else if (desc->smaller_num_bits <= 16) {
+      SubtractHistogramDiscretizedInner<true, false, false>(
+        num_total_bin, desc->smaller_struct, desc->larger_struct, buffer);
+    } else {
+      SubtractHistogramDiscretizedInner<false, false, false>(
+        num_total_bin, desc->smaller_struct, desc->larger_struct, buffer);
+    }
+  }
+}
+
+__global__ void CopyChangedNumBitHistogramLiveKernel(
+  const int num_total_bin,
+  const CUDAHybridPairDescriptor* pair_descs,
+  hist_t* num_bit_change_buffer,
+  const uint8_t* bin_used,
+  const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the subtract's change buffer is complete and visible
+  const unsigned int global_thread_index = threadIdx.x + blockIdx.x * blockDim.x;
+  if (global_thread_index >= static_cast<unsigned int>(num_total_bin) ||
+      (bin_used != nullptr && !bin_used[global_thread_index])) {
+    return;
+  }
+  // CopyChangedNumBitHistogramBatchedKernel's per-pair gate: a level without a bit-width change is one bounded
+  // launch whose rows only read the live pairs' descriptors
+  const unsigned int live_pairs = static_cast<unsigned int>(dls->live_pairs);
+  for (unsigned int p = blockIdx.y; p < live_pairs; p += gridDim.y) {
+    const CUDAHybridPairDescriptor* desc = pair_descs + p;
+    if (desc->larger_leaf_index < 0 || !(desc->parent_num_bits > 16 && desc->larger_num_bits <= 16)) {
+      continue;
+    }
+    int32_t* hist_dst = reinterpret_cast<int32_t*>(desc->larger_struct->hist_in_leaf);
+    const int32_t* hist_src = reinterpret_cast<const int32_t*>(num_bit_change_buffer) +
+      static_cast<size_t>(p) * static_cast<size_t>(num_total_bin);
+    hist_dst[global_thread_index] = hist_src[global_thread_index];
+  }
 }
 
 __global__ void FixSubtractDiscretizedMaskedKernel(
@@ -2571,6 +2668,12 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
     const int num_subtract_blocks = (num_subtract_threads + SUBTRACT_BLOCK_SIZE - 1) / SUBTRACT_BLOCK_SIZE;
     dim3 subtract_grid(num_subtract_blocks, num_pairs);
     bool fused_fix_subtract = false;
+    // cuda_plan key device_tree_live_grid: a complete device tree's level (worst-case num_pairs, live count on the
+    // device) runs the fix/subtract and the bit-change copy over its live pairs with a bounded grid, where the
+    // worst-case launch exceeds that grid's block budget (narrower levels keep the batched kernels unchanged)
+    const bool live_tree = device_level_whole_tree_ && gstate == nullptr;
+    const char* fix_route = "batched-masked";  // diag only: which kernels this level enqueued
+    int fix_grid_x = FixSubtractMaskedGridX();
     if (gstate == nullptr && any_feature_unused_bytree_ && used_feature_info_ok_ &&
         FalcataPlan::Get().fix_subtract_fused) {
       // cuda_plan key fix_subtract_fused: fix + subtract of the sampled features, one block per pair
@@ -2585,9 +2688,31 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         hist_buffer_for_num_bit_change_.RawData(),
         dls);
       fused_fix_subtract = true;  // the kernel also did CopyChangedNumBitHistogramBatchedKernel's copies
+      fix_route = "fused";
+      fix_grid_x = 1;
+    } else if (FixSubtractMaskedEnabled() && live_tree && LiveGridPays(FixSubtractMaskedGridX(), num_pairs)) {
+      fix_route = "live-masked";
+      const dim3 grid(FixSubtractMaskedGridX(), LiveGridRows(FixSubtractMaskedGridX(), num_pairs));
+      LaunchLevelChainKernel(PdlLevelChainEnabled(), FixSubtractDiscretizedMaskedLiveKernel,
+        grid, dim3(fix_subtract_masked_block_), 0, cuda_stream_,
+        num_total_bin_,
+        FixSubtractMaskedSubtractBlocks(),
+        cuda_feature_num_bins_.RawData(),
+        cuda_feature_hist_offsets_.RawData(),
+        cuda_feature_most_freq_bins_.RawData(),
+        cuda_need_fix_histogram_features_.RawData(),
+        cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
+        cuda_fix_mfb_mask_.RawDataReadOnly(),
+        pair_descs,
+        hist_buffer_for_num_bit_change_.RawData(),
+        any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
+        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+        dls);
     } else if (FixSubtractMaskedEnabled()) {
       LaunchFixSubtractDiscretizedMaskedKernel(pair_descs, num_pairs, gstate);
     } else {
+      fix_grid_x = num_subtract_blocks;
+      fix_route = "batched-subtract";
       if (need_fix_histogram_features_.size() > 0) {
         dim3 fix_grid(static_cast<unsigned int>(need_fix_histogram_features_.size()), num_pairs);
         FixHistogramDiscretizedBatchedKernel<<<fix_grid, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
@@ -2600,16 +2725,39 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
           any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
           gstate, dls);
       }
-      SubtractHistogramDiscretizedBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
+      if (live_tree && LiveGridPays(num_subtract_blocks, num_pairs)) {
+        fix_route = "live-subtract";
+        const dim3 grid(num_subtract_blocks, LiveGridRows(num_subtract_blocks, num_pairs));
+        SubtractHistogramDiscretizedLiveKernel<<<grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
+          num_total_bin_,
+          pair_descs,
+          hist_buffer_for_num_bit_change_.RawData(),
+          any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
+          dls);
+      } else {
+        SubtractHistogramDiscretizedBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
+          num_total_bin_,
+          pair_descs,
+          hist_buffer_for_num_bit_change_.RawData(),
+          any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
+          gstate, dls);
+      }
+    }
+    const char* copy_route = fused_fix_subtract ? "fused" : "batched";
+    if (live_tree && !fused_fix_subtract && LiveGridPays(num_subtract_blocks, num_pairs)) {
+      copy_route = "live";
+      // the bit-change copies over the live pairs (a level without any: one bounded launch reading descriptors)
+      const dim3 grid(num_subtract_blocks, LiveGridRows(num_subtract_blocks, num_pairs));
+      LaunchLevelChainKernel(PdlLevelChainEnabled(), CopyChangedNumBitHistogramLiveKernel,
+        grid, dim3(SUBTRACT_BLOCK_SIZE), 0, cuda_stream_,
         num_total_bin_,
         pair_descs,
         hist_buffer_for_num_bit_change_.RawData(),
         any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-        gstate, dls);
-    }
-    // graph capture always includes the copy node (the device-derived per-pair
-    // bit widths gate it); the host path launches it only on bit-change levels
-    if ((bit_change_copy && !fused_fix_subtract) || gstate != nullptr) {
+        dls);
+    } else if ((bit_change_copy && !fused_fix_subtract) || gstate != nullptr) {
+      // graph capture always includes the copy node (the device-derived per-pair
+      // bit widths gate it); the host path launches it only on bit-change levels
       // cuda_plan key pdl_level_chain: a programmatic dependent of the subtract launched just before (host launches)
       LaunchLevelChainKernel(gstate == nullptr && PdlLevelChainEnabled(), CopyChangedNumBitHistogramBatchedKernel,
         subtract_grid, dim3(SUBTRACT_BLOCK_SIZE), 0, cuda_stream_,
@@ -2618,6 +2766,13 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         hist_buffer_for_num_bit_change_.RawData(),
         any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
         gstate, dls);
+    }
+    if (live_tree && FalcataDebug().diag) {
+      // once per enqueued level (direct enqueues and captures; a graph replay enqueues nothing): the routes taken and
+      // the inputs of the live-grid decision (live iff grid_x * pairs > budget)
+      fprintf(stderr, "[hybrid-diag] device_tree_live_grid: pairs=%d budget=%" PRId64 " fix_subtract=%s grid_x=%d "
+              "copy=%s copy_grid_x=%d\n", num_pairs, LiveGridBudget(), fix_route, fix_grid_x, copy_route,
+              num_subtract_blocks);
     }
   }
 }

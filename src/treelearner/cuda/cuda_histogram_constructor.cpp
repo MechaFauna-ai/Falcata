@@ -2299,11 +2299,7 @@ void CUDAHistogramConstructor::InitCountConstruct() {
   if (cudaDeviceGetAttribute(&shared_limit, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
     shared_limit = 48 * 1024;
   }
-  int sms = 0;
-  if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess || sms <= 0) {
-    sms = 1;
-  }
-  count_num_sms_ = sms;
+  NumSMs();  // count_num_sms_
   const size_t slab_bytes = cuda_det_dense_slots_.Size() * sizeof(hist_t);
   // the wide layout is the larger in both: the shared table must fit a block, and the slab must hold a scratch row
   // per histogram pipeline (the per-leaf construct's rows)

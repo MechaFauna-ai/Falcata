@@ -47,6 +47,23 @@ def _case(name):
         y = X @ np.arange(1, 11, dtype=np.float32)
         params.update(feature_fraction=1.0, min_data_in_leaf=2, quant_mode="fixedpoint", quant_bins=64)
         rounds = 3
+    elif name == "fullbig":
+        # "full" on 2^18 rows: a depth-8 leaf (1024 rows x 64 quant bins) needs 32-bit histogram bins and its depth-9
+        # children (512 rows) 16-bit ones, so the bit-change copy applies at the search of 256 pairs
+        X = ((np.arange(1 << 18, dtype=np.uint32)[:, None] >> np.arange(10, dtype=np.uint32)) & 1).astype(np.float32)
+        y = X @ np.arange(1, 11, dtype=np.float32)
+        params.update(feature_fraction=1.0, min_data_in_leaf=2, quant_mode="fixedpoint", quant_bins=64)
+        rounds = 2
+    elif name == "fivebin_wide":
+        # five-bin features whose most frequent value (3, in 70% of the rows) is not the zero bin: the level
+        # fix/subtract needs its most-frequent-bin fix (the masked kernel); every feature in every tree, so the fused
+        # used-feature fix/subtract does not take it
+        rng_wide = np.random.default_rng(7)
+        X = np.where(rng_wide.random((30011, 400)) < 0.7, 3.0, np.floor(rng_wide.random((30011, 400)) * 5))
+        X = X.astype(np.float32)
+        y = X[:, :8].sum(axis=1) + rng_wide.standard_normal(len(X))
+        params["feature_fraction"] = 1.0
+        rounds = 3
     else:
         bins = rng.integers(3, 7, size=400) if name == "layouts" else np.full(3555 if name == "reuse" else 400, 5)
         X = np.floor(rng.random((30011, len(bins))) * bins).astype(np.float32)
@@ -202,6 +219,60 @@ def test_device_tree_complete_cuda(case, graph):
         ), "no graph reuse across changing preliminary partition maxima"
     if graph == "off":
         assert all(int(e[3]) == 0 for e in events)
+
+
+_LIVE_GRID_LINE = re.compile(
+    r"device_tree_live_grid: pairs=(\d+) budget=(\d+) fix_subtract=([\w-]+) grid_x=(\d+) copy=(\w+) copy_grid_x=(\d+)"
+)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["off", "on"])
+@pytest.mark.parametrize(
+    ("case", "extra", "live_grid", "expect"),
+    [
+        # no need-fix feature: the plain subtract, live (with the copy) at the 256-pair level only
+        ("full", "", 1, {"live-subtract", "copy-live"}),
+        # the bit-change copy applies at the 256-pair level, which runs live
+        ("fullbig", "", 1, {"live-subtract", "copy-live-at-256"}),
+        # need-fix features and every feature sampled: the masked fix/subtract, live on every level
+        ("fivebin_wide", "", 1, {"live-masked", "copy-live"}),
+        ("fivebin_wide", ",fix_subtract_masked:off", 1, {"live-subtract", "copy-live"}),
+        # under the budget everywhere, or the key off: the batched kernels only
+        ("fivebin_wide", "", 4096, {"no-live"}),
+        ("fivebin_wide", "", 0, {"no-live"}),
+        # a sampled layout (feature_fraction 0.1, <= 8 bins) takes the fused used-feature fix/subtract and copy
+        ("layouts", "", 1, {"fused"}),
+    ],
+)
+def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
+    # cuda_plan key device_tree_live_grid: a level whose worst-case launch (grid_x * pairs blocks) exceeds
+    # device_tree_live_grid blocks per SM runs the fix/subtract and the bit-change copy over its live pairs. The diag
+    # line of every enqueued level (direct or captured) names the route; the probe compares the complete tree's model
+    # bytes with the host flow's.
+    data, diag = _run(case, graph, base_plan=f"auto,device_tree_live_grid:{live_grid}{extra}")
+    assert diag.count("device_tree: complete") == data["rounds"]
+    assert "device_tree: host fallback" not in diag
+    lines = _LIVE_GRID_LINE.findall(diag)
+    assert lines, diag
+    routes = set()
+    for pairs, budget, fix, grid_x, copy, copy_grid_x in lines:
+        pairs, budget, grid_x, copy_grid_x = int(pairs), int(budget), int(grid_x), int(copy_grid_x)
+        assert (budget == 0) == (live_grid == 0)
+        if fix != "fused":
+            assert fix.startswith("live") == (budget > 0 and grid_x * pairs > budget), (pairs, budget, fix, grid_x)
+        if copy != "fused":
+            assert (copy == "live") == (budget > 0 and copy_grid_x * pairs > budget), (pairs, budget, copy)
+        routes.add(fix)
+        routes.add("copy-" + copy)
+        if copy == "live" and pairs == 256:
+            routes.add("copy-live-at-256")
+    if "no-live" in expect:
+        assert not any("live" in route for route in routes), routes
+    elif "fused" in expect:
+        assert routes == {"fused", "copy-fused"}, routes
+    else:
+        assert expect <= routes, routes
 
 
 @_REQUIRES_CUDA

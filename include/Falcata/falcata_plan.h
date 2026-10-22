@@ -990,6 +990,13 @@ struct FalcataPlan {
   // forest_batched: trees per group (key forest_group, cuda_plan=auto,forest_group:N; 0 = auto); every value trains
   // the same model
   int forest_group = 0;
+  // device_tree's level fix/subtract and bit-change copy over the level's LIVE pairs: a bounded grid of about this
+  // many blocks per SM whose rows stride over the live pairs (and the copy over the pairs whose bit width changes),
+  // read on the device, instead of one block row per pair of the level's worst case (2^level) of which the rows past
+  // the live pairs exit (millions of blocks per level on wide histograms). Only levels whose worst-case launch
+  // exceeds that budget switch; narrower ones keep the batched kernels. 0 = the worst-case launch everywhere. Each
+  // (pair, bin) element is computed as before: bit-identical.
+  int device_tree_live_grid = 32;  // key: device_tree_live_grid
 
   // --- resolved facts from Config (no keys; inputs to auto decisions) -------
   // Quantized training active. Shape auto-decisions that only win under the
@@ -1234,6 +1241,17 @@ struct FalcataPlan {
                      tile_rows_key ? "an even number in [2, 384]" : "a power of two in [32, 1024]");
         }
         (tile_rows_key ? plan.construct_tile_rows : plan.construct_tile_threads) = static_cast<int>(value);
+        overridden = true;
+        continue;
+      }
+      if (kv[0] == std::string("device_tree_live_grid")) {
+        char* end = nullptr;
+        const long value = std::strtol(kv[1].c_str(), &end, 10);  // NOLINT(runtime/int)
+        if (end == kv[1].c_str() || *end != '\0' || value < 0 || value > 4096) {
+          Log::Fatal("cuda_plan: bad value \"%s\" for key \"device_tree_live_grid\" (expected an integer in "
+                     "[0, 4096])", kv[1].c_str());
+        }
+        plan.device_tree_live_grid = static_cast<int>(value);
         overridden = true;
         continue;
       }
