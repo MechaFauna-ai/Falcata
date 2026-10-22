@@ -554,7 +554,9 @@ __global__ void SplitCategoricalLevelKernel(
   double* threshold) {
   const int c = static_cast<int>(blockIdx.x);
   const int thread_index = static_cast<int>(threadIdx.x);
-  // offsets: the lengths of the level's earlier categorical splits, summed by the block
+  // offsets: the lengths of the level's earlier categorical splits, summed by the block. Every block sums its own
+  // prefix, O(n^2 / blockDim) loads per level for n categorical splits (n <= num_leaves / 2; trivial at the levels
+  // measured, 512 splits is ~2k loads per block); a block-wide scan in one block would be the follow-up if it shows.
   __shared__ uint64_t warp_sums[2][32];
   __shared__ size_t offsets[2];
   uint64_t sum = 0;

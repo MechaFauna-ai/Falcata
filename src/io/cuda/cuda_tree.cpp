@@ -318,6 +318,9 @@ int CUDATree::SplitCategorical(const int leaf_index,
            uint32_t* cuda_bitset_inner,
            size_t cuda_bitset_inner_len) {
   // a per-split categorical split after SplitLevel's (the leaf-wise tail) appends at the exact end of the record
+  if (cat_record_on_device_) {
+    ++cat_tail_settles_;
+  }
   SettleCategoricalRecordSizes();
   LaunchSplitCategoricalKernel(leaf_index, real_feature_index,
     missing_type, cuda_split_info,
@@ -540,11 +543,16 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
 bool CUDATree::ReadCategoricalRecordOneCopy() {
   // cuda_plan key cat_level_record: the boundaries hold the word counts, so one pack kernel gathers both boundary
   // arrays and both bitsets (each up to its bound) into the arena's staging and one copy brings them over, instead
-  // of four copies of which two wait for the other two's counts. Past kMaxWords (a large high-cardinality record)
-  // the four copies stay: the bound may then be far above the record.
+  // of four copies of which two wait for the other two's counts. When the bound passes kMaxWords (high-cardinality
+  // features) the four copies stay: the bound may then be far above the record.
   constexpr size_t kMaxWords = static_cast<size_t>(1) << 16;
-  if (!cat_record_on_device_ || cat_arena_ == nullptr || num_cat_ == 0) {
+  if (cat_level_launches_ == 0 || cat_arena_ == nullptr || num_cat_ == 0) {
     return false;
+  }
+  if (!cat_record_on_device_) {
+    // settled since the last level record (a per-split tail split appended at the exact end): the bounds are exact
+    cat_words_bound_ = cuda_bitset_.Size();
+    cat_words_inner_bound_ = cuda_bitset_inner_.Size();
   }
   const size_t num_boundaries = static_cast<size_t>(num_cat_) + 1;
   const size_t words_bound = std::min(cat_words_bound_, cuda_bitset_.Capacity());
@@ -558,7 +566,11 @@ bool CUDATree::ReadCategoricalRecordOneCopy() {
     staging.ResizeDiscard(std::max(total, 2 * staging.Size()));
   }
   LaunchPackCategoricalRecordKernel(staging.RawData(), words_bound, words_inner_bound);
-  std::vector<uint32_t> packed(total);
+  // host staging kept by the learner's arena (no allocation per tree once it has grown)
+  std::vector<uint32_t>& packed = cat_arena_->readback_host;
+  if (packed.size() < total) {
+    packed.resize(total);
+  }
   // legacy-stream copy: waits for the pack kernel on the (blocking) tree stream
   CopyFromCUDADeviceToHost<uint32_t>(packed.data(), staging.RawData(), total, __FILE__, __LINE__);
   cat_boundaries_.resize(num_boundaries);

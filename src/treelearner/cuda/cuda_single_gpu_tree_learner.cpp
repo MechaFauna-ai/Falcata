@@ -2317,10 +2317,12 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
     // runs while CEGB is active. Kept as a defensive guard in case that gating is
     // ever relaxed. No-op unless CEGB is configured.
     cuda_best_split_finder_->MarkFeatureUsedInSplit(inner_feature_index);
-    // Categorical splits: the entry is never consumed (the interleave below
-    // routes them through SplitCategorical), and RealThreshold() would
-    // OOB-index the bin-upper-bound array with the categorical threshold
-    // payload -- do not call it.
+    // Categorical splits: the entry's real_threshold is never read (the
+    // per-split loop below routes them through SplitCategorical; under
+    // cuda_plan key cat_level_record SplitLevel reads the rest of the entry
+    // but not the threshold), and RealThreshold() would OOB-index the
+    // bin-upper-bound array with the categorical threshold payload -- do not
+    // call it.
     const bool is_cat_split = host_leaf_best_splits_[leaf].num_cat_threshold > 0;
     if (!apply_first) {
       host_tree_batch_splits_.push_back({
@@ -5860,9 +5862,10 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     const int levels = tree->cat_level_launches();
     const int splits = tree->cat_level_splits();
     fprintf(stderr, "[hybrid-diag] cat_level_record: levels=%d cat_splits=%d record_launches=%d "
-            "saved_launches=%d saved_d2d=%d saved_length_readbacks=%d tohost_copies=%d overflow_readbacks=%d\n",
+            "saved_launches=%d saved_d2d=%d saved_length_readbacks=%d tohost_copies=%d overflow_readbacks=%d "
+            "tail_settles=%d\n",
             levels, splits, levels, splits - levels, 2 * splits, levels, tree->cat_record_one_copy() ? 1 : 4,
-            tree->cat_overflow_readbacks());
+            tree->cat_overflow_readbacks(), tree->cat_tail_settles());
   }
   last_tree_is_linear_ = false;
   if (config_->linear_tree) {

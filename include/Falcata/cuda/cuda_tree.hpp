@@ -143,6 +143,8 @@ struct CUDATreeCatArena {
   /*! \brief cuda_plan key cat_level_record: device staging of ToHost's one-copy readback of the record (both boundary
    *  arrays, then both bitsets); grows like the bitsets and stays with the learner */
   CUDAVector<uint32_t> readback;
+  /*! \brief its host counterpart (the one copy's destination) */
+  std::vector<uint32_t> readback_host;
 };
 
 /*! \brief cuda_plan key cat_level_record: the device inputs of one level's categorical splits for CUDATree::SplitLevel,
@@ -288,11 +290,12 @@ class CUDATree : public Tree {
                   const CUDATreeCatLevel& cat);
 
   /*! \brief cuda_plan key cat_level_record: counters of this tree (FALCATA_DEBUG=diag): SplitLevel categorical
-   *  launches, the categorical splits they recorded, exact-count readbacks on a capacity overflow, and whether
-   *  ToHost read the record back with one copy */
+   *  launches, the categorical splits they recorded, exact-count readbacks on a capacity overflow and before a
+   *  per-split categorical split of the leaf-wise tail, and whether ToHost read the record back with one copy */
   int cat_level_launches() const { return cat_level_launches_; }
   int cat_level_splits() const { return cat_level_splits_; }
   int cat_overflow_readbacks() const { return cat_overflow_readbacks_; }
+  int cat_tail_settles() const { return cat_tail_settles_; }
   bool cat_record_one_copy() const { return cat_record_one_copy_; }
 
   int SplitCategorical(
@@ -419,8 +422,9 @@ class CUDATree : public Tree {
    *  device (reads the two word counts back from the boundary arrays); no-op when nothing is pending */
   void SettleCategoricalRecordSizes();
 
-  /*! \brief cuda_plan key cat_level_record: ToHost's readback of a pending categorical record: one pack kernel and
-   *  one copy into the host record; false (nothing done) when the record is too large for the one-copy path */
+  /*! \brief cuda_plan key cat_level_record: ToHost's readback of the categorical record of a tree SplitLevel
+   *  recorded: one pack kernel and one copy into the host record; false (nothing done) for a tree without SplitLevel
+   *  records or when the record's word bound is too large for the one-copy path */
   bool ReadCategoricalRecordOneCopy();
 
   void LaunchSplitCategoricalLevelKernel(const int first_split, const int num_cat_splits, const CUDATreeCatLevel& cat);
@@ -501,6 +505,7 @@ class CUDATree : public Tree {
   int cat_level_launches_ = 0;
   int cat_level_splits_ = 0;
   int cat_overflow_readbacks_ = 0;
+  int cat_tail_settles_ = 0;
   bool cat_record_one_copy_ = false;
   /*! \brief SplitLevel's descriptors in launch order (numerical, then categorical); kept until the next level as
    *  SplitBatch's caller keeps its vector */

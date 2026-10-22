@@ -1393,8 +1393,8 @@ splits. No length is read back during the tree; at the tree end one pack kernel 
 (both boundary arrays, both bitsets) to the host instead of four copies. The record buffers must hold the level's worst
 case (every split at the per-split bitset stride) before the launch: the host keeps an upper bound of the words
 recorded so far, and only when that bound plus the level's worst case passes the capacity does it read the exact
-counts back (two ints) and grow by doubling; a record above 64Ki words at the tree end (high-cardinality features)
-keeps the four-copy readback. Vector leaves keep the per-split loop. The same words, boundaries and nodes in the same
+counts back (two ints) and grow by doubling; a record whose word bound is above 64Ki words at the tree end
+(high-cardinality features) keeps the four-copy readback. Vector leaves keep the per-split loop. The same words, boundaries and nodes in the same
 order: bit-identical (lattice 441/441, categorical cells md5-equal to master). `FALCATA_DEBUG=diag` prints a
 `cat_level_record` line per tree with the launches, copies and readbacks saved.
 
@@ -1410,7 +1410,7 @@ arm:
 | categorical-control (3 classes, 32 leaves / depth 5) | 0.695 | 0.594 | 1.170x |
 | same at 255 leaves / depth 8 | 1.249 | 1.061 | 1.177x |
 | airline-cat deep (92M rows, 3 categorical columns, 1023 / 10, stochastic quant) | 45.17 | 42.68 | 1.058x |
-| covtype deep (no categorical features, control) | 0.571 | 0.569 | 1.004x |
+| covtype deep (no categorical features, control) | 0.572 | 0.569 | 1.004x |
 
 Per tree under nsys (categorical-control / airline-cat deep): blocking `cudaMemcpy` 55.1 -> 15.0 / 968 -> 21, of them
 D2D 35.2 -> 3.1 / 940 -> 3.7 and D2H 9.0 -> 1.0 / 11.8 -> 1.0; kernels 87 -> 73 / 829 -> 127 (the per-split record
