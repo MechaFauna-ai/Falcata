@@ -2911,9 +2911,10 @@ as `BynodeKeySplit`), beside the children's histogram construct, and the find wa
 the same way before the root search. Rows, task lists and two key generations sit at fixed per-leaf offsets, so the
 level finders read them through a static row table and the whole sequence is captured in the tree's graph. The lean
 tree end applies to these trees as well. `device_bynode_masks:off` restores the host loop. Same samples, task lists
-and kernels: md5-identical models (`test_cuda_device_bynode.py`: bynode 0.02-0.99 over every branch, with and without
-`feature_fraction` and bagging, regression, binary and multiclass, against the key off, `device_tree:off` and
-`device_levels:off`). Measured: see the 1.2 release notes.
+and kernels: md5-identical models (`test_cuda_device_bynode.py`: the selection scan (bynode 0.3 / 0.5 / 0.8) with and
+without bagging for regression, binary and multiclass against the key off, `device_tree:off` and `device_levels:off`;
+Floyd's draw (0.1, 0.02), every candidate (0.99), `feature_fraction` samples, a binding final level, depth 1 and 10
+and a shape outside the complete tree's bound for binary against the key off). Measured: see the 1.2 release notes.
 
 `device_tree_lean_end` (default ON) gives the complete device tree's lean tree end, until now only for unweighted,
 unbagged, constant-hessian L2, to every objective boosted on the device (binary, multiclass(ova),

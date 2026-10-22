@@ -843,7 +843,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // the cudaGraphExecUpdateResult of the last refused update (-1: none), for FALCATA_DEBUG=diag
   int device_level_graph_update_last_refusal_ = -1;
   // ---- cuda_plan key device_bynode_masks state ----
-  bool device_bynode_logged_ = false;
   CUDADeviceBynodeConfig device_bynode_cfg_ = {};
   // the row table (a pointer per leaf slot, padded to 256 bytes), then the rows
   CUDAVector<int8_t> cuda_bynode_rows_;

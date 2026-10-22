@@ -121,6 +121,18 @@ def test_device_bynode_plan_variants_same_model_cuda(plan):
     assert _model_md5({**params, "cuda_plan": plan}, X, y) == host
 
 
+def test_device_bynode_outside_bound_keeps_host_draws_cuda():
+    # 2^6 > 31 + 1: outside the complete tree's bound; the device_levels prefix does not take per-node masks, so the
+    # host level loop grows these trees with host draws, key on or off
+    X, y = _data("binary")
+    params = _params("binary", 0.5, num_leaves=31, max_depth=6)
+    off = _model_md5({**params, "cuda_plan": "auto,device_bynode_masks:off"}, X, y)
+    assert _model_md5({**params, "cuda_plan": "auto"}, X, y) == off
+    err = _diag("auto", num_leaves=31, max_depth=6)
+    assert "device masks" not in err
+    assert "device_tree: complete" not in err
+
+
 def test_device_bynode_rf_unchanged_cuda():
     # boosting=rf trains on forest slots: they keep the host level loop and the host draws, key on or off
     X, y = _data("binary")

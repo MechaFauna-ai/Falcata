@@ -3627,7 +3627,9 @@ void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
 
 bool CUDASingleGPUTreeLearner::DeviceBynodeMasksUsable() const {
   return FalcataPlan::Get().device_bynode_masks && bynode_keyed_ && LevelFlowsTakeNodeMasks() && !forest_slot_ &&
-    !FalcataDebug().bynode && DeviceBynodeSharedBytes(train_data_->num_features()) <= 48 * 1024;
+    !FalcataDebug().bynode &&
+    // the kernels' static shared memory (the block scan's ~132 bytes) beside the dynamic bitmap: a 1 KB margin
+    DeviceBynodeSharedBytes(train_data_->num_features()) + 1024 <= 48 * 1024;
 }
 
 void CUDASingleGPUTreeLearner::BeginDeviceBynode() {
@@ -3835,8 +3837,23 @@ void CUDASingleGPUTreeLearner::EvaluateDeviceTreeScratchGate() {
   const size_t other_bytes = (static_cast<size_t>(kDeviceLevelJournalHeader) + 2 * leaves + 4) * sizeof(int) +
     (leaves + 2) * sizeof(CUDALeafSplitsStruct) + (leaves + 4) * sizeof(CUDAHybridApplyDescriptor) +
     static_cast<size_t>(pairs) * sizeof(CUDAHybridPairDescriptor);
+  // cuda_plan key device_bynode_masks: BeginDeviceBynode's rows, task lists, keys and sample (slots x (num_features +
+  // 4 x max_tasks) bytes dominate: hundreds of MB at depth 12 with ~10k features)
+  size_t bynode_bytes = 0;
+  if (select_features_by_node_ && DeviceBynodeMasksUsable()) {
+    const size_t slots = std::min(static_cast<size_t>(config_->num_leaves), leaves) + 2;
+    const size_t num_features = static_cast<size_t>(train_data_->num_features());
+    std::vector<int> candidates;
+    std::vector<int> task_inner;
+    int max_tasks = 0;
+    cuda_best_split_finder_->NodeTaskTables(col_sampler_.GetByNodeKeyedShape(&candidates).num_sampled, &task_inner,
+                                            &max_tasks);
+    bynode_bytes = (slots * sizeof(int8_t*) + 255) / 256 * 256 + slots * num_features +
+      (2 * slots + slots * static_cast<size_t>(std::max(1, max_tasks))) * sizeof(int) + 2 * slots * sizeof(uint64_t) +
+      (5 + num_features + task_inner.size()) * sizeof(int);
+  }
   const size_t growth_bytes = cuda_best_split_finder_->HybridLevelGrowthBytes(pairs) +
-    cuda_histogram_constructor_->BitChangeScratchGrowthBytes(pairs) + other_bytes;
+    cuda_histogram_constructor_->BitChangeScratchGrowthBytes(pairs) + other_bytes + bynode_bytes;
   size_t free_bytes = 0;
   size_t device_bytes = 0;
   CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &device_bytes));
@@ -3848,10 +3865,11 @@ void CUDASingleGPUTreeLearner::EvaluateDeviceTreeScratchGate() {
   device_tree_scratch_gate_ = fits ? 1 : 0;
   if (FalcataDebug().diag) {
     constexpr double kMiB = 1024.0 * 1024.0;
-    fprintf(stderr, "[hybrid-diag] device_tree: scratch estimate %.1f MiB (finder %.1f, bit-change %.1f, other %.1f; "
-            "to allocate %.1f) for max_depth %d, %d searched pairs, %d tasks, %d total bins; free %.1f of %.1f MiB: "
-            "%s\n", (finder_bytes + bit_change_bytes + other_bytes) / kMiB, finder_bytes / kMiB,
-            bit_change_bytes / kMiB, other_bytes / kMiB, growth_bytes / kMiB, num_levels, pairs,
+    fprintf(stderr, "[hybrid-diag] device_tree: scratch estimate %.1f MiB (finder %.1f, bit-change %.1f, other %.1f, "
+            "bynode %.1f; to allocate %.1f) for max_depth %d, %d searched pairs, %d tasks, %d total bins; free %.1f of "
+            "%.1f MiB: %s\n", (finder_bytes + bit_change_bytes + other_bytes + bynode_bytes) / kMiB,
+            finder_bytes / kMiB, bit_change_bytes / kMiB, other_bytes / kMiB, bynode_bytes / kMiB,
+            growth_bytes / kMiB, num_levels, pairs,
             cuda_best_split_finder_->num_tasks(), num_total_bin_, free_bytes / kMiB, device_bytes / kMiB,
             fits ? "fits" : "over half of free memory");
     if (!fits && !device_tree_fallback_logged_) {

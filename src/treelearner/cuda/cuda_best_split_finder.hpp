@@ -867,8 +867,8 @@ class CUDABestSplitFinder {
   std::vector<int> feature_task_begin_;
   std::vector<int> feature_task_ids_;
   void EnsureLevelNodeMaskCapacity();
-  /*! \brief the level finders' node mask table: null unless level_node_masks_ (and never inside a captured graph,
-   *  which the tree learner does not run with per-node masks) */
+  /*! \brief the level finders' node mask table: null unless level_node_masks_, and null for the graph loop (gstate);
+   *  the device tree's captured levels read the device-drawn table of SetDeviceNodeMasks */
   const int8_t* const* LevelNodeMaskTable(const CUDAHybridGraphLoopStateOpt gstate) const {
     if (!level_node_masks_ || gstate != nullptr) {
       return nullptr;
