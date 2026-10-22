@@ -2259,6 +2259,32 @@ GPU-bound shapes need less histogram work (forest stage 3), not more trees in fl
 key off across objectives, quantization modes, shapes, samplings, group sizes, metrics every round, early stopping, a
 parameter reset with rollbacks; where the key engages.
 
+**A group of one tree trains off slot mode (`forest_single_job_device`, default on).** A group often holds one tree: a
+binary or regression forest under `forest_group:1`, the auto size when it settles back at one round (the usual case:
+the doubling's second slot rarely gains 15%), the last group of a `forest_group:N` training, a group shrunk by device
+memory. The slot exclusions above exist because other slot threads launch while a slot captures; with one job no
+other thread runs (the trainer grows it on the calling thread, the previous group's threads were joined), so the
+trainer marks that tree solo and it takes what the sequential learner takes: the complete device tree where its depth
+bound holds, the `device_levels` prefix, the selective device prefix (`selective_device_prefix`: unbounded depth or a
+binding leaf budget) and the quantized graph prefix elsewhere (the non-quantized graph loop stays
+off: it is not run-to-run deterministic, so a forest would change with its group sizes). Groups of two or more trees
+(every multiclass round) keep slot mode, and a learner switches between the modes from group to group (graph caches
+are captured and replayed only in solo trees, on the calling thread). The tree gets the same bag, gradients, feature
+sample and tree counters either way: bit-identical models. The solo tree's device-tree scratch belongs to slot 0;
+under auto it is allocated by the first group (always one round) before any extra slot is made, so `EnsureSlots`'
+free-memory measurement includes it; a solo group after the slots (the last group of `forest_group:N`) is bounded by
+the device tree's scratch gate (at most half of the free memory, else the prefix flow) and by the reserve check after
+every group. A solo tree with per-node masks (`feature_fraction_bynode` < 1) draws them on the device
+(`device_bynode_masks`) like a sequential tree; slots keep the host draws (same keys, same masks). `FALCATA_DEBUG=diag` ends each `[forest-diag] rounds` line with `mode single job (non-slot)` or `mode slots`.
+Measured (RTX 5090, strict gpuq, 6 alternating pairs, fresh process per run, default plan, master vs this change,
+md5-identical in every run; master c3c59d2d, higgs-rf-deep against bd0e1355): rf-control (binary, 128 leaves / depth 7, bagging 0.7, `feature_fraction_bynode` 0.5,
+quant stochastic, 1000 rounds; auto settles at one round, 64 of 67 diag groups solo) 0.486 -> 0.391 s, **1.243x**;
+the same without per-node sampling 0.425 -> 0.399 s, 1.064x; covtype-rf-std (seven class trees per round: slots) 0.988x
+and higgs-rf-deep (quant none: no device flow) 0.998x, both unchanged routes within noise; gbdt covtype-deep 1.002x.
+`tests/python_package_test/test_cuda_forest_single_job.py`: md5 equal to the key off and to `forest_batched:off` across
+objectives, quantization modes, per-node and per-tree sampling, bounded and unbounded shapes and group sizes 1, 3 and
+auto; the device tree engages exactly on the solo trees.
+
 ## 10s. The level chain's consumer kernels as programmatic dependents (`pdl_level_chain`)
 
 Every level runs short kernels that consume what the kernel just before them on the same stream wrote: the level
@@ -2868,7 +2894,8 @@ quantized training as ground truth in
 numerical single-GPU trees wherever its depth bound holds: positive `max_depth <= 12` and
 `2^max_depth <= num_leaves + 1`, i.e. every level but the depth-capped last one may split every valid leaf.
 Per-node feature masks (`feature_fraction_bynode < 1` without interaction constraints) are eligible too: the device
-draws them (`device_bynode_masks`, below); forest slots (`boosting=rf` under `forest_batched`) are not.
+draws them (`device_bynode_masks`, below); forest slots (`boosting=rf` under `forest_batched`) are not, except a
+forest group's only tree (`forest_single_job_device`, section 10r).
 The controller presizes its per-level scratch for the deepest level it searches (2^(max_depth-2) pairs: split-finder
 output and the quantized bit-change histograms, which grow with the total bin count); where that estimate exceeds
 half of the free device memory at the first tree, the prefix flow grows the trees instead (`FALCATA_DEBUG=diag`
@@ -2878,7 +2905,9 @@ growth tail. Against the `device_levels` prefix (section 10w) it removes, once p
 host replay and the host-driven final level (its uploads, launches and readbacks). Elsewhere (unlimited or deeper
 trees, smaller leaf budgets) the prefix flows and the host flow run exactly as before, and `FALCATA_DEBUG=diag`
 reports `device_tree: fallback to the prefix/host flow (depth bound or leaf budget)`; unsupported kernels,
-constraints and data keep the host flow and report the fallback as the prefix does. There is no automatic
+constraints and data keep the host flow and report the fallback as the prefix does. Random-forest slots (10r) keep the host flow while other
+slots train beside them; a forest group of one tree takes the device tree like sequential training
+(`forest_single_job_device`). There is no automatic
 selector: `cuda_plan=auto,device_tree:off` restores the prefix flow everywhere, `cuda_plan=auto,device_levels:off`
 the host flow (in 1.1 the opt-in spelling was `auto,device_levels:off,device_tree:on`; that string now selects the
 host flow). No training parameters or split rules change: the same selector, kernels and order, bit-identical
@@ -3069,7 +3098,8 @@ and `device_tree:off` makes it the flow for all of them.
 
 `device_level_graph` caches the prefix launches. Cache identity includes resizable buffers, task/layout values,
 packing codec and GOSS's changing ridge. Repeated cache misses switch subsequent trees to the host path. Both
-modes exclude forest slots and legacy single-stream diagnostics. Unsupported kernels, nonquantized training,
+modes exclude forest slots (except a forest group's only tree, `forest_single_job_device`, section 10r) and
+legacy single-stream diagnostics. Unsupported kernels, nonquantized training,
 node masks, categorical/vector leaves, constraints and forced splits keep their host flows; selective growth runs
 its first levels on this prefix (`selective_device_prefix`, below).
 Configuration/data resets invalidate captures and static tables; quantizer row and leaf-budget storage is also
