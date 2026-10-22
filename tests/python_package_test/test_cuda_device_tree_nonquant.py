@@ -130,12 +130,39 @@ def test_nonquant_device_tree_off_takes_one_sync_cuda():
     assert removed == _subprocess("reg-63-6", "auto")[0]
 
 
+def _train_diag(params, rounds, X, y):
+    """FALCATA_DEBUG=diag stderr and the training-set predictions of one training in a fresh process"""
+    code = (
+        "import json,sys,numpy as np,falcata as flc; p=json.loads(sys.argv[1]); d=np.load(sys.argv[2]);"
+        "b=flc.train(p, flc.Dataset(d['X'], label=d['y'], params=p), num_boost_round=int(sys.argv[3]));"
+        "np.save(sys.argv[4], b.predict(d['X']))"
+    )
+    base = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"nq_{os.getpid()}")
+    np.savez(base + ".npz", X=X, y=y)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, json.dumps(params), base + ".npz", str(rounds), base + ".pred.npy"],
+            env=dict(os.environ, FALCATA_DEBUG="diag"),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        pred = np.load(base + ".pred.npy")
+    finally:
+        for path in (base + ".npz", base + ".pred.npy"):
+            if os.path.exists(path):
+                os.remove(path)
+    return result.stderr, pred
+
+
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
     ("extra", "line"),
     [
         # one level past the bound: the one-sync host flow
         ({"num_leaves": 4095, "max_depth": 12, "min_data_in_leaf": 1}, "(nonquant_onesync) route=one_sync"),
+        # the bound's edge: depth 11 holds, but 2048 leaves are one past num_leaves <= 2047
+        ({"num_leaves": 2048, "max_depth": 11, "min_data_in_leaf": 1}, "(nonquant_onesync) route=one_sync"),
         # a binding leaf budget: the selective one-sync flow
         ({"num_leaves": 40, "max_depth": 6}, "(nonquant_selective) route=selective_one_sync"),
         # per-node masks are drawn on the host
@@ -144,22 +171,32 @@ def test_nonquant_device_tree_off_takes_one_sync_cuda():
 )
 def test_nonquant_device_tree_fallback_cuda(extra, line):
     X, y = _data("regression", 20000, 30)
+    diag, _ = _train_diag({**_params("reg-63-6"), **extra}, 3, X, y)
+    assert f"device_tree: fallback {line}\n" in diag, diag[-3000:]
+    assert "device_tree: complete" not in diag
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"data_sample_strategy": "goss"},
+        # sequential random-forest trees (forest_batched:off; slot groups keep their own loop, forest_slots)
+        {"boosting": "rf", "bagging_fraction": 0.632, "bagging_freq": 1, "cuda_plan": "auto,forest_batched:off"},
+        {"linear_tree": True},
+    ],
+)
+def test_nonquant_device_tree_engages_cuda(extra):
+    # GOSS, random forests and depth-limited linear trees grow as complete device trees too
+    X, y = _data("regression", 20000, 30)
     params = {**_params("reg-63-6"), **extra}
-    code = (
-        "import json,sys,numpy as np,falcata as flc; p=json.loads(sys.argv[1]); d=np.load(sys.argv[2]);"
-        "flc.train(p, flc.Dataset(d['X'], label=d['y'], params=p), num_boost_round=3)"
-    )
-    path = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"nq_fallback_{os.getpid()}.npz")
-    np.savez(path, X=X, y=y)
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", code, json.dumps(params), path],
-            env=dict(os.environ, FALCATA_DEBUG="diag"),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    finally:
-        os.remove(path)
-    assert f"device_tree: fallback {line}\n" in result.stderr, result.stderr[-3000:]
-    assert "device_tree: complete" not in result.stderr
+    rounds = 6
+    diag, pred = _train_diag(params, rounds, X, y)
+    assert len(re.findall(r"device_tree: complete depth=", diag)) == rounds, diag[-3000:]
+    assert not re.search(r"device_tree: fallback", diag), diag[-3000:]
+    if params.get("linear_tree"):
+        # linear trees' per-leaf least-squares sums use double atomics: not run-to-run deterministic on any flow, so
+        # no md5 pins them; the one-sync flow's predictions must agree closely
+        off_diag, off_pred = _train_diag({**params, "cuda_plan": "auto,device_tree:off"}, rounds, X, y)
+        assert "device_tree: complete" not in off_diag
+        np.testing.assert_allclose(pred, off_pred, rtol=1e-4, atol=1e-4 * float(np.std(off_pred)))

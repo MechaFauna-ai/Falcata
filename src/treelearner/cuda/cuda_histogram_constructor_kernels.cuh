@@ -2649,8 +2649,11 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
     // and keep ptxas at the register budgets it compiled the kernel to before (PackRaw8 at 8 bits: 56 registers on
     // sm_120), under which it issues the row batch's eight bin loads before their shared atomics. Without them the
     // kernel compiled to 46 registers with the loads interleaved, and the root construct of epsilon-fixedpoint
-    // measured 3.3% slower (P3, nsys). Same results either way; check the registers (cuobjdump
-    // --dump-resource-usage) and the root construct's time before removing it.
+    // measured 3.3% slower (P3, nsys). The values are nonsense by design: it reads construct_block_start[i] as a
+    // row count, num_leaves as a bin count and other state fields as formula constants, only so the code has the
+    // old path's shape and register pressure. Do not "fix" it: what it preserves is the 56-register budget, nothing
+    // it computes is ever used. Same results either way; check the registers (cuobjdump --dump-resource-usage) and
+    // the root construct's time before changing or removing it.
     data_size_t max_num_data = 0;
     const int num_pairs = dls->live_pairs;
     for (int i = 0; i < num_pairs; ++i) {
