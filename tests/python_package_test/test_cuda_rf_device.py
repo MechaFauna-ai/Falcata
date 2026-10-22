@@ -119,7 +119,7 @@ def _params(objective, quant_mode, extra=None):
         params["num_class"] = 5
     if quant_mode == "none":
         # the hybrid level loop with fp64 histograms is not run-to-run deterministic; the host loop is
-        params["cuda_plan_extra"] = ",graph_loop:off"
+        params["cuda_plan_extra"] = ",device_tree:off"
     params.update(extra or {})
     return params
 

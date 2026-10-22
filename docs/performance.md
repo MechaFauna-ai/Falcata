@@ -383,29 +383,26 @@ else used; the three features are always on.)
 
   ![selective grow-then-prune](perf-plots/hybrid_selective_prune.png)
 
-## 2. CUDA-graph level loops (`graph_loop`)
+## 2. CUDA-graph level loops (`graph_loop`, removed in 1.2)
 
 **The problem.** Even batched, each level's launch sequence is issued by the
 CPU. For shallow trees the levels are so short that CPU launch overhead
 returns.
 
-**The idea.** CUDA lets you record a sequence of kernel launches once (a
-"graph") and replay it from the device itself. Falcata captures the per-level
-sequence and lets a device-side controller replay it, removing the CPU from
-the inner loop entirely.
+**The idea, and what replaced it.** CUDA lets you record a sequence of kernel
+launches once (a "graph") and replay it. The 1.0/1.1 graph level loops
+captured the per-level sequence and let a device-side controller resize and
+replay it (`graph_quant` for quantized trees, `graph_loop` / `graph_det` for
+non-quantized ones). Both were removed in 1.2: the complete device tree
+("Complete bounded device trees by default", below) runs every level on the
+device for both precisions, and its levels are cached CUDA graphs too
+(`device_level_graph`, section 10w). Non-quantized trees inside the graph
+loop's bound train the same models on it.
 
-**Measured (leave-one-out battery, 21 Oct 2026 on `a82336d8`):** nothing
-clears the noise floor. Every cell reads between −2.3% and +1.0% (numerai-deep
-within noise after the baseline correction), so no number here is quotable
-and the section carries no plot. In the August 2026 battery the largest
-readings were +9.3% on covtype-deep and +4.5% on both numerai cells, against
-noise bands of 12% and 5% (§7 methodology note); the 1.1 battery does not
-reproduce even that direction.
-
-The graph's job today is simply smaller than when it landed: the one-sync and
-batched flows already removed most of the host round-trips it was built to
-hide. It stays on because it is free where it doesn't help, and the planner
-picks per shape.
+**Measured before the removal (leave-one-out battery, 21 Oct 2026 on
+`a82336d8`):** the non-quantized graph loop read between −2.3% and +1.0% on
+every cell, inside the noise floor; the August 2026 battery's largest readings
+(+9.3% covtype-deep, +4.5% numerai) were within its 12% / 5% noise bands.
 
 ## 3. Per-tree compact column view (`compact_quant`)
 
@@ -2594,14 +2591,15 @@ bagging, leaf outputs and the score update. The existing deterministic batched c
 width per pair).
 
 **`nonquant_deterministic`** (default on; non-quantized training only, quantized never reads it): the levels the
-float atomics built (the default graph loop, compact views, levels wider than the slab) take the same batched
+float atomics built (the default graph loop, compact views, levels wider than the slab; since 1.2 the complete
+device tree's non-quantized levels, which replaced the graph loop with its models) take the same batched
 kernel with a 64-bit integer accumulator. Per tree, the gradient interleave pass also takes max |g| and max |h|
 (order-free `atomicMax` on the floats' bits); one thread sets S = 62 - e - lg_n (max < 2^e, 2^lg_n >= num_data),
 so no sum of num_data scaled values can overflow 63 bits. The construct multiplies each value by 2^S (exact) and
 rounds once to an integer; the shared table holds 64-bit words, each add two native 32-bit shared atomics (the low
 word's returned old value gives that add's exact carry into the high word; a 64-bit shared `atomicAdd` compiles to
-a compare-and-swap loop), the flush is a 64-bit integer global atomic, and one kernel per level (a pair-on-y node in
-the graph loop) rewrites the words in place as `hist_t` times 2^-S. Integer adds commute, so the histogram is the
+a compare-and-swap loop), the flush is a 64-bit integer global atomic, and one kernel per level (guarded by the live
+pairs on a device level) rewrites the words in place as `hist_t` times 2^-S. Integer adds commute, so the histogram is the
 same however the atomics land. A value within about 2^(38 - lg_n) of the largest is a multiple of 2^-S and is summed
 exactly; any other is off by at most 2^-(S+1), about max * num_data * 2^-63 (2^-39 of the largest at 2^24 rows):
 below its own float32 rounding within about 2^(40 - lg_n) of the largest, fewer bits further down, nothing below
@@ -3130,6 +3128,36 @@ immediately before the final scatter, in graph and plain enqueue. This documents
 without an allocator change or speed claim. Separate `device_tree_final_all_map`,
 `device_tree_final_all_map_branch` and `device_tree_final_map_only` diagnostics identify the route.
 
+### Non-quantized trees on the complete device tree (FULL_DEVICE_PLAN P3)
+
+Depth-limited `quant_mode=none` trees with `max_depth <= 11` and `num_leaves <= 2047` (the bound the removed
+non-quantized graph loop served; single GPU, scalar leaves, no categorical features, no per-node masks, not a forest
+slot) take the complete device tree too. Each level constructs the smaller children's histograms in 64-bit fixed point
+(`nonquant_deterministic`, section 10v) over the device's block map (`DeviceLevelPairsKernel`: the dense formula's
+block rows of each live pair; a fixed launch claims them), converts them in place, and runs the non-quantized fix /
+subtract and level find over the level's live pairs. These are the graph loop's kernels and sums, so the models are
+the graph loop's: bit-identical, and run-to-run deterministic (#122). The root output is not seeded on the device for
+these trees: like the one-sync flow, the first split records `internal_value[0] = 0`. The lattice's non-quantized
+cells and `route/r04a-nq-l15` pin the md5s; `dense/nonquant-atomic` (`nonquant_deterministic:off`, float atomics)
+stays nondeterministic, as before.
+
+Deeper or wider depth-limited shapes keep the one-sync host flow (reason `nonquant_onesync`), budget-limited ones the
+selective one-sync flow (`nonquant_selective`): their double-slot deterministic construct equals the fixed-point one
+only empirically, so moving them would be a model decision of its own. `device_tree:off` (or `device_levels:off`)
+restores the one-sync flow with the double-slot construct for every non-quantized tree (`graph_loop:off`'s flow).
+
+Measured (RTX 5090, strict A/B, 6 alternating pairs, 1000 rounds, master `4a5f88ef` (the graph loop) vs this change,
+md5 equal in every arm): nonquantized-control (128 leaves / depth 7, regression) 0.995 -> 0.708 s, **1.406x**; fraud
+deep with `quant_mode=none` (1024 / 10, binary) 1.350 -> 0.919 s, **1.470x**; higgs at 1023 / 10 with
+`quant_mode=none` (bagged 0.8, 7 bins) 3.111 -> 1.686 s, **1.845x**. The graph loop spent its time in kernels the
+device tree does not run: on higgs 1023 / 10 (nsys, 60 rounds) GPU kernel time drops from 152.6 to 100.3 ms; the
+fixed-point construct from 57.7 to 27.6 ms (the graph's construct ran a pow2-frozen grid whose every block re-read the
+level's leaf sizes; the device tree claims its block map's rows), the partition from the graph's unfused per-split
+gen-bit / split-inner kernels (29.3 ms) to the fused row-batched apply (about 15 ms), and the device controller
+(5.9 ms) is gone. Quantized controls unchanged: covtype deep 0.999x, epsilon fixedpoint 0.999x, walls overlapping
+(a master-vs-master A/A of epsilon fixedpoint read 0.997x); GPU kernel time of epsilon fixedpoint over 200 rounds
+1747.4 ms (master) vs 1745.3 ms.
+
 ### Why a tree is not a complete device tree: the reason line
 
 Under `FALCATA_DEBUG=diag` every CUDA tree the complete device tree did not grow is reported as
@@ -3165,7 +3193,7 @@ Reasons, in their order (several can hold; the first is reported):
 | `monotone`, `cegb`, `forced_splits` | per-split constraints (monotone constraints need `quant_mode=none` on CUDA) | classic |
 | `linear_budget` | linear trees with a binding budget | classic |
 | `num_leaves_le_2` | stumps | classic |
-| `nonquant_selective`, `nonquant_onesync`, `nonquant_l15` | `quant_mode=none`: budget-limited, depth-limited outside the L1.5 graph bound, inside it | selective one-sync / one-sync / l15 graph |
+| `nonquant_selective`, `nonquant_onesync` | `quant_mode=none`: budget-limited; depth-limited with `max_depth > 11` or `num_leaves > 2047` (outside the bound of the removed L1.5 graph, which the device tree serves since P3) | selective one-sync / one-sync |
 | `lambda_l1`, `path_smooth` | the level finder has no batched variant | host two-sync, per-pair search |
 | `large_bin_layout`, `compact_16bit` | partitions on global-memory histograms; compact view of non-8-bit rows | host two-sync, per-pair kernels |
 | `categorical` | a categorical feature | host two-sync |
@@ -3179,8 +3207,8 @@ Reasons, in their order (several can hold; the first is reported):
 | `unclassified` | none of the above (a bug; the route pins fail on it) | |
 
 Routes: `device_tree`, `prefix` (device_levels prefix, then the host two-sync loop), `host_two_sync`,
-`selective_prefix`, `selective_two_sync`, `selective_one_sync`, `l15_graph`, `one_sync`, `classic` (the per-split
-loop), `forest_slots`.
+`selective_prefix`, `selective_two_sync`, `selective_one_sync`, `one_sync`, `classic` (the per-split loop),
+`forest_slots` (`l15_graph`, the non-quantized graph loop, went in P3: its shapes report `device_tree: complete`).
 
 `device_levels: host fallback (<reason>)` keeps reporting, once per learner, why the prefix itself declined in flows
 outside the complete device tree (with the same tokens).
@@ -3197,7 +3225,12 @@ train the default model):
   map-only final level);
 - the `FALCATA_DEBUG` tokens `syncpairs`, `maxsplits=N` and `aggressive` (the approximate breadth-biased level
   batching of budget-limited trees) and the `FALCATA_SINGLE_STREAM` switch (the tokens now warn as unknown; the
-  environment variable is silently ignored).
+  environment variable is silently ignored);
+- `cuda_plan` keys `graph_loop` and `graph_det` (FULL_DEVICE_PLAN P3), with the non-quantized graph loop (L1.5) and its
+  device controller: its shapes take the complete device tree, which trains `graph_loop:on`'s models. `graph_loop:off`
+  selected the one-sync host flow with the double-slot deterministic construct, now `device_tree:off`; `graph_det:on`
+  captured that construct inside the graph. Both models equal the default only empirically (on every lattice and
+  article shape measured), so an old string naming either key may train a slightly different model.
 
 Kept, because each still selects a live behaviour: `hybrid` (`hybrid:off`, the classic per-split loop everywhere: the
 gates' reference arm), `level_bynode_masks` (`:off` restores the 1.0 per-node samples and models), `device_tree`,

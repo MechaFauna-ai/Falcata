@@ -64,14 +64,7 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
     cudaEventDestroy(tree_record_done_event_);
   }
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  hybrid_graph_cache_.clear();
   device_level_graphs_.clear();
-  if (pinned_hybrid_graph_state_ != nullptr) {
-    cudaFreeHost(pinned_hybrid_graph_state_);
-  }
-  if (pinned_hybrid_graph_journal_ != nullptr) {
-    cudaFreeHost(pinned_hybrid_graph_journal_);
-  }
   if (pinned_device_level_journal_ != nullptr) {
     cudaFreeHost(pinned_device_level_journal_);
   }
@@ -382,8 +375,8 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // in budget-limited ones, both on the per-plane histogram loop and the
   // batched vector find. The speculative (one-sync) flow derives its child
   // gates from device structs the plane fan-out has not refreshed yet, so it
-  // falls back to the classic per-split loop here, as does the graph loop
-  // (HybridGraphPrefixUsable).
+  // falls back to the classic per-split loop here, as does the complete
+  // non-quantized device tree (NonquantDeviceTreeShape).
   if (vec_num_targets_ > 1) {
     use_hybrid_one_sync_ = false;
   }
@@ -690,20 +683,10 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     // may flip once BuildCompactView below runs, which the classic prefix
     // handles by reading the sums back at its start.
     root_sums_deferred_ = HybridGrowthUsable() && UseOneSyncPrefix();
-    // One ownership model of the histogram storage per tree (see
-    // DetDenseBatchedEligible): host batched det may run alongside the graph
-    // prefix only when the graph itself captured the det construct+merge
-    // nodes; a run whose graph stays atomic stays atomic end to end.
-    bool det_batched_allowed = !HybridGraphPrefixUsable();
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-    if (!det_batched_allowed) {
-      const int widest = std::min(
-        1 << std::max(0, std::min(config_->max_depth - 1, 10)),
-        kHybridGraphMaxSplitsPerLevel);
-      det_batched_allowed = cuda_histogram_constructor_->DetDenseGraphEligible(widest);
-    }
-#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
-    cuda_histogram_constructor_->SetDetBatchedAllowed(det_batched_allowed);
+    // One ownership model of the histogram storage per run (see DetDenseBatchedEligible): a configuration the
+    // complete device tree takes never runs the host batched deterministic construct, on any of its trees (the
+    // root level and trees the one-sync flow grows build in fixed point, like the device levels)
+    cuda_histogram_constructor_->SetDetBatchedAllowed(!NonquantDeviceTreeShape());
     cuda_histogram_constructor_->SetCountCodes(CountHistCodesForTree());
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
@@ -1180,9 +1163,9 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // Multi-GPU rides the hybrid TWO-SYNC batched flow only: that is the flow
   // whose per-level structure allows ONE grouped all-reduce per level instead
   // of one per split, which is the dominant multi-GPU cost. The one-sync,
-  // graph and selective flows derive leaf counts on-device or reorder the
+  // device tree and selective flows derive leaf counts on-device or reorder the
   // readback, and their rank-visible decisions have not been made global, so
-  // they stay single-GPU (see UseOneSyncPrefix / HybridGraphPrefixUsable /
+  // they stay single-GPU (see UseOneSyncPrefix / NonquantDeviceTreeShape /
   // UseSelectiveGrowth).
   const bool nccl_ok = nccl_communicator_ == nullptr ||
       (cuda_histogram_constructor_ != nullptr && cuda_best_split_finder_ != nullptr &&
@@ -1303,6 +1286,37 @@ bool CUDASingleGPUTreeLearner::UseOneSyncPrefix() const {
          !config_->use_quantized_grad &&
          cuda_histogram_constructor_->SupportsBatchedLevel() &&
          cuda_best_split_finder_->SupportsBatchedLevel();
+}
+
+bool CUDASingleGPUTreeLearner::NonquantDeviceTreeShape() const {
+  // the configurations the non-quantized graph loop (L1.5, removed in 1.2) served: depth-limited (the device select
+  // applies a binding final level's top-K in the host arbitration order), single GPU, scalar leaves, no categorical
+  // features, no per-node masks, no debug hooks, not a forest slot; and its shape bound, where the device levels'
+  // fixed-point construct trains its models (cuda_device_levels.hpp)
+  if (config_->use_quantized_grad || nccl_communicator_ != nullptr || fp_merge_state_ != nullptr ||
+      select_features_by_node_ || vec_num_targets_ > 1 || has_categorical_feature_ || ForestSlotShared() ||
+      forest_slot_ || FalcataDebug().debug || FalcataDebug().dump) {
+    return false;
+  }
+  // insufficient shared memory for the fixed-point table: the classic loop's deterministic per-pair kernels
+  if (cuda_histogram_constructor_ != nullptr && cuda_histogram_constructor_->NonquantClassicFallback()) {
+    return false;
+  }
+  const FalcataPlan& plan = FalcataPlan::Get();
+  const int depth = config_->max_depth;
+  return plan.device_levels && plan.device_tree && depth >= 1 && depth <= kNonquantDeviceTreeMaxDepth &&
+    (1LL << depth) <= static_cast<int64_t>(config_->num_leaves) + 1 &&
+    config_->num_leaves <= kNonquantDeviceTreeMaxLeaves;
+}
+
+bool CUDASingleGPUTreeLearner::NonquantDeviceTreeUsable() const {
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  return NonquantDeviceTreeShape() && UseOneSyncPrefix() && DeviceTreeRequested() && !device_levels_disabled_ &&
+    !device_tree_scratch_refused_ &&
+    cuda_best_split_finder_->num_used_tasks() > 0;
+#else
+  return false;
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 }
 
 bool CUDASingleGPUTreeLearner::EnsureReadbackStaging(const size_t bytes) {
@@ -2715,18 +2729,8 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // non-quantized training (the quantized HOST path selects histogram kernels
   // host-side from per-leaf bit widths, which needs the classic readback
   // ordering).
-  if (UseOneSyncPrefix()) {
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-    // graphs L1: run the whole depth-limited prefix as one device-driven
-    // graph launch where supported (cuda_plan=auto,graph_loop:off disables)
-    if (HybridGraphPrefixUsable()) {
-      const int graph_splits = TrainLevelWisePrefixGraph(tree);
-      if (graph_splits >= 0) {
-        growth_route_ = GrowthRoute::kL15Graph;
-        return graph_splits;
-      }
-    }
-#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  // (cuda_plan key device_tree: a non-quantized tree inside the device tree's bound takes the complete device tree)
+  if (UseOneSyncPrefix() && !NonquantDeviceTreeUsable()) {
     growth_route_ = GrowthRoute::kOneSync;
     return TrainLevelWisePrefixOneSync(tree);
   }
@@ -2738,6 +2742,11 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     device_levels_disabled_ = true;
   }
   const bool whole_device_tree = DeviceTreeRequested() && device_levels > 0 && device_levels_ready_;
+  if (UseOneSyncPrefix() && !whole_device_tree) {
+    // a non-quantized device tree whose setup failed: the one-sync flow grows it
+    growth_route_ = GrowthRoute::kOneSync;
+    return TrainLevelWisePrefixOneSync(tree);
+  }
   if (!whole_device_tree) {
     EnsureRootSumsReadBack(tree);
   }
@@ -3029,506 +3038,9 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
   return num_splits;
 }
 
-// ---- graphs L1: device-driven level loop (see cuda_hybrid_graph.hpp) ----
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 
-namespace {
-
-bool HybridGraphEnvEnabled() {
-  return FalcataPlan::Get().graph_loop;
-}
-
-bool HybridGraphDriverSupported() {
-  static const bool supported = []() {
-    int driver_version = 0;
-    return cudaDriverGetVersion(&driver_version) == cudaSuccess && driver_version >= 12040;
-  }();
-  return supported;
-}
-
-}  // anonymous namespace
-
-CUDASingleGPUTreeLearner::HybridGraphInstance::~HybridGraphInstance() {
-  if (exec != nullptr) {
-    cudaGraphExecDestroy(exec);
-  }
-  if (graph != nullptr) {
-    cudaGraphDestroy(graph);
-  }
-  if (state_dev != nullptr) {
-    cudaFree(state_dev);
-  }
-}
-
-bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
-  // Insufficient fixed shared memory: the existing classic per-pair kernels are deterministic for every layout.
-  if (cuda_histogram_constructor_ != nullptr && cuda_histogram_constructor_->NonquantClassicFallback()) {
-    return false;
-  }
-  // multi-GPU: the graph flow builds descriptors on-device; its rank-visible decisions are not global
-  if (nccl_communicator_ != nullptr) {
-    return false;
-  }
-  // per-node masks (cuda_plan key level_bynode_masks): the device controller assigns the leaves of a level, the
-  // host draws their masks; the host-driven level loops take them instead
-  if (select_features_by_node_) {
-    return false;
-  }
-  // feature-parallel: the device controller cannot host-merge winners per level
-  if (fp_merge_state_ != nullptr) {
-    return false;
-  }
-  // forest slots (cuda_plan key forest_batched): while one thread captures a graph on its blocking streams, another
-  // thread's legacy-stream work would join the capture. A group's only tree (forest_single_job_device) has no other
-  // thread beside it, but still keeps off the graph loop, which serves only non-quantized training: that loop is not
-  // run-to-run deterministic and slots never ran it, so a forest's model would change with its group sizes.
-  if (ForestSlotShared() || (forest_slot_ && !config_->use_quantized_grad)) {
-    return false;
-  }
-  // FALCATA_DEBUG=debug checks the host loop's decisions, which the device controller makes on the device
-  if (!HybridGraphEnvEnabled() || FalcataDebug().debug || !HybridGraphDriverSupported() ||
-      hybrid_graph_disabled_) {
-    return false;
-  }
-  // categorical splits interleave a per-split host path (bitset construct +
-  // SplitCategorical) through the level apply -- impossible inside a captured
-  // graph body; categorical datasets keep the host-driven prefix loop
-  if (has_categorical_feature_) {
-    return false;
-  }
-  // vector-leaf training: the captured level body has one construct/find node
-  // per level, while the vector flow issues one construct per gradient PLANE
-  // and a plane fan-out per level, none of which the device controller models
-  if (vec_num_targets_ > 1) {
-    return false;
-  }
-  // non-quantized training only: quantized depth-limited trees take the complete device tree, or the device_levels
-  // prefix where it is refused (the quantized graph prefix and its cuda_plan key graph_quant were removed in 1.2)
-  if (config_->use_quantized_grad) {
-    return false;
-  }
-  // depth-limited exact regime only (mirrors HybridGrowthUsable): the
-  // controller replays ArbitrateLevelBudget under the level == depth
-  // invariant that only holds there
-  const bool depth_limited = config_->max_depth > 0 && config_->max_depth < 31 &&
-      (1LL << config_->max_depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
-  return depth_limited &&
-         config_->num_leaves <= 2 * kHybridGraphMaxSplitsPerLevel - 1 &&
-         config_->max_depth < kHybridGraphMaxLevels &&
-         // unrolled graph: max_depth level bodies + the epilogue controller
-         // (implied by the gates above, but keep the bound explicit)
-         config_->max_depth < kHybridGraphMaxBodies;
-}
-
-bool CUDASingleGPUTreeLearner::SetupHybridGraphStatics() {
-  // ---- static feature tables ----
-  std::vector<CUDAHybridGraphFeatureMeta> meta;
-  cuda_data_partition_->BuildHybridGraphFeatureMeta(&meta);
-  CHECK_EQ(static_cast<int>(meta.size()), train_data_->num_features());
-  std::vector<double> real_thresholds;
-  uint32_t threshold_offset = 0;
-  for (int feature_index = 0; feature_index < train_data_->num_features(); ++feature_index) {
-    meta[feature_index].real_feature_index = train_data_->RealFeatureIndex(feature_index);
-    meta[feature_index].missing_type =
-      static_cast<int>(train_data_->FeatureBinMapper(feature_index)->missing_type());
-    meta[feature_index].real_threshold_offset = threshold_offset;
-    const int num_bin = train_data_->FeatureBinMapper(feature_index)->num_bin();
-    for (int bin = 0; bin < num_bin; ++bin) {
-      real_thresholds.push_back(train_data_->RealThreshold(feature_index, static_cast<uint32_t>(bin)));
-    }
-    threshold_offset += static_cast<uint32_t>(num_bin);
-  }
-  cuda_hybrid_graph_feature_meta_.InitFromHostVector(meta);
-  cuda_hybrid_graph_real_thresholds_.InitFromHostVector(real_thresholds);
-  cuda_hybrid_graph_feature_source_.Resize(static_cast<size_t>(train_data_->num_features()));
-  hybrid_graph_journal_size_ = static_cast<size_t>(kHybridGraphJournalHeader) +
-    2 * static_cast<size_t>(config_->num_leaves) + 4;
-  cuda_hybrid_graph_journal_.Resize(hybrid_graph_journal_size_);
-  if (pinned_hybrid_graph_state_ == nullptr) {
-    if (cudaHostAlloc(reinterpret_cast<void**>(&pinned_hybrid_graph_state_),
-                      sizeof(CUDAHybridGraphLoopState), cudaHostAllocDefault) != cudaSuccess) {
-      return false;
-    }
-  }
-  if (pinned_hybrid_graph_journal_ != nullptr) {
-    cudaFreeHost(pinned_hybrid_graph_journal_);
-    pinned_hybrid_graph_journal_ = nullptr;
-  }
-  if (cudaHostAlloc(reinterpret_cast<void**>(&pinned_hybrid_graph_journal_),
-                    hybrid_graph_journal_size_ * sizeof(int), cudaHostAllocDefault) != cudaSuccess) {
-    return false;
-  }
-  // ---- worst-case capacity of every captured device buffer (no captured
-  // pointer may ever reallocate) ----
-  const size_t max_slots = static_cast<size_t>(config_->num_leaves) + 2;
-  if (hybrid_pair_slots_.Size() < max_slots) {
-    hybrid_pair_slots_.Resize(max_slots);
-  }
-  const int max_pairs = config_->num_leaves / 2 + 2;
-  if (cuda_hybrid_pair_descs_.Size() < static_cast<size_t>(max_pairs)) {
-    cuda_hybrid_pair_descs_.Resize(static_cast<size_t>(max_pairs));
-  }
-  cuda_data_partition_->EnsureHybridGraphCapacity(num_data_);
-  cuda_best_split_finder_->EnsureHybridGraphCapacity(max_pairs);
-  // ---- the static half of the loop state ----
-  CUDAHybridGraphLoopState& st = hybrid_graph_state_template_;
-  std::memset(&st, 0, sizeof(st));
-  st.max_depth = config_->max_depth;
-  st.num_leaves_budget = config_->num_leaves;
-  // construct grid x / block dims are filled per instance at build time (the
-  // compact view's block shape follows the per-tree sampled column count and
-  // is part of the graph key)
-  st.construct_min_grid_dim_y = cuda_histogram_constructor_->hybrid_graph_min_grid_dim_y();
-  st.construct_min_rows_per_thread = CUDAHistogramConstructor::BatchConstructMinRowsPerThread();
-  st.construct_saturation_floor = CUDAHistogramConstructor::BatchConstructSaturationFloor();
-  // quantized training: enables the construct overflow guard and the device
-  // hist-bits derivation in the graph body kernels (0 = non-quantized)
-  st.num_grad_quant_bins = cuda_histogram_constructor_->hybrid_graph_num_grad_quant_bins();
-  // the 64->32-bit compaction scratch pointer is baked into the captured
-  // subtract/copy kernels: presize it for the worst-case pair count
-  cuda_histogram_constructor_->EnsureHybridGraphBitChangeCapacity(max_pairs);
-  st.leaf_best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
-  st.leaf_num_data = cuda_data_partition_->cuda_leaf_num_data();
-  st.leaf_data_start = cuda_data_partition_->cuda_leaf_data_start();
-  st.apply_descs = cuda_data_partition_->hybrid_graph_apply_descs();
-  st.pair_descs = cuda_hybrid_pair_descs_.RawData();
-  st.pair_slots = hybrid_pair_slots_.RawData();
-  st.feature_meta = cuda_hybrid_graph_feature_meta_.RawDataReadOnly();
-  st.feature_source = cuda_hybrid_graph_feature_source_.RawDataReadOnly();
-  st.real_thresholds = cuda_hybrid_graph_real_thresholds_.RawDataReadOnly();
-  st.journal = cuda_hybrid_graph_journal_.RawData();
-  hybrid_graph_statics_ready_ = true;
-  return true;
-}
-
-void CUDASingleGPUTreeLearner::ComputeHybridGraphKey(CUDATree* tree,
-                                                     std::vector<const void*>* key) const {
-  key->clear();
-  cuda_histogram_constructor_->HybridGraphKeyPointers(key);
-  cuda_best_split_finder_->HybridGraphKeyPointers(key);
-  key->push_back(static_cast<const void*>(tree->hybrid_graph_batch_splits()));
-  // the compact view's construct BLOCK shape follows the per-tree sampled
-  // column count and block dims are not device-updatable: one instance per
-  // shape, captured with the exact host dims (bit-identical results)
-  key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(
-    cuda_histogram_constructor_->HybridGraphCompactShapeKey())));
-}
-
-bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
-                                                        HybridGraphInstance* instance) {
-#define HYBRID_GRAPH_SOFT_CHECK(call) \
-  do { \
-    const cudaError_t soft_check_err_ = (call); \
-    if (soft_check_err_ != cudaSuccess) { \
-      Log::Warning("graphs L1: %s failed with %s; falling back to the host level loop", \
-                   #call, cudaGetErrorString(soft_check_err_)); \
-      return false; \
-    } \
-  } while (0)
-  if (cudaMalloc(reinterpret_cast<void**>(&instance->state_dev),
-                 sizeof(CUDAHybridGraphLoopState)) != cudaSuccess) {
-    return false;
-  }
-  HYBRID_GRAPH_SOFT_CHECK(cudaGraphCreate(&instance->graph, 0));
-
-  // ---- capture the UNROLLED level bodies (L1.5): max_depth straight-line
-  // repetitions of controller -> apply chain -> search chain plus one final
-  // epilogue controller, mirroring the host flow's stream/event wiring; each
-  // record/wait pair becomes a graph edge, chaining the bodies ----
-  cudaStream_t hist_stream = cuda_histogram_constructor_->hist_stream();
-  cudaStream_t apply_stream = cuda_data_partition_->apply_stream();
-  cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
-  cudaEvent_t fork_event = nullptr;
-  cudaEvent_t apply_event = nullptr;
-  cudaEvent_t join_event = nullptr;
-  HYBRID_GRAPH_SOFT_CHECK(cudaEventCreateWithFlags(&fork_event, cudaEventDisableTiming));
-  HYBRID_GRAPH_SOFT_CHECK(cudaEventCreateWithFlags(&apply_event, cudaEventDisableTiming));
-  HYBRID_GRAPH_SOFT_CHECK(cudaEventCreateWithFlags(&join_event, cudaEventDisableTiming));
-  std::vector<cudaGraphNode_t> nodes;
-  std::vector<int> roles;
-  std::vector<int> role_static_x;
-  bool capture_ok = true;
-  size_t nodes_per_level = 0;
-  const int num_level_bodies = config_->max_depth;  // gated to < kHybridGraphMaxBodies
-  HYBRID_GRAPH_SOFT_CHECK(cudaStreamBeginCaptureToGraph(
-    hist_stream, instance->graph, nullptr, nullptr, 0, cudaStreamCaptureModeThreadLocal));
-  // graphs A2: device address of the loop state's live split count -- the
-  // pow2-frozen tree-split grid's idle blocks guard on it (plain int pointer
-  // so the tree's public header stays free of the loop-state type)
-  const int* graph_live_split_count = &instance->state_dev->cur_num_splits;
-  // deterministic construct inside the graph: decided ONCE for the whole
-  // instance (node counts must be body-uniform) against the widest possible
-  // level; each body's capture gets its own tighter pair bound so shallow
-  // bodies keep a full block dy
-  const int det_widest_level_pairs = std::min(
-    1 << std::min(num_level_bodies - 1, 10), kHybridGraphMaxSplitsPerLevel);
-  const bool graph_det =
-    cuda_histogram_constructor_->DetDenseGraphEligible(det_widest_level_pairs);
-  for (int body = 0; body < num_level_bodies; ++body) {
-    const size_t body_node_start = nodes.size();
-    CaptureHybridGraphControllerKernel(hist_stream, instance->state_dev, body);
-    capture_ok = capture_ok && cudaEventRecord(fork_event, hist_stream) == cudaSuccess;
-    capture_ok = capture_ok && cudaStreamWaitEvent(apply_stream, fork_event, 0) == cudaSuccess;
-    tree->CaptureHybridGraphSplitBatchKernel(apply_stream, graph_live_split_count);
-    capture_ok = capture_ok && AppendCapturedNode(apply_stream, &nodes);
-    roles.push_back(kHybridGraphNodeTreeSplit);
-    cuda_data_partition_->CaptureHybridGraphApplyKernels(instance->state_dev, &nodes, &roles);
-    while (role_static_x.size() < roles.size()) {
-      role_static_x.push_back(0);
-    }
-    capture_ok = capture_ok && cudaEventRecord(apply_event, apply_stream) == cudaSuccess;
-    capture_ok = capture_ok && cudaStreamWaitEvent(hist_stream, apply_event, 0) == cudaSuccess;
-    const int det_body_pairs = graph_det ?
-      std::min(1 << std::min(body, 10), det_widest_level_pairs) : 0;
-    cuda_histogram_constructor_->CaptureHybridGraphSearchKernels(
-      cuda_hybrid_pair_descs_.RawDataReadOnly(),
-      cuda_data_partition_->level_smaller_leaf_counts(),
-      instance->state_dev,
-      det_body_pairs,
-      &nodes, &roles, &role_static_x);
-    cuda_best_split_finder_->CaptureHybridGraphFindKernels(
-      cuda_hybrid_pair_descs_.RawDataReadOnly(),
-      config_->use_quantized_grad ? cuda_gradient_discretizer_->grad_scale_ptr() : nullptr,
-      config_->use_quantized_grad ? cuda_gradient_discretizer_->hess_scale_ptr() : nullptr,
-      instance->state_dev,
-      &nodes, &roles, &role_static_x);
-    capture_ok = capture_ok && cudaEventRecord(join_event, find_stream) == cudaSuccess;
-    capture_ok = capture_ok && cudaStreamWaitEvent(hist_stream, join_event, 0) == cudaSuccess;
-    const size_t body_nodes = nodes.size() - body_node_start;
-    if (body == 0) {
-      nodes_per_level = body_nodes;
-    } else if (body_nodes != nodes_per_level) {
-      capture_ok = false;  // non-uniform body capture; bail out below
-    }
-  }
-  // epilogue controller: stops the loop (journal header + done flag) after
-  // the last level body's speculative search
-  CaptureHybridGraphControllerKernel(hist_stream, instance->state_dev, num_level_bodies);
-  cudaGraph_t captured = nullptr;
-  const cudaError_t end_err = cudaStreamEndCapture(hist_stream, &captured);
-  cudaEventDestroy(fork_event);
-  cudaEventDestroy(apply_event);
-  cudaEventDestroy(join_event);
-  if (end_err != cudaSuccess || !capture_ok ||
-      nodes.size() != roles.size() || roles.size() != role_static_x.size() ||
-      nodes_per_level > static_cast<size_t>(kHybridGraphMaxNodes) || nodes_per_level < 10) {
-    Log::Warning("graphs L1: body capture failed (%s); falling back to the host level loop",
-                 cudaGetErrorString(end_err));
-    return false;
-  }
-
-  // ---- device-updatable node handles (per-body slices at stride
-  // kHybridGraphMaxNodes, matching the controller's node_base) ----
-  CUDAHybridGraphLoopState state = hybrid_graph_state_template_;
-  state.tree_batch_splits = tree->hybrid_graph_batch_splits();
-  // per-instance construct extents: block dims follow this tree's (compact)
-  // shape and were baked into the capture above
-  int construct_grid_x = 0;
-  int construct_block_dim_y = 0;
-  cuda_histogram_constructor_->HybridGraphConstructDims(&construct_grid_x, &construct_block_dim_y);
-  state.construct_grid_x = construct_grid_x;
-  state.construct_block_dim_y = construct_block_dim_y;
-  state.det_total_slot_rows =
-    graph_det ? cuda_histogram_constructor_->det_dense_total_slot_rows() : 0;
-  state.det_rows_per_thread = CUDAHistogramConstructor::det_rows_per_thread();
-  state.num_nodes = static_cast<int>(nodes_per_level);
-  for (size_t i = 0; i < nodes.size(); ++i) {
-    const size_t slot = (i / nodes_per_level) * static_cast<size_t>(kHybridGraphMaxNodes) +
-      (i % nodes_per_level);
-    cudaLaunchAttributeValue attr_value;
-    std::memset(&attr_value, 0, sizeof(attr_value));
-    attr_value.deviceUpdatableKernelNode.deviceUpdatable = 1;
-    HYBRID_GRAPH_SOFT_CHECK(cudaGraphKernelNodeSetAttribute(
-      nodes[i], cudaLaunchAttributeDeviceUpdatableKernelNode, &attr_value));
-    state.nodes[slot].node = attr_value.deviceUpdatableKernelNode.devNode;
-    state.nodes[slot].role = roles[i];
-    state.nodes[slot].static_x = role_static_x[i];
-    state.node_enabled[slot] = 1;  // captured nodes start enabled
-    if (state.nodes[slot].node == nullptr) {
-      Log::Warning("graphs L1: null device node handle; falling back to the host level loop");
-      return false;
-    }
-  }
-  HYBRID_GRAPH_SOFT_CHECK(cudaGraphInstantiate(&instance->exec, instance->graph, 0));
-  HYBRID_GRAPH_SOFT_CHECK(cudaMemcpy(instance->state_dev, &state,
-    sizeof(CUDAHybridGraphLoopState), cudaMemcpyHostToDevice));
-  // a graph that updates its own device-updatable nodes from the device MUST
-  // be uploaded before it is launched (CUDA launch-attribute docs); without
-  // this the controller's first-launch updates race the lazy upload:
-  // intermittent cudaErrorInvalidValue device-side updates or
-  // cudaErrorIllegalAddress at the post-graph sync, ~20%/run on multiclass
-  // (7 first launches per run) at machine-state-dependent rates
-  HYBRID_GRAPH_SOFT_CHECK(cudaGraphUpload(instance->exec,
-    cuda_best_split_finder_->find_stream()));
-  ComputeHybridGraphKey(tree, &instance->key);
-  const bool hybrid_diag = FalcataDebug().diag;
-  if (hybrid_diag) {
-    // fprintf like the other hybrid-diag lines: visible under verbose=-1
-    fprintf(stderr, "[hybrid-diag] graphs L1.5: instantiated unrolled device level loop "
-            "(%d bodies x %d nodes, %d cached)\n",
-            num_level_bodies, state.num_nodes, static_cast<int>(hybrid_graph_cache_.size()) + 1);
-  }
-  return true;
-#undef HYBRID_GRAPH_SOFT_CHECK
-}
-
-CUDASingleGPUTreeLearner::HybridGraphInstance* CUDASingleGPUTreeLearner::GetOrBuildHybridGraph(
-    CUDATree* tree) {
-  if (cuda_best_split_finder_->num_used_tasks() == 0) {
-    return nullptr;  // no usable feature this tree; the host loop handles it
-  }
-  if (!hybrid_graph_statics_ready_) {
-    if (!SetupHybridGraphStatics()) {
-      hybrid_graph_disabled_ = true;
-      return nullptr;
-    }
-  }
-  std::vector<const void*> key;
-  ComputeHybridGraphKey(tree, &key);
-  for (size_t i = 0; i < hybrid_graph_cache_.size(); ++i) {
-    if (hybrid_graph_cache_[i]->key == key) {
-      // LRU: move the hit to the back (multiclass cycles one key per class,
-      // the compact column view alternates two buffers -- the steady state
-      // must keep every cycling key resident or each tree pays a rebuild)
-      if (i + 1 != hybrid_graph_cache_.size()) {
-        std::rotate(hybrid_graph_cache_.begin() + i,
-                    hybrid_graph_cache_.begin() + i + 1,
-                    hybrid_graph_cache_.end());
-      }
-      return hybrid_graph_cache_.back().get();
-    }
-  }
-  // device-updatable graphs cannot be host-updated after instantiation, so a
-  // new pointer key needs a fresh capture. Steady state: (#gradient buffers,
-  // i.e. one per class) x (compact double buffer). The compact buffers also
-  // grow to a running max early on, retiring old keys; evict LRU for those.
-  // A key set larger than the cache would rebuild every tree -- give up on
-  // the graph path instead (the host loop is bit-for-bit correct).
-  const size_t cache_limit = 64;
-  if (hybrid_graph_cache_.size() >= cache_limit) {
-    ++hybrid_graph_build_failures_;
-    if (hybrid_graph_build_failures_ >= 8) {
-      hybrid_graph_disabled_ = true;
-      Log::Warning("graphs L1: per-tree buffer pointers keep churning; using the host level loop");
-      return nullptr;
-    }
-    hybrid_graph_cache_.erase(hybrid_graph_cache_.begin());
-  }
-  auto instance = std::unique_ptr<HybridGraphInstance>(new HybridGraphInstance());
-  if (!BuildHybridGraphInstance(tree, instance.get())) {
-    hybrid_graph_build_failures_ += 4;
-    if (hybrid_graph_build_failures_ >= 8) {
-      hybrid_graph_disabled_ = true;
-    }
-    return nullptr;
-  }
-  hybrid_graph_cache_.push_back(std::move(instance));
-  return hybrid_graph_cache_.back().get();
-}
-
-int CUDASingleGPUTreeLearner::TrainLevelWisePrefixGraph(CUDATree* tree) {
-  HybridGraphInstance* instance = GetOrBuildHybridGraph(tree);
-  if (instance == nullptr) {
-    return -1;  // host loop fallback
-  }
-  // root search exactly like the host one-sync flow (host-known exact grid)
-  EnqueueRootLevelSearchOneSync();
-  cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
-  // per-tree inputs: the column source table (per-tree compact/packed view)
-  // and the mutable prefix of the loop state
-  cuda_data_partition_->BuildHybridGraphFeatureSource(&host_hybrid_graph_feature_source_);
-  CopyFromHostToCUDADeviceAsync<CUDAHybridGraphFeatureSource>(
-    cuda_hybrid_graph_feature_source_.RawData(), host_hybrid_graph_feature_source_.data(),
-    host_hybrid_graph_feature_source_.size(), find_stream, __FILE__, __LINE__);
-  CUDAHybridGraphLoopState* staged = pinned_hybrid_graph_state_;
-  staged->main_indices = cuda_data_partition_->hybrid_graph_main_indices();
-  staged->out_indices = cuda_data_partition_->hybrid_graph_out_indices();
-  staged->level = 0;
-  staged->num_leaves = 1;
-  staged->split_info_base = 0;
-  staged->journal_split_cursor = 0;
-  staged->root_num_data = cuda_data_partition_->root_num_data();
-  staged->find_grid_x = cuda_best_split_finder_->hybrid_graph_find_grid_x();
-  staged->done = 0;
-  // live counts are controller-owned (written before each body's kernels run);
-  // reset them with the prefix so a stale value can never leak across trees
-  staged->cur_num_splits = 0;
-  staged->cur_num_gaps = 0;
-  CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(instance->state_dev, staged,
-    offsetof(CUDAHybridGraphLoopState, max_depth), cudaMemcpyHostToDevice, find_stream));
-  // ---- the ONE host launch of the whole prefix ----
-  CUDASUCCESS_OR_FATAL(cudaGraphLaunch(instance->exec, find_stream));
-  // ---- the ONE synchronization: EVERY post-graph readback (journal,
-  // deferred split-info slab, per-leaf best splits for the tail's collect) is
-  // prefetched stream-ordered behind the graph at a host-known upper-bound
-  // size (journal[1] <= num_leaves - 1 splits; the collect reads
-  // <= num_leaves leaves), then one stream sync covers all three. Nothing
-  // mutates these device buffers between graph completion and the previous
-  // in-place synchronous copies (FinishHybridGraphLevels is host-only
-  // bookkeeping, FinishSplitBatch/SyncAllLeafBestSplitsToHost are pure
-  // reads), so the prefetched values are bit-for-bit identical ----
-  CopyFromCUDADeviceToHostAsync<int>(pinned_hybrid_graph_journal_,
-    cuda_hybrid_graph_journal_.RawData(), hybrid_graph_journal_size_, find_stream,
-    __FILE__, __LINE__);
-  cuda_data_partition_->PrefetchSplitBatchAsync(config_->num_leaves - 1, find_stream);
-  cuda_best_split_finder_->PrefetchLeafBestSplitsAsync(config_->num_leaves, find_stream);
-  CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(find_stream));
-  const int* journal = pinned_hybrid_graph_journal_;
-  if (journal[2] != 0) {
-    Log::Fatal("graphs L1: device-side graph update failed (flags 0x%x)", journal[2]);
-  }
-  const int num_levels = journal[0];
-  const int total_splits = journal[1];
-  CHECK_GE(num_levels, 0);
-  CHECK_LE(num_levels, kHybridGraphMaxLevels);
-  CHECK_GE(total_splits, 0);
-  CHECK_LE(total_splits, config_->num_leaves - 1);
-  int num_splits = 0;
-  if (total_splits > 0) {
-    cuda_data_partition_->FinishHybridGraphLevels(num_levels, total_splits);
-    // deferred split info of the WHOLE prefix (cumulative slab slots),
-    // already staged by the prefetch above
-    cuda_data_partition_->ReadPrefetchedSplitBatch(total_splits, &hybrid_graph_batch_info_);
-    std::vector<HybridAppliedSplit>& applied = hybrid_graph_applied_scratch_;
-    applied.clear();
-    int cursor = 0;
-    for (int level = 0; level < num_levels; ++level) {
-      const int level_splits = journal[3 + level];
-      CHECK_GE(level_splits, 0);
-      for (int k = 0; k < level_splits; ++k) {
-        const int left_leaf = journal[kHybridGraphJournalHeader + 2 * (cursor + k)];
-        const int inner_feature = journal[kHybridGraphJournalHeader + 2 * (cursor + k) + 1];
-        const int right_leaf = tree->num_leaves();
-        // host-mirror half of SplitBatch (device updates ran inside the graph)
-        tree->ReplaySplitHostMirrors(left_leaf, train_data_->RealFeatureIndex(inner_feature));
-        applied.push_back({left_leaf, right_leaf, nullptr, nullptr});
-      }
-      cursor += level_splits;
-    }
-    CHECK_EQ(cursor, total_splits);
-    // batch_info slots are in global applied order, exactly what
-    // FinishLevelBookkeeping's 18-ints-per-split walk expects
-    FinishLevelBookkeeping(applied, hybrid_graph_batch_info_, nullptr, &num_splits);
-  }
-  if (tree->num_leaves() < config_->num_leaves) {
-    // mirror the host loop's exit state: the final level's readback + collect
-    // (skipped when the budget is exhausted -- the host loop breaks without
-    // re-reading after a final partial level, and the tail never runs);
-    // already staged by the prefetch above
-    cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(tree->num_leaves(), &host_leaf_best_splits_);
-    CollectSplittableLeaves(tree, &hybrid_graph_splittable_scratch_);
-  }
-  if (num_splits == 0) {
-    // the root has no valid split: the leaf-wise tail (and a possible stump)
-    // needs the host root sums after all
-    EnsureRootSumsReadBack(tree);
-  }
-  return num_splits;
-}
-
-void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
-  hybrid_graph_cache_.clear();
-  hybrid_graph_statics_ready_ = false;
+void CUDASingleGPUTreeLearner::ReleaseDeviceLevelGraphs() {
   // ResetConfig / ResetTrainingData can replace every pointer and static feature table captured by the prefix.
   device_level_graphs_.clear();
   device_levels_ready_ = false;
@@ -3567,7 +3079,7 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   const bool bynode_unkeyed_by_key = config_->feature_fraction_bynode < 1.0 &&
     config_->interaction_constraints_vector.empty() && !plan.level_bynode_masks;
   if (!plan.hybrid || !plan.device_levels || !plan.device_tree || bynode_unkeyed_by_key ||
-      (bynode_keyed_ && !plan.device_bynode_masks)) {
+      (bynode_keyed_ && !plan.device_bynode_masks) || (!config_->use_quantized_grad && !use_hybrid_one_sync_)) {
     return R::kPlanOff;
   }
   if (nccl_communicator_ != nullptr) {
@@ -3620,10 +3132,10 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
     if (!depth_limited) {
       return R::kNonquantSelective;
     }
-    // HybridGraphPrefixUsable's shape bound (the L1.5 graph)
-    const bool l15_bound = config_->num_leaves <= 2 * kHybridGraphMaxSplitsPerLevel - 1 &&
-      depth < kHybridGraphMaxLevels && depth < kHybridGraphMaxBodies;
-    return l15_bound ? R::kNonquantL15 : R::kNonquantOnesync;
+    // the complete device tree's non-quantized bound (NonquantDeviceTreeShape)
+    if (depth > kNonquantDeviceTreeMaxDepth || config_->num_leaves > kNonquantDeviceTreeMaxLeaves) {
+      return R::kNonquantOnesync;
+    }
   }
   if (finder != R::kNone) {
     return finder;  // lambda_l1, path_smooth
@@ -3633,6 +3145,15 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   }
   if (has_categorical_feature_) {
     return R::kCategorical;
+  }
+  if (!config_->use_quantized_grad) {
+    // NonquantDeviceTreeShape's own refusals: per-node masks (drawn on the host), a forest slot's tree
+    if (select_features_by_node_) {
+      return R::kBynodeHostMasks;
+    }
+    if (forest_slot_) {
+      return R::kForestSlots;
+    }
   }
   if (select_features_by_node_ && !depth_limited) {
     return R::kBynodeOutsideBound;
@@ -3869,7 +3390,7 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     refusal = DeviceTreeReason::kFeatureParallel;
   } else if (vec_num_targets_ > 1) {
     refusal = DeviceTreeReason::kVectorLeaves;
-  } else if (!config_->use_quantized_grad) {
+  } else if (!config_->use_quantized_grad && !NonquantDeviceTreeUsable()) {
     refusal = DeviceTreeRefusal();  // the non-quantized flavour
   } else if (!batched_level_kernels || !batched_level_apply ||
              !cuda_histogram_constructor_->DeviceLevelConstructSupported()) {
@@ -3919,7 +3440,7 @@ int CUDASingleGPUTreeLearner::DeviceLevelSearchPairs(const int num_levels) const
 }
 
 // cuda_plan key device_tree: the pair chunk of a whole tree of max_depth num_levels, against free device memory
-// (FALCATA_DEBUG=vramfree=N caps it, as ChooseViewRegime's), before the first tree's level flow; ReleaseHybridGraphs
+// (FALCATA_DEBUG=vramfree=N caps it, as ChooseViewRegime's), before the first tree's level flow; ReleaseDeviceLevelGraphs
 // (ResetConfig, ResetTrainingData) clears it, so the next tree plans again. The measure is the bytes SetupDeviceLevels
 // and BeginDeviceBynode still have to allocate (a growing Resize holds the old block until the new one exists): the
 // tree's fixed scratch (per-split descriptors, slots and journal, the block map, the select's global scratch, the
@@ -3982,7 +3503,10 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
   }
   const size_t budget = free_bytes / 2;
   int chunk = pairs;
-  if (growth_bytes(pairs) > budget || bynode_cap < pairs) {
+  // pair chunking serves the quantized device tree; a non-quantized tree (NonquantDeviceTreeShape's bound) keeps the
+  // whole search's scratch or, over the budget, its one-sync host flow (scratch_too_large), as before P4
+  const bool chunkable = config_->use_quantized_grad;
+  if (chunkable && (growth_bytes(pairs) > budget || bynode_cap < pairs)) {
     // the most pairs within the budget (growth_bytes rises with the chunk) and the bynode offset cap, at least one
     chunk = 1;
     int lo = 2;
@@ -4024,7 +3548,7 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
 bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
   // static feature tables of the select kernel: SplitLevelBatched's per-feature metadata and the real thresholds
   std::vector<CUDAHybridGraphFeatureMeta> meta;
-  cuda_data_partition_->BuildHybridGraphFeatureMeta(&meta);
+  cuda_data_partition_->BuildDeviceLevelFeatureMeta(&meta);
   CHECK_EQ(static_cast<int>(meta.size()), train_data_->num_features());
   std::vector<double> real_thresholds;
   uint32_t threshold_offset = 0;
@@ -4095,7 +3619,7 @@ bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
     cuda_device_level_chunk_states_.Resize(static_cast<size_t>(chunks));
   }
   cuda_data_partition_->EnsureDeviceLevelCapacity(max_prefix_leaves);
-  cuda_best_split_finder_->EnsureHybridGraphCapacity(scratch_pairs);
+  cuda_best_split_finder_->EnsureDeviceLevelCapacity(scratch_pairs);
   cuda_histogram_constructor_->EnsureDeviceLevelCapacity(scratch_pairs);
   device_levels_ready_ = true;
   return true;
@@ -4133,8 +3657,9 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   LaunchDeviceLevelReset(cfg, 1, find_stream);
   cuda_histogram_constructor_->SetDeviceLevelState(dls, cfg.whole_tree != 0);
   cuda_best_split_finder_->SetDeviceLevelState(dls);
-  const score_t* grad_scale = cuda_gradient_discretizer_->grad_scale_ptr();
-  const score_t* hess_scale = cuda_gradient_discretizer_->hess_scale_ptr();
+  // (non-quantized training: the level finder on hist_t histograms)
+  const score_t* grad_scale = config_->use_quantized_grad ? cuda_gradient_discretizer_->grad_scale_ptr() : nullptr;
+  const score_t* hess_scale = config_->use_quantized_grad ? cuda_gradient_discretizer_->hess_scale_ptr() : nullptr;
   // The prefix can select in the previous sync's last block; whole trees select in a standalone launch.
   bool select_ran = false;
   const CUDADeviceLevelConfig* cfg_device = cuda_device_level_config_.RawDataReadOnly();
@@ -4263,6 +3788,11 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     key.push_back(static_cast<const void*>(cfg.chunk_states));
     // cuda_plan key device_bynode_masks: the mask kernels and the buffers they capture
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(device_bynode_active_ ? 1 : 0)));
+    if (!config_->use_quantized_grad) {
+      // non-quantized training: the construct's instantiation (fixed point or float atomics, interleaved pairs)
+      key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(
+        cuda_histogram_constructor_->NonquantDeviceLevelKey())));
+    }
     if (device_bynode_active_) {
       key.push_back(static_cast<const void*>(device_bynode_cfg_.sample));
       key.push_back(static_cast<const void*>(device_bynode_cfg_.task_inner_feature));
@@ -4437,7 +3967,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   global_timer.Start("CUDASingleGPUTreeLearner::TrainDeviceLevels");
   cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
   // the tree's column sources (the per-tree compact or packed view), as SplitLevelBatched reads them per split
-  cuda_data_partition_->BuildHybridGraphFeatureSource(&host_device_level_feature_source_);
+  cuda_data_partition_->BuildDeviceLevelFeatureSource(&host_device_level_feature_source_);
   CopyFromHostToCUDADeviceAsync<CUDAHybridGraphFeatureSource>(
     cuda_device_level_feature_source_.RawData(), host_device_level_feature_source_.data(),
     host_device_level_feature_source_.size(), find_stream, __FILE__, __LINE__);
@@ -4447,7 +3977,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.state = dls;
   cfg.leaf_best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
   cfg.root_struct = cuda_smaller_leaf_splits_->GetCUDAStruct();
-  cfg.tree_leaf_value = tree->cuda_leaf_value_ref();
+  // (non-quantized trees keep the root output of the one-sync flow, which reads the root sums back only for a stump:
+  // the first split records internal_value[0] = 0, as that flow and the graph loop it replaced wrote it)
+  cfg.tree_leaf_value = config_->use_quantized_grad ? tree->cuda_leaf_value_ref() : nullptr;
   cfg.leaf_num_data = cuda_data_partition_->cuda_leaf_num_data();
   cfg.leaf_data_start = cuda_data_partition_->cuda_leaf_data_start();
   cfg.tree_batch_splits = tree->hybrid_graph_batch_splits();
@@ -4481,7 +4013,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // cuda_plan key selective_device_prefix: the applied splits' best-split records, for the selective records. Sized
   // here, outside SetupDeviceLevels, because only selective trees ask for them (the device tree and the plain prefix
   // never allocate them); the growth happens before any level is enqueued or captured, and K is config-constant, so
-  // it happens once per learner (ReleaseHybridGraphs keeps the buffers: a larger K regrows them here)
+  // it happens once per learner (ReleaseDeviceLevelGraphs keeps the buffers: a larger K regrows them here)
   const int max_prefix_splits = std::min((1 << num_levels) - 1, config_->num_leaves - 1);
   if (record_split_infos) {
     CHECK(!cfg.whole_tree);
@@ -4550,8 +4082,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.construct_min_rows_per_thread = CUDAHistogramConstructor::BatchConstructMinRowsPerThread();
   cfg.construct_saturation_floor = CUDAHistogramConstructor::BatchConstructSaturationFloor();
   cuda_histogram_constructor_->DeviceLevelConstructShape(&cfg.shape);
-  cfg.level_row_blocks = (cfg.shape.pair_mode == 0 ? FalcataPlan::Get().dense_level_row_blocks :
-                          FalcataPlan::Get().level_row_blocks) ? 1 : 0;
+  // (the non-quantized dense kernel has no rows-per-thread floor: each block row takes its pair's grid share)
+  cfg.level_row_blocks = config_->use_quantized_grad && (cfg.shape.pair_mode == 0 ?
+    FalcataPlan::Get().dense_level_row_blocks : FalcataPlan::Get().level_row_blocks) ? 1 : 0;
   // the apply's pairs block reads the config from device memory (stream-ordered before the levels; the host copy
   // stays alive in the learner)
   CopyFromHostToCUDADeviceAsync<CUDADeviceLevelConfig>(cuda_device_level_config_.RawData(), &cfg, 1, find_stream,
@@ -6438,7 +5971,7 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
   next_tree_col_sample_ready_ = false;
   cuda_histogram_constructor_->InvalidateCompactPrefill();
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  ReleaseHybridGraphs();  // captured buffer pointers may have changed
+  ReleaseDeviceLevelGraphs();  // captured buffer pointers may have changed
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   // the histogram constructor dropped the old data's column-major copy: decide again after a tree on the new data
   colmajor_fill_pending_ = cuda_histogram_constructor_->ColMajorFillApplicable();
@@ -6490,7 +6023,7 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   next_tree_col_sample_ready_ = false;
   cuda_histogram_constructor_->InvalidateCompactPrefill();
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  ReleaseHybridGraphs();  // captured buffer pointers / budgets may have changed
+  ReleaseDeviceLevelGraphs();  // captured buffer pointers / budgets may have changed
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   // colmajor_direct: a new feature_fraction may call for the other regime (other config changes keep it, so a
   // per-round reset_parameter callback does not rebuild the view)
@@ -6770,8 +6303,8 @@ const CUDACountHistCodes* CUDASingleGPUTreeLearner::CountHistCodesForTree() {
     why = "weights";
   } else if (nccl_communicator_ != nullptr || vec_num_targets_ > 1) {
     why = "multi-GPU or vector leaves";
-  } else if (HybridGraphPrefixUsable()) {
-    why = "graph loop";
+  } else if (NonquantDeviceTreeShape()) {
+    why = "device tree";
   } else if (!cuda_histogram_constructor_->CountConstructSupported()) {
     why = "construct (sparse, large-bin partition, fp32 histograms or the shared table)";
   }

@@ -208,6 +208,7 @@ def _run(name, graph="on", base_plan="auto"):
         "reuse",
         "reset",
         "bynode",
+        "nonquant",
     ],
 )
 def test_device_tree_complete_cuda(case, graph):
@@ -355,7 +356,6 @@ def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
         ("unbounded", "auto", "(selective_unbounded) route=selective_prefix"),
         # per-node masks drawn on the host: the host flow
         ("bynode", "auto,device_bynode_masks:off", "(plan_off) route=host_two_sync prefix=bynode_host_masks"),
-        ("nonquant", "auto", "(nonquant_l15) route=l15_graph"),
         ("two_leaf", "auto", "(num_leaves_le_2) route=classic"),
         ("l1", "auto", "(lambda_l1) route=host_two_sync"),
     ],

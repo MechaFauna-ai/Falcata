@@ -1275,9 +1275,9 @@ def _quant_model_md5(profile, extra_params=None):
 
 # (profile, params-for-the-DEFAULT-variant, params-for-the-OTHER-variant, name).
 # The two variants must produce bit-identical models: every cuda_plan decision is
-# perf-only by contract. (The quantized graph level loop's graph_quant:on vs
-# graph_loop:off case went with the key in 1.2; graph_loop now serves only
-# non-quantized training, which the lattice's nonquant graph cells cover.)
+# perf-only by contract. (The graph level loops' graph_quant:on and
+# graph_loop:off cases went with their keys in 1.2; the complete device tree
+# serves both precisions, which the lattice's device tree cells cover.)
 _KILL_SWITCH_CASES = [
     ("fewbin", {}, {"cuda_plan": "auto,rowdata_4bit:off"}, "rowdata_4bit"),
     ("dense", {}, {"cuda_plan": "auto,fast_rowdata:off"}, "fast_rowdata"),
@@ -1467,15 +1467,16 @@ _HAS_COVTYPE = os.path.isdir(_COVTYPE_DIR) and os.path.isfile(_COVTYPE_DIR + "X_
     ("num_leaves", "max_depth", "quant"),
     [(63, 6, True), (63, 6, False), (127, 8, True), (31, 5, True)],
 )
-def test_cuda_multiclass_graph_loop_trains_and_is_accurate(num_leaves, max_depth, quant):
-    """Multiclass training with the CUDA graph level-loop active (default ON since
-    84db39cd) must not raise and must reach a sane accuracy.
+def test_cuda_multiclass_device_tree_trains_and_is_accurate(num_leaves, max_depth, quant):
+    """Multiclass training through the complete device tree (the default for these
+    depth-limited shapes, quantized and non-quantized) must not raise and must reach a
+    sane accuracy.
 
-    Regression guard for the 84db39cd upload-race fix: the depth-limited multiclass
-    graph loop is now the default path. This trains several covtype configs through
-    it and asserts (a) no exception / no crash and (b) accuracy in a sane band, so a
-    future change that reintroduces the upload race (garbage histograms -> near-random
-    trees) or breaks the multiclass graph path is caught.
+    Regression guard first written for the 84db39cd upload-race fix of the graph level
+    loop the device tree replaced: this trains several covtype configs through it and
+    asserts (a) no exception / no crash and (b) accuracy in a sane band, so a future
+    change that breaks a captured multiclass level path (garbage histograms ->
+    near-random trees) is caught.
     """
     Xtr = np.load(_COVTYPE_DIR + "X_train.npy")
     ytr = np.load(_COVTYPE_DIR + "y_train.npy")

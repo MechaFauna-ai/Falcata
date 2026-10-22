@@ -795,7 +795,7 @@ void CUDABestSplitFinder::FindBestSplitsForLevel(
   if (grad_scale != nullptr && hess_scale != nullptr) {
     LaunchFindBestSplitsDiscretizedForLevelKernel(pair_descs, num_pairs, grad_scale, hess_scale);
   } else {
-    LaunchFindBestSplitsForLevelKernel(pair_descs, num_pairs, nullptr, gate_on_desc_counts);
+    LaunchFindBestSplitsForLevelKernel(pair_descs, num_pairs, gate_on_desc_counts);
   }
   if (FalcataDebug().dump) {
     SynchronizeCUDADevice(__FILE__, __LINE__);

@@ -38,12 +38,7 @@ OUT_DEFAULT = Path(__file__).resolve().parent / "ablation_results.jsonl"
 #: every cuda_plan key with its default state; LOO flips it to the opposite
 ALL_KEYS = {
     "hybrid": True,
-    "selective": True,
     "one_sync": True,
-    "batch_kernels": True,
-    "batch_apply": True,
-    "graph_loop": True,
-    "graph_quant": False,
     "nonquant_deterministic": True,
     "compact_quant": True,
     "fast_rowdata": True,
@@ -55,7 +50,6 @@ ALL_KEYS = {
     "construct_tile_bin": True,
     "efb_precheck": True,
     "batch_reghist": True,
-    "batch_wide": True,
     "gh_interleave": True,
     "split_packed_read": True,
     "small_leaf_construct": True,
@@ -92,8 +86,6 @@ ALL_KEYS = {
     "sync_copy_batched": True,
     "fix_subtract_fused": True,
     "fix_subtract_masked": True,
-    "apply_struct_fused": True,
-    "gap_copy_fused": True,
     "apply_inner_rows": True,
     "apply_genbit_rows": True,
     "aggregate_load_first": True,
@@ -140,28 +132,24 @@ ALL_KEYS = {
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),
 #: so they are judged on quality delta, not bit-identity
-GROWTH_KEYS = {"hybrid", "selective", "one_sync"}
+GROWTH_KEYS = {"hybrid", "one_sync"}
 
 #: keys whose fallback path breaks exact-gain ties in a different order at
 #: scale (verified benign on numerai-deep: different tree md5, holdout corr
 #: identical to 5 decimals). Judged like growth keys.
-TIEBREAK_KEYS = {"batch_kernels"}
+TIEBREAK_KEYS: set = set()  # (batch_kernels, removed in 1.2)
 
 #: keys whose fallback assigns child-leaf indices in a different ORDER
 #: (batched apply numbers new leaves level-wise, the per-split fallback in
 #: split order): equivalent trees, different node numbering, different file
 #: md5. Verified 2026-08-09 on covtype-deep-quant: predictions bit-identical
 #: (max |diff| = 0.0) between batch_apply on/off. Judged on quality delta.
-RENUMBER_KEYS = {"batch_apply"}
+RENUMBER_KEYS: set = set()  # (batch_apply, removed in 1.2)
 
 #: keys worth paying for on the expensive numerai-deep cell
 DEEP_KEYS = [
     "hybrid",
-    "selective",
     "one_sync",
-    "batch_kernels",
-    "batch_apply",
-    "graph_loop",
     "compact_quant",
     "gh_interleave",
     "split_packed_read",
@@ -178,7 +166,6 @@ DEEP_KEYS = [
     "root_hist_short_blocks",
     "sync_copy_batched",
     "fix_subtract_fused",
-    "apply_struct_fused",
     "apply_inner_rows",
     "apply_genbit_rows",
     "aggregate_load_first",

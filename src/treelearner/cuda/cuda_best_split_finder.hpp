@@ -25,7 +25,7 @@
 #include <Falcata/cuda/cuda_split_info.hpp>
 
 #include "cuda_leaf_splits.hpp"
-#include "cuda_hybrid_graph.hpp"
+#include "cuda_device_levels.hpp"
 
 #define NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER (256)
 #define NUM_THREADS_FIND_BEST_LEAF (256)
@@ -401,9 +401,9 @@ class CUDABestSplitFinder {
   void SyncLevelLeafBestSplitsToHost(const int num_leaves, const bool staging_coherent,
                                      std::vector<CUDASplitInfo>* out);
 
-  /*! \brief graphs L2: stream-ordered async prefetch of leaves
+  /*! \brief cuda_plan key device_levels: stream-ordered async prefetch of leaves
    *  [0, num_leaves) of the device per-leaf best-split cache into the pinned
-   *  staging buffer, so the learner's single post-graph stream sync covers
+   *  staging buffer, so the learner's single post-tree stream sync covers
    *  it; consume with ReadPrefetchedLeafBestSplits after synchronizing */
   void PrefetchLeafBestSplitsAsync(const int num_leaves, cudaStream_t stream) const;
 
@@ -413,20 +413,9 @@ class CUDABestSplitFinder {
   void ReadPrefetchedLeafBestSplits(const int num_leaves, std::vector<CUDASplitInfo>* out) const;
 
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  /*! \brief graphs L1 body capture: find + sync kernels with placeholder pair
-   *  counts on cuda_streams_[0]; node handles + roles collected for the device
-   *  controller (which sets the find grid x per tree from num_used_tasks) */
-  void CaptureHybridGraphFindKernels(const CUDAHybridPairDescriptor* pair_descs,
-                                     const score_t* grad_scale,
-                                     const score_t* hess_scale,
-                                     const CUDAHybridGraphLoopState* gstate,
-                                     std::vector<cudaGraphNode_t>* nodes,
-                                     std::vector<int>* roles,
-                                     std::vector<int>* role_static_x);
-
-  /*! \brief preallocates the per-pair best-split scratch for the graph loop's
-   *  worst case, so the captured buffer pointer never reallocates */
-  void EnsureHybridGraphCapacity(const int max_pairs) { EnsureHybridLevelCapacity(max_pairs); }
+  /*! \brief cuda_plan key device_levels: preallocates the per-pair best-split scratch for a device level's worst
+   *  case, so a captured or in-flight buffer pointer never reallocates */
+  void EnsureDeviceLevelCapacity(const int max_pairs) { EnsureHybridLevelCapacity(max_pairs); }
   /*! \brief cuda_plan key forest_batched: the level output sized for levels of up to max_pairs pairs now, unless
    *  that takes more than max_bytes (a growth during training is a device synchronize, which stalls every slot) */
   void PresizeLevelOutput(const int max_pairs, const size_t max_bytes) {
@@ -463,23 +452,8 @@ class CUDABestSplitFinder {
     return slots * slot_bytes;
   }
 
-  /*! \brief the batched find kernel's x-grid extent of the current tree */
-  int hybrid_graph_find_grid_x() const {
-    const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
-    return compact_tasks ? num_used_tasks_ : num_tasks_;
-  }
-
   int num_used_tasks() const { return num_used_tasks_; }
   int num_tasks() const { return num_tasks_; }
-
-  /*! \brief per-tree pointer/flag choices baked into captured find/sync kernel
-   *  params: a graph instance is only valid for trees whose key matches */
-  void HybridGraphKeyPointers(std::vector<const void*>* key) const {
-    const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
-    key->push_back(compact_tasks ?
-      static_cast<const void*>(cuda_used_task_indices_.RawDataReadOnly()) : nullptr);
-    key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
-  }
 
   cudaStream_t find_stream() const { return cuda_streams_[0]; }
 
@@ -492,7 +466,10 @@ class CUDABestSplitFinder {
   bool LastSyncRanSelect() const { return last_sync_ran_select_; }
   /*! \brief cuda_plan key device_level_graph: the pointers and per-tree task layout a captured level search bakes in */
   void DeviceLevelGraphKey(std::vector<const void*>* key) const {
-    HybridGraphKeyPointers(key);
+    const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+    key->push_back(compact_tasks ?
+      static_cast<const void*>(cuda_used_task_indices_.RawDataReadOnly()) : nullptr);
+    key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
     // A host continuation can grow these slabs after the prefix was captured.
     key->push_back(static_cast<const void*>(cuda_best_split_info_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_cat_threshold_feature_.RawDataReadOnly()));
@@ -671,15 +648,13 @@ class CUDABestSplitFinder {
   void LaunchFindBestSplitsForLevelKernel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
-    const CUDAHybridGraphLoopStateOpt gstate = nullptr,
     const bool use_desc_counts = false);
 
   void LaunchFindBestSplitsDiscretizedForLevelKernel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
     const score_t* grad_scale,
-    const score_t* hess_scale,
-    const CUDAHybridGraphLoopStateOpt gstate = nullptr);
+    const score_t* hess_scale);
 
   void LaunchFindBestSplitsForLevelKernelVector(
     const CUDAHybridPairDescriptor* pair_descs,
@@ -886,18 +861,18 @@ class CUDABestSplitFinder {
   std::vector<int> feature_task_begin_;
   std::vector<int> feature_task_ids_;
   void EnsureLevelNodeMaskCapacity();
-  /*! \brief the level finders' node mask table: null unless level_node_masks_, and null for the graph loop (gstate);
-   *  the device tree's captured levels read the device-drawn table of SetDeviceNodeMasks */
-  const int8_t* const* LevelNodeMaskTable(const CUDAHybridGraphLoopStateOpt gstate) const {
-    if (!level_node_masks_ || gstate != nullptr) {
+  /*! \brief the level finders' node mask table: null unless level_node_masks_; the device tree's captured levels
+   *  read the device-drawn table of SetDeviceNodeMasks */
+  const int8_t* const* LevelNodeMaskTable() const {
+    if (!level_node_masks_) {
       return nullptr;
     }
     return device_node_table_ != nullptr ? device_node_table_ :
       reinterpret_cast<const int8_t* const*>(cuda_level_node_masks_.RawDataReadOnly());
   }
   /*! \brief the level finders' and syncs' per-leaf task lists: null unless level_node_masks_ (as the table) */
-  const int* LevelNodeTaskLists(const CUDAHybridGraphLoopStateOpt gstate) const {
-    if (!level_node_masks_ || gstate != nullptr) {
+  const int* LevelNodeTaskLists() const {
+    if (!level_node_masks_) {
       return nullptr;
     }
     return device_node_tasks_ != nullptr ? device_node_tasks_ : cuda_level_node_tasks_.RawDataReadOnly();

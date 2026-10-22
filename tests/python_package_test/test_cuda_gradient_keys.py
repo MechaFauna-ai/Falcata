@@ -83,7 +83,7 @@ def test_gradient_keys_are_bit_identical_cuda(objective, extra, quantized, weigh
     "extra",
     [
         {"use_quantized_grad": True, "bagging_fraction": 0.6, "bagging_freq": 1},
-        {"use_quantized_grad": False, "cuda_plan": "auto,graph_loop:off"},
+        {"use_quantized_grad": False, "cuda_plan": "auto,device_tree:off"},
         {"use_quantized_grad": True, "objective": "multiclassova", "num_class": 4},
     ],
 )

@@ -199,8 +199,8 @@ def build_cells():
     )
 
     # --- plan-flip equality cells: each decision must be behavior-preserving - #
-    # (the quantized graph prefix's graph_loop flip, graph/flip*-graph_loop, went with graph_quant in 1.2: graph_loop
-    # now selects only the non-quantized graph loop, which the nonquant cells below flip)
+    # (the quantized graph prefix's graph_loop flip, graph/flip*-graph_loop, went with graph_quant in 1.2, and the
+    # non-quantized graph loop with graph_loop / graph_det in P3: device_tree:off flips the nonquant cells below)
     flips = [
         ("fewbin", "rowdata_4bit", {}, {"cuda_plan": "auto,rowdata_4bit:off"}),
         ("dense", "fast_rowdata", {}, {"cuda_plan": "auto,fast_rowdata:off"}),
@@ -309,41 +309,39 @@ def build_cells():
     )
     # Non-quant DETERMINISTIC cells: on these shapes every construct runs the
     # deterministic kernels (per-leaf, batched-level, compact view, sparse
-    # fallback), so their models fingerprint like quant cells do. The graph
-    # loop now captures the det construct+merge node pair too (per-level
-    # extents come from the controller and the kernels' device layout
-    # replica), so DEFAULT-plan cells on graph-eligible shapes fingerprint as
-    # well -- graph/nonquant-det and imbalanced/nonquant-det below pin
-    # exactly that path; the graph_loop:off det cells pin the host loop.
-    cell("dense/nonquant-det", "dense", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50)
+    # fallback), so their models fingerprint like quant cells do. The
+    # device_tree:off det cells pin the one-sync host loop with the double-slot
+    # deterministic batched construct (graph_loop:off's flow before P3); the
+    # DEFAULT-plan cells pin the complete device tree's fixed-point levels.
+    cell("dense/nonquant-det", "dense", {"quant_mode": "none", "cuda_plan": "auto,device_tree:off"}, rounds=50)
     # hybrid:off -- the BATCHED level flow keeps the atomic kernel for compact
     # views (per-leaf det covers them; batched does not yet), so the compact
     # det lock pins the per-leaf flow.
     cell("sampled/nonquant-det", "sampled", {"quant_mode": "none", "cuda_plan": "auto,hybrid:off"}, rounds=50)
-    cell("missing/nonquant-det", "missing", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50)
+    cell("missing/nonquant-det", "missing", {"quant_mode": "none", "cuda_plan": "auto,device_tree:off"}, rounds=50)
     cell(
-        "categorical/nonquant-det", "categorical", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50
-    )
-    # graph_det:on -- the captured det construct+merge nodes inside the graph
-    # loop (opt-in; the DEFAULT graph plan captures the fixed-point construct
-    # and its convert node instead, nonquant_deterministic). imbalanced is the
-    # shape whose atomic/det mix raced in the 2026-08-19 lattice, so its
-    # graph-det model is pinned too.
-    cell("graph/nonquant-det", "graph", {"quant_mode": "none", "cuda_plan": "auto,graph_det:on"}, rounds=50)
-    cell("imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none", "cuda_plan": "auto,graph_det:on"}, rounds=50)
-    # the DEFAULT plan in the graph: the fixed-point construct + convert nodes (fingerprinted since
-    # nonquant_deterministic)
-    cell("graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50)
-    # ... and the graph det loop must be BIT-IDENTICAL to the host det loop:
-    # the controller replays the host loop's decisions and the det
-    # construct+merge is row-grouping invariant, so swapping graph_det:on for
-    # graph_loop:off may not change a single tree byte.
-    cell(
-        "graph/flip-graph_loop-det",
-        "graph",
-        {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"},
+        "categorical/nonquant-det",
+        "categorical",
+        {"quant_mode": "none", "cuda_plan": "auto,device_tree:off"},
         rounds=50,
-        equal_to="graph/nonquant-det",
+    )
+    # the double-slot deterministic models of the graph and imbalanced shapes (graph_det:on's before P3, which the
+    # graph loop's det nodes trained bit-identically to the host det loop). imbalanced is the shape whose atomic/det
+    # mix raced in the 2026-08-19 lattice.
+    cell("graph/nonquant-det", "graph", {"quant_mode": "none", "cuda_plan": "auto,device_tree:off"}, rounds=50)
+    cell(
+        "imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none", "cuda_plan": "auto,device_tree:off"}, rounds=50
+    )
+    # the DEFAULT plan: the complete device tree's fixed-point construct + convert levels (fingerprinted since
+    # nonquant_deterministic; the graph loop's model before P3)
+    cell("graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50)
+    # ... equal, on this shape, to the double-slot deterministic host loop (empirical: both sums are exact here)
+    cell(
+        "graph/flip-device_tree-nonquant",
+        "graph",
+        {"quant_mode": "none", "cuda_plan": "auto,device_tree:off"},
+        rounds=50,
+        equal_to="graph/nonquant",
     )
     # categorical, non-quant: hybrid-vs-classic equivalence guard
     cell(
@@ -487,7 +485,7 @@ def build_cells():
     # variant), and the tree learner also disables the whole hybrid family and
     # the fp32 histogram layout there, so a wide shape always runs the classic
     # loop over the deterministic per-leaf constructs -- bit-stable, no
-    # graph_loop:off needed.
+    # device_tree:off needed.
     #
     # Three cells because the wide kernel has three distinct entries and one
     # shape covers only one of them (task counts confirmed against the tasks
@@ -1024,7 +1022,7 @@ def build_cells():
     # with this branch's build; the key off, and both integration keys off, must train the base cell's model.
     for profile in ["dense", "categorical"]:
         base = f"{profile}/nonquant-det-twosync"
-        cell(base, profile, {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off,one_sync:off"}, rounds=50)
+        cell(base, profile, {"quant_mode": "none", "cuda_plan": "auto,device_tree:off,one_sync:off"}, rounds=50)
         for name, plan in [
             ("split_counts_early", "split_counts_early:off"),
             ("integ", integ_flip.removeprefix("auto,")),
@@ -1032,7 +1030,7 @@ def build_cells():
             cell(
                 f"{profile}/flip-{name}-nonquant-twosync",
                 profile,
-                {"quant_mode": "none", "cuda_plan": f"auto,graph_loop:off,one_sync:off,{plan}"},
+                {"quant_mode": "none", "cuda_plan": f"auto,device_tree:off,one_sync:off,{plan}"},
                 rounds=50,
                 equal_to=base,
             )
@@ -1137,7 +1135,7 @@ def build_cells():
         {"cuda_plan": "auto,fix_subtract_fused:off,fix_subtract_masked:off"},
         equal_to="sampled/flipbase-fix_subtract_fused",
     )
-    # gradient_fp64_lean: the binary logloss gradients, plain, deterministic non-quantized (graph_det), with label
+    # gradient_fp64_lean: the binary logloss gradients, plain, deterministic non-quantized (double-slot), with label
     # weights (is_unbalance, scale_pos_weight), mild sample weights (uniform 0.5-2: wide ones make master's model
     # nondeterministic, see the init score), another sigmoid, fixedpoint, and one-vs-all multiclass (the binary
     # kernel per class)
@@ -1148,7 +1146,7 @@ def build_cells():
     cell("graph/quant-ova", "graph", ova)
     for base, profile, base_params, rounds in [
         ("imbalanced/quant", "imbalanced", {}, 25),
-        ("imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none", "cuda_plan": "auto,graph_det:on"}, 50),
+        ("imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none", "cuda_plan": "auto,device_tree:off"}, 50),
         ("imbalanced/unbalance", "imbalanced", {"is_unbalance": True}, 25),
         ("imbalanced/posweight", "imbalanced", {"scale_pos_weight": 10.0}, 25),
         ("imbalanced/fixedpoint", "imbalanced", {"quant_mode": "fixedpoint"}, 25),
@@ -1320,8 +1318,8 @@ def build_cells():
     # One cell per refusal route of the CUDA learner on master 5bec2574 (runs/device_default/FULL_DEVICE_PLAN.md
     # section 1, rows rNN; a/b/c are variants): each configuration the complete device tree refuses today, recorded on
     # the route that serves it now (the device_levels prefix + host two-sync loop, the selective device prefix + host
-    # selective loop, the non-quantized L1.5 graph / one-sync loops, forest slots, the per-pair search, the classic
-    # per-split loop). The full-device-controller PRs port these routes onto the device controller and delete host
+    # selective loop, the non-quantized L1.5 graph (on the device tree since P3) / one-sync loops, forest slots, the
+    # per-pair search, the classic per-split loop). The full-device-controller PRs port these routes onto the device controller and delete host
     # paths; each must keep every md5 below unless it is marked as a model change (CEGB: level-wise on the device, a
     # documented change; re-baseline with --update route/r18-cegb). Not here: multi-GPU (rows 10-11, the vast.ai
     # 2-GPU check), low shared memory (row 16, not reproducible on this GPU), the empty task list (row 23, a unit

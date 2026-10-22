@@ -49,8 +49,7 @@ namespace Falcata {
   X(kLinearBudget, "linear_budget", "20")                 /* linear trees, budget-limited */           \
   X(kNumLeavesLe2, "num_leaves_le_2", "21")                                                            \
   X(kNonquantSelective, "nonquant_selective", "5")        /* quant_mode=none, budget-limited */        \
-  X(kNonquantOnesync, "nonquant_onesync", "4")            /* quant_mode=none outside the L1.5 bound */ \
-  X(kNonquantL15, "nonquant_l15", "4")                    /* quant_mode=none inside the L1.5 bound */  \
+  X(kNonquantOnesync, "nonquant_onesync", "4")   /* quant_mode=none, depth > 11 or num_leaves > 2047 */ \
   X(kLambdaL1, "lambda_l1", "13")                                                                      \
   X(kPathSmooth, "path_smooth", "13")                                                                  \
   X(kLargeBinLayout, "large_bin_layout", "14")            /* partitions on global-memory histograms */ \
@@ -90,7 +89,6 @@ inline const char* DeviceTreeReasonToken(const DeviceTreeReason reason) {
   X(kSelectivePrefix, "selective_prefix")       /* device prefix, then the host selective loop */       \
   X(kSelectiveTwoSync, "selective_two_sync")    /* the host selective two-sync loop */                  \
   X(kSelectiveOneSync, "selective_one_sync")    /* the host selective one-sync loop (non-quantized) */  \
-  X(kL15Graph, "l15_graph")                     /* the non-quantized captured level graph */            \
   X(kOneSync, "one_sync")                       /* the non-quantized one-sync level loop */             \
   X(kClassic, "classic")                        /* the per-split loop */                                \
   X(kForestSlots, "forest_slots")               /* a forest slot beside other slot threads */
