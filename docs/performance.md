@@ -3047,7 +3047,8 @@ and `device_tree:off` makes it the flow for all of them.
 `device_level_graph` caches the prefix launches. Cache identity includes resizable buffers, task/layout values,
 packing codec and GOSS's changing ridge. Repeated cache misses switch subsequent trees to the host path. Both
 modes exclude forest slots and legacy single-stream diagnostics. Unsupported kernels, nonquantized training,
-node masks, categorical/vector leaves, constraints, forced splits and selective growth keep their host flows.
+node masks, categorical/vector leaves, constraints and forced splits keep their host flows; selective growth runs
+its first levels on this prefix (`selective_device_prefix`, below).
 Configuration/data resets invalidate captures and static tables; quantizer row and leaf-budget storage is also
 refreshed, retaining its stochastic tree counter. Empty histogram work returns before claiming rows, and stopped
 levels initialize their claim counters.
@@ -3112,6 +3113,41 @@ The poisoned reset/pairs probe passes initcheck with zero errors. Full-applicati
 unused bulk tree/readback bytes are reported, and an instrumented graph run did not finish within its timeout.
 Historical unknown-source model mismatches and illegal accesses are not proven to have the same cause or to be
 resolved by these fixes. The current results apply to the exact source/library above.
+
+### Selective growth's first levels on the prefix (`selective_device_prefix`)
+
+A binding leaf budget (`2^max_depth > num_leaves + 1`) or unlimited depth trains with selective grow-then-prune
+growth: per level the host reads every leaf's best split back, runs a greedy leaf-wise simulation over the applied
+splits and the new candidates, collapses displaced subtrees, applies the selected candidates and reads the split
+counts back, two blocking readbacks per level. `selective_device_prefix` (default ON) runs the first
+`K = min(floor(log2(num_leaves)), max_depth - 1, 10)` levels as this section's prefix instead. On level k the
+simulation holds at most `2^k - 1` applied splits and `2^k` candidates, all reachable from the root; while
+`2^(k+1) <= num_leaves` that is within the budget `num_leaves - 1`, so it selects every valid candidate and collapses
+nothing, which is the prefix's "split every valid leaf" (the same `is_valid` set; gain, data and hessian gates act
+only through it). The prefix's select also journals each applied split's best-split record (the gain in double, the
+child sums and outputs) and the host rebuilds its selective records (parents, windows, depths, gains) from that
+journal, then continues the selective loop at level K with the prefix's last search already read back. The prefix
+numbers a level's right children leaf-ascending where the host numbers them in greedy order; the simulation, its
+tie-break and the final renumbering read gains and classic leaf indices only, so the models are bit-identical.
+Same eligibility as the prefix (quantized, numerical, scalar, single GPU, no per-node masks); forced splits never
+reach selective growth. `FALCATA_DEBUG=diag` prints one `selective_device_prefix: levels=K applied_levels=...` line
+per tree.
+
+Measured (RTX 5090, strict exclusive runs, 6 alternating pairs of fresh processes, 1000 rounds, train wall clock;
+master `025008ca` vs this change with the default plan, and the same binary with `selective_device_prefix:off`; every
+run of every arm md5-identical):
+
+| cell | prefix levels | master s | default s | key off s | master/default | master/key off |
+|---|---:|---:|---:|---:|---:|---:|
+| binding-budget (151 leaves, depth 10, binary) | 7 | 0.8187 | 0.7635 | 0.8151 | 1.072x | 1.004x |
+| unbounded-fewbin (1024 leaves, unlimited, regression) | 10 | 2.2539 | 2.1239 | 2.2630 | 1.061x | 0.996x |
+| higgs (255 leaves, depth 10, binary) | 7 | 1.0061 | 0.9630 | 1.0046 | 1.045x | 1.002x |
+| fraud (255 leaves, unlimited, binary) | 7 | 0.9529 | 0.9114 | 0.9570 | 1.046x | 0.996x |
+| covtype-deep (1024 leaves, depth 10: complete device tree, not selective) | - | 3.9803 | 3.9901 | | 0.998x | |
+| epsilon-fixedpoint (512 leaves, depth 9: complete device tree) | - | 8.4871 | 8.4968 | | 0.999x | |
+
+The gain is below the idle share the prefix levels held (the prefix's launches are sized for each level's worst
+case, as in section 10w); the deep levels after the prefix keep their two readbacks per level.
 
 
 Whole-tree fused apply bounds only its physical workers by the joint split/gap row extent:

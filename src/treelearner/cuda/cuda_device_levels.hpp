@@ -171,6 +171,9 @@ struct CUDADeviceLevelConfig {
   /*! \brief cuda_plan keys dense_level_row_blocks / level_row_blocks: the rows floor of a multi-pair level */
   int level_row_blocks;
   CUDADeviceLevelConstructShape shape;
+  /*! \brief cuda_plan key selective_device_prefix: per applied split (in applied order, at the journal's split
+   *  index) a raw copy of the split's best-split record as the select reads it; nullptr: not recorded */
+  CUDASplitInfo* split_info_journal;
 };
 
 /*! \brief block threads of the select / pairs kernels at a level of at most max_splits splits */

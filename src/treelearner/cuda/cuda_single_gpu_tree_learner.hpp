@@ -381,7 +381,14 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // after the root level's search is enqueued: num_levels device-driven levels (apply + children's search), one
   // readback, the host bookkeeping replayed; host_leaf_best_splits_ then hold the last search's result and *pairs
   // the last level's pairs, as after the host loop's own readback. Returns the splits applied.
-  int TrainDeviceLevels(CUDATree* tree, const int num_levels, std::vector<HybridPendingPair>* pairs);
+  // record_split_infos (cuda_plan key selective_device_prefix): the select also journals every applied split's
+  // best-split record, read back with the journal into pinned_selective_prefix_split_infos_
+  int TrainDeviceLevels(CUDATree* tree, const int num_levels, std::vector<HybridPendingPair>* pairs,
+                        bool record_split_infos = false);
+  // cuda_plan key selective_device_prefix: the selective flow's first levels as the device_levels prefix (the root
+  // search, then TrainDeviceLevels), and the selective records rebuilt from its journal. True when it ran: the host
+  // loop then continues with the readback of the last prefix level's search (host_leaf_best_splits_, *pairs).
+  bool TrainSelectiveDevicePrefix(CUDATree* tree, std::vector<HybridPendingPair>* pairs);
   // the device levels' launches and stream edges (capturable: nothing on the legacy stream, nothing read back)
   void EnqueueDeviceLevels(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels,
                            const bool inline_all_map, const bool final_map_only);
@@ -808,6 +815,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<CUDADeviceLevelConfig> cuda_device_level_config_;
   CUDADeviceLevelConfig host_device_level_config_;
   CUDAVector<int> cuda_device_level_journal_;
+  // cuda_plan key selective_device_prefix: the applied splits' best-split records (device journal, pinned readback)
+  CUDAVector<CUDASplitInfo> cuda_selective_prefix_split_infos_;
+  void* pinned_selective_prefix_split_infos_ = nullptr;
+  size_t pinned_selective_prefix_split_infos_count_ = 0;
+  bool selective_prefix_logged_ = false;
   int* pinned_device_level_journal_ = nullptr;
   size_t device_level_journal_size_ = 0;
   CUDAVector<CUDAHybridGraphFeatureMeta> cuda_device_level_feature_meta_;
