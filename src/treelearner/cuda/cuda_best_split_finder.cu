@@ -2278,7 +2278,7 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
     __syncthreads();
     if (s_last != 0) {
       __threadfence();
-      DeviceLevelSelectBlock(*select_cfg, dls->levels_applied);
+      DeviceLevelSelectBlock<kDeviceLevelMaxPairs>(*select_cfg, dls->levels_applied);
       if (threadIdx.x == 0) {
         select_cfg->state->sync_blocks_done = 0;
       }

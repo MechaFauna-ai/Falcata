@@ -188,8 +188,9 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
 }  // namespace
 
 TEST(CUDADeviceLevelBudget, EqualGainFinalCapsKeepLowerLeafTiesAndRightChildOrder) {
-  // Original 255/depth8 and1023/depth10 final frontiers, including the full512-candidate block.
-  for (const int leaves : {128, 512}) {
+  // Original 255/depth8 and1023/depth10 final frontiers, including the full512-candidate block, and the
+  // 2047/depth11 and 4095/depth12 ones up to the whole tree's full 2048-candidate block (kDeviceTreeMaxSplits).
+  for (const int leaves : {128, 512, 1024, 2048}) {
     SCOPED_TRACE(::testing::Message() << "leaves=" << leaves);
     CheckSelection(std::vector<double>(leaves, 7.0), std::vector<bool>(leaves, true), 2 * leaves - 1);
   }

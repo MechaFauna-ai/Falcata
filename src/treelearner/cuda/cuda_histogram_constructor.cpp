@@ -2010,7 +2010,7 @@ size_t CUDAHistogramConstructor::BitChangeScratchGrowthBytes(const int max_pairs
     return 0;
   }
   // ConstructHistogramsForLevel's Resize keeps the old block until the new one is allocated
-  const size_t needed = static_cast<size_t>(std::max(max_pairs, 0)) * static_cast<size_t>(num_total_bin_);
+  const size_t needed = BitChangeScratchEntries(max_pairs);
   return hist_buffer_for_num_bit_change_.Size() >= needed ? 0 : needed * sizeof(hist_t);
 }
 
@@ -2049,10 +2049,9 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
     return;
   }
   if (use_quantized_grad_ && any_pair_needs_bit_change_copy) {
-    // one int32 region of num_total_bin_ entries per pair; sized in hist_t (8 byte)
-    // units so this allocates twice the strict need, but is only reached when a
-    // level actually contains a >16-bit parent with a <=16-bit larger child
-    const size_t needed = static_cast<size_t>(num_pairs) * static_cast<size_t>(num_total_bin_);
+    // one int32 region of num_total_bin_ entries per pair (BitChangeScratchEntries: hist_t storage units, half
+    // as many); only reached when a level actually contains a >16-bit parent with a <=16-bit larger child
+    const size_t needed = BitChangeScratchEntries(num_pairs);
     if (hist_buffer_for_num_bit_change_.Size() < needed) {
       hist_buffer_for_num_bit_change_.Resize(needed);
     }
