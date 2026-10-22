@@ -101,6 +101,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     forest_slot_ = false;
     forest_next_sample_ready_ = false;
   }
+  /*! \brief cuda_plan key forest_single_job_device: the next Train is the only tree of its group (no other slot thread
+   *  runs until it returns), so it trains as the sequential learner does: the flows forest slots exclude (graph
+   *  capture, the device_levels prefix and the complete device tree) are open to it. The forest trainer sets it around
+   *  one Train; the learner stays a forest slot otherwise (the test hooks keep counting its trees). */
+  void SetForestSoloTree(bool solo) { forest_solo_ = solo; }
   /*! \brief The per-tree counters the next Train runs under: the tree part of the bynode node keys (bynode) and the
    *  quantized discretizer's tree counter (stochastic rounding noise, error-feedback slot). Sequential training
    *  advances each by one per tree; the forest trainer gives every tree the values sequential training would. */
@@ -692,6 +697,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   // cuda_plan key forest_batched (EnableForestSlot, SetTreeCount, SetNextTreeSample)
   bool forest_slot_ = false;
+  // cuda_plan key forest_single_job_device (SetForestSoloTree): this tree is its group's only one
+  bool forest_solo_ = false;
+  /*! \brief whether other slot threads may launch while this tree trains: a forest slot not training a group's only
+   *  tree. Their legacy-stream launches would join this thread's stream capture, so no capture and no device-driven
+   *  level flow then. */
+  bool ForestSlotShared() const { return forest_slot_ && !forest_solo_; }
   bool forest_private_column_view_ = false;
   // the learner whose bin matrix (CUDARowData, read-only after its Init) this slot's histogram constructor shares
   const CUDASingleGPUTreeLearner* forest_row_data_source_ = nullptr;
