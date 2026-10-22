@@ -3134,17 +3134,17 @@ reach selective growth. `FALCATA_DEBUG=diag` prints one `selective_device_prefix
 per tree.
 
 Measured (RTX 5090, strict exclusive runs, 6 alternating pairs of fresh processes, 1000 rounds, train wall clock;
-master `025008ca` vs this change with the default plan, and the same binary with `selective_device_prefix:off`; every
+master `fe163428` vs this change with the default plan, and the same binary with `selective_device_prefix:off`; every
 run of every arm md5-identical):
 
 | cell | prefix levels | master s | default s | key off s | master/default | master/key off |
 |---|---:|---:|---:|---:|---:|---:|
-| binding-budget (151 leaves, depth 10, binary) | 7 | 0.8187 | 0.7635 | 0.8151 | 1.072x | 1.004x |
-| unbounded-fewbin (1024 leaves, unlimited, regression) | 10 | 2.2539 | 2.1239 | 2.2630 | 1.061x | 0.996x |
-| higgs (255 leaves, depth 10, binary) | 7 | 1.0061 | 0.9630 | 1.0046 | 1.045x | 1.002x |
-| fraud (255 leaves, unlimited, binary) | 7 | 0.9529 | 0.9114 | 0.9570 | 1.046x | 0.996x |
-| covtype-deep (1024 leaves, depth 10: complete device tree, not selective) | - | 3.9803 | 3.9901 | | 0.998x | |
-| epsilon-fixedpoint (512 leaves, depth 9: complete device tree) | - | 8.4871 | 8.4968 | | 0.999x | |
+| binding-budget (151 leaves, depth 10, binary) | 7 | 0.8257 | 0.7586 | 0.8217 | 1.089x | 1.005x |
+| unbounded-fewbin (1024 leaves, unlimited, regression) | 10 | 2.2588 | 2.1231 | 2.2595 | 1.064x | 1.000x |
+| higgs (255 leaves, depth 10, binary) | 7 | 1.0044 | 0.9636 | 1.0062 | 1.042x | 0.998x |
+| fraud (255 leaves, unlimited, binary) | 7 | 0.9559 | 0.9113 | 0.9558 | 1.049x | 1.000x |
+| covtype-deep (1024 leaves, depth 10: complete device tree, not selective) | - | 3.9687 | 3.9820 | | 0.997x | |
+| epsilon-fixedpoint (512 leaves, depth 9: complete device tree) | - | 8.4983 | 8.5079 | | 0.999x | |
 
 The gain is below the idle share the prefix levels held (the prefix's launches are sized for each level's worst
 case, as in section 10w); the deep levels after the prefix keep their two readbacks per level.
