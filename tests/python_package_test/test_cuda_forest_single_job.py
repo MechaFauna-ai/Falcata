@@ -104,6 +104,8 @@ def _md5(params, plan, X, y, rounds):
         # outside the device tree's bound: the device_levels prefix / quantized graph prefix and the selective tail
         ("binary", "binary", "stochastic", {"num_leaves": 127, "max_depth": -1}),
         ("regression", "regression", "stochastic", {"num_leaves": 255, "max_depth": 8, "min_data_in_leaf": 1}),
+        # a binding leaf budget (2^7 > 40 + 1): selective growth with the selective device prefix in a solo tree
+        ("binary", "binary", "stochastic", {"num_leaves": 40, "max_depth": 7}),
     ],
 )
 def test_forest_single_job_same_forest_cuda(objective, kind, quant_mode, extra):
@@ -132,7 +134,7 @@ flc.train(cfg, ds, num_boost_round=rounds)
 """
 
 
-def _diag(params, rounds):
+def _diag_lines(params, rounds):
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["FALCATA_DEBUG"] = "diag"
     res = subprocess.run(
@@ -144,7 +146,11 @@ def _diag(params, rounds):
         check=False,
     )
     assert res.returncode == 0, res.stderr[-3000:]
-    lines = res.stderr.splitlines()
+    return res.stderr.splitlines()
+
+
+def _diag(params, rounds):
+    lines = _diag_lines(params, rounds)
     groups = [line for line in lines if line.startswith("[forest-diag] rounds")]
     solo = [line for line in groups if line.endswith("mode single job (non-slot)")]
     slots = [line for line in groups if line.endswith("mode slots")]
@@ -218,3 +224,13 @@ def test_forest_single_job_modes_cuda(extra, mode):
         assert len(solo) == 6, solo + slots
         assert not slots, solo + slots
         assert complete == 6
+
+
+@pytest.mark.parametrize("shape", [{"num_leaves": 127, "max_depth": -1}, {"num_leaves": 40, "max_depth": 7}])
+def test_forest_single_job_takes_the_selective_device_prefix_cuda(shape):
+    # unbounded depth / a binding leaf budget: selective growth, whose first levels run on the device in a solo tree
+    for key, want in (("", 6), (KEY_OFF, 0)):
+        lines = _diag_lines(_engage_params(cuda_plan="auto,forest_group:1" + key, **shape), 6)
+        assert sum(line.endswith("mode single job (non-slot)") for line in lines) == want
+        assert sum("selective_device_prefix: levels=" in line for line in lines) == want
+        assert not any("device_tree: complete" in line for line in lines)
