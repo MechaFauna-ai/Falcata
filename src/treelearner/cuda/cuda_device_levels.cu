@@ -63,10 +63,12 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
 }
 
 // One level's host decisions between its search and its apply (DeviceLevelSelectBlock, cuda_device_levels.cuh), as a
-// launch of its own where the level's sync does not run them in its last block
+// launch of its own where the level's sync does not run them in its last block (MAX_SPLITS: kDeviceLevelMaxPairs for
+// the prefix, kDeviceTreeMaxSplits for a whole tree, whose final level has up to 2^(max_depth - 1) splits)
+template <int MAX_SPLITS>
 __global__ void DeviceLevelSelectKernel(const CUDADeviceLevelConfig cfg, const int level) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the level sync's leaf entries are complete and visible
-  DeviceLevelSelectBlock(cfg, level);
+  DeviceLevelSelectBlock<MAX_SPLITS>(cfg, level);
 }
 
 // The children's search descriptors of the level just applied (DeviceLevelPairsBlock, cuda_device_levels.cuh), as a
@@ -85,8 +87,13 @@ void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_l
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
                              cudaStream_t stream) {
   // cuda_plan key pdl_level_chain: a programmatic dependent of the level sync launched just before on this stream
-  LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel, dim3(1), dim3(DeviceLevelThreads(max_splits)),
-                         0, stream, config, level);
+  if (config.whole_tree) {
+    LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceTreeMaxSplits>, dim3(1),
+                           dim3(DeviceLevelThreads(max_splits)), 0, stream, config, level);
+  } else {
+    LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceLevelMaxPairs>, dim3(1),
+                           dim3(DeviceLevelThreads(max_splits)), 0, stream, config, level);
+  }
 }
 
 void LaunchDeviceLevelPairs(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
