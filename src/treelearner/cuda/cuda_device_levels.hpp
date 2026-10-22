@@ -61,6 +61,25 @@ constexpr int kDeviceLevelClaimColumns = 64;
 constexpr int kDeviceLevelJournalHeader = 5;
 constexpr int kDeviceLevelJournalRecord = 3;
 
+/*! \brief cuda_plan key device_bynode_masks: the most pairs per chunk whose per-node task-list offsets stay in int range.
+ *  The (offset, count) table holds int offsets 2 * slots + row_slot * max_tasks, row slots = slots unchunked (chunk ==
+ *  pairs) and 1 + 2 * chunk chunked; returns pairs when the unchunked layout fits, else the largest chunk < pairs that
+ *  fits, 0 when none does (the caller refuses the complete tree) */
+inline int DeviceTreeBynodeChunkCap(const int64_t slots, const int64_t max_tasks, const int pairs) {
+  constexpr int64_t kIntMax = 2147483647;
+  const int64_t tasks = max_tasks > 0 ? max_tasks : 1;
+  if (2 * slots + slots * tasks <= kIntMax) {
+    return pairs;
+  }
+  // 2 * slots + (1 + 2 chunk) * tasks <= kIntMax
+  const int64_t room = kIntMax - 2 * slots;
+  if (room < 3 * tasks) {
+    return 0;
+  }
+  const int64_t chunk = (room / tasks - 1) / 2;
+  return static_cast<int>(chunk < pairs - 1 ? chunk : pairs - 1);
+}
+
 /*! \brief the applied splits per level from a journal's level tags (host replay): counts[L] for L < num_levels */
 inline bool DeviceLevelJournalCounts(const int* journal, const int total_splits, const int num_levels,
                                      int* counts) {

@@ -177,7 +177,9 @@ __device__ __forceinline__ void DeviceBynodeDrawNode(const CUDADeviceBynodeConfi
     count += s_total;
   }
   if (tid == 0) {
-    cfg.tasks[2 * leaf] = 2 * cfg.num_slots + slot * cfg.max_tasks;
+    // int range: PlanDeviceTreeChunks caps the chunk so 2 * num_slots + row slots * max_tasks fits (64-bit math here)
+    cfg.tasks[2 * leaf] = static_cast<int>(2 * static_cast<int64_t>(cfg.num_slots) +
+                                           static_cast<int64_t>(slot) * cfg.max_tasks);
     cfg.tasks[2 * leaf + 1] = min(count, cfg.max_tasks);
     if (cfg.table != nullptr) {
       cfg.table[leaf] = row;  // pair chunking: the leaf's row lives in its chunk slot

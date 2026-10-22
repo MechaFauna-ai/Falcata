@@ -7,6 +7,7 @@ num_leaves + 1. Diagnostics prove engagement on every eligible round, including 
 rather than merely comparing a fallback.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -370,6 +371,45 @@ def test_device_tree_unsupported_cuda(case, plan, line):
     assert "device_tree: complete" not in diag
 
 
+def _md5_probe(name):
+    X, y, params, rounds = _case(name)
+    booster = flc.train(params, flc.Dataset(X, label=y, params=params), num_boost_round=rounds)
+    text = "\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line)
+    print(json.dumps({"md5": hashlib.md5(text.encode()).hexdigest(), "rounds": rounds}))
+
+
+def _run_md5(name, debug):
+    code = "import runpy,sys; runpy.run_path(sys.argv[1])['_md5_probe'](sys.argv[2])"
+    result = subprocess.run(
+        [sys.executable, "-c", code, __file__, name],
+        env=dict(os.environ, FALCATA_DEBUG=debug),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + "\nSTDERR:\n" + result.stderr[-6000:]
+    return json.loads(result.stdout.splitlines()[-1]), result.stderr
+
+
+@_REQUIRES_CUDA
+def test_device_tree_scratch_too_large_falls_back_to_host_loop_cuda():
+    # FALCATA_DEBUG=vramfree=2 at depth 13: the tree's fixed scratch alone (descriptors, slots, journal, the global
+    # select's scratch) exceeds the 2 MiB "free", so not even one searched pair per chunk fits. The host level loop
+    # grows the trees (no CUDA Fatal), with the complete device tree's model bytes.
+    capped, diag = _run_md5("deep13", "diag,vramfree=2")
+    assert re.search(
+        r"device_tree: scratch too large: max_depth 13 needs [\d.]+ MiB at one searched pair per chunk, "
+        r"[\d.]+ MiB free: host level loop",
+        diag,
+    ), diag[-3000:]
+    assert diag.count("device_tree: fallback (scratch_too_large) route=host_two_sync\n") == 1, diag[-3000:]
+    assert len(re.findall(r"device_tree: fallback \(", diag)) == 1, diag[-3000:]
+    assert "device_tree: complete" not in diag
+    device, device_diag = _run_md5("deep13", "diag")
+    assert device_diag.count("device_tree: complete") == device["rounds"]
+    assert capped["md5"] == device["md5"]
+
+
 def _chunk_probe(name, graph):
     X, y, params, rounds = _case(name)
     models = []
@@ -386,14 +426,16 @@ def _chunk_probe(name, graph):
 @pytest.mark.parametrize("graph", ["off", "on"])
 @pytest.mark.parametrize("case", ["deep12", "deep13", "bynode", "fivebin_wide"])
 def test_device_tree_pair_chunks_cuda(case, graph):
-    # FALCATA_DEBUG=vramfree=2 leaves 2 MiB "free": the widest search's per-pair scratch (finder output, bit-change
+    # FALCATA_DEBUG=vramfree=2 (6 at depth 13) leaves a few MiB "free": the widest search's per-pair scratch (finder output, bit-change
     # scratch, bynode rows) does not fit half of it, so each wide level's fix/subtract and find run over pair chunks.
     # The complete tree still grows every tree, with the prefix's and the host flow's model bytes (the chunk boundary
     # changes no float result).
     code = "import runpy,sys; runpy.run_path(sys.argv[1])['_chunk_probe'](*sys.argv[2:])"
+    # (deep13's fixed scratch alone is over 2 MiB: 6 MiB leaves room for 8 chunks)
+    vramfree = 6 if case == "deep13" else 2
     result = subprocess.run(
         [sys.executable, "-c", code, __file__, case, graph],
-        env=dict(os.environ, FALCATA_DEBUG="diag,vramfree=2"),
+        env=dict(os.environ, FALCATA_DEBUG=f"diag,vramfree={vramfree}"),
         capture_output=True,
         text=True,
         check=False,

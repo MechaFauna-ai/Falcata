@@ -134,6 +134,8 @@ def test_device_tree_default_engages_past_depth_12_cuda(leaves, depth):
     [
         # a binding leaf budget: selective growth, its first levels as the device prefix
         (40, 6, "selective_budget"),
+        # one leaf short of depth 13's bound (2^13 > 8190 + 1): just outside the complete tree
+        (8190, 13, "selective_budget"),
         (255, -1, "selective_unbounded"),
     ],
 )

@@ -3535,6 +3535,7 @@ void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
   device_levels_disabled_ = false;
   selective_prefix_logged_ = false;  // a new config reports its levels again
   device_tree_chunk_pairs_ = -1;
+  device_tree_scratch_refused_ = false;
   device_level_graph_disabled_ = false;
   device_level_graph_hits_ = 0;
   device_level_graph_misses_ = 0;
@@ -3645,6 +3646,9 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   if (!depth_limited) {
     return R::kSelectiveBudget;
   }
+  if (device_tree_scratch_refused_) {
+    return R::kScratchTooLarge;
+  }
   if (device_levels_disabled_) {
     return R::kSetupFailed;
   }
@@ -3715,6 +3719,8 @@ void CUDASingleGPUTreeLearner::BeginDeviceBynode() {
     std::vector<int> task_inner;
     int max_tasks = 0;
     cuda_best_split_finder_->NodeTaskTables(shape.num_sampled, &task_inner, &max_tasks);
+    CHECK_LE(2 * static_cast<int64_t>(slots) + static_cast<int64_t>(row_slots) * std::max(1, max_tasks),
+             static_cast<int64_t>(std::numeric_limits<int>::max()));
     // every buffer at its training-long size: the level kernels and the finder's captured launches keep them
     bynode_table_bytes_ = (static_cast<size_t>(slots) * sizeof(int8_t*) + 255) / 256 * 256;
     bynode_row_slots_ = row_slots;
@@ -3731,7 +3737,10 @@ void CUDASingleGPUTreeLearner::BeginDeviceBynode() {
     cuda_bynode_tasks_.Resize(task_ints);
     std::vector<int> ranges(2 * static_cast<size_t>(slots), 0);
     for (int leaf = 0; leaf < slots; ++leaf) {
-      ranges[2 * leaf] = 2 * slots + (chunked ? 0 : leaf) * max_tasks;
+      // in int range: PlanDeviceTreeChunks caps the chunk (DeviceTreeBynodeChunkCap)
+      const int64_t offset = 2 * static_cast<int64_t>(slots) + static_cast<int64_t>(chunked ? 0 : leaf) * max_tasks;
+      CHECK_LE(offset, static_cast<int64_t>(std::numeric_limits<int>::max()));
+      ranges[2 * leaf] = static_cast<int>(offset);
     }
     CopyFromHostToCUDADevice<int>(cuda_bynode_tasks_.RawData(), ranges.data(), ranges.size(), __FILE__, __LINE__);
     cuda_bynode_keys_.Resize(2 * static_cast<size_t>(slots));
@@ -3876,6 +3885,11 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     LogDeviceLevelsFallback(refusal);
     return 0;
   }
+  if (device_tree && device_tree_scratch_refused_) {
+    // PlanDeviceTreeChunks: not even one searched pair per chunk fits: the host level loop, not the prefix
+    LogDeviceLevelsFallback(DeviceTreeReason::kScratchTooLarge);
+    return 0;
+  }
   if (device_tree) {
     return config_->max_depth;
   }
@@ -3937,6 +3951,8 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
   const size_t num_features = static_cast<size_t>(train_data_->num_features());
   size_t bynode_fixed = 0;
   size_t bynode_per_slot = 0;
+  // the most pairs per chunk whose per-node task-list offsets stay in int range (depth 17 unchunked: 131074 slots)
+  int bynode_cap = pairs;
   if (bynode) {
     std::vector<int> candidates;
     std::vector<int> task_inner;
@@ -3946,6 +3962,7 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
     bynode_fixed = (slots * sizeof(int8_t*) + 255) / 256 * 256 + 2 * slots * sizeof(int) +
       2 * slots * sizeof(uint64_t) + (5 + num_features + task_inner.size()) * sizeof(int);
     bynode_per_slot = num_features + static_cast<size_t>(std::max(1, max_tasks)) * sizeof(int);
+    bynode_cap = DeviceTreeBynodeChunkCap(static_cast<int64_t>(slots), max_tasks, pairs);
   }
   const auto bynode_bytes = [&](const int chunk) {
     return bynode ? bynode_fixed + (chunk < pairs ? 1 + 2 * static_cast<size_t>(chunk) : slots) * bynode_per_slot : 0;
@@ -3959,18 +3976,17 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
   size_t free_bytes = 0;
   size_t device_bytes = 0;
   CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &device_bytes));
-  const size_t real_free_bytes = free_bytes;
   const int64_t cap_mib = FalcataDebug().vramfree_mib;
   if (cap_mib >= 0) {
     free_bytes = std::min(free_bytes, static_cast<size_t>(cap_mib) << 20);
   }
   const size_t budget = free_bytes / 2;
   int chunk = pairs;
-  if (growth_bytes(pairs) > budget) {
-    // the most pairs within the budget (growth_bytes rises with the chunk), at least one
+  if (growth_bytes(pairs) > budget || bynode_cap < pairs) {
+    // the most pairs within the budget (growth_bytes rises with the chunk) and the bynode offset cap, at least one
     chunk = 1;
     int lo = 2;
-    int hi = pairs - 1;
+    int hi = std::min(pairs - 1, bynode_cap);
     while (lo <= hi) {
       const int mid = lo + (hi - lo) / 2;
       if (growth_bytes(mid) <= budget) {
@@ -3981,13 +3997,15 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
       }
     }
   }
-  if (growth_bytes(chunk) > real_free_bytes) {
-    // not a fallback: the configuration is supported, the device lacks the memory for even one pair per chunk
-    Log::Fatal("device_tree: max_depth %d needs %.1f MiB of device scratch at one searched pair per chunk, but only "
-               "%.1f MiB are free", num_levels, growth_bytes(chunk) / (1024.0 * 1024.0),
-               real_free_bytes / (1024.0 * 1024.0));
-  }
   device_tree_chunk_pairs_ = chunk;
+  // even one pair per chunk exceeds the budget (half of the free memory; vramfree caps it), or the bynode task offsets
+  // overflow at one pair: the host level loop grows this learner's trees (reason scratch_too_large), no CUDA Fatal
+  device_tree_scratch_refused_ = growth_bytes(chunk) > budget || bynode_cap < 1;
+  if (device_tree_scratch_refused_ && FalcataDebug().diag) {
+    fprintf(stderr, "[hybrid-diag] device_tree: scratch too large: max_depth %d needs %.1f MiB at one searched pair "
+            "per chunk, %.1f MiB free (budget half): host level loop\n", num_levels,
+            growth_bytes(chunk) / (1024.0 * 1024.0), free_bytes / (1024.0 * 1024.0));
+  }
   if (FalcataDebug().diag) {
     constexpr double kMiB = 1024.0 * 1024.0;
     const size_t finder_bytes = 2 * static_cast<size_t>(cuda_best_split_finder_->num_tasks()) *

@@ -253,3 +253,22 @@ TEST(CUDADeviceLevelBudget, EmptyExhaustedAndNonfinalBindingStopWithoutApply) {
   CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, true), 8);
   CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, true), 11, false);
 }
+
+TEST(CUDADeviceLevelBudget, BynodeChunkCapKeepsTaskOffsetsInIntRange) {
+  // the per-node (offset, count) table holds int offsets 2 * slots + row_slot * max_tasks
+  constexpr int64_t kIntMax = 2147483647;
+  // depth 12 with few tasks: the unchunked layout (one row slot per leaf slot) fits, no cap
+  EXPECT_EQ(Falcata::DeviceTreeBynodeChunkCap(4098, 400, 1024), 1024);
+  // depth 17 unchunked: 131074 slots x 20000 tasks overflows; the cap forces chunks whose 1 + 2 P row slots fit
+  const int64_t slots = 131074;
+  const int64_t tasks = 20000;
+  const int pairs = 32768;
+  ASSERT_GT(2 * slots + slots * tasks, kIntMax);
+  const int cap = Falcata::DeviceTreeBynodeChunkCap(slots, tasks, pairs);
+  ASSERT_GE(cap, 1);
+  EXPECT_LT(cap, pairs);
+  EXPECT_LE(2 * slots + (1 + 2 * static_cast<int64_t>(cap)) * tasks, kIntMax);
+  EXPECT_GT(2 * slots + (1 + 2 * static_cast<int64_t>(cap + 1)) * tasks, kIntMax);
+  // not even one pair (3 row slots) fits: 0, the complete tree is refused (scratch_too_large)
+  EXPECT_EQ(Falcata::DeviceTreeBynodeChunkCap(slots, kIntMax / 2, pairs), 0);
+}

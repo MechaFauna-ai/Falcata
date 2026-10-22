@@ -2941,8 +2941,8 @@ chunks of the most pairs P that fit, reusing one chunk of scratch (the level's c
 over all its pairs). A pair's fix/subtract and search read and write only its own histograms, scratch region and leaf
 entries, and the select runs after the last chunk, so the chunk boundary changes no float result: the model is the
 same with any chunk. `FALCATA_DEBUG=diag` prints the estimate and the plan (`... searched pairs, C chunks of P
-pairs`). Only a device without the memory for one pair per chunk stops, with a fatal error naming the bytes; there is
-no memory fallback. Levels wider than 2048 splits (`max_depth > 12`: the final level has 2^(max_depth-1)) select
+pairs`). Where not even one pair per chunk fits that budget (or, with per-node masks, the task-list offsets would leave int
+range at one pair), the host level loop grows the trees (reason `scratch_too_large`; diag names the bytes). Levels wider than 2048 splits (`max_depth > 12`: the final level has 2^(max_depth-1)) select
 over global scratch with the same bitonic network as the shared-memory select (its sub-tile stages in shared-memory
 tiles), so ties keep the host's gain-descending, lower-leaf order; the journal tags each split with its level, so any
 level count fits. Before 1.2 the controller stopped at `max_depth` 12 and fell back to the prefix flow over the
@@ -3171,6 +3171,7 @@ Reasons, in their order (several can hold; the first is reported):
 | `categorical` | a categorical feature | host two-sync |
 | `bynode_outside_bound`, `bynode_host_masks` | per-node masks outside the depth bound; inside it with device masks unusable | host two-sync / selective |
 | `selective_unbounded`, `selective_budget` | `max_depth <= 0`; `2^max_depth > num_leaves + 1` | selective prefix |
+| `scratch_too_large` | the complete tree's scratch at one searched pair per chunk exceeds the free memory | host two-sync |
 | `setup_failed` | the device levels could not be set up | host two-sync |
 | `prefix_graph_churn` | (as `prefix=` only) sampled layouts kept missing the graph cache: the prefix turned itself off | host two-sync / selective two-sync |
 | `empty_task_list` | no searchable feature in the tree | host two-sync |

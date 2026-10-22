@@ -850,6 +850,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   /*! \brief PlanDeviceTreeChunks' pair chunk: -1 not yet planned (or no complete tree), else the most pairs one chunk
    *  of a level's search takes (the widest search's pairs: no chunking) */
   int device_tree_chunk_pairs_ = -1;
+  /*! \brief PlanDeviceTreeChunks: one pair per chunk exceeds the free memory; the host level loop grows the trees */
+  bool device_tree_scratch_refused_ = false;
   /*! \brief pairs SetupDeviceLevels sized the block map and descriptors for (the widest search), and the per-pair
    *  search scratch for (one chunk) */
   int device_level_max_pairs_ = 0;
