@@ -2978,7 +2978,7 @@ A level's fix/subtract and bit-change copy are launched for the level's worst ca
 these kernels with a bounded grid whose rows stride over the live pairs, read on the device. The copy keeps the
 per-pair bit-width gate. Every (pair, bin) element is computed as before. Measured on an RTX 5090 against master
 `ee84ba28`, same plan, 6 alternating pairs of 1000 rounds, md5-identical models on every arm: epsilon-sampled
-1.075, epsilon-fixedpoint 1.040, fraud-deep 1.016, covtype-deep 1.002, year 1.002 (12 pairs), higgs (1024 leaves /
+1.074, epsilon-fixedpoint 1.040, fraud-deep 1.016, covtype-deep 1.002, year 1.002 (12 pairs), higgs (1024 leaves /
 depth 10) 1.000.
 
 For the complete controller's slotted whole-row code-word construct, the physical worker grid is bounded by

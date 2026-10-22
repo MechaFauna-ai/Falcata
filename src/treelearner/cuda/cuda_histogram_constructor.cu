@@ -15,6 +15,7 @@
 #include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -2671,6 +2672,8 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
     // device) runs the fix/subtract and the bit-change copy over its live pairs with a bounded grid, where the
     // worst-case launch exceeds that grid's block budget (narrower levels keep the batched kernels unchanged)
     const bool live_tree = device_level_whole_tree_ && gstate == nullptr;
+    const char* fix_route = "batched-masked";  // diag only: which kernels this level enqueued
+    int fix_grid_x = FixSubtractMaskedGridX();
     if (gstate == nullptr && any_feature_unused_bytree_ && used_feature_info_ok_ &&
         FalcataPlan::Get().fix_subtract_fused) {
       // cuda_plan key fix_subtract_fused: fix + subtract of the sampled features, one block per pair
@@ -2685,7 +2688,10 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         hist_buffer_for_num_bit_change_.RawData(),
         dls);
       fused_fix_subtract = true;  // the kernel also did CopyChangedNumBitHistogramBatchedKernel's copies
+      fix_route = "fused";
+      fix_grid_x = 1;
     } else if (FixSubtractMaskedEnabled() && live_tree && LiveGridPays(FixSubtractMaskedGridX(), num_pairs)) {
+      fix_route = "live-masked";
       const dim3 grid(FixSubtractMaskedGridX(), LiveGridRows(FixSubtractMaskedGridX(), num_pairs));
       LaunchLevelChainKernel(PdlLevelChainEnabled(), FixSubtractDiscretizedMaskedLiveKernel,
         grid, dim3(fix_subtract_masked_block_), 0, cuda_stream_,
@@ -2705,6 +2711,8 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
     } else if (FixSubtractMaskedEnabled()) {
       LaunchFixSubtractDiscretizedMaskedKernel(pair_descs, num_pairs, gstate);
     } else {
+      fix_grid_x = num_subtract_blocks;
+      fix_route = "batched-subtract";
       if (need_fix_histogram_features_.size() > 0) {
         dim3 fix_grid(static_cast<unsigned int>(need_fix_histogram_features_.size()), num_pairs);
         FixHistogramDiscretizedBatchedKernel<<<fix_grid, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
@@ -2718,6 +2726,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
           gstate, dls);
       }
       if (live_tree && LiveGridPays(num_subtract_blocks, num_pairs)) {
+        fix_route = "live-subtract";
         const dim3 grid(num_subtract_blocks, LiveGridRows(num_subtract_blocks, num_pairs));
         SubtractHistogramDiscretizedLiveKernel<<<grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
           num_total_bin_,
@@ -2734,7 +2743,9 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
           gstate, dls);
       }
     }
+    const char* copy_route = fused_fix_subtract ? "fused" : "batched";
     if (live_tree && !fused_fix_subtract && LiveGridPays(num_subtract_blocks, num_pairs)) {
+      copy_route = "live";
       // the bit-change copies over the live pairs (a level without any: one bounded launch reading descriptors)
       const dim3 grid(num_subtract_blocks, LiveGridRows(num_subtract_blocks, num_pairs));
       LaunchLevelChainKernel(PdlLevelChainEnabled(), CopyChangedNumBitHistogramLiveKernel,
@@ -2755,6 +2766,13 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         hist_buffer_for_num_bit_change_.RawData(),
         any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
         gstate, dls);
+    }
+    if (live_tree && FalcataDebug().diag) {
+      // once per enqueued level (direct enqueues and captures; a graph replay enqueues nothing): the routes taken and
+      // the inputs of the live-grid decision (live iff grid_x * pairs > budget)
+      fprintf(stderr, "[hybrid-diag] device_tree_live_grid: pairs=%d budget=%" PRId64 " fix_subtract=%s grid_x=%d "
+              "copy=%s copy_grid_x=%d\n", num_pairs, LiveGridBudget(), fix_route, fix_grid_x, copy_route,
+              num_subtract_blocks);
     }
   }
 }
