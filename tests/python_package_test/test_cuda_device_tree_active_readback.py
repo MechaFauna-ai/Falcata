@@ -119,7 +119,7 @@ def test_device_tree_active_readback_cuda(graph, setting):
         diag,
     )
     active = re.findall(r"device_tree_active_readback: queued=(\d+) ready=(\d+) leaves=(\d+)", diag)
-    assert "device_tree: host fallback" not in diag
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
     if setting in {"weighted", "renewal"}:
         assert len(events) == len(active) == data["stages"] == 1, diag
         assert int(events[0][2]) > 0, "disabled route must still grow a real whole tree"

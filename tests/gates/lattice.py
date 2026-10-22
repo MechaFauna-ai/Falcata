@@ -199,13 +199,9 @@ def build_cells():
     )
 
     # --- plan-flip equality cells: each decision must be behavior-preserving - #
+    # (the quantized graph prefix's graph_loop flip, graph/flip*-graph_loop, went with graph_quant in 1.2: graph_loop
+    # now selects only the non-quantized graph loop, which the nonquant cells below flip)
     flips = [
-        (
-            "graph",
-            "graph_loop",
-            {"cuda_plan": "auto,graph_quant:on"},
-            {"cuda_plan": "auto,graph_quant:on,graph_loop:off"},
-        ),
         ("fewbin", "rowdata_4bit", {}, {"cuda_plan": "auto,rowdata_4bit:off"}),
         ("dense", "fast_rowdata", {}, {"cuda_plan": "auto,fast_rowdata:off"}),
         ("dense", "gpu_construct", {}, {"cuda_plan": "auto,gpu_construct:off"}),
@@ -597,12 +593,6 @@ def build_cells():
         rounds=50,
         equal_to="categorical-mc/quant-bagged",
     )
-    cell(
-        "graph/flip-async_tree_start-graph_quant",
-        "graph",
-        {"cuda_plan": "auto,graph_quant:on,async_tree_start:off"},
-        equal_to="graph/flipbase-graph_loop",
-    )
 
     # --- fused fill, level find/sync/fix/apply kernels, host round trips ------ #
     # Every key below is default on and exact by contract; each off (and all of them off) must train the base cell's
@@ -622,8 +612,6 @@ def build_cells():
         "root_hist_short_blocks",
         "sync_copy_batched",
         "fix_subtract_fused",
-        "apply_struct_fused",
-        "gap_copy_fused",
         "readback_kernel",
         "invalidate_async",
         "level_apply_first",
@@ -775,9 +763,8 @@ def build_cells():
     )
 
     # deep trees with a binding leaf budget (no tree-completing level), the bagged multiclass categorical cell
-    # (level_apply_first keeps the record first for categorical splits; final_map_only is off with bagging) and the
-    # quantized graph prefix
-    for key in ["apply_struct_fused", "gap_copy_fused", "readback_kernel"]:
+    # (level_apply_first keeps the record first for categorical splits; final_map_only is off with bagging)
+    for key in ["readback_kernel"]:
         cell(
             f"dense/flip-{key}-deep",
             "dense",
@@ -800,12 +787,6 @@ def build_cells():
         },
         rounds=50,
         equal_to="categorical-mc/quant-bagged",
-    )
-    cell(
-        "graph/flip-night3-graph_quant",
-        "graph",
-        {"cuda_plan": "auto,graph_quant:on," + night3_off.removeprefix("auto,")},
-        equal_to="graph/flipbase-graph_loop",
     )
 
     # --- the 5-bit pair-code view (pair_code5) ------------------------------- #
@@ -990,12 +971,6 @@ def build_cells():
         rounds=50,
         equal_to="categorical-mc/quant-bagged",
     )
-    cell(
-        "graph/flip-night6-graph_quant",
-        "graph",
-        {"cuda_plan": "auto,graph_quant:on," + night6_flip.removeprefix("auto,")},
-        equal_to="graph/flipbase-graph_loop",
-    )
     for suffix, base_params, base in [
         ("-ff15", ff15, "sampledwide5/quant-ff15"),
         ("", {}, "sampledwide5/quant"),
@@ -1134,14 +1109,6 @@ def build_cells():
             "fewbin",
             {"cuda_plan": f"auto,pair_hist:off,{plan}"},
             equal_to="fewbin/flipbase-pair_hist",
-        )
-    # the quantized graph prefix: the row floor derived on the device, the captured masked fix + subtract node
-    for key in ["dense_level_row_blocks", "fix_subtract_masked"]:
-        cell(
-            f"graph/flip-{key}-graph_quant",
-            "graph",
-            {"cuda_plan": f"auto,graph_quant:on,{key}:off"},
-            equal_to="graph/flipbase-graph_loop",
         )
     # fix_subtract_masked: need-fix features (missing-mfb0's synthesised bin 0, efb's bundles), the classic flow's
     # per-leaf launch (hybrid off), 32-bit leaf bins (bigrow, sub_case 3), and the masked kernel's bin_used /

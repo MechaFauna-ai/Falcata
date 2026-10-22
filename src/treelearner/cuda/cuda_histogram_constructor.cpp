@@ -1114,14 +1114,14 @@ void CUDAHistogramConstructor::LaunchCompactFill(
         // view, when byte slot k is byte k of the interleaved row (one run, as the construct's whole-row blocks
         // index it) and every byte's joint cell lo * span(hi) + hi fits 5 bits; per byte: span(hi) (1 without a
         // high column) | has-high << 5. The nibble view is then pending (EnsureNibbleView at its readers), so only
-        // where the split reads do not take it (the column-major store serves them), no prefill swaps the live
-        // buffer and no quantized level graph captures a construct
+        // where the split reads do not take it (the column-major store serves them) and no prefill swaps the live
+        // buffer
         const uint8_t* fill_src = colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>();
         const DeviceLaunchLimits device_limits = CurrentDeviceLaunchLimits();
         bool code5 = code5_allowed_ && FalcataPlan::Get().pair_code5 && FalcataPlan::Get().pair_hist &&
                      FalcataPlan::Get().pair_hist_rows && FalcataPlan::Get().colmajor_split &&
                      colmajor_bin() != nullptr && fill_src == colmajor_bin() &&
-                     !FalcataPlan::Get().compact_prefill && !FalcataPlan::Get().graph_quant &&
+                     !FalcataPlan::Get().compact_prefill &&
                      layout.row_interleave && compact_codec_ == PackCodecId::kNibble4 &&
                      compact_pair_joint_total_ > 0 && total_byte_slots > 0 && total_byte_slots == compact_row_bytes_ &&
                      // the whole-row construct's shape conditions known before a level (its joint tables fit a
@@ -1510,15 +1510,8 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   // per-leaf kernels after histogram construction/subtraction without a device sync.
   // One (stream, event-pair) pipeline per concurrently-processed sibling pair.
   pipeline_streams_[0] = cuda_stream_;
-  // FALCATA_SINGLE_STREAM (diagnostic): alias every pipeline to the main
-  // stream, removing all cross-stream event ordering from the flow.
-  const bool single_stream = std::getenv("FALCATA_SINGLE_STREAM") != nullptr;
   for (int p = 1; p < kNumHistPipelines; ++p) {
-    if (single_stream) {
-      pipeline_streams_[p] = cuda_stream_;
-    } else {
-      CUDASUCCESS_OR_FATAL(cudaStreamCreate(&pipeline_streams_[p]));
-    }
+    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&pipeline_streams_[p]));
   }
   for (int p = 0; p < kNumHistPipelines; ++p) {
     CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&construct_done_events_[p], cudaEventDisableTiming));

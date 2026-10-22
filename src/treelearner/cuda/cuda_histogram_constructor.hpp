@@ -24,6 +24,7 @@
 #include <tuple>
 #include <vector>
 
+#include <Falcata/cuda/cuda_device_tree_reason.hpp>
 #include <Falcata/cuda/cuda_row_data.hpp>
 #include <Falcata/cuda/pack_codecs.hpp>
 
@@ -385,19 +386,30 @@ class CUDAHistogramConstructor {
     return old;
   }
 
-  /*! \brief whether the batched per-level construct/fix/subtract path supports the
-   *  current data layout (dense, shared-memory histograms). The compact column
-   *  view (feature_fraction sampling gathered into a dense per-tree copy) is
-   *  supported through the same batched dense kernel fed with the compact
-   *  pointers/dims; cuda_plan=auto,batch_wide:off restores the per-pair fallback for it. */
-  bool SupportsBatchedLevel() const {
-    return !NonquantClassicFallback() && cuda_row_data_ != nullptr &&
-           !cuda_row_data_->is_sparse() &&
-           cuda_row_data_->NumLargeBinPartition() == 0 &&
-           (!use_compact_view_ ||
-            (FalcataBatchWideEnabled() &&
-             cuda_row_data_->bit_type() == 8));
+  /*! \brief why the batched per-level construct/fix/subtract path does not support the
+   *  current data layout (kNone: it does: dense, shared-memory histograms). The compact
+   *  column view (feature_fraction sampling gathered into a dense per-tree copy) is
+   *  supported through the same batched dense kernel fed with the compact pointers/dims,
+   *  for 8-bit rows. */
+  DeviceTreeReason BatchedLevelRefusal() const {
+    if (NonquantClassicFallback()) {
+      return DeviceTreeReason::kNoSharedMemory;
+    }
+    if (cuda_row_data_ == nullptr) {
+      return DeviceTreeReason::kEmptyTaskList;  // no row data was built: no feature to search
+    }
+    if (cuda_row_data_->is_sparse()) {
+      return DeviceTreeReason::kSparseLayout;
+    }
+    if (cuda_row_data_->NumLargeBinPartition() != 0) {
+      return DeviceTreeReason::kLargeBinLayout;
+    }
+    if (use_compact_view_ && cuda_row_data_->bit_type() != 8) {
+      return DeviceTreeReason::kCompact16Bit;
+    }
+    return DeviceTreeReason::kNone;
   }
+  bool SupportsBatchedLevel() const { return BatchedLevelRefusal() == DeviceTreeReason::kNone; }
 
   /*! \brief whether the tree learner's per-tree column-view build can source its
    *  gather from this constructor's compact matrix (row-major-in-partition over
@@ -440,13 +452,12 @@ class CUDAHistogramConstructor {
     char buf[256];
     snprintf(buf, sizeof(buf),
              "hist: row_data=%d sparse=%d large_bin_parts=%d compact_view=%d "
-             "bit_type=%d batch_wide=%d",
+             "bit_type=%d",
              static_cast<int>(cuda_row_data_ != nullptr),
              cuda_row_data_ != nullptr ? static_cast<int>(cuda_row_data_->is_sparse()) : -1,
              cuda_row_data_ != nullptr ? cuda_row_data_->NumLargeBinPartition() : -1,
              static_cast<int>(use_compact_view_),
-             cuda_row_data_ != nullptr ? cuda_row_data_->bit_type() : -1,
-             static_cast<int>(FalcataBatchWideEnabled()));
+             cuda_row_data_ != nullptr ? cuda_row_data_->bit_type() : -1);
     return std::string(buf);
   }
 
@@ -492,7 +503,7 @@ class CUDAHistogramConstructor {
   }
   /*! \brief cuda_plan key pair_code5: whether this tree's fused fill may write the code view instead of the nibble
    *  view; the learner clears it for trees whose split path reads the nibble view anyway (the one-byte split view
-   *  built at tree start, the per-split apply of batch_apply:off), which would only rewrite it right after */
+   *  built at tree start), which would only rewrite it right after */
   void AllowCode5View(const bool allow) { code5_allowed_ = allow; }
 
   /*! \brief true once per tree when this tree's fill accumulated the root histogram in the format of a root with

@@ -78,15 +78,10 @@ _BASE = {
     [
         # a non-quantized forest: the host level loop with the count construct
         {**_BASE, "boosting": "rf", "quant_mode": "none", "bagging_fraction": 0.632, "bagging_freq": 1},
-        # quantized gbdt with interaction constraints: the host level loop with the accumulating integer construct
-        {
-            **_BASE,
-            "quant_mode": "fixedpoint",
-            "cuda_plan": "auto,quant_ef:off",
-            "interaction_constraints": [[0, 1, 2, 3, 4, 5, 6, 7], [8, 9, 10, 11, 12, 13, 14, 15]],
-        },
+        # quantized gbdt with L1 regularization: the host two-sync level loop with the accumulating integer construct
+        {**_BASE, "quant_mode": "fixedpoint", "cuda_plan": "auto,quant_ef:off", "lambda_l1": 1.0},
     ],
-    ids=["rf-none", "gbdt-fixedpoint-interaction"],
+    ids=["rf-none", "gbdt-fixedpoint-l1"],
 )
 def test_aborted_tree_leaves_no_state_cuda(params):
     want = _run(params, 10)

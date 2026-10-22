@@ -813,7 +813,7 @@ bool CUDAHistogramConstructor::PairJointServesView() const {
   if (!plan.pair_hist || !use_quantized_grad_) {
     return false;
   }
-  if (plan.pack_bit3 || plan.pack_radix5 || plan.pack_radix6 || plan.pack_radix7 || plan.graph_quant) {
+  if (plan.pack_bit3 || plan.pack_radix5 || plan.pack_radix6 || plan.pack_radix7) {
     return false;
   }
   const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
@@ -884,7 +884,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernel(
   if (colmajor_direct_ && use_quantized_grad_) {
     // the quantized per-leaf construct (classic loop, hybrid per-pair fallback, leaf-wise tail) has no compact-view
     // branch: it reads every column of the row-major layout. The tree learner picks the mask regime where its trees
-    // take this path; elsewhere (an ablation key, the aggressive tail) the compact regime fills the full view here.
+    // take this path; elsewhere (an ablation key, a leaf-wise tail) the compact regime fills the full view here.
     EnsureFullView("the per-leaf quantized construct");
   }
   if (cuda_row_data_->shared_hist_size() == DP_SHARED_HIST_SIZE && gpu_use_dp_) {

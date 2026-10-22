@@ -210,10 +210,6 @@ def test_device_levels_first_tree_stump_cuda(max_bin, graph):
         "warp_find:off",
         "fix_subtract_fused:off,fix_subtract_masked:off",
         "apply_row_batch:off,aggregate_load_first:off",
-        "apply_struct_fused:off",
-        "gap_copy_fused:off",
-        "batch_kernels:off",
-        "batch_apply:off",
         "readback_fused:off",
         "final_map_only:off,final_readback_first:off",
     ],
@@ -311,29 +307,6 @@ def test_device_levels_rf_multiclass_cuda():
         y,
         12,
     )
-
-
-@_REQUIRES_CUDA
-def test_device_levels_single_stream_fallback_cuda():
-    code = (
-        "import numpy as np, falcata as flc, hashlib\n"
-        "rng = np.random.default_rng(71)\n"
-        "X = rng.standard_normal((12000, 12)).astype(np.float32)\n"
-        "y = (X[:, 0] + X[:, 1] > 0).astype(np.float32)\n"
-        "p = dict(device_type='cuda', objective='binary', num_leaves=63, max_depth=6, verbose=-1,\n"
-        "         quant_mode='fixedpoint', seed=7)\n"
-        "out = []\n"
-        "for plan in ['auto,device_levels:off', 'auto,device_tree:off,device_level_graph:off',\n"
-        "             'auto,device_tree:off,device_level_graph:on', 'auto']:\n"
-        " p['cuda_plan'] = plan\n"
-        " b = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=5)\n"
-        " text = '\\n'.join(s for s in b.model_to_string().splitlines() if 'cuda_plan' not in s)\n"
-        " out.append(hashlib.md5(text.encode()).hexdigest())\n"
-        "assert len(set(out)) == 1, out\n"
-    )
-    env = dict(os.environ, FALCATA_SINGLE_STREAM="1", FALCATA_DEBUG="diag")
-    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True)
-    assert "device_levels: host fallback (legacy single stream)" in out.stderr
 
 
 @_REQUIRES_CUDA

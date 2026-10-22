@@ -190,21 +190,21 @@ CASES = {
         "regression",
         "none",
         {"data_sample_strategy": "goss", "bagging_fraction": 1.0, "bagging_freq": 0},
-        None,
+        "b494cd3a0c498f8dd4aef8b8dd643ea4",
     ),
     "multiclass-none-goss": (
         "multiclass",
         "none",
         {"data_sample_strategy": "goss", "bagging_fraction": 1.0, "bagging_freq": 0},
-        None,
+        "5344f1e632fe40aaedb9403a637d08be",
     ),
-    "regression-none-freq2": ("regression", "none", {"bagging_freq": 2}, None),
-    "multiclass-none-freq2": ("multiclass", "none", {"bagging_freq": 2}, None),
+    "regression-none-freq2": ("regression", "none", {"bagging_freq": 2}, "65a574c1874595cdf344a5791bb7df03"),
+    "multiclass-none-freq2": ("multiclass", "none", {"bagging_freq": 2}, "8d272a4b27ee32dec1493493fb3ec14f"),
     "binary-none-balanced-bagging": (
         "binary",
         "none",
         {"pos_bagging_fraction": 0.8, "neg_bagging_fraction": 0.6},
-        None,
+        "f4d8e762158d8c65c297f915c4e51cb9",
     ),
     # leaf renewal against the init score column
     "regression-l1": ("regression_l1", "stochastic", {}, "1e8272aa01c746a7eba5ad38721bfa4a"),
@@ -223,7 +223,7 @@ def test_forest_sequential_same_model_cuda(case):
 # metrics every round on the training and a validation set, then early stopping: md5 on master 5bec2574, and the
 # iteration early stopping ended at
 READERS = {
-    "every-round-train-score": None,
+    "every-round-train-score": "4681889eef5d523e6412b5763c1eabc9",
     "every-round": "a17289db912fcdfda59ba0017dcc6998",
     "early-stopping": ("7c288d15448c3cc651fd18aae81a8437", 23),
 }
@@ -377,7 +377,7 @@ def test_forest_removed_keys_ignored_cuda(plan):
     params = _engage_params(objective="multiclass", num_class=4, verbose=0)
     stdout, lines = _run({**params, "cuda_plan": plan}, 4, diag=False)
     for key in [kv.split(":")[0] for kv in plan.split(",")[1:]]:
-        assert f"cuda_plan key {key} was removed (2026-10-22): ignored" in stdout + "\n".join(lines), key
+        assert f"cuda_plan key {key} was removed in 1.2: ignored" in stdout + "\n".join(lines), key
     X, y = _data("multiclass")
     p = _params("multiclass", "stochastic")
     assert _md5(_train({**p, "cuda_plan": plan}, X, y, 6)[0]) == _md5(_train(p, X, y, 6)[0])

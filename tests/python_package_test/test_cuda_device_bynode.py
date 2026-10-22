@@ -171,7 +171,8 @@ def test_device_bynode_engages_cuda():
     off = _diag("auto,device_bynode_masks:off")
     assert "device_tree: complete" not in off
     assert "device masks" not in off
-    assert "device_tree: host fallback (unsupported prefix kernels or configuration)" in off
+    # the device_levels prefix declines too (the masks are drawn on the host per level)
+    assert "device_tree: fallback (plan_off) route=host_two_sync prefix=bynode_host_masks" in off
 
 
 def test_device_bynode_debug_bynode_keeps_host_draws_cuda():

@@ -65,11 +65,11 @@ struct FalcataPlan {
   // --- shape-conditional decisions (cuda_plan override keys) ---------------
   // hybrid level-batched growth (off = classic one-split-at-a-time leaf-wise)
   bool hybrid = true;               // key: hybrid
-  // CUDA-graph level loop for the hybrid prefix (helps shallow trees; the
-  // fixed controller latency turns net-negative on deep configs)
+  // CUDA-graph level loop for the non-quantized hybrid prefix (helps shallow trees; the
+  // fixed controller latency turns net-negative on deep configs). Quantized trees take
+  // the complete device tree or the device_levels prefix instead (the quantized graph
+  // prefix and its key graph_quant were removed in 1.2).
   bool graph_loop = true;           // key: graph_loop
-  // graph level loop also for quantized training (opt-in; less measured)
-  bool graph_quant = false;         // key: graph_quant
   // deterministic construct+merge nodes inside the graph loop (non-quant):
   // bit-identical to the host det loop (graph_loop:off). Off by default: the
   // det merge costs ~4x on shallow non-quant shapes (covtype-shallow-class);
@@ -199,13 +199,12 @@ struct FalcataPlan {
 
   // --- measured-invariant winners: default ON, but keyed so each one can be
   // ablated (leave-one-out) to attribute its share of the speedup ----------
+  // (removed in 1.2 with the flows only they reached: batch_kernels, batch_apply, selective, batch_wide, cat_hybrid,
+  // apply_struct_fused, gap_copy_fused, graph_quant; the batched level kernels, the batched apply, selective growth
+  // and the fused apply are always on; the keys are accepted with a warning and ignored, see FromConfig)
   bool split_packed_read = true;    // key: split_packed_read
-  bool batch_kernels = true;        // key: batch_kernels -- one find/sync launch per level
-  bool batch_apply = true;          // key: batch_apply -- batched per-level apply phase
   bool one_sync = true;             // key: one_sync -- SPECULATIVE single-sync level pipeline
-  bool selective = true;            // key: selective -- SPECULATIVE grow-then-prune
   bool batch_reghist = true;        // key: batch_reghist -- register-tiled construct
-  bool batch_wide = true;           // key: batch_wide -- wide leaf-splits init batching
   bool gh_interleave = true;        // key: gh_interleave -- packed grad/hess layout
   bool small_leaf_construct = true;  // key: small_leaf_construct
   // gap-gated outlier-robust gradient scale (fixedpoint quant only; no-op in
@@ -215,8 +214,6 @@ struct FalcataPlan {
   // rounding residual into the next tree, so round-to-nearest bias telescopes
   // away. Deterministic; changes the model -- NOT an equality key.
   bool quant_ef = true;             // key: quant_ef
-  // cat_hybrid:off routes categorical data to the classic training loop.
-  bool cat_hybrid = true;           // key: cat_hybrid
   // the host level loop's categorical splits as one record per level: one kernel appends every categorical split's
   // two bitsets at offsets prefix-summed on the device and records the splits' nodes, with the word counts kept on
   // the device until the tree end, where one copy reads the whole categorical record back; instead of a length
@@ -275,7 +272,7 @@ struct FalcataPlan {
   // key view_pair_rule: at or above view_mask_ff, auto takes the compact regime exactly where the pair-joint
   // construct (pair_hist) serves the compact view: every partition's sampled columns (expected count plus two
   // standard deviations) keep its joint table within 48 KB of shared memory and the block within the kernel's
-  // thread limit, on the nibble view (no pack codec) outside graph_quant (CUDAHistogramConstructor::
+  // thread limit, on the nibble view (no pack codec) (CUDAHistogramConstructor::
   // PairJointServesView); mask otherwise, and whenever every column is sampled. Calibrated 2026-10-15 (RTX 5090,
   // md5 identical in every arm): numerai53bench (5 bins, partitions of up to 1008 columns) compact 77-89 vs mask
   // 119-125 ms per round from ff 0.85 to 0.95 (served), 157-166 vs 118-121 from 0.97 to 0.99 (not served);
@@ -464,8 +461,7 @@ struct FalcataPlan {
   // (178 byte slots: 30 words -> 128 B instead of 178 B, 4 sectors per
   // gathered row instead of ~6.6; the fill writes 28% fewer bytes). Taken only
   // when every byte's span(lo) * span(hi) <= 32, the split reads use the
-  // column-major store (colmajor_split), without compact_prefill or
-  // graph_quant. Any other reader of the 4-bit view (other construct kernels,
+  // column-major store (colmajor_split), without compact_prefill. Any other reader of the 4-bit view (other construct kernels,
   // the row->column gathers) first writes it with the plain tiled fill from
   // the code fill's own copy of the byte-slot tables, over the code view. The
   // kernel adds the same packed gradient to the same cell of the same table
@@ -609,23 +605,9 @@ struct FalcataPlan {
   // leaf (or the bit-change buffer), instead of a fix kernel then a subtract kernel reading the same histograms.
   // The same integer expressions per bin in the same bit-width cases: bit-identical.
   bool fix_subtract_masked = true;  // key: fix_subtract_masked
-  // host-launched batched level apply: each split's tree-structure update (child
-  // leaf outputs, split info slots, hist pool pointers, smaller/larger leaf
-  // structs) is written by warp 0 of one extra block of the partition kernel's
-  // flat grid (the first num_splits flat ids, so its short dependent chain
-  // overlaps the partition) instead of by a separate 32-thread-per-split kernel
-  // after the partition. Its inputs (the aggregate's child counts and starts, the
-  // level's split infos) are final before the partition kernel, and the
-  // partition neither reads nor writes what it writes. Same expressions, same
-  // values, same stream: bit-identical.
-  bool apply_struct_fused = true;   // key: apply_struct_fused
-  // host-launched batched level apply: the gap copy (terminal leaves' index
-  // ranges carried from the old main array into the out buffer) runs as extra
-  // 1024-row chunks at the end of the partition kernel's flat grid instead of a
-  // separate (largest gap x gaps) kernel. The ranges are disjoint from every
-  // split window the partition reads or writes. Same copies: bit-identical.
-  bool gap_copy_fused = true;       // key: gap_copy_fused
-  // the batched level apply's fused partition kernel (apply_struct_fused / gap_copy_fused) with apply_row_batch at
+  // (the batched level apply's fused partition kernel writes each split's tree-structure update and the gap copy
+  // as extra flat ids of its grid; their keys apply_struct_fused / gap_copy_fused were removed in 1.2)
+  // the batched level apply's fused partition kernel with apply_row_batch at
   // twice its rows per thread (8, 128-thread blocks for each 1024-row chunk) under that block's launch bound, so all
   // of a thread's rows stay in flight in registers: the default build's bound (a 1024-thread block) caps it at 64
   // registers, at which fewer 256-thread blocks fit an SM than its thread limit allows. Taken only where the
@@ -938,7 +920,8 @@ struct FalcataPlan {
   // valid leaf), every level's select, apply and search plus the final apply without its unnecessary child search
   // run device-driven; one growth journal readback and no host growth tail, instead of the device_levels prefix,
   // its readback, the host's replay and the host-driven final level. Other shapes keep the prefix and the host flow
-  // (FALCATA_DEBUG=diag reports the fallback), and so does a shape whose presized per-level scratch (2^(max_depth-2)
+  // (FALCATA_DEBUG=diag reports every such tree as `device_tree: fallback (<reason>) route=<route>`, see
+  // Falcata/cuda/cuda_device_tree_reason.hpp), and so does a shape whose presized per-level scratch (2^(max_depth-2)
   // pairs) would take more than half of the free device memory; device_tree:off restores the prefix everywhere. A changing sampled
   // layout can disable graph caching, but never the device controller itself. The same selector, kernels and order:
   // bit-identical.
@@ -1026,7 +1009,6 @@ struct FalcataPlan {
   bool* KeySlot(const std::string& key) {
     if (key == "hybrid") return &hybrid;
     if (key == "graph_loop") return &graph_loop;
-    if (key == "graph_quant") return &graph_quant;
     if (key == "graph_det") return &graph_det;
     if (key == "nonquant_deterministic") return &nonquant_deterministic;
     if (key == "compact_quant") return &compact_quant;
@@ -1048,17 +1030,12 @@ struct FalcataPlan {
     if (key == "construct_tile_bin") return &construct_tile_bin;
     if (key == "efb_precheck") return &efb_precheck;
     if (key == "split_packed_read") return &split_packed_read;
-    if (key == "batch_kernels") return &batch_kernels;
-    if (key == "batch_apply") return &batch_apply;
     if (key == "one_sync") return &one_sync;
-    if (key == "selective") return &selective;
     if (key == "batch_reghist") return &batch_reghist;
-    if (key == "batch_wide") return &batch_wide;
     if (key == "gh_interleave") return &gh_interleave;
     if (key == "small_leaf_construct") return &small_leaf_construct;
     if (key == "robust_scale") return &robust_scale;
     if (key == "quant_ef") return &quant_ef;
-    if (key == "cat_hybrid") return &cat_hybrid;
     if (key == "cat_level_record") return &cat_level_record;
     if (key == "compact_prefill") return &compact_prefill;
     if (key == "pack_bit3") return &pack_bit3;
@@ -1108,8 +1085,6 @@ struct FalcataPlan {
     if (key == "sync_copy_batched") return &sync_copy_batched;
     if (key == "fix_subtract_fused") return &fix_subtract_fused;
     if (key == "fix_subtract_masked") return &fix_subtract_masked;
-    if (key == "apply_struct_fused") return &apply_struct_fused;
-    if (key == "gap_copy_fused") return &gap_copy_fused;
     if (key == "apply_inner_rows") return &apply_inner_rows;
     if (key == "apply_genbit_rows") return &apply_genbit_rows;
     if (key == "aggregate_load_first") return &aggregate_load_first;
@@ -1178,15 +1153,15 @@ struct FalcataPlan {
     const FalcataPlan plan = FromConfig(config, &overridden);
     Mutable() = plan;
     if (overridden) {
-      Log::Info("cuda_plan: hybrid=%d selective=%d one_sync=%d graph_loop=%d graph_quant=%d "
+      Log::Info("cuda_plan: hybrid=%d one_sync=%d graph_loop=%d "
                 "compact_quant=%d row_batch=%d fast_rowdata=%d rowdata_4bit=%d "
-                "gpu_construct=%d efb_precheck=%d batch_kernels=%d batch_apply=%d "
-                "batch_reghist=%d batch_wide=%d gh_interleave=%d split_packed_read=%d "
+                "gpu_construct=%d efb_precheck=%d "
+                "batch_reghist=%d gh_interleave=%d split_packed_read=%d "
                 "small_leaf_construct=%d",
-                plan.hybrid, plan.selective, plan.one_sync, plan.graph_loop, plan.graph_quant,
+                plan.hybrid, plan.one_sync, plan.graph_loop,
                 plan.compact_quant, plan.row_batch, plan.fast_rowdata, plan.rowdata_4bit,
-                plan.gpu_construct, plan.efb_precheck, plan.batch_kernels, plan.batch_apply,
-                plan.batch_reghist, plan.batch_wide, plan.gh_interleave, plan.split_packed_read,
+                plan.gpu_construct, plan.efb_precheck,
+                plan.batch_reghist, plan.gh_interleave, plan.split_packed_read,
                 plan.small_leaf_construct);
     }
   }
@@ -1216,10 +1191,17 @@ struct FalcataPlan {
         Log::Warning("cuda_plan key %s was removed (2026-10-15): ignored", kv[0].c_str());
         continue;
       }
-      // the forest slot keys (every random forest tree trains on the booster's learner, one after another)
-      if (kv[0] == std::string("forest_batched") || kv[0] == std::string("forest_group") ||
+      // removed in 1.2 (FULL_DEVICE_PLAN P1) with the flows only their non-default value reached: an old plan string
+      // naming them now trains the default model (the keys were documented as bit-identical, batch_kernels:off up to
+      // the order of exact-gain ties)
+      if (kv[0] == std::string("batch_kernels") || kv[0] == std::string("batch_apply") ||
+          kv[0] == std::string("selective") || kv[0] == std::string("batch_wide") ||
+          kv[0] == std::string("cat_hybrid") || kv[0] == std::string("apply_struct_fused") ||
+          kv[0] == std::string("gap_copy_fused") || kv[0] == std::string("graph_quant") ||
+          // P2 (#178): the forest slot keys; every random forest tree trains on the booster's learner, in tree order
+          kv[0] == std::string("forest_batched") || kv[0] == std::string("forest_group") ||
           kv[0] == std::string("forest_single_job_device")) {
-        Log::Warning("cuda_plan key %s was removed (2026-10-22): ignored", kv[0].c_str());
+        Log::Warning("cuda_plan key %s was removed in 1.2: ignored", kv[0].c_str());
         continue;
       }
       // the non-boolean keys: view_mode, pin_bins and the view_* numbers
@@ -1329,13 +1311,13 @@ inline bool FalcataVerifyEnabled() {
 
 /*!
  * \brief FALCATA_DEBUG: comma-separated developer diagnostics, e.g.
- * ``FALCATA_DEBUG=diag,dump,maxsplits=8``. Tokens:
- *  - ``diag``       per-phase timing/counter diagnostics
+ * ``FALCATA_DEBUG=diag,dump``. Tokens:
+ *  - ``diag``       per-phase timing/counter diagnostics, and the CUDA learner's
+ *    ``device_tree: fallback (<reason>) route=<route>`` line for every tree the
+ *    complete device tree did not grow (vocabulary: FALCATA_DEVICE_TREE_REASONS
+ *    in Falcata/cuda/cuda_device_tree_reason.hpp)
  *  - ``debug``      verbose hybrid-growth debug checks/logging
  *  - ``dump``       dump partition snapshots to files
- *  - ``syncpairs``  force per-pair synchronization (isolates batching)
- *  - ``aggressive`` experimental aggressive hybrid batching
- *  - ``maxsplits=N`` cap splits per level (isolates multi-pair interactions)
  *  - ``vramfree=N`` treat at most N MiB of device memory as free when
  *    colmajor_fill decides whether its copy fits (tests the decline path
  *    without filling the GPU); does not change any result
@@ -1346,19 +1328,17 @@ inline bool FalcataVerifyEnabled() {
  *    including selective splits pruned later; keeps those trees off the
  *    device-drawn masks of device_bynode_masks, whose draws it would not
  *    see); does not change any result
- * The growth tokens (debug, syncpairs, maxsplits) also disable the CUDA-graph
- * controller path (the device controller does not replicate these hooks).
+ * debug and dump also keep trees off the device-driven flows (the device
+ * controller does not replicate these hooks). The 1.1 tokens syncpairs,
+ * aggressive and maxsplits=N, and the FALCATA_SINGLE_STREAM switch, were removed
+ * in 1.2 (an unknown token is ignored with a warning).
  */
 struct FalcataDebugOptions {
   bool diag = false;
   bool debug = false;
   bool dump = false;
-  bool syncpairs = false;
-  bool aggressive = false;
   bool bynode = false;
-  int maxsplits = -1;  // -1 = uncapped
   int64_t vramfree_mib = -1;  // -1 = the real free memory
-  bool any_growth_hook() const { return debug || syncpairs || maxsplits >= 0; }
 };
 
 inline const FalcataDebugOptions& FalcataDebug() {
@@ -1374,14 +1354,8 @@ inline const FalcataDebugOptions& FalcataDebug() {
         o.debug = true;
       } else if (token == std::string("dump")) {
         o.dump = true;
-      } else if (token == std::string("syncpairs")) {
-        o.syncpairs = true;
-      } else if (token == std::string("aggressive")) {
-        o.aggressive = true;
       } else if (token == std::string("bynode")) {
         o.bynode = true;
-      } else if (token.rfind("maxsplits=", 0) == 0) {
-        o.maxsplits = std::atoi(token.c_str() + 10);
       } else if (token.rfind("vramfree=", 0) == 0) {
         o.vramfree_mib = std::min<int64_t>(std::max<int64_t>(0, std::atoll(token.c_str() + 9)), int64_t{1} << 40);
       } else if (!token.empty()) {

@@ -93,8 +93,8 @@ The Execution Planner
 Every shape-conditional kernel choice above is resolved once from the data
 and parameters by ``cuda_plan=auto`` -- not from environment variables or
 hidden heuristics scattered through the code. Each decision is bit-identical
-except where the ``cuda_plan`` parameter documents otherwise (``robust_scale``,
-and the tie order of ``batch_kernels``), enforced by local GPU regression
+except where the ``cuda_plan`` parameter documents otherwise (``robust_scale``),
+enforced by local GPU regression
 gates that flip every key and require identical models, and individually
 overridable, e.g.
 ``cuda_plan=auto,hybrid:off,row_batch:off``, which also makes every

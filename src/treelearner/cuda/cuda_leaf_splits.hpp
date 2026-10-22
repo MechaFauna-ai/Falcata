@@ -85,13 +85,6 @@ class TreeStartUploads {
   std::vector<std::vector<uint8_t>> kept_;
 };
 
-/*! \brief kill switch for the wide-shape batched level support (many split-find
- *  tasks and/or compact-column-view histogram data): cuda_plan=auto,batch_wide:off
- *  restores the previous fallback to the per-pair kernels for those shapes */
-inline bool FalcataBatchWideEnabled() {
-  return FalcataPlan::Get().batch_wide;
-}
-
 struct CUDALeafSplitsStruct {
  public:
   int leaf_index;

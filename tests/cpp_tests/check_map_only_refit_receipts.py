@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def check(text):
-    assert "device_tree: host fallback" not in text, "refit probe fell back"
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", text), "refit probe fell back"
     assert "PASS: same-learner direct/leaf_pred and reset-smoothed refit" in text
     arm = None
     rows = {

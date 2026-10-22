@@ -202,7 +202,7 @@ def test_device_tree_complete_cuda(case, graph):
         diag,
     )
     assert len(events) == data["rounds"], diag
-    assert "device_tree: host fallback" not in diag
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
     assert all(int(e[2]) + 1 == count for e, count in zip(events, data["counts"], strict=True))
     if case == "full":
         assert data["counts"] == [1024] * data["rounds"]
@@ -306,7 +306,7 @@ def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
     # bytes with the host flow's.
     data, diag = _run(case, graph, base_plan=f"auto,device_tree_live_grid:{live_grid}{extra}")
     assert diag.count("device_tree: complete") == data["rounds"]
-    assert "device_tree: host fallback" not in diag
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
     lines = _LIVE_GRID_LINE.findall(diag)
     assert lines, diag
     routes = set()
@@ -331,26 +331,28 @@ def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    ("case", "plan"),
+    ("case", "plan", "line"),
     [
-        ("binding", "auto"),
-        ("unbounded", "auto"),
-        ("too_deep", "auto"),
-        ("bynode", "auto,device_bynode_masks:off"),  # per-node masks drawn on the host: the host flow
-        ("nonquant", "auto"),
-        ("two_leaf", "auto"),
-        ("l1", "auto"),
+        ("binding", "auto", "(selective_budget) route=selective_prefix"),
+        ("unbounded", "auto", "(selective_unbounded) route=selective_prefix"),
+        # max_depth 13 is past the standalone select's 2048-split capacity (kDeviceTreeMaxDepth = 12)
+        ("too_deep", "auto", "(depth_gt_12) route=prefix"),
+        # per-node masks drawn on the host: the host flow
+        ("bynode", "auto,device_bynode_masks:off", "(plan_off) route=host_two_sync prefix=bynode_host_masks"),
+        ("nonquant", "auto", "(nonquant_l15) route=l15_graph"),
+        ("two_leaf", "auto", "(num_leaves_le_2) route=classic"),
+        ("l1", "auto", "(lambda_l1) route=host_two_sync"),
     ],
 )
-def test_device_tree_unsupported_cuda(case, plan):
+def test_device_tree_unsupported_cuda(case, plan, line):
     _, diag = _run(case, base_plan=plan)
-    # outside the depth bound the prefix grows the tree; unsupported configurations use the host flow
-    bound = case in {"binding", "unbounded", "too_deep"}
-    assert ("device_tree: fallback to the prefix/host flow" if bound else "device_tree: host fallback") in diag
+    # outside the depth bound the prefix grows the tree; unsupported configurations use the host flow; the reason line
+    # names why and which controller grew the trees, once (no route changes here; the comparison arms' plan_off lines
+    # aside)
+    expected = 0 if line.startswith("(plan_off)") else 1
+    assert len(re.findall(r"device_tree: fallback \((?!plan_off\))", diag)) == expected, diag[-3000:]
+    assert f"device_tree: fallback {line}\n" in diag, diag[-3000:]
     assert "device_tree: complete" not in diag
-    if case == "too_deep":
-        # max_depth 13 is past the standalone select's 2048-split capacity (kDeviceTreeMaxDepth = 12)
-        assert "device_tree: fallback to the prefix/host flow (depth bound or leaf budget)" in diag
 
 
 def _gate_probe():
@@ -379,7 +381,8 @@ def test_device_tree_scratch_gate_falls_back_to_prefix_cuda():
     assert result.returncode == 0, result.stdout + "\nSTDERR:\n" + result.stderr
     diag = result.stderr
     assert re.search(r"device_tree: scratch estimate .* for max_depth 12, 1024 searched pairs.*over half of free", diag)
-    assert diag.count("device_tree: fallback to the prefix flow (device tree scratch exceeds free memory)") == 1
+    assert diag.count("device_tree: fallback (memory_gate) route=prefix\n") == 1
+    assert len(re.findall(r"device_tree: fallback \((?!plan_off\))", diag)) == 1
     assert "device_tree: complete" not in diag
     assert "host fallback" not in diag
     # the device_levels prefix grew both arms' trees (min(log2(4096), 12 - 1, 10) levels)
@@ -391,7 +394,7 @@ def test_device_tree_scratch_gate_falls_back_to_prefix_cuda():
 def test_device_tree_dependencies_cuda(plan):
     data, diag = _run("fivebin", base_plan=plan)
     assert diag.count("device_tree: complete") == data["rounds"]
-    assert "device_tree: host fallback" not in diag
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
 
 
 @_REQUIRES_CUDA
@@ -401,7 +404,7 @@ def test_device_tree_root_output_cuda(case, graph):
     data, diag = _run(case, graph)
     assert all(abs(value) > 1e-6 for value in data["roots"])
     assert diag.count("device_tree: complete") == data["rounds"]
-    assert "device_tree: host fallback" not in diag
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
 
 
 @_REQUIRES_CUDA
@@ -414,7 +417,7 @@ def test_device_tree_reset_auto_budget_cuda(graph):
     assert len(data["counts"]) == data["rounds"] == 12
     assert all(count <= 2 for count in data["counts"])
     assert all(depth <= 1 for depth in data["depths"])
-    assert "device_tree: host fallback" in diag
+    assert "device_tree: fallback (num_leaves_le_2) route=classic" in diag
     assert "device_tree: complete" not in diag
 
 
@@ -501,7 +504,7 @@ def test_device_tree_end_readback_cuda(graph, gate):
     staged = re.findall(r"device_tree_end_readback: queued=(\d+) ready=(\d+) leaves=(\d+) counts=(\d+)", diag)
     consumed = re.findall(r"device_tree_end_readback: consume slab=(\d+) counts=(\d+) leaves=(\d+)", diag)
     assert len(events) == len(staged) == data["stages"] == 9, diag
-    assert "device_tree: host fallback" not in diag
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
     assert [int(event[2]) == 0 for event in events] == [True, False, False, True, False, False, False, False, True]
     assert int(events[7][1]) < 10, "early-exhaustion fixture did not stop below the depth bound"
     enabled = not gate
@@ -634,7 +637,7 @@ def test_device_tree_host_cache_cuda(graph, scenario):
     caches = re.findall(r"device_tree_host_cache: skipped=(\d+) split_info_bytes=(\d+) stale=(\d+)", diag)
     expected = 6 if scenario == "transition" else 3 if scenario == "refit" else 2
     assert len(events) == len(caches) == expected, diag
-    assert "device_tree: fallback to the prefix/host flow" in diag
+    assert "device_tree: fallback (" in diag
     skip = scenario not in {"weighted", "renewal"}
     for event, cache in zip(events, caches, strict=True):
         splits = int(event[2])
@@ -781,7 +784,7 @@ def test_device_tree_final_all_map_cuda(graph, scenario, gate):
     )
     routes = re.findall(r"device_tree_final_all_map_branch: route=(\S+) leaves=(\d+)", diag)
     assert len(events) == len(inline) == len(routes) == data["stages"], diag
-    assert "device_tree: host fallback" not in diag
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
     for event, row, branch in zip(events, inline, routes, strict=True):
         depth, applied, splits = map(int, event[:3])
         enabled, complete, final_splits, leaves = map(int, row)

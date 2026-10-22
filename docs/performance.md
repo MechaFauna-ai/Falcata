@@ -353,6 +353,9 @@ huge rows make each kernel long enough that launch latency matters less).
 
 Two sub-features extend the same idea (1.1 battery, 21 Oct 2026 on `a82336d8`):
 
+(The keys `batch_kernels`, `batch_apply` and `selective` were removed in 1.2: their off values reached flows nothing
+else used; the three features are always on.)
+
 - **Batched split kernels (`batch_kernels`)** — one find/sync launch per
   level instead of per pair: +2370% numerai-deep, +1419% numerai-example,
   +710% covtype-deep, +207% fraud-deep, +190% covtype-shallow, +132% year,
@@ -706,7 +709,7 @@ numerai-deep corrected for its slow baseline run) it says so.
   registers and flush once instead of two shared-memory atomics per row.
 - **`batch_wide`** — wide-shape batched search for many-column datasets
   (+9.9% on epsilon in the smoke ablation), plus wide leaf-splits init
-  batching.
+  batching. (Always on since 1.2; the key was removed.)
 - **`small_leaf_construct`** — a cheaper construct body for very small
   leaves. Extended to quantized training: when a deep level's
   largest sibling pair is under 1024 rows, a dedicated kernel adds packed
@@ -809,7 +812,7 @@ bit-identical in every cell):
     fill's own arithmetic), the one-byte split view of the sampled columns
     whenever the tree learner will build it (its own predicate: no packed
     split read, i.e. no hybrid flow, categorical features,
-    `split_packed_read:off`, forced splits, the aggressive tail) and the
+    `split_packed_read:off`, forced splits) and the
     reserve (the split finder's level output and bit-change
     scratch for `num_leaves / 2 + 2` pairs, the booster's per-row state,
     256 MiB) fit in free device memory at decision time; otherwise mask, with
@@ -830,8 +833,7 @@ bit-identical in every cell):
     the bound sends the whole tree to the per-column construct), so a
     prediction of "served" means nearly every tree runs the pair-joint
     construct. Exact for uniform spans. Never served under a pack codec
-    (`pack_bit3`, `pack_radix5`–`7`) or `graph_quant`, where the construct
-    always declines. A training that samples every column builds no
+    (`pack_bit3`, `pack_radix5`–`7`), where the construct always declines. A training that samples every column builds no
     compact view and stays mask. Below the threshold, from 0.5, an unserved
     view takes mask where every partition has at most 504 columns
     (calibration below).
@@ -1539,8 +1541,8 @@ A third overnight agentic search took about 12% off that round with nineteen `cu
 
 **Fewer level kernels (`fix_subtract_fused`, `apply_struct_fused`, `gap_copy_fused`).**
 - Under feature sampling one kernel (a thread per sampled feature) fixes, subtracts and copies the changed-bit histograms. The old kernels launched mostly empty blocks for the unsampled features: 88 → 35 µs per round.
-- The batched apply's tree-structure update and gap copy run as extra flat ids of the partition kernel: two launches fewer per level, −55 µs per round.
-- `fix_subtract_masked` (2026-10-14): where `fix_subtract_fused` does not run (no feature sampling, or sampled columns wider than 8 bins) and some feature needs its most-frequent bin fixed, the quantized fix and subtract are one launch. Its subtract blocks skip the need-fix features' most-frequent bins (the `fix_mfb_mask` the non-quantized small-leaf kernel already uses), and the fix block of each such feature subtracts the fixed value at that bin, so both kernels' reads of the same histograms happen in one launch. It serves the host-launched level path, the captured graph level loop and the classic per-leaf loop (sparse columns, no depth limit). Same integer expressions per bin in the same bit-width cases: bit-identical (`tests/python_package_test/test_fix_subtract_masked.py`). Same-binary A/B, key off vs on, 3 pairs: covtype deep 1.024 (4.28 → 4.18 ms per round, 70 levels per round), higgs deep 1.005; against master: covtype 1.031, higgs 1.009, the numerai cells unchanged (they take `fix_subtract_fused`). With bagging (`bagging_fraction` 0.7, `bagging_freq` 1, tuner off, 2 pairs): covtype 4.85/4.96 → 4.81/4.86 ms per round, higgs 2.454/2.462 → 2.421/2.416, same models. A synthetic sparse, leaf-wise binary training (500k rows, 255 leaves) was 0.5–1% faster per run. Its block size is the widest need-fix feature's power-of-two bin count within [128, 512] threads (the fix loop strides over wider features): against fixed 512-thread blocks, higgs 1.006 (3 of 3 pairs), covtype 1.001. A variant that also did the bit-change copy in the last-arriving block of each pair (per-pair arrival counter) measured neutral (covtype 0.9996) and was dropped; so were a variant whose fix block subtracts all of its feature's bins (the smaller histogram read once instead of twice: higgs 0.997, the second read hits cache) and a warp per need-fix feature instead of a block (higgs 1.003, covtype 1.002: within noise, and slower in principle on very wide columns).
+- The batched apply's tree-structure update and gap copy run as extra flat ids of the partition kernel: two launches fewer per level, −55 µs per round. (Both keys were removed in 1.2: always on.)
+- `fix_subtract_masked` (2026-10-14): where `fix_subtract_fused` does not run (no feature sampling, or sampled columns wider than 8 bins) and some feature needs its most-frequent bin fixed, the quantized fix and subtract are one launch. Its subtract blocks skip the need-fix features' most-frequent bins (the `fix_mfb_mask` the non-quantized small-leaf kernel already uses), and the fix block of each such feature subtracts the fixed value at that bin, so both kernels' reads of the same histograms happen in one launch. It serves the host-launched level path, the captured graph level loop (removed in 1.2 with `graph_quant`; the complete device tree runs the same fused kernel) and the classic per-leaf loop (sparse columns, no depth limit). Same integer expressions per bin in the same bit-width cases: bit-identical (`tests/python_package_test/test_fix_subtract_masked.py`). Same-binary A/B, key off vs on, 3 pairs: covtype deep 1.024 (4.28 → 4.18 ms per round, 70 levels per round), higgs deep 1.005; against master: covtype 1.031, higgs 1.009, the numerai cells unchanged (they take `fix_subtract_fused`). With bagging (`bagging_fraction` 0.7, `bagging_freq` 1, tuner off, 2 pairs): covtype 4.85/4.96 → 4.81/4.86 ms per round, higgs 2.454/2.462 → 2.421/2.416, same models. A synthetic sparse, leaf-wise binary training (500k rows, 255 leaves) was 0.5–1% faster per run. Its block size is the widest need-fix feature's power-of-two bin count within [128, 512] threads (the fix loop strides over wider features): against fixed 512-thread blocks, higgs 1.006 (3 of 3 pairs), covtype 1.001. A variant that also did the bit-change copy in the last-arriving block of each pair (per-pair arrival counter) measured neutral (covtype 0.9996) and was dropped; so were a variant whose fix block subtracts all of its feature's bins (the smaller histogram read once instead of twice: higgs 0.997, the second read hits cache) and a warp per need-fix feature instead of a block (higgs 1.003, covtype 1.002: within noise, and slower in principle on very wide columns).
 
 **Host round trips (`readback_kernel`, `level_apply_first`, `invalidate_async`, `gradients_no_sync`, `tree_meta_batch`, `tree_end_prealloc`).**
 - Each level's two synchronous readbacks are copied by a small default-stream kernel into mapped pinned memory, so the copy starts as the producing kernel ends.
@@ -1887,7 +1889,7 @@ Measured and dropped on the same profile (same-binary A/Bs, md5-identical, no ke
 - **The level sync run by the warp finder** (`find_sync_fused`, measured after the merge with §10j and `fix_subtract_masked`): each (pair, leaf role) counted its finished find warps (release fence + atomic), and the warp completing the leaf reduced the leaf's task slots (read through L2) into its best-split entry and the readback mirror, so the sync launch went. md5-identical, the sync kernel gone (covtype -150 us per round), but the finder grew by 220 us per round (96 -> 118 registers inlined; with the body out of line the registers stayed at 96 and it was slower still): same-binary covtype 0.994 / 0.987, higgs 1.000 / 0.994. The sync costs one in-stream launch gap (0.7 us) plus a ~2 us kernel per level; the fusion puts a release fence, an atomic round trip and a one-warp fold of the leaf's slots on each leaf's critical path, which costs as much or more.
 - **The used-task sync block sized by the task count** (whole warps for about two tasks per thread, 32-256 threads, instead of 256 at any count): the kernel did not get shorter on covtype (2.14 -> 2.26 us per launch; it waits on its dependent descriptor, leaf-struct and slot loads, not on the block reduction): covtype 0.994, higgs 1.004.
 - **Device-scope atomics for the quantized per-column construct's global flush** (`ATOM.E.ADD.STRONG.GPU` instead of `.SYS`): higgs 0.992, covtype 0.999, md5-identical: the flush is not bound by the atomics' scope.
-- **`graph_quant:on`** (the captured graph level loop for quantized training, opt-in) on the same build: covtype 3.76 -> 11.69 ms per round, higgs 1.90 -> 13.07 (md5-identical): the graph body has none of the host-launched level's fast kernels; not a candidate for a default.
+- **`graph_quant:on`** (the captured graph level loop for quantized training, opt-in) on the same build: covtype 3.76 -> 11.69 ms per round, higgs 1.90 -> 13.07 (md5-identical): the graph body has none of the host-launched level's fast kernels; not a candidate for a default. (Removed in 1.2: the complete device tree and the `device_levels` prefix serve the quantized depth-limited trees it served.)
 
 Merged with §10j's construct keys and `fix_subtract_masked` (against master 2330477a, the cells harness, 2 pairs per cell): numerai53bench 1.000, numerai53bench with NaNs 1.001, covtype 1.138 (4.28 -> 3.76 ms per round), higgs 1.297 (2.47 -> 1.90); md5-identical, lattice 341/341, guards md5-identical. Bagged (fraction 0.6, 400 rounds, rounds 150.., 2 pairs, own `$HOME` per run): higgs 2.20 -> 1.755 ms per round, covtype 4.83 -> 4.14 (4.39 without `sync_used_narrow`), same models. Synthetic shapes, master -> this (300 rounds, median of rounds 150.., 2 runs each, md5-identical): 50k x 20 continuous, binary, 127 leaves, fixedpoint 0.389 / 0.395 -> 0.352 / 0.351 ms per round; 1M x 120 16-value columns with 10% NaNs, regression, 255 leaves, bagging 0.8 1.193 / 1.196 -> 1.037 / 1.040; 300k x 40 continuous, 5 classes, 63 leaves 1.844 / 1.838 -> 1.639 / 1.655; 100k x 500 continuous, feature fraction 0.3, 255 leaves 0.978 / 0.980 -> 0.897 / 0.891.
 
@@ -2545,7 +2547,7 @@ field holds; otherwise a 64-bit sum and a 32-bit count), adds its nonzero bins t
 deterministic construct's slot slab, unused meanwhile), and a convert kernel stores each bin as `(base * n + unit *
 S, hessian * n)` and zeroes the scratch it read. At most 128 column lanes per block (a lane takes several columns of
 a wide partition, more rows in flight); tiles of at least 8 (row, column) adds per partition bin, up to about 32
-blocks per SM. The codes are kept for the training (a cache per gradient array shared with the forest slots, cleared
+blocks per SM. The codes are kept for the training (a cache per gradient array, cleared
 by a reset of the training data or the config).
 
 **Exact, so the same model.** The codes are built only when every hessian is the same finite positive float, at most
@@ -2967,13 +2969,13 @@ one after another on the booster's learner, section 10r).
 The controller presizes its per-level scratch for the deepest level it searches (2^(max_depth-2) pairs: split-finder
 output and the quantized bit-change histograms, which grow with the total bin count); where that estimate exceeds
 half of the free device memory at the first tree, the prefix flow grows the trees instead (`FALCATA_DEBUG=diag`
-prints the estimate and `device_tree: fallback to the prefix flow (device tree scratch exceeds free memory)`).
+prints the estimate and `device_tree: fallback (memory_gate) route=prefix`).
 Every level's select, apply and search plus the final apply run on the GPU, with one growth readback and no host
 growth tail. Against the `device_levels` prefix (section 10w) it removes, once per tree, the prefix readback, the
 host replay and the host-driven final level (its uploads, launches and readbacks). Elsewhere (unlimited or deeper
-trees, smaller leaf budgets) the prefix flows and the host flow run exactly as before, and `FALCATA_DEBUG=diag`
-reports `device_tree: fallback to the prefix/host flow (depth bound or leaf budget)`; unsupported kernels,
-constraints and data keep the host flow and report the fallback as the prefix does. There is no automatic
+trees, smaller leaf budgets) the prefix flows and the host flow run exactly as before; unsupported kernels,
+constraints and data keep the host flow. `FALCATA_DEBUG=diag` reports why on the reason line (next section). There is
+no automatic
 selector: `cuda_plan=auto,device_tree:off` restores the prefix flow everywhere, `cuda_plan=auto,device_levels:off`
 the host flow (in 1.1 the opt-in spelling was `auto,device_levels:off,device_tree:on`; that string now selects the
 host flow). No training parameters or split rules change: the same selector, kernels and order, bit-identical
@@ -3149,6 +3151,80 @@ ordinary prefix keys stay unchanged. The same apply/find stream clears exactly t
 immediately before the final scatter, in graph and plain enqueue. This documents the deferred route,
 without an allocator change or speed claim. Separate `device_tree_final_all_map`,
 `device_tree_final_all_map_branch` and `device_tree_final_map_only` diagnostics identify the route.
+
+### Why a tree is not a complete device tree: the reason line
+
+Under `FALCATA_DEBUG=diag` every CUDA tree the complete device tree did not grow is reported as
+
+    [hybrid-diag] device_tree: fallback (<reason>) route=<route>[ prefix=<reason>]
+
+once for the learner's first such tree and again whenever the line changes (a route change: a memory gate, a
+prefix that turns its graphs off, a forest group switching mode), not once per tree; trees the device tree grew keep
+their `device_tree: complete ...` line. `<reason>` is the first refusal that holds in a fixed order, `<route>` the
+controller that grew the tree, and `prefix=` (on the `host_two_sync` and `selective_two_sync` routes) why a
+`device_levels` prefix did not run where that flow would take one. Each token belongs to one row of the refusal
+inventory of the full device controller program; the vocabulary is `FALCATA_DEVICE_TREE_REASONS` and
+`FALCATA_GROWTH_ROUTES` in `include/Falcata/cuda/cuda_device_tree_reason.hpp`, the one list
+`tests/python_package_test/test_cuda_route_pins.py` reads. That test pins the reason and route of 34 configurations
+(the program's golden route cells), so a later change that moves a configuration to another controller changes one
+row of its table.
+
+Reasons, in their order (several can hold; the first is reported):
+
+| token | refusal | route today |
+|---|---|---|
+| `debug_hook` | `FALCATA_DEBUG=debug`, `dump`, or `bynode` with per-node masks | host flows |
+| `plan_off` | a `cuda_plan` key turned a device flow off (`device_tree`, `device_levels`, `hybrid`, `level_bynode_masks`, `device_bynode_masks`) | prefix / host |
+| `multi_gpu` | `num_gpu > 1` (data-parallel) | host two-sync (NCCL level reduce) or classic |
+| `feature_parallel` | `tree_learner=feature` | host two-sync |
+| `vector_leaves` | `tree_mode=vector_leaf` | host two-sync / selective |
+| `no_shared_memory` | non-quantized fixed-point table larger than the device's shared memory | classic |
+| `nonquant_gt_256_bins` | non-quantized feature with more than 256 bins (global-memory finder) | classic |
+| `sparse_layout` | sparse row data | host two-sync, per-pair kernels |
+| `extra_trees`, `cat_random_search` | the level finder has no batched variant | host two-sync, per-pair search |
+| `interaction_constraints` | interaction constraints (shared-stream per-node draws) | classic |
+| `monotone`, `cegb`, `forced_splits` | per-split constraints (monotone constraints need `quant_mode=none` on CUDA) | classic |
+| `linear_budget` | linear trees with a binding budget | classic |
+| `num_leaves_le_2` | stumps | classic |
+| `nonquant_selective`, `nonquant_onesync`, `nonquant_l15` | `quant_mode=none`: budget-limited, depth-limited outside the L1.5 graph bound, inside it | selective one-sync / one-sync / l15 graph |
+| `lambda_l1`, `path_smooth` | the level finder has no batched variant | host two-sync, per-pair search |
+| `large_bin_layout`, `compact_16bit` | partitions on global-memory histograms; compact view of non-8-bit rows | host two-sync, per-pair kernels |
+| `categorical` | a categorical feature | host two-sync |
+| `bynode_outside_bound`, `bynode_host_masks` | per-node masks outside the depth bound; inside it with device masks unusable | host two-sync / selective |
+| `selective_unbounded`, `selective_budget` | `max_depth <= 0`; `2^max_depth > num_leaves + 1` | selective prefix |
+| `depth_gt_12` | depth-limited, `max_depth > 12` | prefix |
+| `memory_gate` | the presized scratch exceeds half of the free memory | prefix |
+| `setup_failed` | the device levels could not be set up | host two-sync |
+| `prefix_graph_churn` | (as `prefix=` only) sampled layouts kept missing the graph cache: the prefix turned itself off | host two-sync / selective two-sync |
+| `empty_task_list` | no searchable feature in the tree | host two-sync |
+| `root_tail_parity` | the device root search found no split and the classic one did | classic tail |
+| `unclassified` | none of the above (a bug; the route pins fail on it) | |
+
+Routes: `device_tree`, `prefix` (device_levels prefix, then the host two-sync loop), `host_two_sync`,
+`selective_prefix`, `selective_two_sync`, `selective_one_sync`, `l15_graph`, `one_sync`, `classic` (the per-split
+loop). (`forest_slots`, the forest slot threads, went with the slots in #178.)
+
+`device_levels: host fallback (<reason>)` keeps reporting, once per learner, why the prefix itself declined in flows
+outside the complete device tree (with the same tokens).
+
+**Removed in 1.2** (opt-in or off values only; old plan strings naming these keys are accepted with a warning and now
+train the default model):
+
+- `cuda_plan` keys `batch_kernels`, `batch_apply`, `selective`, `batch_wide`, `cat_hybrid`, `apply_struct_fused`,
+  `gap_copy_fused` and `graph_quant`, with the flows only their non-default value reached: the per-split apply
+  inside the level loop (`batch_apply:off`), the quantized captured graph prefix (`graph_quant:on`, which still ran
+  where the device tree was refused, e.g. with `device_tree:off`; the same plan now takes the `device_levels`
+  prefix), the
+  classic-loop fence for categorical data (`cat_hybrid:off`), the unfused level apply kernels (kept only for the
+  map-only final level);
+- the `FALCATA_DEBUG` tokens `syncpairs`, `maxsplits=N` and `aggressive` (the approximate breadth-biased level
+  batching of budget-limited trees) and the `FALCATA_SINGLE_STREAM` switch (the tokens now warn as unknown; the
+  environment variable is silently ignored).
+
+Kept, because each still selects a live behaviour: `hybrid` (`hybrid:off`, the classic per-split loop everywhere: the
+gates' reference arm), `level_bynode_masks` (`:off` restores the 1.0 per-node samples and models), `device_tree`,
+`device_levels`, `device_bynode_masks`, `selective_device_prefix` (their off values select the prefix and host flows
+that still serve every fallback above; the tests' reference arms) and `one_sync`.
 
 ## 10w. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
 

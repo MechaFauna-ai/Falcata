@@ -54,8 +54,8 @@ What makes it fast
 - **An execution planner.** Shape-conditional kernel choices are resolved once
   from the data and parameters (`cuda_plan=auto`) instead of from a pile of
   environment variables — every decision bit-identical except where the
-  `cuda_plan` documentation says otherwise (`robust_scale`, and the tie order
-  of `batch_kernels`), and individually overridable for experiments.
+  `cuda_plan` documentation says otherwise (`robust_scale`), and individually
+  overridable for experiments.
 - **GPU inference via NVIDIA FIL.** `Booster.predict()` transparently runs on
   cuML's Forest Inference Library when available (see below); CuPy arrays stay
   on the device end to end.
@@ -65,8 +65,8 @@ Correctness discipline
 
 Every optimization above must be *bit-identical* to the reference path, and
 that is enforced mechanically rather than trusted. A regression-gate suite runs
-locally on a GPU for every merge and nightly (hosted CI has no GPU): a 441-cell
-lattice of (config × data-shape) training cells (98 md5-fingerprinted, 341
+locally on a GPU for every merge and nightly (hosted CI has no GPU): a 462-cell
+lattice of (config × data-shape) training cells (131 md5-fingerprinted, 329
 plan-flip equality cells that prove each planner decision changes nothing,
 2 metric cells), validity assertions, metric floors, and a perf gate against a
 rolling baseline. The nightly tier adds a config × shape fuzzer with CPU-parity
