@@ -889,6 +889,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int64_t sel_stat_sim_ns_ = 0;
   // reusable device slab for CUDATree's per-tree arrays (see CUDATree ctor)
   CUDAVector<uint8_t> cuda_tree_pool_buffer_;
+  // reusable growth buffers for the categorical split record of the tree being grown (see CUDATreeCatArena)
+  CUDATreeCatArena cuda_tree_cat_arena_;
   // whether BeforeTrain deferred the root-sum readback (single-sync flow); the
   // readback (plus the root leaf-output init) then happens lazily in
   // EnsureRootSumsReadBack on the paths that need host root sums
