@@ -860,6 +860,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<int> cuda_device_level_select_leaves_;
   CUDAVector<double> cuda_device_level_select_gains_;
   CUDAVector<unsigned int> cuda_device_level_select_bits_;
+  CUDAVector<int2> cuda_device_level_select_gaps_;
   CUDAVector<CUDADeviceLevelState> cuda_device_level_chunk_states_;
   CUDAVector<CUDADeviceLevelState> cuda_device_level_state_;
   // the select / pairs kernels' inputs in device memory (the apply's pairs block reads them there), uploaded per tree

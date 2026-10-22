@@ -67,6 +67,7 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   DeviceBuffer<int> select_leaves(global_select ? leaves : 1);
   DeviceBuffer<double> select_gains(global_select ? leaves : 1);
   DeviceBuffer<unsigned int> select_bits(global_select ? 2 * leaves / 32 : 1);
+  DeviceBuffer<int2> select_gaps(global_select ? 2 * leaves : 1);
   std::vector<CUDASplitInfo> splits(leaves);
   std::vector<data_size_t> host_counts(leaves), host_starts(leaves);
   std::vector<int> expected;
@@ -141,6 +142,7 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
     cfg.select_leaves = select_leaves.data();
     cfg.select_gains = select_gains.data();
     cfg.select_split_bits = select_bits.data();
+    cfg.select_gaps = select_gaps.data();
     cfg.select_capacity = leaves;
   }
   LaunchDeviceLevelSelect(cfg, level, leaves, nullptr);

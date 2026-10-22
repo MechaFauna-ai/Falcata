@@ -3923,7 +3923,7 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
   const size_t leaves = static_cast<size_t>(1) << num_levels;
   const size_t final_splits = leaves / 2;
   const size_t select_bytes = final_splits > static_cast<size_t>(kDeviceTreeSharedSplits) ?
-    final_splits * (sizeof(int) + sizeof(double)) + leaves / 32 * sizeof(unsigned int) : 0;
+    final_splits * (sizeof(int) + sizeof(double)) + leaves / 32 * sizeof(unsigned int) + leaves * sizeof(int2) : 0;
   const size_t other_bytes =
     (static_cast<size_t>(kDeviceLevelJournalHeader) + kDeviceLevelJournalRecord * leaves) * sizeof(int) +
     (leaves + 2) * sizeof(CUDALeafSplitsStruct) + (leaves + 4) * sizeof(CUDAHybridApplyDescriptor) +
@@ -4070,6 +4070,7 @@ bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
     cuda_device_level_select_leaves_.Resize(final_splits);
     cuda_device_level_select_gains_.Resize(final_splits);
     cuda_device_level_select_bits_.Resize(2 * final_splits / 32);
+    cuda_device_level_select_gaps_.Resize(2 * final_splits);
   }
   const int chunks = whole_tree ? DeviceTreeChunks(max_pairs) : 1;
   if (chunks > 1 && cuda_device_level_chunk_states_.Size() < static_cast<size_t>(chunks)) {
@@ -4449,6 +4450,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     cfg.select_leaves = cuda_device_level_select_leaves_.RawData();
     cfg.select_gains = cuda_device_level_select_gains_.RawData();
     cfg.select_split_bits = cuda_device_level_select_bits_.RawData();
+    cfg.select_gaps = cuda_device_level_select_gaps_.RawData();
     cfg.select_capacity = 1 << (num_levels - 1);
   }
   // pair chunking (PlanDeviceTreeChunks): the chunks of the widest search; narrower levels use the first ones

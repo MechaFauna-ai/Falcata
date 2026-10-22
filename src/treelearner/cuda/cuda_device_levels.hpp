@@ -204,6 +204,9 @@ struct CUDADeviceLevelConfig {
   int* select_leaves;
   double* select_gains;
   unsigned int* select_split_bits;
+  /*! \brief the level's terminal gaps (leaf, flat chunk start), 2 * select_capacity of them (the global select writes
+   *  their descriptors word-parallel from here) */
+  int2* select_gaps;
   int select_capacity;
   /*! \brief pair chunking (a complete tree whose per-pair search scratch for a whole level exceeds the memory budget):
    *  a level's fix/subtract and find run over num_chunks chunks of chunk_pairs pairs. The pairs block writes chunk c's

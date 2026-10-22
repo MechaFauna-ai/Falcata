@@ -335,7 +335,9 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
       missing_default_leaf_index = leaf;
     }
     const data_size_t parent_num_data = cfg.leaf_num_data[leaf];
-    CUDAHybridApplyDescriptor& d = cfg.apply_descs[k];
+    // built in registers and stored whole (wide stores, as the gap descriptors below); the offsets follow
+    CUDAHybridApplyDescriptor d;
+    memset(&d, 0, sizeof(CUDAHybridApplyDescriptor));
     d.column_data = src.column_data;
     d.best_split_info = info;
     d.smaller_leaf_splits = cfg.pair_slots + 2 * k;
@@ -367,6 +369,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
     d.cat_bitset_len = 0;
     d.cat_bitset = nullptr;
     d.cat_mfb_offset = 0;
+    cfg.apply_descs[k] = d;
     my_slots += d.num_blocks + 1;
     my_flat += d.num_blocks;
     atomicOr(&s_split_bits[leaf >> 5], 1u << (leaf & 31));
@@ -410,19 +413,53 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   const int num_gaps = s_total;
   int gap_flat_pos = DeviceLevelBlockScan(my_gap_flat, s_warp, &s_total);
   const int gap_flat_blocks = s_total;
+  if constexpr (GLOBAL) {
+    // A deep level has thousands of terminal leaves, one descriptor each, all written by this one block: each thread
+    // records its gaps' (leaf, flat chunk start) compactly, then consecutive threads write consecutive 8-byte words
+    // of the descriptors (coalesced). The same descriptors as the per-leaf writes below.
+    for (int leaf = leaf_begin; leaf < leaf_end; ++leaf) {
+      const data_size_t num = cfg.leaf_num_data[leaf];
+      if (((s_split_bits[leaf >> 5] >> (leaf & 31)) & 1u) == 0 && num > 0) {
+        cfg.select_gaps[gap_pos] = make_int2(leaf, total_flat_blocks + gap_flat_pos);
+        ++gap_pos;
+        gap_flat_pos += (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+      }
+    }
+    __syncthreads();
+    static_assert(sizeof(CUDAHybridApplyDescriptor) % sizeof(uint64_t) == 0, "descriptors are written as words");
+    constexpr int kWords = static_cast<int>(sizeof(CUDAHybridApplyDescriptor) / sizeof(uint64_t));
+    uint64_t* gap_words = reinterpret_cast<uint64_t*>(cfg.apply_descs + n);
+    for (int w = tid; w < num_gaps * kWords; w += nt) {
+      const int gap = w / kWords;
+      const int2 rec = cfg.select_gaps[gap];
+      const data_size_t num = cfg.leaf_num_data[rec.x];
+      CUDAHybridApplyDescriptor g;
+      memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
+      g.left_leaf_index = rec.x;  // the final whole apply also maps this terminal leaf
+      g.leaf_data_start = cfg.leaf_data_start[rec.x];
+      g.num_data_in_leaf = num;
+      g.num_blocks = (num + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
+      g.flat_block_start = rec.y;
+      gap_words[w] = reinterpret_cast<const uint64_t*>(&g)[w - gap * kWords];
+    }
+  } else {
   for (int leaf = leaf_begin; leaf < leaf_end; ++leaf) {
     const data_size_t num = cfg.leaf_num_data[leaf];
     if (((s_split_bits[leaf >> 5] >> (leaf & 31)) & 1u) == 0 && num > 0) {
-      CUDAHybridApplyDescriptor& g = cfg.apply_descs[n + gap_pos];
+      // built in registers and stored whole (wide stores): a memset of the global descriptor is byte stores, and a
+      // deep level's thousands of terminal leaves made it the select's bottleneck
+      CUDAHybridApplyDescriptor g;
       memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
       g.left_leaf_index = leaf;  // the final whole apply also maps this terminal leaf
       g.leaf_data_start = cfg.leaf_data_start[leaf];
       g.num_data_in_leaf = num;
       g.num_blocks = (num + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
       g.flat_block_start = total_flat_blocks + gap_flat_pos;
+      cfg.apply_descs[n + gap_pos] = g;
       ++gap_pos;
       gap_flat_pos += (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
     }
+  }
   }
   if (tid == 0) {
     st->live_splits = n;
@@ -680,13 +717,14 @@ __device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevel
 #pragma unroll
   for (int c = 0; c < CHUNK; ++c) {
     if (leaf_begin + c < leaf_end && !valid[c] && num[c] > 0) {
-      CUDAHybridApplyDescriptor& g = cfg.apply_descs[n + gap_pos];
+      CUDAHybridApplyDescriptor g;  // registers, stored whole (see DeviceLevelSelectBlock)
       memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
       g.left_leaf_index = leaf_begin + c;  // the final whole apply also maps this terminal leaf
       g.leaf_data_start = start[c];
       g.num_data_in_leaf = num[c];
       g.num_blocks = (num[c] + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
       g.flat_block_start = total_flat_blocks + gap_flat_pos;
+      cfg.apply_descs[n + gap_pos] = g;
       ++gap_pos;
       gap_flat_pos += (num[c] + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
     }
