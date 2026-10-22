@@ -113,7 +113,7 @@ def _train(params, data_kw, rounds):
 def _device_scores(bst, data_idx, rows, num_class):
     """The scores the booster maintained on the device, in output space, shaped like Booster.predict."""
     score = bst._Booster__inner_predict(data_idx=data_idx)
-    return score.reshape(num_class, rows).T if num_class > 1 else score
+    return score.reshape(rows, num_class) if num_class > 1 else score
 
 
 def _per_tree_words(text, key):
