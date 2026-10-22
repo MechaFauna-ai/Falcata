@@ -104,6 +104,8 @@ void CUDAForestTrainer::Train(const std::vector<Job>& jobs, std::vector<std::uni
   const int num_jobs = static_cast<int>(jobs.size());
   trees->clear();
   trees->resize(num_jobs);
+  // cuda_plan key forest_single_job_device: whether this group's one tree trains alone (set below, around it)
+  last_solo_ = num_jobs == 1 && FalcataPlan::Get().forest_single_job_device;
   if (num_jobs == 0) {
     return;
   }
@@ -176,7 +178,12 @@ void CUDAForestTrainer::Train(const std::vector<Job>& jobs, std::vector<std::uni
     }
   };
   if (num_jobs == 1) {
+    // cuda_plan key forest_single_job_device: no other thread runs while the group's only tree trains (on this
+    // thread), so it trains as the sequential learner does (graph capture, the device level flows)
+    CUDASingleGPUTreeLearner* const solo = slots_[jobs[0].slot];
+    solo->SetForestSoloTree(last_solo_);
     grow(0);
+    solo->SetForestSoloTree(false);
   } else {
     std::vector<std::thread> threads;
     threads.reserve(num_jobs - 1);

@@ -669,10 +669,11 @@ class RF : public GBDT {
     if (FalcataDebug().diag) {
       size_t free_bytes = 0, total_bytes = 0;
       cudaMemGetInfo(&free_bytes, &total_bytes);
-      fprintf(stderr, "[forest-diag] rounds %d..%d: %d trees on %d slots in %.1f ms (%d first trees), %.0f MiB free%s\n",
-              iter_, iter_ + rounds - 1, static_cast<int>(jobs.size()), forest_trainer_->num_slots(), group_ms,
-              forest_trainer_->last_first_trees(), free_bytes / 1048576.0,
-              auto_size ? (forest_auto_settled_ ? ", auto size settled" : ", auto size growing") : "");
+      fprintf(stderr, "[forest-diag] rounds %d..%d: %d trees on %d slots in %.1f ms (%d first trees), %.0f MiB free%s, "
+              "mode %s\n", iter_, iter_ + rounds - 1, static_cast<int>(jobs.size()), forest_trainer_->num_slots(),
+              group_ms, forest_trainer_->last_first_trees(), free_bytes / 1048576.0,
+              auto_size ? (forest_auto_settled_ ? ", auto size settled" : ", auto size growing") : "",
+              forest_trainer_->last_solo() ? "single job (non-slot)" : "slots");
     }
     size_t next = 0;
     for (ForestRound& round : forest_rounds_) {
