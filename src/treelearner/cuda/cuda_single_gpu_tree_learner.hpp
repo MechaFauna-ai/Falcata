@@ -374,8 +374,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool SetupDeviceLevels(const int num_levels);
   /*! \brief pairs of the widest child search of num_levels device levels (whole tree: 2^(num_levels - 2)) */
   int DeviceLevelSearchPairs(int num_levels) const;
-  /*! \brief cuda_plan key device_tree: once per learner, whether a whole tree's presized scratch fits half of free
-   *  device memory; when it does not, DeviceTreeRequested() is false (the prefix flow) */
+  /*! \brief cuda_plan key device_tree: before the first tree's level flow (again after ReleaseHybridGraphs, e.g. a
+   *  ResetConfig), whether a whole tree's presized scratch fits half of free device memory; when it does not,
+   *  DeviceTreeRequested() is false (the prefix flow) */
   void EvaluateDeviceTreeScratchGate();
   // after the root level's search is enqueued: num_levels device-driven levels (apply + children's search), one
   // readback, the host bookkeeping replayed; host_leaf_best_splits_ then hold the last search's result and *pairs

@@ -3680,8 +3680,8 @@ int CUDASingleGPUTreeLearner::DeviceLevelSearchPairs(const int num_levels) const
 }
 
 // cuda_plan key device_tree: the scratch SetupDeviceLevels presizes for a whole tree of max_depth num_levels, against
-// free device memory (FALCATA_DEBUG=vramfree=N caps it, as ChooseViewRegime's), once per learner before the first
-// tree's level flow. Each buffer counts in full where it must grow (a growing Resize holds the old block until the new
+// free device memory (FALCATA_DEBUG=vramfree=N caps it, as ChooseViewRegime's), before the first tree's level flow;
+// ReleaseHybridGraphs (ResetConfig, ResetTrainingData) clears the cached decision, so the next tree evaluates it again. Each buffer counts in full where it must grow (a growing Resize holds the old block until the new
 // one exists): the split finder's per-level output (2 * num_tasks * pairs CUDASplitInfo), the quantized bit-change
 // scratch (pairs * total bins int32), and the per-split descriptors, slots and journal. Over half of the free memory
 // DeviceTreeRequested() turns false for this learner: its trees take the prefix flow (the graph prefix or the

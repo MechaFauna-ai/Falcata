@@ -2,7 +2,7 @@
 """CUDA training must train the same model with the default plan, device_tree:off and device_levels:off.
 
 The default plan runs the complete device tree (cuda_plan key device_tree) where its depth bound holds (positive
-max_depth <= 10 and 2^max_depth <= num_leaves + 1) and leaves every other shape to the device_levels prefix and the
+max_depth <= 12 and 2^max_depth <= num_leaves + 1) and leaves every other shape to the device_levels prefix and the
 host flow; device_tree:off restores the prefix flow, device_levels:off the host flow. The sweep covers eligible shapes
 (a full and a one-short leaf budget, regression, binary and multiclass, bagging, feature_fraction, missing values) and
 shapes outside the bound, whose models must not change either.

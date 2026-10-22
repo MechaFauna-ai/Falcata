@@ -217,6 +217,10 @@ def test_device_tree_complete_cuda(case, graph):
         estimates = re.findall(rf"device_tree: scratch estimate .* for max_depth {depth}, (\d+) searched pairs", diag)
         assert estimates == [str(1 << (depth - 2))], diag
         assert "over half of free memory" not in diag
+        # the live-grid route of every enqueued level (#168), up to the 2^(depth-2)-pair search; at the default budget
+        # these narrow levels stay under it (test_device_tree_deep_live_grid_cuda runs them live)
+        routes = _LIVE_GRID_LINE.findall(diag)
+        assert {int(r[0]) for r in routes} == {1 << level for level in range(depth - 1)}, routes
     elif case == "reset":
         assert data["budgets"] == [1024] * 4
         assert [int(e[0]) for e in events] == [1] * 3 + [10] * 3 + [3] * 3 + [10] * 3
@@ -250,6 +254,30 @@ def test_device_tree_complete_cuda(case, graph):
 _LIVE_GRID_LINE = re.compile(
     r"device_tree_live_grid: pairs=(\d+) budget=(\d+) fix_subtract=([\w-]+) grid_x=(\d+) copy=(\w+) copy_grid_x=(\d+)"
 )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["off", "on"])
+@pytest.mark.parametrize("case", ["deep11", "deep12"])
+def test_device_tree_deep_live_grid_cuda(case, graph):
+    # device_tree_live_grid:1 (a budget of one block per SM) at depth 11 / 12: the widest searches (256 and 512 pairs,
+    # and 1024 at depth 12) run the live fix/subtract and the live bit-change copy, with the host flow's model bytes.
+    # These fixtures change histogram bit width at the 64-pair search, which stays under the budget; the live copy
+    # moving real data is covered by the fullbig case of test_device_tree_live_grid_cuda.
+    depth = int(case[4:])
+    data, diag = _run(case, graph, base_plan="auto,device_tree_live_grid:1")
+    events = re.findall(r"device_tree: complete depth=(\d+) applied_levels=(\d+) ", diag)
+    assert len(events) == data["rounds"]
+    assert all(e == (str(depth), str(depth)) for e in events)
+    assert data["counts"] == [1 << depth] * data["rounds"]
+    live = {}
+    for pairs, budget, fix, grid_x, copy, copy_grid_x in _LIVE_GRID_LINE.findall(diag):
+        pairs, budget, grid_x, copy_grid_x = int(pairs), int(budget), int(grid_x), int(copy_grid_x)
+        assert fix.startswith("live") == (grid_x * pairs > budget), (pairs, budget, fix, grid_x)
+        assert (copy == "live") == (copy_grid_x * pairs > budget), (pairs, budget, copy)
+        live[pairs] = (fix, copy)
+    assert max(live) == 1 << (depth - 2), live
+    assert live[1 << (depth - 2)] == ("live-subtract", "live"), live
 
 
 @_REQUIRES_CUDA
@@ -343,6 +371,8 @@ def test_device_tree_scratch_gate_falls_back_to_prefix_cuda():
     assert diag.count("device_tree: fallback to the prefix flow (device tree scratch exceeds free memory)") == 1
     assert "device_tree: complete" not in diag
     assert "host fallback" not in diag
+    # the device_levels prefix grew both arms' trees (min(log2(4096), 12 - 1, 10) levels)
+    assert "device_levels: 10 device-driven levels per tree" in diag
 
 
 @_REQUIRES_CUDA
