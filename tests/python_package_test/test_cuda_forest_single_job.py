@@ -81,9 +81,9 @@ def _params(objective, quant_mode, **extra):
 
 def _md5(params, plan, X, y, rounds):
     if params["quant_mode"] == "none":
-        # sequential training (forest_batched off) may take the non-quantized graph loop, which is not run-to-run
-        # deterministic; forest groups never take it, with or without the key
-        plan += ",graph_loop:off"
+        # sequential training (forest_batched off) may take the complete non-quantized device tree (fixed-point
+        # levels), forest groups never take it: both arms keep the one-sync host loop
+        plan += ",device_tree:off"
     ds = flc.Dataset(X, label=y, params={"max_bin": 63, "verbose": -1})
     booster = flc.train({**params, "cuda_plan": plan}, ds, num_boost_round=rounds)
     return hashlib.md5(_strip_parameters(booster.model_to_string()).encode()).hexdigest()
@@ -238,11 +238,11 @@ def test_forest_single_job_takes_the_selective_device_prefix_cuda(shape):
         assert not any("device_tree: complete" in line for line in lines)
 
 
-def test_forest_single_job_no_nonquantized_graph_loop_cuda():
-    # a solo non-quantized tree keeps the slots' level loop: the non-quantized graph loop is not run-to-run
-    # deterministic, so a forest's model would depend on its group sizes. Sequential training (forest_batched off)
-    # takes it on this shape: the diag line is the graph loop's
-    graph_line = "[hybrid-diag] graphs L1.5: instantiated"
+def test_forest_single_job_no_nonquantized_device_tree_cuda():
+    # a solo non-quantized tree keeps the slots' level loop: the complete non-quantized device tree (the graph loop's
+    # model before P3) constructs in fixed point where the slots' loop takes the double-slot construct, so a forest's
+    # model would depend on its group sizes. Sequential training (forest_batched off) takes it on this shape
+    graph_line = "[hybrid-diag] device_tree: complete"
     sequential = _diag_lines(_engage_params(quant_mode="none", cuda_plan="auto,forest_batched:off"), 6)
     assert any(graph_line in line for line in sequential), sequential[-20:]
     lines = _diag_lines(_engage_params(quant_mode="none", cuda_plan="auto,forest_group:1"), 6)

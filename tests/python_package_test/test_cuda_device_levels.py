@@ -287,13 +287,16 @@ def test_device_levels_forced_splits_cuda(tmp_path):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["off", "on"])
-def test_device_levels_nonquant_fallback_cuda(graph):
+def test_device_levels_nonquant_cuda(graph):
+    # non-quantized depth-limited trees take the complete device tree (its fixed-point levels: the removed graph
+    # loop's model); device_levels:off and device_tree:off both keep the one-sync host loop with the double-slot
+    # deterministic construct, the same model by construction, and on this fixture the device tree's too (both
+    # constructs' sums are exact here: empirical, not guaranteed in general)
     X, y = _data(12000, 16, "binary", 67)
     p = _params("binary", 63, 6, "none", num_threads=1)
-    plan = "auto,graph_loop:off"
-    off = _model_md5({**p, "cuda_plan": plan + ",device_levels:off"}, X, y, 6)
-    assert _model_md5({**p, "cuda_plan": plan + ",device_tree:off,device_level_graph:" + graph}, X, y, 6) == off
-    assert _model_md5({**p, "cuda_plan": plan + ",device_level_graph:" + graph}, X, y, 6) == off
+    off = _model_md5({**p, "cuda_plan": "auto,device_levels:off"}, X, y, 6)
+    assert _model_md5({**p, "cuda_plan": "auto,device_tree:off,device_level_graph:" + graph}, X, y, 6) == off
+    assert _model_md5({**p, "cuda_plan": "auto,device_level_graph:" + graph}, X, y, 6) == off
 
 
 @_REQUIRES_CUDA

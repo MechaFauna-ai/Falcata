@@ -22,7 +22,7 @@
 #include <Falcata/cuda/cuda_tree.hpp>
 
 #include "cuda_leaf_splits.hpp"
-#include "cuda_hybrid_graph.hpp"
+#include "cuda_device_levels.hpp"
 
 #define FILL_INDICES_BLOCK_SIZE_DATA_PARTITION (1024)
 #define SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION (1024)
@@ -147,7 +147,7 @@ class CUDADataPartition: public NCCLInfo {
   void SetColumnData(const CUDAColumnData* column_data) { cuda_column_data_ = column_data; }
 
   /*! \brief cuda_plan key forest_batched: size the batched level apply's block-offset and packed-bit buffers for
-   *  the worst case of any level (as the graph loop does), so they never grow during training: a growth is a device
+   *  the worst case of any level (as the device levels do), so they never grow during training: a growth is a device
    *  synchronize, which stalls every forest slot */
   void PresizeLevelBuffers() {
     EnsureLevelPartitioned();  // saved direction/offset buffers must survive until repair
@@ -395,52 +395,30 @@ class CUDADataPartition: public NCCLInfo {
   const data_size_t* level_smaller_leaf_counts() const { return cuda_level_smaller_counts_.RawDataReadOnly(); }
 
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  /*! \brief graphs L1 body capture: launches the five batched apply kernels
-   *  with placeholder grids on the capture stream (cuda_streams_[0]) and
-   *  collects their graph nodes + roles; the device controller resizes them
-   *  per level */
-  void CaptureHybridGraphApplyKernels(const CUDAHybridGraphLoopState* gstate,
-                                      std::vector<cudaGraphNode_t>* nodes,
-                                      std::vector<int>* roles);
+  /*! \brief cuda_plan key device_levels: static per-feature split metadata of the batched apply descriptors
+   *  (everything of SplitLevelBatched's host math that does not depend on the per-tree column view; real
+   *  feature/threshold/missing-type fields are filled by the learner) */
+  void BuildDeviceLevelFeatureMeta(std::vector<CUDAHybridGraphFeatureMeta>* meta) const;
 
-  /*! \brief preallocates the apply-descriptor and block-offset buffers for the
-   *  graph loop's worst case, so no captured buffer pointer ever reallocates */
-  void EnsureHybridGraphCapacity(const data_size_t max_root_num_data);
+  /*! \brief cuda_plan key device_levels: per-tree column source of every inner feature (the packed compact view is
+   *  per-tree and double-buffered) */
+  void BuildDeviceLevelFeatureSource(std::vector<CUDAHybridGraphFeatureSource>* source) const;
 
-  /*! \brief graphs L1: static per-feature split metadata of the batched apply
-   *  descriptors (everything of SplitLevelBatched's host math that does not
-   *  depend on the per-tree column view; real feature/threshold/missing-type
-   *  fields are filled by the learner) */
-  void BuildHybridGraphFeatureMeta(std::vector<CUDAHybridGraphFeatureMeta>* meta) const;
-
-  /*! \brief graphs L1: per-tree column source of every inner feature (the
-   *  packed compact view is per-tree and double-buffered) */
-  void BuildHybridGraphFeatureSource(std::vector<CUDAHybridGraphFeatureSource>* source) const;
-
-  /*! \brief device apply-descriptor buffer the graph controller writes */
-  CUDAHybridApplyDescriptor* hybrid_graph_apply_descs() { return cuda_apply_descs_.RawData(); }
-
-  /*! \brief current main / out index buffers, written into the loop state
-   *  before every graph launch (the controller swaps them per level) */
-  data_size_t* hybrid_graph_main_indices() {
+  /*! \brief current main / out index buffers (the standalone device level probes in tests/cpp_tests seed them) */
+  data_size_t* device_level_main_indices() {
     EnsureLevelPartitioned();  // cuda_plan key final_map_only
     level_shared_gaps_valid_ = false;  // a writer outside the batched level apply
     return cuda_data_indices_.RawData();
   }
-  data_size_t* hybrid_graph_out_indices() {
+  data_size_t* device_level_out_indices() {
     EnsureLevelPartitioned();  // cuda_plan key final_map_only
     level_shared_gaps_valid_ = false;
     return cuda_out_data_indices_in_leaf_.RawData();
   }
 
-  /*! \brief graphs L1 host bookkeeping after a graph prefix: accounts the
-   *  applied splits and realigns the host index-buffer wrappers with the
-   *  device loop's per-level buffer swaps */
-  void FinishHybridGraphLevels(const int num_levels, const int total_splits);
-
-  /*! \brief graphs L2: stream-ordered async prefetch of the deferred
+  /*! \brief cuda_plan key device_levels: stream-ordered async prefetch of the deferred
    *  split-info slab (up to \p max_splits slots) into the pinned staging
-   *  buffer, so the learner's single post-graph stream sync covers it;
+   *  buffer, so the learner's single post-tree stream sync covers it;
    *  consume with ReadPrefetchedSplitBatch after synchronizing \p stream */
   void PrefetchSplitBatchAsync(const int max_splits, cudaStream_t stream);
 
@@ -450,8 +428,7 @@ class CUDADataPartition: public NCCLInfo {
   void ReadPrefetchedSplitBatch(const int num_splits, std::vector<int>* out) const;
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
-  /*! \brief the stream the batched apply kernels run on (graphs L1 captures
-   *  the body on it) */
+  /*! \brief the stream the batched apply kernels run on */
   cudaStream_t apply_stream() const { return cuda_streams_[0]; }
   /*! \brief cuda_plan key device_levels: run the apply stream's launches on \p stream (the device levels' one
    *  stream) until restored; returns the stream it replaces */
@@ -468,7 +445,7 @@ class CUDADataPartition: public NCCLInfo {
    *  packed-bit hand-off buffer for a level with `total_slots` chunk slots:
    *  one uint32 ballot word per (slot, warp), expressed in uint16 units. */
   /*! \brief worst-case uint16 units for the packed-bit hand-off over ANY level.
-   *  The CUDA-graph path builds its descriptors (and scans their block-offset
+   *  The device levels build their descriptors (and scan their block-offset
    *  slots) ON DEVICE, so the host never sees that level's real slot count
    *  before replay -- the buffer has to be big enough up front. A level holds
    *  at most one descriptor per split plus one per terminal gap, and each

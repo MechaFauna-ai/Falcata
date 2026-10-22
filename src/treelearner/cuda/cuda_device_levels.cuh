@@ -21,7 +21,6 @@
 #include "cuda_data_partition.hpp"
 #include "cuda_device_levels.hpp"
 #include "cuda_histogram_constructor.hpp"
-#include "cuda_hybrid_graph.hpp"
 #include "cuda_leaf_splits.hpp"
 
 namespace Falcata {

@@ -79,7 +79,7 @@ def _data(objective, rows, cols, seed, sparse=False):
             "regression",
             12000,
             1500,
-            {"num_leaves": 255, "max_depth": 8, "cuda_plan": "auto,graph_loop:off"},
+            {"num_leaves": 255, "max_depth": 8, "cuda_plan": "auto,device_tree:off"},
         ),
         (
             "rf-binary",
@@ -136,7 +136,7 @@ def test_nonquant_training_is_run_to_run_deterministic_cuda(name, objective, row
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("extra", [{}, {"cuda_plan": "auto,graph_loop:off"}, {"feature_fraction": 0.5}])
+@pytest.mark.parametrize("extra", [{}, {"cuda_plan": "auto,device_tree:off"}, {"feature_fraction": 0.5}])
 def test_nonquant_4bit_matches_unpacked_and_det_cuda(extra):
     # Review #122: the full-view 4-bit arm used to omit the fixed-word convert.
     # Its wrong model was repeatable, so a run-to-run equality check missed it.
@@ -163,7 +163,7 @@ def test_nonquant_4bit_matches_unpacked_and_det_cuda(extra):
         arm: _model_md5({**params, "cuda_plan": plan + suffix}, X, y, 30)
         for arm, suffix in [
             ("default", ""),
-            ("det", ",graph_det:on"),
+            ("det", ",device_tree:off"),
             ("unpacked", ",rowdata_4bit:off"),
         ]
     }

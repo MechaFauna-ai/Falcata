@@ -1319,11 +1319,11 @@ __global__ void FindBestSplitsForLevelKernel(
   const int min_data_per_group,
   CUDASplitInfo* cuda_best_split_info,
   const bool use_desc_counts,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const CUDADeviceLevelState* dls) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
-  // graphs A2: the graph-frozen grid is a pow2 bucket of the live pair count;
-  // blocks beyond the live range exit before any read (stale descriptors)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs exits before any read
+  // (stale descriptors)
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   const unsigned int pair_index = blockIdx.y;
@@ -1449,11 +1449,10 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   const score_t* hess_scale,
   const double hessian_ridge_quanta,
   CUDASplitInfo* cuda_best_split_info,
-  const CUDAHybridGraphLoopStateOpt gstate,
   const CUDADeviceLevelState* dls) {
-  // graphs A2: the graph-frozen grid is a pow2 bucket of the live pair count;
-  // blocks beyond the live range exit before any read (stale descriptors)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs exits before any read
+  // (stale descriptors)
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   // the tree learner's hessian-quantum ridge (see the per-leaf discretized
@@ -1467,20 +1466,9 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
     return;
   }
   const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
-  // host-launched (two-sync) path: the host-written descriptor carries the
-  // exact leaf size and the validity flags already include the min_data /
-  // min_hessian gates (bit-for-bit the previous behavior). Graph loop: the
-  // controller-written flags carry only the max_depth gate, so the size comes
-  // from the child struct the batched apply kernels wrote and the data /
-  // hessian gates are evaluated here (mirror of the non-quantized level kernel)
-  const data_size_t num_data = HybridGraphActive(gstate) ?
-    leaf_splits->num_data_in_leaf :
-    (is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf);
-  if (HybridGraphActive(gstate) &&
-      (leaf_splits->leaf_index < 0 || num_data <= min_data_in_leaf ||
-       leaf_splits->sum_of_hessians <= min_sum_hessian_in_leaf)) {
-    return;
-  }
+  // the descriptor (host-written or the device level's) carries the exact leaf size, and the validity flags
+  // already include the min_data / min_hessian gates
+  const data_size_t num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
   unsigned int task_index;
   if (node_tasks != nullptr) {
     // cuda_plan key level_bynode_masks: the leaf's own task list (see the non-quantized level kernel)
@@ -1504,11 +1492,8 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   CUDASplitInfo* out = cuda_best_split_info + output_offset;
   CUDARandom* cuda_random = USE_RAND ?
     (is_larger ? cuda_randoms + task_index * 2 + 1 : cuda_randoms + task_index * 2) : nullptr;
-  // per-leaf histogram bit width: host descriptor on the host-launched path,
-  // device-derived from the exact leaf count (host thresholds) inside the graph
-  const uint8_t leaf_num_bits = HybridGraphActive(gstate) ?
-    HybridGraphQuantHistBits(gstate, num_data) :
-    (is_larger ? desc->larger_num_bits : desc->smaller_num_bits);
+  // per-leaf histogram bit width (the descriptor's)
+  const uint8_t leaf_num_bits = (is_larger ? desc->larger_num_bits : desc->smaller_num_bits);
   const bool use_16bit_bin = leaf_num_bits <= 16;
   // cuda_plan key level_bynode_masks: the leaf's own per-node mask row (a subset of the tree's); null otherwise
   const int8_t* is_feature_used = node_masks == nullptr ? is_feature_used_bytree :
@@ -1775,10 +1760,9 @@ __global__ void SyncBestSplitForLevelKernel(
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
   const bool gate_on_desc_counts,
-  const CUDAHybridGraphLoopStateOpt gstate,
   const CUDADeviceLevelState* dls) {
-  // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   __shared__ double shared_gain_buffer[WARPSIZE];
@@ -1915,10 +1899,9 @@ __global__ void SyncBestSplitForLevelKernelAllBlocks(
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
   const bool gate_on_desc_counts,
-  const CUDAHybridGraphLoopStateOpt gstate,
   const CUDADeviceLevelState* dls) {
-  // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   const unsigned int pair_index = blockIdx.y;
@@ -2300,21 +2283,20 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
 void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
-  const CUDAHybridGraphLoopStateOpt gstate,
   const bool use_desc_counts) {
   const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
   if (num_used_tasks_ == 0) {
     return;  // no usable feature this tree; the sync masks every lane not-found
   }
-  dim3 grid_dim(LevelNodeTaskLists(gstate) != nullptr ? LevelNodeGridX() :
+  dim3 grid_dim(LevelNodeTaskLists() != nullptr ? LevelNodeGridX() :
                 compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
   if (grid_dim.x == 0) {
     return;  // no leaf of the level has a task: the sync writes every leaf not-found
   }
   #define FindBestSplitsForLevelKernel_ARGS \
       cuda_is_feature_used_bytree_.RawData(), \
-      LevelNodeMaskTable(gstate), \
-      LevelNodeTaskLists(gstate), \
+      LevelNodeMaskTable(), \
+      LevelNodeTaskLists(), \
       hist_fp32_, \
       num_tasks_, \
       cuda_split_find_tasks_.RawData(), \
@@ -2334,7 +2316,8 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
       min_data_per_group_, \
       cuda_best_split_info_.RawData(), \
       use_desc_counts, \
-      gstate
+      \
+      device_level_state_
   if (FalcataFP32GainEnabled()) {
     FindBestSplitsForLevelKernel<false, false, false, float>
       <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
@@ -3073,13 +3056,12 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
   const score_t* grad_scale,
-  const score_t* hess_scale,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const score_t* hess_scale) {
   const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
   if (num_used_tasks_ == 0) {
     return;  // no usable feature this tree; the sync masks every lane not-found
   }
-  const bool use_warp = warp_find_eligible_ && gstate == nullptr && !FalcataFP32GainEnabled();
+  const bool use_warp = warp_find_eligible_ && !FalcataFP32GainEnabled();
   const int num_launch_tasks = compact_tasks ? num_used_tasks_ : num_tasks_;
   // the warp launch's order (BeforeTrain): the narrow tasks first, eight per warp, then the wide ones, one per warp
   // (find_group_direction: the order's narrow part may carry padding slots, which are not tasks)
@@ -3125,7 +3107,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
     const bool compact_survivors = FalcataPlan::Get().find_compact_survivors;
     const bool prune_sure = FalcataPlan::Get().find_prune_sure;
     #define FindBestSplitsDiscretizedForLevelWarpKernel_ARGS \
-      cuda_is_feature_used_bytree_.RawData(), LevelNodeMaskTable(gstate), num_tasks_, num_narrow, num_wide, split, cuda_split_find_tasks_.RawData(), \
+      cuda_is_feature_used_bytree_.RawData(), LevelNodeMaskTable(), num_tasks_, num_narrow, num_wide, split, cuda_split_find_tasks_.RawData(), \
       task_order, pair_descs, num_pairs, min_data_in_leaf_, min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_, \
       max_delta_step_, grad_scale, hess_scale, hessian_ridge_quanta_, mid_ppl, prune_fp32, select_int, \
       compact_survivors, prune_sure, cuda_best_split_info_.RawData(), device_level_state_
@@ -3142,15 +3124,15 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
     return;
   }
 #endif
-  dim3 grid_dim(LevelNodeTaskLists(gstate) != nullptr ? LevelNodeGridX() :
+  dim3 grid_dim(LevelNodeTaskLists() != nullptr ? LevelNodeGridX() :
                 compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
   if (grid_dim.x == 0) {
     return;  // no leaf of the level has a task: the sync writes every leaf not-found
   }
   #define FindBestSplitsDiscretizedForLevelKernel_ARGS \
       cuda_is_feature_used_bytree_.RawData(), \
-      LevelNodeMaskTable(gstate), \
-      LevelNodeTaskLists(gstate), \
+      LevelNodeMaskTable(), \
+      LevelNodeTaskLists(), \
       num_tasks_, \
       cuda_split_find_tasks_.RawData(), \
       compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, \
@@ -3171,7 +3153,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       hess_scale, \
       hessian_ridge_quanta_, \
       cuda_best_split_info_.RawData(), \
-      gstate, \
+      \
       device_level_state_
   if (FalcataFP32GainEnabled()) {
     FindBestSplitsDiscretizedForLevelKernel<false, false, false, float>
@@ -3184,67 +3166,6 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   }
   #undef FindBestSplitsDiscretizedForLevelKernel_ARGS
 }
-
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
-    const CUDAHybridPairDescriptor* pair_descs,
-    const score_t* grad_scale,
-    const score_t* hess_scale,
-    const CUDAHybridGraphLoopState* gstate,
-    std::vector<cudaGraphNode_t>* nodes,
-    std::vector<int>* roles,
-    std::vector<int>* role_static_x) {
-  // graphs L1 body capture: find + sync with placeholder pair counts; the wait
-  // on the histogram phase's subtract event becomes a graph edge, exactly
-  // mirroring the host flow's ordering. Quantized training (grad_scale !=
-  // nullptr) captures the discretized find variant, mirroring
-  // FindBestSplitsForLevel's host dispatch.
-  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
-  if (grad_scale != nullptr && hess_scale != nullptr) {
-    LaunchFindBestSplitsDiscretizedForLevelKernel(pair_descs, 1, grad_scale, hess_scale, gstate);
-  } else {
-    LaunchFindBestSplitsForLevelKernel(pair_descs, 1, gstate);
-  }
-  if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
-  roles->push_back(kHybridGraphNodeFind);
-  role_static_x->push_back(0);
-  // mirror of LaunchSyncBestSplitForLevelKernel, one collected node per launch
-  const int num_blocks_per_leaf = (num_tasks_ + NUM_TASKS_PER_SYNC_BLOCK - 1) / NUM_TASKS_PER_SYNC_BLOCK;
-  const bool compact_tasks = num_used_tasks_ < num_tasks_;
-  dim3 grid_dim(2, 1, num_blocks_per_leaf);
-  SyncBestSplitForLevelKernel<<<grid_dim, NUM_TASKS_PER_SYNC_BLOCK, 0, cuda_streams_[0]>>>(
-    pair_descs,
-    cuda_leaf_best_split_info_.RawData(),
-    cuda_split_find_tasks_.RawData(),
-    compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-    /*node_masks=*/nullptr,  // the graph flow does not run with per-node masks
-    cuda_best_split_info_.RawData(),
-    num_tasks_,
-    num_leaves_,
-    min_data_in_leaf_,
-    min_sum_hessian_in_leaf_,
-    /*gate_on_desc_counts=*/false,  // graph flow is single-GPU only
-    gstate, nullptr);
-  if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
-  roles->push_back(kHybridGraphNodeSyncLevel);
-  role_static_x->push_back(num_blocks_per_leaf);
-  if (num_blocks_per_leaf > 1) {
-    dim3 merge_grid_dim(2, 1);
-    SyncBestSplitForLevelKernelAllBlocks<<<merge_grid_dim, 1, 0, cuda_streams_[0]>>>(
-      pair_descs,
-      cuda_leaf_best_split_info_.RawData(),
-      static_cast<unsigned int>(num_blocks_per_leaf),
-      num_leaves_,
-      min_data_in_leaf_,
-      min_sum_hessian_in_leaf_,
-      /*gate_on_desc_counts=*/false,  // graph flow is single-GPU only
-      gstate, nullptr);
-    if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
-    roles->push_back(kHybridGraphNodeSyncAllBlocks);
-    role_static_x->push_back(0);
-  }
-}
-#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
 void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
@@ -3278,7 +3199,7 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
       pair_descs, cuda_leaf_best_split_info_.RawData(), cuda_split_find_tasks_.RawData(), \
       compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr, \
       used_list ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, used_list ? num_used_tasks_ : num_tasks_, \
-      LevelNodeMaskTable(nullptr), LevelNodeTaskLists(nullptr), \
+      LevelNodeMaskTable(), LevelNodeTaskLists(), \
       cuda_best_split_info_.RawData(), num_tasks_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts, \
       leaf_mirror, device_level_state_, device_level_select_cfg_
 #if !defined(__HIP_PLATFORM_AMD__)
@@ -3308,16 +3229,16 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
   if (sync_copy_batched) {
     SyncBestSplitForLevelKernel<true><<<grid_dim, NUM_TASKS_PER_SYNC_BLOCK, 0, cuda_streams_[0]>>>(
       pair_descs, cuda_leaf_best_split_info_.RawData(), cuda_split_find_tasks_.RawData(),
-      compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr, LevelNodeMaskTable(nullptr),
+      compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr, LevelNodeMaskTable(),
       cuda_best_split_info_.RawData(),
-      num_tasks_, num_leaves_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts, nullptr,
+      num_tasks_, num_leaves_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts,
       device_level_state_);
   } else {
     SyncBestSplitForLevelKernel<<<grid_dim, NUM_TASKS_PER_SYNC_BLOCK, 0, cuda_streams_[0]>>>(
       pair_descs, cuda_leaf_best_split_info_.RawData(), cuda_split_find_tasks_.RawData(),
-      compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr, LevelNodeMaskTable(nullptr),
+      compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr, LevelNodeMaskTable(),
       cuda_best_split_info_.RawData(),
-      num_tasks_, num_leaves_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts, nullptr,
+      num_tasks_, num_leaves_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts,
       device_level_state_);
   }
   if (num_blocks_per_leaf > 1) {
@@ -3332,7 +3253,6 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
       min_data_in_leaf_,
       min_sum_hessian_in_leaf_,
       gate_on_desc_counts,
-      nullptr,
       device_level_state_);
   }
 }

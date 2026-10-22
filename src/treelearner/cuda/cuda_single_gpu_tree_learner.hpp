@@ -233,6 +233,13 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // pipeline (see TrainLevelWisePrefixOneSync); requires both batched phases
   // and non-quantized training.
   bool UseOneSyncPrefix() const;
+  // cuda_plan key device_tree, non-quantized training: whether the complete device tree takes this configuration
+  // (config and plan only; the bound the removed non-quantized graph loop served). It also fixes the run's
+  // histogram ownership: no host batched deterministic construct beside the device tree's fixed-point levels.
+  bool NonquantDeviceTreeShape() const;
+  // ... and whether it grows this tree: the one-sync flow would run, the complete tree's scratch gate and setup
+  // passed and the tree has a searchable feature (otherwise the one-sync flow grows it)
+  bool NonquantDeviceTreeUsable() const;
   // Lazily perform the root-sum readback (and the root leaf-output init) that
   // BeforeTrain deferred for the single-sync flow. No-op when not deferred.
   void EnsureRootSumsReadBack(CUDATree* tree);
@@ -334,40 +341,14 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int TrainLevelWisePrefixOneSync(CUDATree* tree);
 
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  // ---- graphs L1: device-driven level loop (see cuda_hybrid_graph.hpp) ----
-  // One cached instantiated graph per per-tree pointer key (the compact column
-  // view is double-buffered, so two keys alternate in the steady state).
-  struct HybridGraphInstance {
-    std::vector<const void*> key;
-    cudaGraph_t graph = nullptr;
-    cudaGraphExec_t exec = nullptr;
-    CUDAHybridGraphLoopState* state_dev = nullptr;  // raw cudaMalloc
-    ~HybridGraphInstance();
-  };
-  // Static config gate of the graph loop (depth-limited one-sync prefix only,
-  // controller capacity limits, no debug modes, the graph_loop plan key).
-  bool HybridGraphPrefixUsable() const;
   // cuda_plan key forest_count_hist: this tree's gradient codes for the count construct (nullptr: not this tree)
   const CUDACountHistCodes* CountHistCodesForTree();
   // a tree that threw mid-way (tree_in_progress_ still set at the next Train): reset what the next tree trusts
   void AbortedTreeReset();
   // test hook FALCATA_TEST_FOREST_ABORT_TREE (see the definition)
   void MaybeInjectTreeFailure(int num_leaves);
-  // Lazy one-time setup: static feature tables, journal/staging buffers, and
-  // worst-case capacity preallocation of every captured device buffer.
-  bool SetupHybridGraphStatics();
-  // Build (capture + instantiate) one graph instance for the current per-tree
-  // pointer key. Returns false (and rolls back) on any failure.
-  bool BuildHybridGraphInstance(CUDATree* tree, HybridGraphInstance* instance);
-  // The per-tree pointer/flag key a graph instance is valid for.
-  void ComputeHybridGraphKey(CUDATree* tree, std::vector<const void*>* key) const;
-  // Cached-or-new instance for this tree; nullptr -> host loop fallback.
-  HybridGraphInstance* GetOrBuildHybridGraph(CUDATree* tree);
-  // The graph-driven prefix: root search (host, as usual), ONE graph launch,
-  // ONE readback + host bookkeeping replay. Returns the number of splits, or
-  // -1 when no instance is available (caller falls back to the host loop).
-  int TrainLevelWisePrefixGraph(CUDATree* tree);
-  void ReleaseHybridGraphs();
+  // ResetConfig / ResetTrainingData: drop the cached device level graphs and the per-learner device level decisions
+  void ReleaseDeviceLevelGraphs();
   // ---- cuda_plan key device_levels (cuda_device_levels.hpp) ----
   /*! \brief cuda_plan key device_tree (with device_levels): the complete device tree runs for this config, i.e. its
    *  depth bound holds (positive max_depth <= kDeviceTreeMaxDepth = 12 and 2^max_depth <= num_leaves + 1) and its
@@ -405,7 +386,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool SetupDeviceLevels(const int num_levels);
   /*! \brief pairs of the widest child search of num_levels device levels (whole tree: 2^(num_levels - 2)) */
   int DeviceLevelSearchPairs(int num_levels) const;
-  /*! \brief cuda_plan key device_tree: before the first tree's level flow (again after ReleaseHybridGraphs, e.g. a
+  /*! \brief cuda_plan key device_tree: before the first tree's level flow (again after ReleaseDeviceLevelGraphs, e.g. a
    *  ResetConfig), whether a whole tree's presized scratch fits half of free device memory; when it does not,
    *  DeviceTreeRequested() is false (the prefix flow) */
   void EvaluateDeviceTreeScratchGate();
@@ -813,25 +794,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   /*! \brief the last reason line this learner printed (LogDeviceTreeFallback prints only changes) */
   std::string last_device_tree_fallback_line_;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  // ---- graphs L1 state ----
-  bool hybrid_graph_statics_ready_ = false;
-  bool hybrid_graph_disabled_ = false;   // sticky off after build failures
-  int hybrid_graph_build_failures_ = 0;
-  std::vector<std::unique_ptr<HybridGraphInstance>> hybrid_graph_cache_;
-  CUDAVector<CUDAHybridGraphFeatureMeta> cuda_hybrid_graph_feature_meta_;
-  CUDAVector<CUDAHybridGraphFeatureSource> cuda_hybrid_graph_feature_source_;
-  CUDAVector<double> cuda_hybrid_graph_real_thresholds_;
-  CUDAVector<int> cuda_hybrid_graph_journal_;
-  std::vector<CUDAHybridGraphFeatureSource> host_hybrid_graph_feature_source_;
-  // pinned staging: per-tree state prefix + journal readback
-  CUDAHybridGraphLoopState* pinned_hybrid_graph_state_ = nullptr;
-  int* pinned_hybrid_graph_journal_ = nullptr;
-  size_t hybrid_graph_journal_size_ = 0;
-  // static config mirror written into every instance's device state
-  CUDAHybridGraphLoopState hybrid_graph_state_template_;
-  std::vector<int> hybrid_graph_splittable_scratch_;
-  std::vector<int> hybrid_graph_batch_info_;
-  std::vector<HybridAppliedSplit> hybrid_graph_applied_scratch_;
   // ---- cuda_plan key device_levels state ----
   bool device_tree_completed_ = false;
   bool device_levels_logged_ = false;

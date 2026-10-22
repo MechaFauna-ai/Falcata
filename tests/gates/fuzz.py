@@ -68,7 +68,7 @@ def sample_spec(rng):
         dtype = "float64"
     plan = ["auto"]
     for key in [
-        "graph_loop",
+        "device_tree",  # graph_loop before P3 (same draw)
         "compact_quant",
         "fast_rowdata",
         "rowdata_4bit",

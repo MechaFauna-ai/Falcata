@@ -64,7 +64,8 @@ ROUTES_EXPECTED = {
     "route/r02-memgate": [("memory_gate", "prefix")],
     "route/r03a-budget": [("selective_budget", "selective_prefix")],
     "route/r03b-unbounded": [("selective_unbounded", "selective_prefix")],
-    "route/r04a-nq-l15": [("nonquant_l15", "l15_graph")],
+    # the non-quantized L1.5 graph's shapes take the complete device tree (P3; same md5)
+    "route/r04a-nq-l15": [_COMPLETE],
     "route/r04b-nq-onesync": [("nonquant_onesync", "one_sync")],
     "route/r05-nq-selective": [("nonquant_selective", "selective_one_sync")],
     "route/r06a-cat": [("categorical", "host_two_sync")],

@@ -22,7 +22,6 @@
 
 #include "cuda_data_partition.hpp"
 #include "cuda_histogram_constructor.hpp"
-#include "cuda_hybrid_graph.hpp"
 #include "cuda_leaf_splits.hpp"
 #include "cuda_pdl_launch.hpp"
 
@@ -33,7 +32,7 @@ namespace {
 __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const int num_leaves) {
   CUDADeviceLevelState* st = cfg.state;
   if (threadIdx.x == 0) {
-    if (cfg.whole_tree) {
+    if (cfg.whole_tree && cfg.tree_leaf_value != nullptr) {
       // Root search has consumed the initialized fixed root struct on this stream. Preserve its exact output
       // before the first tree record saves leaf 0 as internal_value[0]. The select event orders the record stream.
       cfg.tree_leaf_value[0] = cfg.root_struct->leaf_value;

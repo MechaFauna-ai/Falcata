@@ -763,11 +763,7 @@ __global__ void MergeDeterministicDenseHistogramBatchedKernel(
   const int dy,
   const int host_num_pairs,
   const data_size_t min_data_in_leaf,
-  const double min_sum_hessian_in_leaf,
-  const CUDAHybridGraphLoopStateOpt gstate) {
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.z)) {
-    return;
-  }
+  const double min_sum_hessian_in_leaf) {
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
   if (HybridPairConstructSkipped(desc, min_data_in_leaf, min_sum_hessian_in_leaf)) {
     return;
@@ -779,7 +775,7 @@ __global__ void MergeDeterministicDenseHistogramBatchedKernel(
     return;
   }
   const uint32_t i = (start << 1) + j;  // global slot position
-  const int live_pairs = HybridGraphLivePairCount(gstate, host_num_pairs);
+  const int live_pairs = host_num_pairs;
   const int pair_rows = DetDensePairRows(total_slot_rows, live_pairs);
   const int num_rows =
     DetDensePairTiles(desc->smaller_struct->num_data_in_leaf, pair_rows, dy) * dy;
@@ -909,10 +905,10 @@ __global__ void SubtractHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const uint8_t* bin_used,
   const bool hist_fp32,
-  const CUDAHybridGraphLoopStateOpt gstate) {
-  // graphs A2: the graph-frozen grid is a pow2 bucket of the live pair count;
-  // blocks beyond the live range exit before any read (stale descriptors)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+  const CUDADeviceLevelState* dls) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs exits before any read
+  // (stale descriptors)
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   const unsigned int global_thread_index = threadIdx.x + blockIdx.x * blockDim.x;
@@ -949,9 +945,9 @@ __global__ void FixHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int8_t* feature_used,
   const bool hist_fp32,
-  const CUDAHybridGraphLoopStateOpt gstate) {
-  // graphs A2 idle-block guard (pow2-frozen grid; see the subtract kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+  const CUDADeviceLevelState* dls) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   if (feature_used != nullptr &&
@@ -979,9 +975,9 @@ __global__ void FixSubtractHistogramSmallLeafBatchedKernel(
   const uint8_t* bin_used,
   const int8_t* feature_used,
   const bool hist_fp32,
-  const CUDAHybridGraphLoopStateOpt gstate) {
-  // graphs A2 idle-block guard (pow2-frozen grid; see the subtract kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+  const CUDADeviceLevelState* dls) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.y;
@@ -1015,10 +1011,9 @@ __global__ void SubtractHistogramDiscretizedBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   hist_t* num_bit_change_buffer,
   const uint8_t* bin_used,
-  const CUDAHybridGraphLoopStateOpt gstate,
   const CUDADeviceLevelState* dls) {
-  // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   // bins of features outside this tree's sample are dead storage: skip (the
@@ -1035,16 +1030,6 @@ __global__ void SubtractHistogramDiscretizedBatchedKernel(
   uint8_t parent_num_bits = desc->parent_num_bits;
   uint8_t smaller_num_bits = desc->smaller_num_bits;
   uint8_t larger_num_bits = desc->larger_num_bits;
-  if (HybridGraphActive(gstate)) {
-    const data_size_t num_data_smaller = desc->smaller_struct->num_data_in_leaf;
-    const data_size_t num_data_larger = desc->larger_struct->leaf_index >= 0 ?
-      desc->larger_struct->num_data_in_leaf : 0;
-    smaller_num_bits = HybridGraphQuantHistBits(gstate, num_data_smaller);
-    larger_num_bits = HybridGraphQuantHistBits(gstate, num_data_larger);
-    // the parent's leaf bit width was set from its (pre-split) row count,
-    // which the split partitions exactly into the two children
-    parent_num_bits = HybridGraphQuantHistBits(gstate, num_data_smaller + num_data_larger);
-  }
   if (parent_num_bits <= 16) {
     SubtractHistogramDiscretizedInner<true, true, true>(
       num_total_bin, desc->smaller_struct, desc->larger_struct, buffer);
@@ -1077,25 +1062,16 @@ __global__ void CopyChangedNumBitHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   hist_t* num_bit_change_buffer,
   const uint8_t* bin_used,
-  const CUDAHybridGraphLoopStateOpt gstate,
   const CUDADeviceLevelState* dls) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the subtract's change buffer is complete and visible
-  // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.y;
   uint8_t parent_num_bits = desc->parent_num_bits;
   uint8_t larger_num_bits = desc->larger_num_bits;
   int larger_leaf_index = desc->larger_leaf_index;
-  if (HybridGraphActive(gstate)) {
-    larger_leaf_index = desc->larger_struct->leaf_index;
-    const data_size_t num_data_smaller = desc->smaller_struct->num_data_in_leaf;
-    const data_size_t num_data_larger = larger_leaf_index >= 0 ?
-      desc->larger_struct->num_data_in_leaf : 0;
-    larger_num_bits = HybridGraphQuantHistBits(gstate, num_data_larger);
-    parent_num_bits = HybridGraphQuantHistBits(gstate, num_data_smaller + num_data_larger);
-  }
   if (larger_leaf_index < 0 ||
       !(parent_num_bits > 16 && larger_num_bits <= 16)) {
     return;
@@ -1118,10 +1094,9 @@ __global__ void FixHistogramDiscretizedBatchedKernel(
   const uint32_t* cuda_need_fix_histogram_features_num_bin_aligned,
   const CUDAHybridPairDescriptor* pair_descs,
   const int8_t* feature_used,
-  const CUDAHybridGraphLoopStateOpt gstate,
   const CUDADeviceLevelState* dls) {
-  // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   if (feature_used != nullptr &&
@@ -1130,9 +1105,7 @@ __global__ void FixHistogramDiscretizedBatchedKernel(
   }
   __shared__ int64_t shared_mem_buffer[WARPSIZE];
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.y;
-  const uint8_t smaller_num_bits = HybridGraphActive(gstate) ?
-    HybridGraphQuantHistBits(gstate, desc->smaller_struct->num_data_in_leaf) :
-    desc->smaller_num_bits;
+  const uint8_t smaller_num_bits = desc->smaller_num_bits;
   if (smaller_num_bits <= 16) {
     FixHistogramDiscretizedInner<true>(
       cuda_feature_num_bins, cuda_feature_hist_offsets, cuda_feature_most_freq_bins,
@@ -1159,12 +1132,11 @@ __global__ void FixSubtractDiscretizedMaskedBatchedKernel(
   hist_t* num_bit_change_buffer,
   const uint8_t* bin_used,
   const int8_t* feature_used,
-  const CUDAHybridGraphLoopStateOpt gstate,
   const CUDADeviceLevelState* dls) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the construct's histograms are complete and visible
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
-  // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
+  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.y;
@@ -1172,14 +1144,6 @@ __global__ void FixSubtractDiscretizedMaskedBatchedKernel(
   uint8_t parent_num_bits = desc->parent_num_bits;
   uint8_t smaller_num_bits = desc->smaller_num_bits;
   uint8_t larger_num_bits = desc->larger_num_bits;
-  if (HybridGraphActive(gstate)) {
-    // as SubtractHistogramDiscretizedBatchedKernel (the fix kernel derives the smaller's width the same way)
-    const data_size_t num_data_smaller = desc->smaller_struct->num_data_in_leaf;
-    const data_size_t num_data_larger = larger_exists ? desc->larger_struct->num_data_in_leaf : 0;
-    smaller_num_bits = HybridGraphQuantHistBits(gstate, num_data_smaller);
-    larger_num_bits = HybridGraphQuantHistBits(gstate, num_data_larger);
-    parent_num_bits = HybridGraphQuantHistBits(gstate, num_data_smaller + num_data_larger);
-  }
   FixSubtractDiscretizedMaskedPair(
     num_total_bin, num_subtract_blocks, cuda_feature_num_bins, cuda_feature_hist_offsets, cuda_feature_most_freq_bins,
     cuda_need_fix_histogram_features, cuda_need_fix_histogram_features_num_bin_aligned, fix_mfb_mask,
@@ -1618,40 +1582,16 @@ bool CUDAHistogramConstructor::DetDenseBatchedEligible(const int num_pairs) cons
   if (use_quantized_grad_ || det_dense_dy_ <= 0 || hist_fp32_ || use_compact_view_) {
     return false;
   }
-  if (hybrid_graph_capture_gstate_ != nullptr || !det_batched_allowed_) {
-    // hybrid_graph_capture_gstate_: the graph loop's det construct is
-    // captured explicitly (CaptureHybridGraphDetConstructMerge), never
-    // through this launcher chain -- an atomic body capture must stay atomic.
-    // det_batched_allowed_: one tree must keep ONE ownership model of the
-    // histogram storage end to end. Mixing graph-replayed atomic construct
-    // levels with host det construct+merge levels raced in the 2026-08-19
-    // lattice (intermittent illegal access, imbalanced/nonquant); the
-    // learner therefore allows host batched det only when the graph prefix
-    // is off OR the graph itself runs the det nodes (DetDenseGraphEligible).
+  if (!det_batched_allowed_) {
+    // det_batched_allowed_: one run keeps ONE ownership model of the histogram storage end to end. Mixing
+    // graph-replayed atomic construct levels with host det construct+merge levels raced in the 2026-08-19 lattice
+    // (intermittent illegal access, imbalanced/nonquant); the learner allows host batched det only where the
+    // complete non-quantized device tree (whose levels construct in fixed point) does not take the configuration.
     return false;
   }
   const int total_slot_rows = det_dense_total_slot_rows();
   return num_pairs > 0 &&
          num_pairs <= std::min(total_slot_rows, kDetDenseBatchedPairCap);
-}
-
-bool CUDAHistogramConstructor::DetDenseGraphEligible(const int max_level_pairs) const {
-  // A device without room for the fixed table uses the deterministic classic loop, never an atomic graph.
-  if (NonquantClassicFallback() || !FalcataPlan::Get().graph_det) {
-    // opt-in (cuda_plan=auto,graph_det:on): by default the graph loop does not
-    // capture the det construct+merge (~4x on shallow non-quant shapes); under
-    // nonquant_deterministic it captures the fixed-point construct + convert
-    // instead, with the key off the float atomics. graph_det gates BOTH the
-    // capture and the host-det-alongside-graph allowance (SetDetBatchedAllowed),
-    // so a run keeps one histogram ownership model end to end.
-    return false;
-  }
-  if (use_quantized_grad_ || det_dense_dy_ <= 0 || hist_fp32_ || use_compact_view_) {
-    return false;
-  }
-  const int total_slot_rows = det_dense_total_slot_rows();
-  return max_level_pairs > 0 &&
-         max_level_pairs <= std::min(total_slot_rows, kDetDenseBatchedPairCap);
 }
 
 template <typename BIN_TYPE>
@@ -1694,8 +1634,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic
       det_dense_slot_stride_,
       cuda_det_dense_slots_.RawData(),
       total_slot_rows,
-      det_dy,
-      nullptr);
+      det_dy);
   const int merge_threads = 256;
   dim3 merge_grid((det_dense_slot_stride_ + merge_threads - 1) / merge_threads,
                   grid_dim_x, static_cast<unsigned int>(num_pairs));
@@ -1708,8 +1647,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic
     det_dy,
     num_pairs,
     static_cast<data_size_t>(min_data_in_leaf_),
-    min_sum_hessian_in_leaf_,
-    nullptr);
+    min_sum_hessian_in_leaf_);
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
@@ -1861,7 +1799,7 @@ bool CUDAHistogramConstructor::CountBatchedEligible() const {
   // needs one row per pair and the launcher chunks the level by the rows the slab holds
   // (the compact view too: the per-leaf deterministic arm serves it, the batched one leaves it to the float atomics)
   return count_codes_ != nullptr && !use_quantized_grad_ && det_dense_dy_ > 0 && !hist_fp32_ &&
-         hybrid_graph_capture_gstate_ == nullptr && det_batched_allowed_;
+         det_batched_allowed_;
 }
 
 template <typename BIN_TYPE>
@@ -1950,8 +1888,8 @@ __global__ void ConvertFixedHistBatchedKernel(
   const uint8_t* bin_used,
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
-  const CUDAHybridGraphLoopStateOpt gstate) {
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+  const CUDADeviceLevelState* dls) {
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.y;
@@ -1969,15 +1907,15 @@ __global__ void ConvertFixedHistBatchedKernel(
 
 int CUDAHistogramConstructor::LaunchConvertFixedHistBatched(
   const CUDAHybridPairDescriptor* pair_descs,
-  const int num_pairs,
-  CUDAHybridGraphLoopStateOpt gstate) {
+  const int num_pairs) {
   constexpr int kThreads = 256;
   const int num_items = 2 * num_total_bin_;
   const int blocks_x = (num_items + kThreads - 1) / kThreads;
   ConvertFixedHistBatchedKernel<<<dim3(blocks_x, num_pairs), kThreads, 0, cuda_stream_>>>(
     pair_descs, num_items, nq_inv_scale_.RawDataReadOnly(),
     any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-    static_cast<data_size_t>(min_data_in_leaf_), min_sum_hessian_in_leaf_, gstate);
+    static_cast<data_size_t>(min_data_in_leaf_), min_sum_hessian_in_leaf_,
+    device_level_state_);
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
   return blocks_x;
 }
@@ -2146,8 +2084,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   const data_size_t* level_smaller_num_data) {
   // cuda_plan key nonquant_deterministic: the level goes through the fixed-point instantiation; Inner0 still picks the
   // count or deterministic arm where they serve, and reports whether its fixed-point kernel built the level
-  // (nq_fixed_kernel_launched_): only then are the words converted in place (on the host path here; the graph capture
-  // appends the convert as its own node, CaptureHybridGraphSearchKernels)
+  // (nq_fixed_kernel_launched_): only then are the words converted in place (a device level's convert is guarded
+  // by the level's live pairs)
   nq_fixed_kernel_launched_ = false;
   if (!use_quantized_grad_ && NonquantFixedActive()) {
     nq_fixed_launch_ = true;
@@ -2161,8 +2099,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
       Log::Fatal("Unknown shared histogram size %d", cuda_row_data_->shared_hist_size());
     }
     nq_fixed_launch_ = false;
-    if (nq_fixed_kernel_launched_ && hybrid_graph_capture_gstate_ == nullptr) {
-      LaunchConvertFixedHistBatched(pair_descs, num_pairs, nullptr);
+    if (nq_fixed_kernel_launched_) {
+      LaunchConvertFixedHistBatched(pair_descs, num_pairs);
     }
     return;
   }
@@ -2176,8 +2114,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
 }
 
 bool CUDAHistogramConstructor::DeviceLevelConstructSupported() {
-  // the dense batched kernel and the pair-joint family both take the device block map
-  return use_quantized_grad_ && SupportsBatchedLevel();
+  // the dense batched kernels (quantized and non-quantized) and the pair-joint family take the device block map
+  return SupportsBatchedLevel();
 }
 
 void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstructShape* shape) {
@@ -2192,7 +2130,7 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
   const int cc = std::max(1, max_num_compact_cols_per_partition_);
   if (use_compact_view_) {
     block_dim_x = cc > NUM_THREADS_PER_BLOCK ? (cc + 1) / 2 : cc;
-    block_dim_y = std::max(1, NUM_THREADS_PER_BLOCK / block_dim_x);
+    block_dim_y = std::max(1, BatchedConstructThreads() / block_dim_x);
     block_dim_y = HybridQuantConstructBlockDimY(block_dim_y, use_quantized_grad_ ? num_grad_quant_bins_ : 0);
   }
   shape->block_y = block_dim_y;
@@ -2200,7 +2138,7 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
   shape->block_x = block_dim_x;
   const int bins = use_quantized_grad_ ? num_grad_quant_bins_ : 0;
   const FalcataPlan& plan = FalcataPlan::Get();
-  if (!(use_compact_view_ && compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4 && plan.pair_hist &&
+  if (!use_quantized_grad_ || !(use_compact_view_ && compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4 && plan.pair_hist &&
         compact_pair_joint_max_ > 0 && compact_pair_joint_max_ * sizeof(int32_t) <= 48 * 1024 &&
         (cc + 1) / 2 * block_dim_y <= PairJointMaxThreadsPerBlock())) {
     return;  // the dense batched kernel
@@ -2346,12 +2284,10 @@ int CUDAHistogramConstructor::DeviceLevelConstructTargetBlocks() {
 
 void CUDAHistogramConstructor::LaunchFixSubtractDiscretizedMaskedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
-  const int num_pairs,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const int num_pairs) {
   dim3 grid_dim(FixSubtractMaskedGridX(), num_pairs);
   // cuda_plan key pdl_level_chain: a programmatic dependent of the construct launched just before on this stream
-  // (host launches only: a graph capture keeps the ordinary node)
-  LaunchLevelChainKernel(gstate == nullptr && PdlLevelChainEnabled(), FixSubtractDiscretizedMaskedBatchedKernel,
+  LaunchLevelChainKernel(PdlLevelChainEnabled(), FixSubtractDiscretizedMaskedBatchedKernel,
     grid_dim, dim3(fix_subtract_masked_block_), 0, cuda_stream_,
     num_total_bin_,
     FixSubtractMaskedSubtractBlocks(),
@@ -2365,14 +2301,13 @@ void CUDAHistogramConstructor::LaunchFixSubtractDiscretizedMaskedKernel(
     hist_buffer_for_num_bit_change_.RawData(),
     any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
     any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-    gstate, device_level_state_);
+    device_level_state_);
   CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());  // a new launch shape: its launch errors surface
 }
 
 void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
-  const int num_pairs,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const int num_pairs) {
   // the subtract role is elementwise and block-size invariant; the fix role
   // stages one bin entry per thread (FixHistogramGroupInner)
   static_assert(2 * kFixGroupChunk * kFixGroupFeatures == FIX_HISTOGRAM_BLOCK_SIZE,
@@ -2392,250 +2327,13 @@ void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
     any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
     hist_fp32_,
-    gstate);
+    device_level_state_);
 }
 
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-template <typename BIN_TYPE>
-void CUDAHistogramConstructor::CaptureHybridGraphDetConstructMergeInner(
-    const CUDAHybridPairDescriptor* pair_descs,
-    const CUDAHybridGraphLoopState* gstate,
-    const int block_dim_x,
-    const int grid_dim_x,
-    const int dy,
-    std::vector<cudaGraphNode_t>* nodes,
-    std::vector<int>* roles,
-    std::vector<int>* role_static_x) {
-  const int total_slot_rows = det_dense_total_slot_rows();
-  const bool det_packed_4bit = cuda_row_data_->is_4bit_packed();
-  auto det_kernel = det_packed_4bit ?
-    &CUDAConstructHistogramDenseGMDeterministicBatchedKernel<BIN_TYPE, true> :
-    &CUDAConstructHistogramDenseGMDeterministicBatchedKernel<BIN_TYPE, false>;
-  // placeholder grids: the controller resizes both nodes per level (exact
-  // tile extent for the construct, pow2 pair bucket for both)
-  dim3 det_grid(static_cast<unsigned int>(grid_dim_x), 1, 1);
-  dim3 det_block(static_cast<unsigned int>(block_dim_x), static_cast<unsigned int>(dy));
-  count_scratch_dirty_ = true;  // cuda_plan key forest_count_hist: the det slab is also the count scratch
-  det_kernel<<<det_grid, det_block, 0, cuda_stream_>>>(
-      pair_descs,
-      cuda_gradients_, cuda_hessians_,
-      RowMajorBin<BIN_TYPE>(),
-      cuda_row_data_->cuda_column_hist_offsets(),
-      cuda_row_data_->cuda_partition_hist_offsets(),
-      cuda_row_data_->cuda_feature_partition_column_index_offsets(),
-      det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr,
-      column_used_bytree_device(),
-      num_data_,
-      static_cast<data_size_t>(min_data_in_leaf_),
-      min_sum_hessian_in_leaf_,
-      det_dense_slot_stride_,
-      cuda_det_dense_slots_.RawData(),
-      total_slot_rows,
-      dy,
-      gstate);
-  if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-  roles->push_back(kHybridGraphNodeConstructDet);
-  role_static_x->push_back(dy);  // the controller's tile formula needs dy
-  const int merge_threads = 256;
-  const int merge_blocks_x =
-    (static_cast<int>(det_dense_slot_stride_) + merge_threads - 1) / merge_threads;
-  dim3 merge_grid(static_cast<unsigned int>(merge_blocks_x),
-                  static_cast<unsigned int>(grid_dim_x), 1);
-  MergeDeterministicDenseHistogramBatchedKernel<<<merge_grid, merge_threads, 0, cuda_stream_>>>(
-    pair_descs,
-    cuda_det_dense_slots_.RawData(),
-    cuda_row_data_->cuda_partition_hist_offsets(),
-    det_dense_slot_stride_,
-    total_slot_rows,
-    dy,
-    /*host_num_pairs=*/1,
-    static_cast<data_size_t>(min_data_in_leaf_),
-    min_sum_hessian_in_leaf_,
-    gstate);
-  if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-  roles->push_back(kHybridGraphNodeConstructDetMerge);
-  role_static_x->push_back(merge_blocks_x);
-}
-
-void CUDAHistogramConstructor::CaptureHybridGraphDetConstructMerge(
-    const CUDAHybridPairDescriptor* pair_descs,
-    const CUDAHybridGraphLoopState* gstate,
-    const int max_level_pairs,
-    std::vector<cudaGraphNode_t>* nodes,
-    std::vector<int>* roles,
-    std::vector<int>* role_static_x) {
-  int grid_dim_x = 0, grid_dim_y = 0, block_dim_x = 0, block_dim_y = 0;
-  CalcConstructHistogramBatchedKernelDim(&grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y, 1, 1);
-  // dy under the 1024-thread block budget (mirrors the host launcher), then
-  // clamped to the widest level's slab carve so the frozen block's dy rows
-  // always fit one pair region (DetDensePairTiles assumes dy <= pair_rows)
-  int dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
-  dy = std::min(dy, std::max(1, det_dense_total_slot_rows() / std::max(1, max_level_pairs)));
-  if (cuda_row_data_->bit_type() == 8) {
-    CaptureHybridGraphDetConstructMergeInner<uint8_t>(
-      pair_descs, gstate, block_dim_x, grid_dim_x, dy, nodes, roles, role_static_x);
-  } else if (cuda_row_data_->bit_type() == 16) {
-    CaptureHybridGraphDetConstructMergeInner<uint16_t>(
-      pair_descs, gstate, block_dim_x, grid_dim_x, dy, nodes, roles, role_static_x);
-  } else {
-    CaptureHybridGraphDetConstructMergeInner<uint32_t>(
-      pair_descs, gstate, block_dim_x, grid_dim_x, dy, nodes, roles, role_static_x);
-  }
-}
-
-void CUDAHistogramConstructor::CaptureHybridGraphSearchKernels(
-    const CUDAHybridPairDescriptor* pair_descs,
-    const data_size_t* level_smaller_num_data,
-    const CUDAHybridGraphLoopState* gstate,
-    const int det_max_level_pairs,
-    std::vector<cudaGraphNode_t>* nodes,
-    std::vector<int>* roles,
-    std::vector<int>* role_static_x) {
-  // graphs L1 body capture: construct + fix/subtract with PLACEHOLDER grids;
-  // the controller resizes them per level. num_pairs == 1 freezes the construct
-  // kernel's inline row-grouping path (level sizes read on-device, extent from
-  // the loop state's live pair count), which computes bit-identical grouping to
-  // the host's per-level sizing (quantized: including the packed int32
-  // shared-histogram overflow guard).
-  // graphs A2: the captured construct kernel reads the live pair count from
-  // the loop state (its frozen grid is only a pow2 upper bound)
-  if (det_max_level_pairs > 0) {
-    // deterministic runs: the level's construct is the det construct + merge
-    // node pair; every per-level extent the host launcher would compute is
-    // derived on device (DetDensePairRows/DetDensePairTiles) or resized by
-    // the controller, so determinism survives the frozen graph body
-    CaptureHybridGraphDetConstructMerge(pair_descs, gstate, det_max_level_pairs,
-                                        nodes, roles, role_static_x);
-  } else {
-    hybrid_graph_capture_gstate_ = gstate;
-    LaunchConstructHistogramBatchedKernel(pair_descs, 1, 1, level_smaller_num_data);
-    hybrid_graph_capture_gstate_ = nullptr;
-    if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-    roles->push_back(kHybridGraphNodeConstruct);
-    role_static_x->push_back(0);
-    if (nq_fixed_kernel_launched_) {
-      // nonquant_deterministic: the construct above accumulated in fixed point (LaunchConstructHistogramBatchedKernel);
-      // its in-place convert is a pair-on-y node (blocks over the items on x, the live-pair guard inside)
-      const int convert_blocks_x = LaunchConvertFixedHistBatched(pair_descs, 1, gstate);
-      if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-      roles->push_back(kHybridGraphNodeSearchPairY);
-      role_static_x->push_back(convert_blocks_x);
-    }
-  }
-  if (use_quantized_grad_) {
-    // mirror of LaunchSubtractHistogramBatchedKernel's quantized branch, one
-    // collected node per launch; the copy node is always captured (per-pair
-    // device-derived bit widths gate it inside the kernel)
-    const int num_subtract_threads = num_total_bin_;
-    const int num_subtract_blocks =
-      (num_subtract_threads + SUBTRACT_BLOCK_SIZE - 1) / SUBTRACT_BLOCK_SIZE;
-    dim3 subtract_grid(num_subtract_blocks, 1);
-    if (FixSubtractMaskedEnabled()) {
-      LaunchFixSubtractDiscretizedMaskedKernel(pair_descs, 1, gstate);
-      if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-      roles->push_back(kHybridGraphNodeSearchPairY);
-      role_static_x->push_back(FixSubtractMaskedGridX());
-    } else {
-    if (need_fix_histogram_features_.size() > 0) {
-      dim3 fix_grid(static_cast<unsigned int>(need_fix_histogram_features_.size()), 1);
-      FixHistogramDiscretizedBatchedKernel<<<fix_grid, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
-        cuda_feature_num_bins_.RawData(),
-        cuda_feature_hist_offsets_.RawData(),
-        cuda_feature_most_freq_bins_.RawData(),
-        cuda_need_fix_histogram_features_.RawData(),
-        cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
-        pair_descs,
-        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-        gstate, nullptr);
-      if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-      roles->push_back(kHybridGraphNodeSearchPairY);
-      role_static_x->push_back(static_cast<int>(need_fix_histogram_features_.size()));
-    }
-    SubtractHistogramDiscretizedBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
-      num_total_bin_,
-      pair_descs,
-      hist_buffer_for_num_bit_change_.RawData(),
-      any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-      gstate, nullptr);
-    if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-    roles->push_back(kHybridGraphNodeSearchPairY);
-    role_static_x->push_back(num_subtract_blocks);
-    }
-    CopyChangedNumBitHistogramBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
-      num_total_bin_,
-      pair_descs,
-      hist_buffer_for_num_bit_change_.RawData(),
-      any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-      gstate, nullptr);
-    if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-    roles->push_back(kHybridGraphNodeSearchPairY);
-    role_static_x->push_back(num_subtract_blocks);
-    CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
-    return;
-  }
-  if (SmallLeafConstructEnabled()) {
-    LaunchFixSubtractHistogramSmallLeafBatchedKernel(pair_descs, 1, gstate);
-    if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-    roles->push_back(kHybridGraphNodeSearchPairY);
-    role_static_x->push_back(FixSubtractSmallLeafGridX());
-  } else {
-    // mirror of LaunchSubtractHistogramBatchedKernel's non-quantized branch,
-    // one collected node per launch
-    const int num_subtract_threads = 2 * num_total_bin_;
-    const int num_subtract_blocks = (num_subtract_threads + SUBTRACT_BLOCK_SIZE - 1) / SUBTRACT_BLOCK_SIZE;
-    if (need_fix_histogram_features_.size() > 0) {
-      dim3 fix_grid(static_cast<unsigned int>(need_fix_histogram_features_.size()), 1);
-      FixHistogramBatchedKernel<<<fix_grid, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
-        cuda_feature_num_bins_.RawData(),
-        cuda_feature_hist_offsets_.RawData(),
-        cuda_feature_most_freq_bins_.RawData(),
-        cuda_need_fix_histogram_features_.RawData(),
-        cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
-        pair_descs,
-        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-        hist_fp32_,
-        gstate);
-      if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-      roles->push_back(kHybridGraphNodeSearchPairY);
-      role_static_x->push_back(static_cast<int>(need_fix_histogram_features_.size()));
-    }
-    dim3 subtract_grid(num_subtract_blocks, 1);
-    SubtractHistogramBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
-      num_total_bin_,
-      pair_descs,
-      any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-      hist_fp32_,
-      gstate);
-    if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-    roles->push_back(kHybridGraphNodeSearchPairY);
-    role_static_x->push_back(num_subtract_blocks);
-  }
-  CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
-}
-
-void CUDAHistogramConstructor::HybridGraphConstructDims(int* grid_x, int* block_dim_y) const {
-  int grid_dim_x = 0, grid_dim_y = 0, block_dim_x = 0, block_dim_y_local = 0;
-  const_cast<CUDAHistogramConstructor*>(this)->CalcConstructHistogramBatchedKernelDim(
-    &grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y_local, 1, 1);
-  if (use_compact_view_) {
-    // mirror of LaunchConstructHistogramBatchedKernelInner0's compact override
-    // (per-tree shape: the graph key includes it, one instance per shape)
-    {
-      const int cc = std::max(1, max_num_compact_cols_per_partition_);
-      block_dim_x = cc > NUM_THREADS_PER_BLOCK ? (cc + 1) / 2 : cc;
-    }
-    block_dim_y_local = std::max(1, BatchedConstructThreads() / block_dim_x);
-  }
-  *grid_x = grid_dim_x;
-  *block_dim_y = block_dim_y_local;
-}
-
-#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
-  const bool any_pair_needs_bit_change_copy,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const bool any_pair_needs_bit_change_copy) {
   if (!use_quantized_grad_) {
     const int num_subtract_threads = 2 * num_total_bin_;
     const int num_subtract_blocks = (num_subtract_threads + SUBTRACT_BLOCK_SIZE - 1) / SUBTRACT_BLOCK_SIZE;
@@ -2650,7 +2348,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         pair_descs,
         any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
         hist_fp32_,
-        nullptr);
+        device_level_state_);
     }
     dim3 subtract_grid(num_subtract_blocks, num_pairs);
     SubtractHistogramBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
@@ -2658,7 +2356,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
       pair_descs,
       any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
       hist_fp32_,
-      nullptr);
+      device_level_state_);
   } else {
     // cuda_plan key device_levels: a device-driven level's pairs are guarded by the device's live count, and its
     // bit-change copies are gated per pair inside the copy kernel (the host does not know whether any applies)
@@ -2671,10 +2369,10 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
     // cuda_plan key device_tree_live_grid: a complete device tree's level (worst-case num_pairs, live count on the
     // device) runs the fix/subtract and the bit-change copy over its live pairs with a bounded grid, where the
     // worst-case launch exceeds that grid's block budget (narrower levels keep the batched kernels unchanged)
-    const bool live_tree = device_level_whole_tree_ && gstate == nullptr;
+    const bool live_tree = device_level_whole_tree_;
     const char* fix_route = "batched-masked";  // diag only: which kernels this level enqueued
     int fix_grid_x = FixSubtractMaskedGridX();
-    if (gstate == nullptr && any_feature_unused_bytree_ && used_feature_info_ok_ &&
+    if (any_feature_unused_bytree_ && used_feature_info_ok_ &&
         FalcataPlan::Get().fix_subtract_fused) {
       // cuda_plan key fix_subtract_fused: fix + subtract of the sampled features, one block per pair
       const int threads = std::max(32, (num_used_feature_info_ + 31) / 32 * 32);  // <= 512 (host gate)
@@ -2709,7 +2407,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
         dls);
     } else if (FixSubtractMaskedEnabled()) {
-      LaunchFixSubtractDiscretizedMaskedKernel(pair_descs, num_pairs, gstate);
+      LaunchFixSubtractDiscretizedMaskedKernel(pair_descs, num_pairs);
     } else {
       fix_grid_x = num_subtract_blocks;
       fix_route = "batched-subtract";
@@ -2723,7 +2421,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
           cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
           pair_descs,
           any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-          gstate, dls);
+          dls);
       }
       if (live_tree && LiveGridPays(num_subtract_blocks, num_pairs)) {
         fix_route = "live-subtract";
@@ -2740,7 +2438,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
           pair_descs,
           hist_buffer_for_num_bit_change_.RawData(),
           any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-          gstate, dls);
+          dls);
       }
     }
     const char* copy_route = fused_fix_subtract ? "fused" : "batched";
@@ -2755,17 +2453,16 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         hist_buffer_for_num_bit_change_.RawData(),
         any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
         dls);
-    } else if ((bit_change_copy && !fused_fix_subtract) || gstate != nullptr) {
-      // graph capture always includes the copy node (the device-derived per-pair
-      // bit widths gate it); the host path launches it only on bit-change levels
+    } else if (bit_change_copy && !fused_fix_subtract) {
+      // only on bit-change levels (a device level's: always, its per-pair bit widths gate it inside)
       // cuda_plan key pdl_level_chain: a programmatic dependent of the subtract launched just before (host launches)
-      LaunchLevelChainKernel(gstate == nullptr && PdlLevelChainEnabled(), CopyChangedNumBitHistogramBatchedKernel,
+      LaunchLevelChainKernel(PdlLevelChainEnabled(), CopyChangedNumBitHistogramBatchedKernel,
         subtract_grid, dim3(SUBTRACT_BLOCK_SIZE), 0, cuda_stream_,
         num_total_bin_,
         pair_descs,
         hist_buffer_for_num_bit_change_.RawData(),
         any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-        gstate, dls);
+        dls);
     }
     if (live_tree && FalcataDebug().diag) {
       // once per enqueued level (direct enqueues and captures; a graph replay enqueues nothing): the routes taken and

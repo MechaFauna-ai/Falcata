@@ -296,7 +296,7 @@
         "feature_fraction": 1.0,
         "bagging_fraction": 1.0,
         "max_bin": 5,
-        "cuda_plan": "auto,graph_loop:off,fast_rowdata:off",
+        "cuda_plan": "auto,device_tree:off,fast_rowdata:off",
         "rounds": 25,
         "data_seed": 1206753030
     },
@@ -576,7 +576,7 @@
         "feature_fraction": 1.0,
         "bagging_fraction": 1.0,
         "max_bin": 255,
-        "cuda_plan": "auto,graph_loop:off",
+        "cuda_plan": "auto,device_tree:off",
         "rounds": 150,
         "data_seed": 420429193
     },
@@ -623,7 +623,7 @@
         "feature_fraction": 1.0,
         "bagging_fraction": 1.0,
         "max_bin": 255,
-        "cuda_plan": "auto,graph_loop:off,fast_rowdata:off,rowdata_4bit:off",
+        "cuda_plan": "auto,device_tree:off,fast_rowdata:off,rowdata_4bit:off",
         "rounds": 25,
         "data_seed": 959935396
     },
@@ -646,7 +646,7 @@
         "feature_fraction": 1.0,
         "bagging_fraction": 1.0,
         "max_bin": 63,
-        "cuda_plan": "auto,graph_loop:off",
+        "cuda_plan": "auto,device_tree:off",
         "rounds": 25,
         "data_seed": 289899236
     },
@@ -715,7 +715,7 @@
         "feature_fraction": 0.6,
         "bagging_fraction": 1.0,
         "max_bin": 5,
-        "cuda_plan": "auto,graph_loop:off",
+        "cuda_plan": "auto,device_tree:off",
         "rounds": 25,
         "data_seed": 41600325
     },

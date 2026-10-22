@@ -372,7 +372,7 @@ void CUDADataPartition::SetLeafDataLayout(const std::vector<data_size_t>& leaf_n
 }
 
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-void CUDADataPartition::BuildHybridGraphFeatureMeta(
+void CUDADataPartition::BuildDeviceLevelFeatureMeta(
     std::vector<CUDAHybridGraphFeatureMeta>* meta) const {
   // static half of SplitLevelBatched's per-split host metadata math; the graph
   // controller replays the arithmetic on-device from these fields
@@ -395,7 +395,7 @@ void CUDADataPartition::BuildHybridGraphFeatureMeta(
   }
 }
 
-void CUDADataPartition::BuildHybridGraphFeatureSource(
+void CUDADataPartition::BuildDeviceLevelFeatureSource(
     std::vector<CUDAHybridGraphFeatureSource>* source) const {
   // per-tree half: the column data source (the packed compact view is a
   // per-tree, double-buffered gather); mirrors SplitLevelBatched exactly
@@ -648,7 +648,7 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     // preallocate for the deepest possible level (splits + as many gaps) so
     // this resizes at most once
     cuda_apply_descs_.Resize(static_cast<size_t>(std::max(num_descs, num_leaves_ + 4)));
-    // zeroed slots are inert (num_blocks == 0); see EnsureHybridGraphCapacity
+    // zeroed slots are inert (num_blocks == 0); see CUDADataPartition::EnsureDeviceLevelCapacity
     SetCUDAMemory<CUDAHybridApplyDescriptor>(cuda_apply_descs_.RawData(),
       0, cuda_apply_descs_.Size(), __FILE__, __LINE__);
   }

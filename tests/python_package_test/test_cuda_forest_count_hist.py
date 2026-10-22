@@ -30,8 +30,8 @@ pytestmark = pytest.mark.skipif(
     reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
 
-OFF = "auto,forest_count_hist:off,graph_loop:off"
-ON = "auto,graph_loop:off"
+OFF = "auto,forest_count_hist:off,device_tree:off"
+ON = "auto,device_tree:off"
 
 
 def _strip_parameters(model_str):
@@ -244,7 +244,7 @@ def _small(objective, **extra):
         "metric": "None",
         "seed": 3,
         "verbose": -1,
-        "cuda_plan": "auto,graph_loop:off",
+        "cuda_plan": "auto,device_tree:off",
     }
     params.update(extra)
     return params
@@ -293,7 +293,7 @@ def test_count_hist_engagement(params, labels, weights, expected):
 @pytest.mark.parametrize(
     "params",
     [
-        _small("binary", cuda_plan="auto,graph_loop:off,forest_count_hist:off"),
+        _small("binary", cuda_plan="auto,device_tree:off,forest_count_hist:off"),
         _small("binary", quant_mode="stochastic"),
         _small("binary", boosting="gbdt"),
     ],

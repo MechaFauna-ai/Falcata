@@ -94,7 +94,7 @@ def _params(objective, quant_mode, shape, **extra):
 
 def _train(params, plan, X, y, rounds, valid=None, eval_train=False, early_stopping=None, callbacks=()):
     if params["quant_mode"] == "none":
-        plan += ",graph_loop:off"
+        plan += ",device_tree:off"
     ds = flc.Dataset(X, label=y, params={"max_bin": 63, "verbose": -1}, free_raw_data=False)
     valid_sets, valid_names = [], []
     if eval_train:
