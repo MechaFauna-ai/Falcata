@@ -35,11 +35,12 @@ mode preserves exact leaf-wise equivalence: levels are grown speculatively
 and splits that global greedy ordering would not have taken are collapsed
 again before they can influence the model.
 
-A speculative single-sync pipeline (``one_sync``) further removes per-level
-host synchronization for the non-quantized path, and a CUDA-graph level loop
-(``graph_loop``) captures the per-level launch sequence once and replays it
-through a device-side controller -- removing host round-trips entirely on
-shallow trees.
+Where the depth bound holds, the complete device tree (``device_tree``) runs
+every level's select, apply and search on the GPU, quantized and
+non-quantized, with one readback per tree; its levels are captured once as a
+CUDA graph and replayed. Elsewhere a speculative single-sync pipeline
+(``one_sync``) removes per-level host synchronization for the non-quantized
+path.
 
 Per-Tree Compact Column View
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
