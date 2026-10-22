@@ -10,6 +10,7 @@ shapes outside the bound, whose models must not change either.
 
 import hashlib
 import os
+import re
 import subprocess
 import sys
 
@@ -100,7 +101,7 @@ def test_device_tree_default_engages_cuda():
     on = _diag("auto")
     assert "device_levels: 6 device-driven levels per tree" in on
     assert on.count("device_tree: complete depth=6 ") == 3
-    assert "device_tree: fallback (" not in on
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", on)
     assert "host fallback" not in on
     prefix = _diag("auto,device_tree:off")
     assert "device_levels: 5 device-driven levels per tree" in prefix

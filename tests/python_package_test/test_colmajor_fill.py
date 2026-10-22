@@ -113,7 +113,9 @@ def test_colmajor_fill_declines_when_the_copy_alone_does_not_fit_cuda():
 def test_colmajor_fill_reserves_nothing_for_the_per_column_view_cuda():
     """The classic per-column split view (one byte per sampled value) is never reserved for: the flows without the
     packed split read build it with every tree's compact view, from the first tree on. The per-split loop reaches the
-    leaf-wise tail on every split here (monotone constraints route the tree to it), and its reserve equals that of
+    leaf-wise tail on every split here (interaction constraints route the tree to it: the classic route the full
+    device controller program pins as interaction_constraints; monotone constraints, its other classic route, are
+    refused with quantized gradients on CUDA), and its reserve equals that of
     the default flow, which never runs the tail; both engage the copy. (Until 1.2 the approximate plain batching of
     FALCATA_DEBUG=aggressive could reach the tail with the packed read and left the view for a later tree; the
     reserve held it then.)"""
@@ -121,11 +123,11 @@ def test_colmajor_fill_reserves_nothing_for_the_per_column_view_cuda():
     assert view_mib > 12
     params = {"quant_mode": "stochastic", "max_depth": -1}
     default, _ = _run(params)
-    monotone, _ = _run({**params, "monotone_constraints": [1] + [0] * (FEATS - 1)})
-    for decisions in (default, monotone):
+    classic, _ = _run({**params, "interaction_constraints": [list(range(FEATS))]})
+    for decisions in (default, classic):
         assert [d[0] for d in decisions] == ["engaged"], decisions
-    reserve = {k: d[0][2] for k, d in (("default", default), ("monotone", monotone))}
-    assert abs(reserve["monotone"] - reserve["default"]) <= 2, reserve
+    reserve = {k: d[0][2] for k, d in (("default", default), ("classic", classic))}
+    assert abs(reserve["classic"] - reserve["default"]) <= 2, reserve
 
 
 @_REQUIRES_CUDA
