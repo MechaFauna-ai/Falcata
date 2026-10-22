@@ -9,6 +9,7 @@
 #include <Falcata/falcata_plan.h>
 
 #include <algorithm>
+#include <functional>
 #include <cstring>
 #include <vector>
 
@@ -982,6 +983,23 @@ void CUDABestSplitFinder::CommitLevelNodeMasks(const std::vector<int>& leaves,
                                        cudaMemcpyHostToDevice, stream));
   CUDASUCCESS_OR_FATAL(cudaEventRecord(level_node_masks_copied_, stream));
   level_node_masks_copy_pending_ = true;
+}
+
+void CUDABestSplitFinder::NodeTaskTables(const int k, std::vector<int>* task_inner_feature, int* max_tasks) const {
+  task_inner_feature->assign(static_cast<size_t>(num_tasks_), -1);
+  for (int task_index = 0; task_index < num_tasks_; ++task_index) {
+    (*task_inner_feature)[task_index] = split_find_tasks_[task_index].inner_feature_index;
+  }
+  std::vector<int> counts(static_cast<size_t>(num_features_), 0);
+  for (int f = 0; f < num_features_; ++f) {
+    counts[f] = feature_task_begin_[f + 1] - feature_task_begin_[f];
+  }
+  std::sort(counts.begin(), counts.end(), std::greater<int>());
+  int total = 0;
+  for (int i = 0; i < std::min(k, num_features_); ++i) {
+    total += counts[i];
+  }
+  *max_tasks = total;
 }
 
 void CUDABestSplitFinder::SetUsedFeatureByNode(const std::vector<int8_t>& is_feature_used_by_smaller_node,

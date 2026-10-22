@@ -191,6 +191,47 @@ void LaunchDeviceLevelPairs(const CUDADeviceLevelConfig& config, const int level
 /*! \brief zero the state and the journal header before a tree's first device level (on \p stream) */
 void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_leaves, cudaStream_t stream);
 
+/*! \brief cuda_plan key device_bynode_masks: the per-node feature masks of a complete device tree, drawn on the device.
+ *  A node's mask is ColSampler::GetByNodeKeyed's sample for the node's key (the generator seeded by the high half of
+ *  MixKey(MixKey(seed) ^ key), Random::Sample's branch, the candidates' inner features), and its task list is
+ *  CUDABestSplitFinder::CommitLevelNodeMasks's: the tasks of the sampled features in ascending task index. A node's
+ *  key follows from its parent's as in CUDASingleGPUTreeLearner::BynodeKeySplit. Rows, lists and keys live at fixed
+ *  per-leaf offsets, so the level finders read them through a static row table and the captured launches never
+ *  change. */
+struct CUDADeviceBynodeConfig {
+  /*! \brief [0] candidates N, [1] sample size K, [2] Random::Sample's branch (ColSampler::KeyedNodeSample::mode),
+   *  [3] / [4] the low / high half of MixKey(seed), then the N candidates' inner features in candidate order */
+  const int* sample;
+  /*! \brief every split-find task's inner feature (num_tasks) */
+  const int* task_inner_feature;
+  int num_tasks;
+  int num_features;
+  /*! \brief leaf slots of the rows, the lists and each key generation */
+  int num_slots;
+  /*! \brief the most tasks a node sample can list (each list's stride) */
+  int max_tasks;
+  /*! \brief leaf l's row (num_features bytes, 1 = searched) at rows + l * num_features */
+  int8_t* rows;
+  /*! \brief (offset, count) per leaf slot, the offset in ints from tasks; leaf l's list at 2 * num_slots + l * max_tasks
+   *  (the layout of the finder's level task lists) */
+  int* tasks;
+  /*! \brief node keys, two generations of num_slots: the children of level L read generation L & 1 (their parents')
+   *  and write generation (L + 1) & 1 */
+  uint64_t* keys;
+};
+
+/*! \brief dynamic shared bytes of the mask kernels (a bitmap over the candidates, at most num_features of them) */
+inline size_t DeviceBynodeSharedBytes(const int num_features) {
+  return static_cast<size_t>((num_features + 31) / 32) * sizeof(uint32_t);
+}
+/*! \brief the root's mask and task list (leaf 0) under root_key, which also becomes generation 0's key of leaf 0 */
+void LaunchDeviceBynodeRootMask(const CUDADeviceBynodeConfig& config, const uint64_t root_key, cudaStream_t stream);
+/*! \brief the masks and task lists of both children of every split level \p level applied (state->live_pairs of them,
+ *  after the apply wrote the descriptors), one block per child */
+void LaunchDeviceBynodeLevelMasks(const CUDADeviceBynodeConfig& config, const CUDADeviceLevelState* state,
+                                  const CUDAHybridApplyDescriptor* apply_descs, const int level, const int max_splits,
+                                  cudaStream_t stream);
+
 #ifdef __CUDACC__
 /*! \brief the apply kernels' guard: this split index lies past the level's live splits */
 __device__ __forceinline__ bool DeviceLevelBeyondLiveSplits(const CUDADeviceLevelState* dls, const unsigned int k) {
