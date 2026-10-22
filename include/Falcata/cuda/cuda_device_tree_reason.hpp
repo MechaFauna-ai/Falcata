@@ -36,7 +36,6 @@ namespace Falcata {
   X(kMultiGpu, "multi_gpu", "10")                         /* num_gpu > 1, data-parallel */             \
   X(kFeatureParallel, "feature_parallel", "11")           /* tree_learner=feature */                   \
   X(kVectorLeaves, "vector_leaves", "12")                 /* tree_mode=vector_leaf */                  \
-  X(kForestSlots, "forest_slots", "9")                    /* rf groups of two or more trees */         \
   X(kNoSharedMemory, "no_shared_memory", "16")            /* nonquant fixed-point table > smem */      \
   X(kNonquantGt256Bins, "nonquant_gt_256_bins", "15")     /* global-memory split finder */             \
   X(kSparseLayout, "sparse_layout", "14")                 /* sparse row data */                        \
@@ -93,8 +92,7 @@ inline const char* DeviceTreeReasonToken(const DeviceTreeReason reason) {
   X(kSelectiveOneSync, "selective_one_sync")    /* the host selective one-sync loop (non-quantized) */  \
   X(kL15Graph, "l15_graph")                     /* the non-quantized captured level graph */            \
   X(kOneSync, "one_sync")                       /* the non-quantized one-sync level loop */             \
-  X(kClassic, "classic")                        /* the per-split loop */                                \
-  X(kForestSlots, "forest_slots")               /* a forest slot beside other slot threads */
+  X(kClassic, "classic")                        /* the per-split loop */
 
 enum class GrowthRoute : uint8_t {
 #define FALCATA_GROWTH_ROUTE_ENUM(name, token) name,

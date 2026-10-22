@@ -184,7 +184,7 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
     // once per level per row through data_indices gather) as L2-persisting on
     // every construct stream. One window per stream is the API limit; the
     // gradient buffer is the highest-reuse scatter target. A stream keeps its window until it is set again, so it is
-    // set only when the buffer changes (a forest's slot grows every tree of a class from the same column).
+    // set only when the buffer changes (a forest grows every tree of a class from the same column).
     l2_window_base_ = gradients;
     l2_window_bytes_ = l2_window_bytes;
     cudaStreamAttrValue attr{};
@@ -1458,15 +1458,10 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);
   cuda_feature_most_freq_bins_.InitFromHostVector(feature_most_freq_bins_);
 
-  if (shared_row_data_ != nullptr) {
-    // a forest slot (cuda_plan key forest_batched): the booster learner's constructor built it for the same data
-    cuda_row_data_ = shared_row_data_;
-  } else {
-    cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
-    // colmajor_direct: no row-major matrix when the Dataset's columns can serve (the tree learner then builds a view)
-    cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
-    cuda_row_data_->Init(train_data, share_state);
-  }
+  cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
+  // colmajor_direct: no row-major matrix when the Dataset's columns can serve (the tree learner then builds a view)
+  cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
+  cuda_row_data_->Init(train_data, share_state);
 
   InitDeterministicDenseScratch();
 

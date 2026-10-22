@@ -322,14 +322,8 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     // one (grad, hess)-pair histogram plane per target within each leaf slot
     cuda_histogram_constructor_->SetNumHistPlanes(vec_num_targets_);
   }
-  if (forest_row_data_source_ != nullptr) {
-    // cuda_plan key forest_batched: a slot reads the booster learner's bin matrix (same data, read-only after Init)
-    cuda_histogram_constructor_->ShareRowData(forest_row_data_source_->cuda_histogram_constructor_->row_data_shared());
-  }
   cuda_histogram_constructor_->Init(train_data_, share_state_.get());
-  // cuda_plan key forest_count_hist: a forest slot shares the booster learner's codes (same gradient arrays)
-  count_hist_cache_ = forest_row_data_source_ != nullptr && forest_row_data_source_->count_hist_cache_ != nullptr ?
-    forest_row_data_source_->count_hist_cache_ : std::make_shared<CUDACountHistCache>();
+  count_hist_cache_ = std::make_shared<CUDACountHistCache>();  // cuda_plan key forest_count_hist
 
   const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
   num_total_bin_ = feature_hist_offsets.empty() ? 0 : static_cast<int>(feature_hist_offsets.back());
@@ -341,13 +335,6 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     num_threads_, config_->use_quantized_grad,
     cuda_histogram_constructor_->cuda_hist_pointer()));
   cuda_data_partition_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
-  if (forest_private_column_view_) {
-    // cuda_plan key forest_batched: this slot's per-tree views go to a view of its own (the dataset's is the
-    // booster learner's, and the other slots install theirs concurrently)
-    private_column_view_.reset(new CUDAColumnData(num_data_, gpu_device_id_));
-    private_column_view_->InitViewOf(train_data_->cuda_column_data());
-    cuda_data_partition_->SetColumnData(private_column_view_.get());
-  }
   cuda_data_partition_->Init();
 
   select_features_by_node_ = !config_->interaction_constraints_vector.empty() || config_->feature_fraction_bynode < 1.0;
@@ -724,11 +711,7 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   if (vec_num_targets_ > 1) {
     VectorInitRootPlanes(leaf_splits_init_indices, root_num_data);
   }
-  if (forest_next_sample_ready_) {
-    // cuda_plan key forest_batched: the forest trainer drew this tree's sample in tree order
-    col_sampler_.SetByTreeSample(forest_next_sample_);
-    forest_next_sample_ready_ = false;
-  } else if (next_tree_col_sample_ready_) {
+  if (next_tree_col_sample_ready_) {
     // the previous Train() already drew this tree's column sample (prefill)
     next_tree_col_sample_ready_ = false;
   } else {
@@ -813,7 +796,7 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   // THIS tree's mask above has already taken its copy. Gated off under by-node
   // feature sampling (GetByNode draws from the same RNG per node; an early
   // by-tree draw would reorder the stream and change models).
-  if (FalcataPlan::Get().compact_prefill && !select_features_by_node_ && !forest_slot_ &&
+  if (FalcataPlan::Get().compact_prefill && !select_features_by_node_ &&
       nccl_communicator_ == nullptr && fp_merge_state_ == nullptr &&
       cuda_histogram_constructor_->compact_view_active()) {
     col_sampler_.ResetByTree();
@@ -3078,11 +3061,10 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   if (fp_merge_state_ != nullptr) {
     return false;
   }
-  // forest slots (cuda_plan key forest_batched): while one thread captures a graph on its blocking streams, another
-  // thread's legacy-stream work would join the capture. A group's only tree (forest_single_job_device) has no other
-  // thread beside it, but still keeps off the graph loop, which serves only non-quantized training: that loop is not
-  // run-to-run deterministic and slots never ran it, so a forest's model would change with its group sizes.
-  if (ForestSlotShared() || (forest_slot_ && !config_->use_quantized_grad)) {
+  // a non-quantized random forest keeps the host level loop and its forest count construct (forest_count_hist):
+  // the forest slots (removed) never took the graph loop, so a forest's model stays what it was; a quantized
+  // forest's trees take what a gbdt tree takes
+  if (config_->boosting == std::string("rf") && !config_->use_quantized_grad) {
     return false;
   }
   // FALCATA_DEBUG=debug checks the host loop's decisions, which the device controller makes on the device
@@ -3578,9 +3560,6 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   if (vec_num_targets_ > 1) {
     return R::kVectorLeaves;
   }
-  if (ForestSlotShared()) {
-    return R::kForestSlots;
-  }
   const R layout = cuda_histogram_constructor_->BatchedLevelRefusal();
   const R finder = cuda_best_split_finder_->BatchedLevelRefusal();
   if (layout == R::kNoSharedMemory) {
@@ -3669,7 +3648,7 @@ void CUDASingleGPUTreeLearner::LogDeviceTreeFallback() {
     return;  // its `device_tree: complete` line
   }
   const DeviceTreeReason reason = DeviceTreeRefusal();
-  const GrowthRoute route = ForestSlotShared() ? GrowthRoute::kForestSlots : growth_route_;
+  const GrowthRoute route = growth_route_;
   std::string line = std::string("[hybrid-diag] device_tree: fallback (") + DeviceTreeReasonToken(reason) +
     ") route=" + GrowthRouteToken(route);
   if ((route == GrowthRoute::kHostTwoSync || route == GrowthRoute::kSelectiveTwoSync) &&
@@ -3685,9 +3664,7 @@ void CUDASingleGPUTreeLearner::LogDeviceTreeFallback() {
 // ---- cuda_plan key device_bynode_masks (see CUDADeviceBynodeConfig) ----
 
 bool CUDASingleGPUTreeLearner::DeviceBynodeMasksUsable() const {
-  // a forest slot beside other slot threads keeps the host draw; a group's only tree (forest_single_job_device) runs
-  // alone and takes the device masks (same keys: the trainer gives it the sequential tree counters)
-  return FalcataPlan::Get().device_bynode_masks && bynode_keyed_ && LevelFlowsTakeNodeMasks() && !ForestSlotShared() &&
+  return FalcataPlan::Get().device_bynode_masks && bynode_keyed_ && LevelFlowsTakeNodeMasks() &&
     !FalcataDebug().bynode &&
     // the kernels' static shared memory (the block scan's ~132 bytes) beside the dynamic bitmap: a 1 KB margin
     DeviceBynodeSharedBytes(train_data_->num_features()) + 1024 <= 48 * 1024;
@@ -3820,12 +3797,6 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
   const FalcataPlan& plan = FalcataPlan::Get();
   const bool device_tree = DeviceTreeRequested();
   if (!plan.device_levels || device_levels_disabled_) {
-    return 0;
-  }
-  // Slot workers use thread-local stream ownership. Neither capture nor the plain device enqueue is supported here.
-  // A group's only tree (cuda_plan key forest_single_job_device) runs alone, as the sequential learner's trees do.
-  if (ForestSlotShared()) {
-    LogDeviceLevelsFallback(DeviceTreeReason::kForestSlots);
     return 0;
   }
   // When sampled layouts keep missing the graph cache, use the existing host loop on subsequent trees.
@@ -4370,7 +4341,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     (lean_end || (config_->objective == "regression" && share_state_->is_constant_hessian)) &&
     boosting_on_cuda_ && (lean_end || train_data_->metadata().weights() == nullptr) &&
     config_->use_quantized_grad && vec_num_targets_ <= 1 && !has_categorical_feature_ &&
-    nccl_communicator_ == nullptr && fp_merge_state_ == nullptr && !forest_slot_ &&
+    nccl_communicator_ == nullptr && fp_merge_state_ == nullptr &&
     config_->data_sample_strategy == "bagging" && !config_->bagging_by_query &&
     // device_tree_lean_end: under row bagging too (the bag is partitioned on the device; the cache is not read)
     (lean_end ||
@@ -4433,7 +4404,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
   // pointer key, replayed on the next ones); otherwise enqueued as they are
   bool launched = false;
-  if (FalcataPlan::Get().device_level_graph && !ForestSlotShared() && !device_level_graph_disabled_) {
+  if (FalcataPlan::Get().device_level_graph && !device_level_graph_disabled_) {
     launched = LaunchDeviceLevelGraph(tree, cfg, num_levels, inline_all_map, final_map_only);
   }
   if (!launched) {
@@ -5453,7 +5424,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   MaybeInitColMajorFill();
   if (construct_saturation_floor_ > 0 &&
       FalcataPlan::Get().batch_construct_saturation_floor != construct_saturation_floor_) {
-    // see Init; written only on a change (forest slots train concurrently and all hold the same value)
+    // see Init; written only on a change
     FalcataPlan::Mutable().batch_construct_saturation_floor = construct_saturation_floor_;
   }
   gradients_ = gradients;
@@ -5463,15 +5434,12 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   const bool leaf_map_zero_dead = LeafMapZeroDead();
   cuda_data_partition_->SetLeafMapZeroDead(leaf_map_zero_dead);
   if (tree_in_progress_) {
-    // the last tree threw mid-way (a device-memory failure, which a forest group retries, or any error a caller
-    // caught): it may have written histogram slots beyond the last completed tree's count, and the accumulating
+    // the last tree threw mid-way (any error a caller caught): it may have written histogram slots beyond the last completed tree's count, and the accumulating
     // constructs (quantized, float atomics) would add the leftovers into this tree
     AbortedTreeReset();
   }
   tree_in_progress_ = true;
-  if (forest_slot_ && !forest_private_column_view_) {
-    ++forest_main_trees_started_;
-  }
+  ++trees_started_;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   if (device_bynode_active_) {
     EndDeviceBynode();  // the last tree threw between its root search and its device levels
@@ -6343,36 +6311,6 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   }
 }
 
-void CUDASingleGPUTreeLearner::PresizeLevelBuffers() {
-  size_t free_bytes = 0, total_bytes = 0;
-  CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &total_bytes));
-  const size_t kMaxPresizeBytes = std::max<size_t>(size_t{256} << 20, total_bytes / 8);
-  int max_pairs = config_->num_leaves / 2 + 2;
-  if (config_->max_depth > 0 && config_->max_depth < 30) {
-    // a level of a depth-limited tree has at most 2^(max_depth - 1) pairs
-    max_pairs = std::min(max_pairs, (1 << (config_->max_depth - 1)) + 2);
-  }
-  cuda_data_partition_->PresizeLevelBuffers();
-  cuda_best_split_finder_->PresizeLevelOutput(max_pairs, kMaxPresizeBytes);
-  if (config_->use_quantized_grad) {
-    cuda_histogram_constructor_->PresizeBitChangeScratch(max_pairs, kMaxPresizeBytes);
-  }
-}
-
-CUDASingleGPUTreeLearner::TreeCounters CUDASingleGPUTreeLearner::tree_counters() const {
-  TreeCounters counters;
-  counters.bynode = bynode_tree_count_;
-  counters.discretizer = cuda_gradient_discretizer_ ? cuda_gradient_discretizer_->iteration() : 0;
-  return counters;
-}
-
-void CUDASingleGPUTreeLearner::SetTreeCounters(const TreeCounters& counters) {
-  bynode_tree_count_ = counters.bynode;
-  if (cuda_gradient_discretizer_) {
-    cuda_gradient_discretizer_->SetIteration(counters.discretizer);
-  }
-}
-
 void CUDASingleGPUTreeLearner::SetBaggingData(const Dataset* /*subset*/,
   const data_size_t* used_indices, data_size_t num_data) {
   cuda_data_partition_->SetUsedDataIndices(used_indices, num_data);
@@ -6551,6 +6489,21 @@ void CUDASingleGPUTreeLearner::AllocateBitset() {
   cuda_bitset_inner_len_ = 0;
 }
 
+void CUDASingleGPUTreeLearner::MaybeInjectTreeFailure(const int num_leaves) {
+  // test hook (FALCATA_TEST_ABORT_TREE=n): the n-th tree (0-based) this learner starts fails once, in the host level
+  // loop's apply after it has at least 4 leaves (histograms of its first levels written), as a device-memory failure
+  // inside a tree would; the caller catches the error and trains on (AbortedTreeReset)
+  static const int inject_tree = [] {
+    const char* v = std::getenv("FALCATA_TEST_ABORT_TREE");
+    return v != nullptr ? std::atoi(v) : -1;
+  }();
+  if (inject_tree < 0 || num_leaves < 4 || injected_tree_failure_ || trees_started_ - 1 != inject_tree) {
+    return;
+  }
+  injected_tree_failure_ = true;
+  throw std::runtime_error("[CUDA] out of memory allocating 0.00 GiB (injected inside a tree for a test)");
+}
+
 void CUDASingleGPUTreeLearner::AbortedTreeReset() {
   // what the next tree would otherwise take from the last completed one: every histogram slot zeroed (as after
   // Init), the count scratch zeroed, no selective-growth peak or pending readback carried over
@@ -6576,21 +6529,6 @@ void CUDASingleGPUTreeLearner::AbortedTreeReset() {
 #ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
   WholeMapOnlyFaultCheckpoint(this, WholeMapOnlyFaultPoint::RecoveryCleared);
 #endif
-}
-
-void CUDASingleGPUTreeLearner::MaybeInjectTreeFailure(const int num_leaves) {
-  // test hook (FALCATA_TEST_FOREST_ABORT_TREE=n): the n-th tree (0-based) the booster's learner grows in forest
-  // mode fails once it has at least 4 leaves, as a device-memory failure inside a tree would
-  static const int inject_tree = [] {
-    const char* v = std::getenv("FALCATA_TEST_FOREST_ABORT_TREE");
-    return v != nullptr ? std::atoi(v) : -1;
-  }();
-  if (inject_tree < 0 || !forest_slot_ || forest_private_column_view_ || num_leaves < 4 || injected_tree_failure_ ||
-      forest_main_trees_started_ - 1 != inject_tree) {
-    return;
-  }
-  injected_tree_failure_ = true;
-  throw std::runtime_error("[CUDA] out of memory allocating 0.00 GiB (injected inside a tree for a test)");
 }
 
 const CUDACountHistCodes* CUDASingleGPUTreeLearner::CountHistCodesForTree() {

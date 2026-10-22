@@ -29,5 +29,5 @@ updater and RF's separate device score buffer retain their behavior.
 
 Device metadata owns resources and cannot be copied or moved. The previous
 implicit `CUDAMetadata` copy shallow-copied owning device pointers and was unsafe;
-column sharing continues through `InitViewOf`. Installed C++ class layouts have
+the second column view (`InitViewOf`, used only by the random-forest slots) was removed with the slots in 1.2. Installed C++ class layouts have
 changed and require a source rebuild.

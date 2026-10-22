@@ -1366,7 +1366,9 @@ def build_cells():
         ),
         ("r08a-ic", "dense", route_ic, 25, {}),
         ("r08b-ic-bynode", "dense", {**route_ic, "feature_fraction_bynode": 0.6}, 25, {}),
-        ("r09a-rf-g4", "imbalanced", {**route_rf, "cuda_plan": "auto,forest_group:4"}, 25, {}),
+        # r09a: recorded with forest_group:4 (four-tree slot groups); the slots and the key are gone (#178) and the
+        # sequential forest keeps the md5
+        ("r09a-rf-g4", "imbalanced", route_rf, 25, {}),
         ("r09b-rf-mc", "rare-mc-b", route_rf, 10, {}),
         ("r12-vector", "vector-leaf", {"num_leaves": 31, "max_depth": -1}, 25, {}),
         ("r13a-l1", "dense", {"lambda_l1": 1.0}, 25, {}),

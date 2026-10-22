@@ -13,8 +13,7 @@ Per shape, the test checks that
 - the scores the booster maintained on the device (validation set; the training set under bagging) equal the host
   prediction of the final model, i.e. every retained tree's device record matches its host record.
 The shapes cover one-hot and many-vs-many splits, a high-cardinality feature whose per-tree record exceeds the
-1 MiB presize (so the buffers grow while a tree records), multiclass, DART, bagging and a random forest grown on
-concurrent forest slots (one learner, so one arena, per slot and host thread) and solo (one-tree groups).
+1 MiB presize (so the buffers grow while a tree records), multiclass, DART, bagging and a random forest.
 
 cuda_plan key cat_level_record (default on) records a level's categorical splits with one kernel at offsets
 summed on the device and reads the record back once per tree; every shape is also trained with the key off (the
@@ -110,16 +109,7 @@ SHAPES = {
     "multiclass": ({"objective": "multiclass", "num_class": 3, "metric": "multi_logloss"}, {"num_class": 3}, 15),
     "dart": ({"boosting": "dart", "drop_rate": 0.3}, {}, 20),
     "bagging": ({"bagging_fraction": 0.7, "bagging_freq": 1, "metric": "auc"}, {}, 20),
-    "rf_forest_slots": (
-        {"boosting": "rf", "bagging_fraction": 0.632, "bagging_freq": 1, "cuda_plan": "auto,forest_group:4"},
-        {},
-        12,
-    ),
-    "rf_solo": (
-        {"boosting": "rf", "bagging_fraction": 0.632, "bagging_freq": 1, "cuda_plan": "auto,forest_group:1"},
-        {},
-        12,
-    ),
+    "rf": ({"boosting": "rf", "bagging_fraction": 0.632, "bagging_freq": 1}, {}, 12),
     # a binding leaf budget: selective growth by default; under FALCATA_DEBUG=aggressive (the diag check below) the
     # host level loop runs until the budget binds and leaves the last splits to its per-split leaf-wise tail
     "budget_tail": ({"num_leaves": 20, "max_depth": 6}, {}, 20),
@@ -233,8 +223,3 @@ def test_cuda_categorical_record(shape):
         assert any(settles > 0 for _, _, _, _, settles in lines), lines
         _, md5_off = _diag_lines({**params, "cuda_plan": plan + ",cat_level_record:off"}, data_kw, 4, debug)
         assert md5_off == md5_on
-
-    if shape == "rf_forest_slots":
-        # concurrent slots grow the same forest as sequential training
-        seq, _, _ = _train({**params, "cuda_plan": "auto,forest_batched:off"}, data_kw, rounds)
-        assert _md5(seq.model_to_string()) == _md5(text)

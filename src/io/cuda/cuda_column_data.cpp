@@ -184,41 +184,6 @@ void CUDAColumnData::Init(const int num_columns,
   InitColumnMetaInfo();
 }
 
-void CUDAColumnData::InitViewOf(const CUDAColumnData* source) {
-  CHECK(source != nullptr);
-  CHECK(source->view_source_ == nullptr);
-  CHECK(data_by_column_.empty());
-  view_source_ = source;
-  gpu_device_id_ = source->gpu_device_id_;
-  num_threads_ = source->num_threads_;
-  num_data_ = source->num_data_;
-  num_columns_ = source->num_columns_;
-  // the original encodings: this view starts out publishing the original buffers, whatever source publishes now
-  column_bit_type_ = source->original_column_bit_type_;
-  original_column_bit_type_ = source->original_column_bit_type_;
-  column_is_sparse_ = source->column_is_sparse_;
-  feature_min_bin_ = source->feature_min_bin_;
-  feature_max_bin_ = source->feature_max_bin_;
-  feature_offset_ = source->feature_offset_;
-  feature_most_freq_bin_ = source->feature_most_freq_bin_;
-  feature_default_bin_ = source->feature_default_bin_;
-  feature_missing_is_zero_ = source->feature_missing_is_zero_;
-  feature_missing_is_na_ = source->feature_missing_is_na_;
-  feature_mfb_is_zero_ = source->feature_mfb_is_zero_;
-  feature_mfb_is_na_ = source->feature_mfb_is_na_;
-  InitMissingFlagSnapshots();
-  feature_to_column_ = source->feature_to_column_;
-  init_skipped_per_column_alloc_ = source->init_skipped_per_column_alloc_;
-  if (init_skipped_per_column_alloc_) {
-    compact_column_host_view_.assign(num_columns_, nullptr);
-  }
-  SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
-  cuda_data_by_column_.InitFromHostVector(OriginalColumnPointers());
-  original_column_view_active_ = !init_skipped_per_column_alloc_;
-  ++column_view_generation_;
-  InitColumnMetaInfo();
-}
-
 void CUDAColumnData::CopySubrow(
   const CUDAColumnData* full_set,
   const data_size_t* used_indices,

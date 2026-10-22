@@ -427,24 +427,6 @@ class CUDABestSplitFinder {
   /*! \brief preallocates the per-pair best-split scratch for the graph loop's
    *  worst case, so the captured buffer pointer never reallocates */
   void EnsureHybridGraphCapacity(const int max_pairs) { EnsureHybridLevelCapacity(max_pairs); }
-  /*! \brief cuda_plan key forest_batched: the level output sized for levels of up to max_pairs pairs now, unless
-   *  that takes more than max_bytes (a growth during training is a device synchronize, which stalls every slot) */
-  void PresizeLevelOutput(const int max_pairs, const size_t max_bytes) {
-    // the most pairs within max_bytes (all of them when they fit): a partial presize still spares the levels up to it
-    int pairs = max_pairs;
-    const size_t full = HybridLevelGrowthBytes(max_pairs);
-    if (full > max_bytes) {
-      pairs = static_cast<int>(static_cast<double>(max_pairs) * static_cast<double>(max_bytes) /
-                               static_cast<double>(full));
-      while (pairs > 0 && HybridLevelGrowthBytes(pairs) > max_bytes) {
-        --pairs;
-      }
-    }
-    if (pairs > 0 && HybridLevelGrowthBytes(pairs) > 0) {
-      EnsureHybridLevelCapacity(pairs);
-    }
-  }
-
   /*! \brief device bytes EnsureHybridLevelCapacity can still allocate for levels of up to max_pairs pairs: 0 once
    *  the output buffer holds them, otherwise the full new block (output slots plus their categorical-threshold
    *  and vector-payload slabs), since a growing Resize keeps the old block until the new one is allocated */

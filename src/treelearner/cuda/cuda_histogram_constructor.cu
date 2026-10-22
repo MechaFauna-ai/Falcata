@@ -1717,7 +1717,7 @@ namespace {
 
 // The count construct's dynamic shared table (up to the widest partition's bins x 12 bytes) may exceed the 48 KB a
 // kernel gets without opting in: raised once per (kernel, device) to the largest size asked for. A process-wide
-// registry under a mutex (forest slots launch from several host threads).
+// registry under a mutex.
 template <typename KERNEL>
 void EnsureCountKernelSharedBytes(KERNEL kernel, const size_t bytes) {
   if (bytes <= 46 * 1024) {

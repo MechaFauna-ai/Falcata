@@ -74,9 +74,9 @@ ROUTES_EXPECTED = {
     "route/r07b-bynode-d13": [("bynode_outside_bound", "host_two_sync")],
     "route/r08a-ic": [("interaction_constraints", _CLASSIC)],
     "route/r08b-ic-bynode": [("interaction_constraints", _CLASSIC)],
-    # 25 rounds in groups of 4: the last group's only tree runs alone (forest_single_job_device)
-    "route/r09a-rf-g4": [("forest_slots", "forest_slots"), _COMPLETE],
-    "route/r09b-rf-mc": [("forest_slots", "forest_slots")],
+    # forest slots removed (#178): every forest tree trains on the booster's learner, here complete device trees
+    "route/r09a-rf-g4": [_COMPLETE],
+    "route/r09b-rf-mc": [_COMPLETE],
     "route/r12-vector": [("vector_leaves", "selective_two_sync")],
     "route/r13a-l1": [("lambda_l1", "host_two_sync")],
     "route/r13b-smooth": [("path_smooth", "host_two_sync")],
