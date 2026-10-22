@@ -3133,8 +3133,10 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
     return false;
   }
   // forest slots (cuda_plan key forest_batched): while one thread captures a graph on its blocking streams, another
-  // thread's legacy-stream work would join the capture
-  if (forest_slot_) {
+  // thread's legacy-stream work would join the capture. A group's only tree (forest_single_job_device) has no other
+  // thread beside it, but takes only the quantized graph prefix: the non-quantized graph loop is not run-to-run
+  // deterministic and slots never ran it, so a forest's model would change with its group sizes.
+  if (ForestSlotShared() || (forest_slot_ && !config_->use_quantized_grad)) {
     return false;
   }
   // the per-level debug envs steer the host loop's decisions in ways the
@@ -3628,8 +3630,9 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     return 0;
   }
   // Slot workers use thread-local stream ownership. Neither capture nor the plain device enqueue is supported here.
-  if (forest_slot_ || cuda_best_split_finder_->find_stream() == cudaStreamLegacy) {
-    LogDeviceLevelsFallback(forest_slot_ ? "forest slot" : "legacy single stream");
+  // A group's only tree (cuda_plan key forest_single_job_device) runs alone, as the sequential learner's trees do.
+  if (ForestSlotShared() || cuda_best_split_finder_->find_stream() == cudaStreamLegacy) {
+    LogDeviceLevelsFallback(ForestSlotShared() ? "forest slot" : "legacy single stream");
     return 0;
   }
   // When sampled layouts keep missing the graph cache, use the existing host loop on subsequent trees.
@@ -4150,7 +4153,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
   // pointer key, replayed on the next ones); otherwise enqueued as they are
   bool launched = false;
-  if (FalcataPlan::Get().device_level_graph && !forest_slot_ && !device_level_graph_disabled_) {
+  if (FalcataPlan::Get().device_level_graph && !ForestSlotShared() && !device_level_graph_disabled_) {
     launched = LaunchDeviceLevelGraph(tree, cfg, num_levels, inline_all_map, final_map_only);
   }
   if (!launched) {

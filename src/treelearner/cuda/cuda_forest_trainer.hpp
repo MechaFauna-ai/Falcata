@@ -62,6 +62,10 @@ class CUDAForestTrainer {
    *  buffers: the group's time is not the steady state) */
   int last_first_trees() const { return last_first_trees_; }
 
+  /*! \brief Whether the last Train's group was one tree trained off slot mode (cuda_plan key
+   *  forest_single_job_device): alone on the device, as the sequential learner trains it */
+  bool last_solo() const { return last_solo_; }
+
   /*! \brief The learner of a slot (renewal, train score update and bag order of its last tree) */
   TreeLearner* learner(int slot) const;
 
@@ -101,6 +105,7 @@ class CUDAForestTrainer {
   /*! \brief per slot: whether it grew a tree (slot 0 counts as grown) */
   std::vector<bool> slot_trained_;
   int last_first_trees_ = 0;
+  bool last_solo_ = false;
   /*! \brief per job of the last Train: the booster learner's counters and (with a per-tree sample) feature sampler
    *  before the job's tree (RewindTo) */
   std::vector<CUDASingleGPUTreeLearner::TreeCounters> job_counters_;

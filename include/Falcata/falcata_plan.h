@@ -717,6 +717,14 @@ struct FalcataPlan {
   // trees of one round). Off: one tree after another (stage-1 behaviour), also without the conditions (bagging or
   // no sampling, no GOSS, linear trees, forced splits, CEGB, multi-GPU, vector leaves, compact_prefill).
   bool forest_batched = true;  // key: forest_batched
+  // forest_batched: a group of ONE tree (forest_group 1, a binary or regression forest's auto size settled at one round,
+  // the last group of a forest_group N training, a memory-bound group shrunk to one round) trains on the booster's
+  // learner as sequential training does, not as a forest slot: no other slot thread runs while it trains, so its
+  // stream capture is safe and the tree takes the flows a slot never takes (the complete device tree, the
+  // device_levels prefix, the graph prefixes). A group of two or more trees stays in slot mode. The trees are the
+  // sequential ones either way: bit-identical. FALCATA_DEBUG=diag names each group's mode ([forest-diag] ... mode).
+  // Off: every group in slot mode, as before.
+  bool forest_single_job_device = true;  // key: forest_single_job_device
   // random forest (boosting=rf, objective binary, multiclass, multiclassova or regression, the device objective, no
   // GOSS, no weights, one GPU, not quantized): the forest's gradients are constant per class and take few values, so
   // where the non-quantized learner runs the deterministic fp64 construct (per-row-group slot rows of doubles in
@@ -1109,6 +1117,7 @@ struct FalcataPlan {
     if (key == "rf_lazy_train_score") return &rf_lazy_train_score;
     if (key == "level_bynode_masks") return &level_bynode_masks;
     if (key == "forest_batched") return &forest_batched;
+    if (key == "forest_single_job_device") return &forest_single_job_device;
     if (key == "forest_count_hist") return &forest_count_hist;
     if (key == "zero_slots_kernel") return &zero_slots_kernel;
     if (key == "root_sums_warp") return &root_sums_warp;
