@@ -975,6 +975,11 @@ struct FalcataPlan {
   // assigned leaf-ascending instead of in greedy order, which no search, simulation or renumbering reads: bit-identical.
   // Engages only when K >= 2 (num_leaves >= 4 and, with a depth limit, max_depth >= 3), like the prefix itself.
   // Quantized, two-sync, single GPU, no categorical features, per-node masks or vector leaves (device_levels' gate).
+  // The selective prefix records no device tree (selective growth rebuilds its tree from its own records), builds the
+  // host records in place at the hand-off, and bounds each level's partition launch by the complete device tree's
+  // joint worker bound. Every prefix (selective or not) selects with register-batched loads and a block-wide journal
+  // copy, the copy fused into each level's sync kernel from a shared-memory config: the same descriptors, journal and
+  // records.
   bool selective_device_prefix = true;  // key: selective_device_prefix
   // the complete device tree under per-node feature masks (feature_fraction_bynode < 1, no interaction constraints,
   // level_bynode_masks): each node's keyed sample (ColSampler::GetByNodeKeyed: the generator seeded by the seed, the
