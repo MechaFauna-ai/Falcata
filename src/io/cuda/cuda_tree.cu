@@ -11,6 +11,7 @@
 #include <Falcata/cuda/cuda_tree.hpp>
 #include <Falcata/falcata_plan.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "../../treelearner/cuda/cuda_pdl_launch.hpp"
@@ -516,6 +517,223 @@ void CUDATree::LaunchSplitCategoricalKernel(const int leaf_index,
     num_cat_,
     cuda_cat_boundaries_.RawData(),
     cuda_cat_boundaries_inner_.RawData());
+}
+
+// cuda_plan key cat_level_record: one level's categorical splits, one block per split (blockIdx.x = c, the level's
+// c-th categorical split; its descriptor is batch_splits[c]). Each block records its node exactly as
+// SplitCategoricalKernel does (threadIdx.x plays that kernel's thread index; num_cat = num_cat_base + c) and appends
+// its two bitsets at the record's current end plus the lengths of the level's earlier categorical splits, which is
+// where the per-split loop's PushBack would put them. The record's current end is boundaries[num_cat_base] (0 for the
+// first categorical split of the tree), written by an earlier launch on this stream.
+__global__ void SplitCategoricalLevelKernel(
+  const CUDATreeBatchSplit* batch_splits,
+  const int num_cat_base,
+  const uint32_t* bitset_slab, const size_t bitset_stride,
+  const uint32_t* bitset_inner_slab, const size_t bitset_inner_stride,
+  const uint64_t* lens,
+  uint32_t* bitset,
+  uint32_t* bitset_inner,
+  int* cuda_cat_boundaries,
+  int* cuda_cat_boundaries_inner,
+  // tree structure
+  int* leaf_parent,
+  int* leaf_depth,
+  int* left_child,
+  int* right_child,
+  int* split_feature_inner,
+  int* split_feature,
+  float* split_gain,
+  double* internal_weight,
+  double* internal_value,
+  data_size_t* internal_count,
+  double* leaf_weight,
+  double* leaf_value,
+  data_size_t* leaf_count,
+  int8_t* decision_type,
+  uint32_t* threshold_in_bin,
+  double* threshold) {
+  const int c = static_cast<int>(blockIdx.x);
+  const int thread_index = static_cast<int>(threadIdx.x);
+  // offsets: the lengths of the level's earlier categorical splits, summed by the block. Every block sums its own
+  // prefix, O(n^2 / blockDim) loads per level for n categorical splits (n <= num_leaves / 2; trivial at the levels
+  // measured, 512 splits is ~2k loads per block); a block-wide scan in one block would be the follow-up if it shows.
+  __shared__ uint64_t warp_sums[2][32];
+  __shared__ size_t offsets[2];
+  uint64_t sum = 0;
+  uint64_t sum_inner = 0;
+  for (int j = thread_index; j < c; j += static_cast<int>(blockDim.x)) {
+    sum += lens[2 * j];
+    sum_inner += lens[2 * j + 1];
+  }
+  for (int delta = 16; delta > 0; delta >>= 1) {
+    sum += __shfl_down_sync(0xffffffffu, sum, delta);
+    sum_inner += __shfl_down_sync(0xffffffffu, sum_inner, delta);
+  }
+  const int lane = thread_index & 31;
+  const int warp = thread_index >> 5;
+  if (lane == 0) {
+    warp_sums[0][warp] = sum;
+    warp_sums[1][warp] = sum_inner;
+  }
+  __syncthreads();
+  if (thread_index == 0) {
+    const int num_warps = static_cast<int>((blockDim.x + 31) / 32);
+    uint64_t total = 0;
+    uint64_t total_inner = 0;
+    for (int w = 0; w < num_warps; ++w) {
+      total += warp_sums[0][w];
+      total_inner += warp_sums[1][w];
+    }
+    const size_t base = num_cat_base == 0 ? 0 : static_cast<size_t>(cuda_cat_boundaries[num_cat_base]);
+    const size_t base_inner = num_cat_base == 0 ? 0 : static_cast<size_t>(cuda_cat_boundaries_inner[num_cat_base]);
+    offsets[0] = base + static_cast<size_t>(total);
+    offsets[1] = base_inner + static_cast<size_t>(total_inner);
+  }
+  __syncthreads();
+  const size_t cuda_bitset_len = static_cast<size_t>(lens[2 * c]);
+  const size_t cuda_bitset_inner_len = static_cast<size_t>(lens[2 * c + 1]);
+  // the append (PushBack's copies)
+  const uint32_t* src = bitset_slab + static_cast<size_t>(c) * bitset_stride;
+  const uint32_t* src_inner = bitset_inner_slab + static_cast<size_t>(c) * bitset_inner_stride;
+  for (size_t w = static_cast<size_t>(thread_index); w < cuda_bitset_len; w += blockDim.x) {
+    bitset[offsets[0] + w] = src[w];
+  }
+  for (size_t w = static_cast<size_t>(thread_index); w < cuda_bitset_inner_len; w += blockDim.x) {
+    bitset_inner[offsets[1] + w] = src_inner[w];
+  }
+  // the node record (SplitCategoricalKernel)
+  const CUDATreeBatchSplit batch_split = batch_splits[c];
+  const int leaf_index = batch_split.leaf_index;
+  const int num_leaves = batch_split.num_leaves_at_split;
+  const CUDASplitInfo* cuda_split_info = batch_split.split_info;
+  const int num_cat = num_cat_base + c;
+  const int new_node_index = num_leaves - 1;
+  if (thread_index == 0) {
+    const int parent_index = leaf_parent[leaf_index];
+    if (parent_index >= 0) {
+      // if cur node is left child
+      if (left_child[parent_index] == ~leaf_index) {
+        left_child[parent_index] = new_node_index;
+      } else {
+        right_child[parent_index] = new_node_index;
+      }
+    }
+    left_child[new_node_index] = ~leaf_index;
+    right_child[new_node_index] = ~num_leaves;
+    leaf_parent[leaf_index] = new_node_index;
+    leaf_parent[num_leaves] = new_node_index;
+  } else if (thread_index == 1) {
+    // add new node
+    split_feature_inner[new_node_index] = cuda_split_info->inner_feature_index;
+  } else if (thread_index == 2) {
+    split_feature[new_node_index] = batch_split.real_feature_index;
+  } else if (thread_index == 3) {
+    split_gain[new_node_index] = static_cast<float>(cuda_split_info->gain);
+  } else if (thread_index == 4) {
+    // save current leaf value to internal node before change
+    internal_weight[new_node_index] = cuda_split_info->left_sum_hessians + cuda_split_info->right_sum_hessians;
+    leaf_weight[leaf_index] = cuda_split_info->left_sum_hessians;
+  } else if (thread_index == 5) {
+    internal_value[new_node_index] = leaf_value[leaf_index];
+    leaf_value[leaf_index] = isnan(cuda_split_info->left_value) ? 0.0f : cuda_split_info->left_value;
+  } else if (thread_index == 6) {
+    internal_count[new_node_index] = cuda_split_info->left_count + cuda_split_info->right_count;
+  } else if (thread_index == 7) {
+    leaf_count[leaf_index] = cuda_split_info->left_count;
+  } else if (thread_index == 8) {
+    leaf_value[num_leaves] = isnan(cuda_split_info->right_value) ? 0.0f : cuda_split_info->right_value;
+  } else if (thread_index == 9) {
+    leaf_weight[num_leaves] = cuda_split_info->right_sum_hessians;
+  } else if (thread_index == 10) {
+    leaf_count[num_leaves] = cuda_split_info->right_count;
+  } else if (thread_index == 11) {
+    // update leaf depth
+    leaf_depth[num_leaves] = leaf_depth[leaf_index] + 1;
+    leaf_depth[leaf_index]++;
+  } else if (thread_index == 12) {
+    decision_type[new_node_index] = 0;
+    SetDecisionTypeCUDA(&decision_type[new_node_index], true, kCategoricalMask);
+    SetMissingTypeCUDA(&decision_type[new_node_index], static_cast<int8_t>(batch_split.missing_type));
+  } else if (thread_index == 13) {
+    threshold_in_bin[new_node_index] = num_cat;
+  } else if (thread_index == 14) {
+    threshold[new_node_index] = num_cat;
+  } else if (thread_index == 15) {
+    if (num_cat == 0) {
+      cuda_cat_boundaries[num_cat] = 0;
+    }
+    cuda_cat_boundaries[num_cat + 1] = offsets[0] + cuda_bitset_len;
+  } else if (thread_index == 16) {
+    if (num_cat == 0) {
+      cuda_cat_boundaries_inner[num_cat] = 0;
+    }
+    cuda_cat_boundaries_inner[num_cat + 1] = offsets[1] + cuda_bitset_inner_len;
+  }
+}
+
+void CUDATree::LaunchSplitCategoricalLevelKernel(const int first_split, const int num_cat_splits,
+                                                 const CUDATreeCatLevel& cat) {
+  SplitCategoricalLevelKernel<<<num_cat_splits, 128, 0, cuda_stream_>>>(
+    cuda_batch_splits_.RawDataReadOnly() + first_split,
+    num_cat_,
+    cat.bitset_slab, cat.bitset_stride,
+    cat.bitset_inner_slab, cat.bitset_inner_stride,
+    cat.lens,
+    cuda_bitset_.RawData(),
+    cuda_bitset_inner_.RawData(),
+    cuda_cat_boundaries_.RawData(),
+    cuda_cat_boundaries_inner_.RawData(),
+    cuda_leaf_parent_.RawData(),
+    cuda_leaf_depth_.RawData(),
+    cuda_left_child_.RawData(),
+    cuda_right_child_.RawData(),
+    cuda_split_feature_inner_.RawData(),
+    cuda_split_feature_.RawData(),
+    cuda_split_gain_.RawData(),
+    cuda_internal_weight_.RawData(),
+    cuda_internal_value_.RawData(),
+    cuda_internal_count_.RawData(),
+    cuda_leaf_weight_.RawData(),
+    cuda_leaf_value_.RawData(),
+    cuda_leaf_count_.RawData(),
+    cuda_decision_type_.RawData(),
+    cuda_threshold_in_bin_.RawData(),
+    cuda_threshold_.RawData());
+}
+
+// cuda_plan key cat_level_record: ToHost's one-copy readback of the categorical record: [boundaries (num_cat + 1)]
+// [inner boundaries (num_cat + 1)] [bitset words, words_bound slots] [inner bitset words, words_inner_bound slots];
+// only the recorded words (boundaries[num_cat] and inner boundaries[num_cat] of them) are written
+__global__ void PackCategoricalRecordKernel(const int num_cat, const int* boundaries, const int* boundaries_inner,
+                                            const uint32_t* bitset, const uint32_t* bitset_inner, uint32_t* out,
+                                            const size_t words_bound, const size_t words_inner_bound) {
+  const size_t num_boundaries = static_cast<size_t>(num_cat) + 1;
+  const size_t words = static_cast<size_t>(boundaries[num_cat]);
+  const size_t words_inner = static_cast<size_t>(boundaries_inner[num_cat]);
+  uint32_t* out_words = out + 2 * num_boundaries;
+  uint32_t* out_words_inner = out_words + words_bound;
+  const size_t stride = static_cast<size_t>(gridDim.x) * blockDim.x;
+  for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < num_boundaries; i += stride) {
+    out[i] = static_cast<uint32_t>(boundaries[i]);
+    out[num_boundaries + i] = static_cast<uint32_t>(boundaries_inner[i]);
+  }
+  for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < words && i < words_bound;
+       i += stride) {
+    out_words[i] = bitset[i];
+  }
+  for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < words_inner && i < words_inner_bound;
+       i += stride) {
+    out_words_inner[i] = bitset_inner[i];
+  }
+}
+
+void CUDATree::LaunchPackCategoricalRecordKernel(uint32_t* out, const size_t words_bound,
+                                                 const size_t words_inner_bound) {
+  const size_t longest = std::max(std::max(words_bound, words_inner_bound), static_cast<size_t>(num_cat_) + 1);
+  const int num_blocks = static_cast<int>(std::min<size_t>((longest + 255) / 256, 64));
+  PackCategoricalRecordKernel<<<num_blocks, 256, 0, cuda_stream_>>>(
+    num_cat_, cuda_cat_boundaries_.RawDataReadOnly(), cuda_cat_boundaries_inner_.RawDataReadOnly(),
+    cuda_bitset_.RawDataReadOnly(), cuda_bitset_inner_.RawDataReadOnly(), out, words_bound, words_inner_bound);
 }
 
 __global__ void ShrinkageKernel(const double rate, double* cuda_leaf_value, const int num_leaves) {

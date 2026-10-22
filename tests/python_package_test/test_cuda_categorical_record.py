@@ -14,11 +14,25 @@ Per shape, the test checks that
   prediction of the final model, i.e. every retained tree's device record matches its host record.
 The shapes cover one-hot and many-vs-many splits, a high-cardinality feature whose per-tree record exceeds the
 1 MiB presize (so the buffers grow while a tree records), multiclass, DART, bagging and a random forest grown on
-concurrent forest slots (one learner, so one arena, per slot and host thread).
+concurrent forest slots (one learner, so one arena, per slot and host thread) and solo (one-tree groups).
+
+cuda_plan key cat_level_record (default on) records a level's categorical splits with one kernel at offsets
+summed on the device and reads the record back once per tree; every shape is also trained with the key off (the
+per-split loop) and must give the same model text and predictions. A binding leaf budget (budget_tail) leaves the
+last splits to the per-split leaf-wise tail after level records (under FALCATA_DEBUG=aggressive, checked in a subprocess); max_cat_32 and max_cat_64 have a categorical feature
+whose largest value is a multiple of 32 (its bitset needs max_cat_value / 32 + 1 words; with values 0..64 a bitset
+sized one word short failed training with an invalid-argument CUDA copy). FALCATA_DEBUG=diag reports per tree what the
+level record did; the test checks that the fast path ran: one tree-end copy, and on the high-cardinality shape the
+exact-count readback on a capacity overflow and the four-copy readback of a record bound past the one-copy limit.
 """
 
 import hashlib
+import json
 import os
+import re
+import subprocess
+import sys
+import tempfile
 
 import numpy as np
 import pytest
@@ -34,9 +48,12 @@ _REQUIRES_CUDA = pytest.mark.skipif(
 _PRESIZE_CAP_WORDS = 1 << 18
 
 
-def _data(rows, seed, cards=(12, 40, 200), high=None, num_class=2):
+def _data(rows, seed, cards=(12, 40, 200), high=None, num_class=2, exact_max=None):
     rng = np.random.default_rng(seed)
     cols = [rng.integers(0, c, rows).astype(np.float64) for c in cards]
+    if exact_max is not None:
+        # every value 0..exact_max occurs
+        cols.append(rng.integers(0, exact_max + 1, rows).astype(np.float64))
     if high is not None:
         # 200 distinct category values spread up to `high`: the real-value bitset of a split holding the largest
         # ones is ~high/32 words long
@@ -98,7 +115,51 @@ SHAPES = {
         {},
         12,
     ),
+    "rf_solo": (
+        {"boosting": "rf", "bagging_fraction": 0.632, "bagging_freq": 1, "cuda_plan": "auto,forest_group:1"},
+        {},
+        12,
+    ),
+    # a binding leaf budget: selective growth by default; under FALCATA_DEBUG=aggressive (the diag check below) the
+    # host level loop runs until the budget binds and leaves the last splits to its per-split leaf-wise tail
+    "budget_tail": ({"num_leaves": 20, "max_depth": 6}, {}, 20),
+    "max_cat_32": ({"max_cat_to_onehot": 1}, {"cards": (12, 40), "exact_max": 32}, 20),
+    "max_cat_64": ({"max_cat_to_onehot": 1}, {"cards": (65,), "exact_max": 64}, 20),
 }
+
+_DIAG = re.compile(
+    r"cat_level_record: levels=(\d+) cat_splits=(\d+) record_launches=\d+ saved_launches=\d+ saved_d2d=\d+ "
+    r"saved_length_readbacks=\d+ tohost_copies=(\d+) overflow_readbacks=(\d+) tail_settles=(\d+)"
+)
+_DIAG_TRAIN = """
+import hashlib, json, sys
+import numpy as np
+import falcata as flc
+d = np.load(sys.argv[1])
+params = json.loads(sys.argv[2])
+ds = flc.Dataset(d["x"], d["y"], categorical_feature=[int(c) for c in d["cats"]], params=params)
+text = flc.train(params, ds, num_boost_round=int(sys.argv[3])).model_to_string()
+print(hashlib.md5(text.split("parameters:")[0].encode()).hexdigest())
+"""
+
+
+def _diag_lines(params, data_kw, rounds, debug="diag"):
+    """(levels, cat_splits, tohost_copies, overflow_readbacks, tail_settles) per tree of a training under
+    FALCATA_DEBUG=<debug> (with diag) in a fresh process (the debug options are read once per process), and the md5 of
+    its model's trees."""
+    x, y, cats = _data(20000, 3, **data_kw)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "data.npz")
+        np.savez(path, x=x, y=y, cats=np.array(cats))
+        env = dict(os.environ, FALCATA_DEBUG=debug)
+        out = subprocess.run(
+            [sys.executable, "-c", _DIAG_TRAIN, path, json.dumps(params), str(rounds)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    return [tuple(int(v) for v in m.groups()) for m in _DIAG.finditer(out.stderr)], out.stdout.strip().splitlines()[-1]
 
 
 def _train(params, data_kw, rounds):
@@ -149,6 +210,30 @@ def test_cuda_categorical_record(shape):
     if shape == "high_cardinality":
         # one tree's real-value record is longer than the presize, so the buffer grew while that tree recorded
         assert max(_per_tree_words(text, "cat_threshold")) > _PRESIZE_CAP_WORDS
+    # cuda_plan key cat_level_record off: the per-split record loop gives the same model
+    plan = params.get("cuda_plan", "auto")
+    per_split, _, _ = _train({**params, "cuda_plan": plan + ",cat_level_record:off"}, data_kw, rounds)
+    assert _md5(per_split.model_to_string()) == _md5(text)
+    np.testing.assert_array_equal(per_split.predict(xv), bst.predict(xv))
+
+    # the level record ran (FALCATA_DEBUG=diag): a silent fallback to the per-split loop or the four-copy readback fails
+    debug = "diag,aggressive" if shape == "budget_tail" else "diag"
+    lines, md5_on = _diag_lines(params, data_kw, min(rounds, 4), debug)
+    assert lines, "no tree took the level record"
+    assert all(levels > 0 and splits > 0 for levels, splits, _, _, _ in lines)
+    if shape == "high_cardinality":
+        # the stride-bound words pass the capacity (exact-count readback, growth) and the one-copy limit
+        assert any(overflow > 0 for _, _, _, overflow, _ in lines)
+        assert any(copies == 4 for _, _, copies, _, _ in lines)
+    else:
+        assert all(copies == 1 and overflow == 0 for _, _, copies, overflow, _ in lines), lines
+    if shape == "budget_tail":
+        # a categorical split of the tail appended after the level records (one exact-size readback first), and the
+        # same trees as the per-split loop
+        assert any(settles > 0 for _, _, _, _, settles in lines), lines
+        _, md5_off = _diag_lines({**params, "cuda_plan": plan + ",cat_level_record:off"}, data_kw, 4, debug)
+        assert md5_off == md5_on
+
     if shape == "rf_forest_slots":
         # concurrent slots grow the same forest as sequential training
         seq, _, _ = _train({**params, "cuda_plan": "auto,forest_batched:off"}, data_kw, rounds)

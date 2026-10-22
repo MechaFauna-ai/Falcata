@@ -1016,6 +1016,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<const CUDASplitInfo*> host_batch_cat_infos_;
   std::vector<int> host_batch_cat_feats_;
   std::vector<uint64_t> host_batch_cat_lens_;
+  /*! \brief cuda_plan key cat_level_record: per entry of the level's tree batch, whether it is categorical */
+  std::vector<uint8_t> host_level_is_cat_;
   uint32_t* cuda_bitset_inner_;
   size_t cuda_bitset_inner_len_;
   size_t* cuda_block_bitset_len_buffer_;
