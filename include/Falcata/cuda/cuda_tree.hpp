@@ -158,7 +158,10 @@ class CUDATree : public Tree {
   *        and calls ToHost() before returning it). Only cuda_leaf_value_ is
   *        needed after ToHost(); it is materialized into owned memory there.
   * \param cat_arena Optional learner-owned categorical record buffers (see CUDATreeCatArena), used when
-  *        has_categorical_feature; the same one-tree-at-a-time contract as the slab applies.
+  *        has_categorical_feature. The tree holds the arena's buffers from here until ToHost() or
+  *        RebuildFromHostSplits() hands them back. A second tree constructed on the same arena in between would
+  *        start from empty buffers and allocate its own (correct, only not reused); the tree learner does not do
+  *        that: it grows one tree at a time, and forest slots each have their own learner and arena.
   */
   explicit CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
     const int gpu_device_id, const bool has_categorical_feature,
