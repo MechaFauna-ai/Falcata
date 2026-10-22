@@ -392,6 +392,7 @@ void CUDADataPartition::BuildDeviceLevelFeatureMeta(
     m.mfb_is_zero = cuda_column_data_->feature_mfb_is_zero(feature_index);
     m.mfb_is_na = cuda_column_data_->feature_mfb_is_na(feature_index);
     m.use_min_bin = is_single_feature_in_column ? 0 : 1;
+    m.is_categorical = is_categorical_feature_[feature_index] ? 1 : 0;
   }
 }
 

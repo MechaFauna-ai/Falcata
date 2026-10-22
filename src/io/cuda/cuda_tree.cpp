@@ -290,6 +290,33 @@ void CUDATree::SplitLevel(const std::vector<CUDATreeBatchSplit>& splits, const s
   }
 }
 
+void CUDATree::ReserveCategoricalRecord(const size_t words, const size_t words_inner) {
+  // before any record of this tree (the constructor left both bitsets empty): a Reserve copies nothing
+  CHECK(!cat_record_on_device_);
+  CHECK_EQ(num_cat_, 0);
+  cuda_bitset_.Reserve(words);
+  cuda_bitset_inner_.Reserve(words_inner);
+}
+
+void CUDATree::ReplayDeviceCategoricalRecord(const int levels_with_cat, const int num_cat_splits,
+                                             const size_t bitset_stride, const size_t bitset_inner_stride) {
+  if (num_cat_splits == 0) {
+    return;
+  }
+  CHECK(!cat_record_on_device_);
+  CHECK_EQ(num_cat_, 0);
+  // what SplitLevel's bookkeeping leaves after the same levels: the bound counts every categorical split at its
+  // stride on top of the exact (empty) start; the record's words stay on the device until ToHost
+  cat_words_bound_ = cuda_bitset_.Size() + static_cast<size_t>(num_cat_splits) * bitset_stride;
+  cat_words_inner_bound_ = cuda_bitset_inner_.Size() + static_cast<size_t>(num_cat_splits) * bitset_inner_stride;
+  CHECK_LE(cat_words_bound_, cuda_bitset_.Capacity());
+  CHECK_LE(cat_words_inner_bound_, cuda_bitset_inner_.Capacity());
+  cat_record_on_device_ = true;
+  cat_level_launches_ += levels_with_cat;
+  cat_level_splits_ += num_cat_splits;
+  num_cat_ += num_cat_splits;
+}
+
 void CUDATree::SettleCategoricalRecordSizes() {
   if (!cat_record_on_device_) {
     return;
@@ -317,9 +344,12 @@ int CUDATree::SplitCategorical(const int leaf_index,
            size_t cuda_bitset_len,
            uint32_t* cuda_bitset_inner,
            size_t cuda_bitset_inner_len) {
-  // a tree records its categorical splits either all with SplitLevel or all here: the level flows that record by
-  // level grow the tree to the end (depth-limited: the budget binds at most on the final level, applied as one
-  // partial level; selective growth records the whole tree), so no per-split categorical split follows a level record
+  // a tree records its categorical splits either all by level (SplitLevel, or the complete device tree's
+  // LaunchSplitLevelKernelsDevice) or all here: the level flows that record by level grow the tree to the end, so no
+  // per-split categorical split follows a level record. The host level loop runs only where HybridGrowthUsable admits
+  // it (depth-limited, or selective growth, which records the whole tree from its own records); depth-limited, the
+  // budget binds at most on the final level, which CUDASingleGPUTreeLearner::ArbitrateLevelBudget applies as one
+  // partial level, never through the leaf-wise tail. The device tree's only tail is the root tail, after no split.
   CHECK(!cat_record_on_device_);
   LaunchSplitCategoricalKernel(leaf_index, real_feature_index,
     missing_type, cuda_split_info,
@@ -540,7 +570,7 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
 }
 
 bool CUDATree::ReadCategoricalRecordOneCopy() {
-  // cuda_plan key cat_level_record: the boundaries hold the word counts, so one pack kernel gathers both boundary
+  // the categorical level record: the boundaries hold the word counts, so one pack kernel gathers both boundary
   // arrays and both bitsets (each up to its bound) into the arena's staging and one copy brings them over, instead
   // of four copies of which two wait for the other two's counts. When the bound passes kMaxWords (high-cardinality
   // features) the four copies stay: the bound may then be far above the record.

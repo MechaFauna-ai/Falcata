@@ -13,18 +13,24 @@ Per shape, the test checks that
 - the scores the booster maintained on the device (validation set; the training set under bagging) equal the host
   prediction of the final model, i.e. every retained tree's device record matches its host record.
 The shapes cover one-hot and many-vs-many splits, a high-cardinality feature whose per-tree record exceeds the
-1 MiB presize (so the buffers grow while a tree records), multiclass, DART, bagging and a random forest grown on
-concurrent forest slots (one learner, so one arena, per slot and host thread) and solo (one-tree groups).
+1 MiB presize, multiclass, DART, bagging and a random forest grown on concurrent forest slots (one learner, so one
+arena, per slot and host thread) and solo (one-tree groups).
 
-cuda_plan key cat_level_record (default on) records a level's categorical splits with one kernel at offsets
-summed on the device and reads the record back once per tree; every shape is also trained with the key off (the
-per-split loop) and must give the same model text and predictions. A tree records its categorical splits either
-all by level or all per split: the level flows grow depth-limited trees to the end (selective growth builds the whole
-tree), so no leaf-wise tail split follows a level record. max_cat_32 and max_cat_64 have a categorical feature whose
-largest value is a multiple of 32 (its bitset needs max_cat_value / 32 + 1 words; with values 0..64 a bitset
-sized one word short failed training with an invalid-argument CUDA copy). FALCATA_DEBUG=diag reports per tree what the
-level record did; the test checks that the fast path ran: one tree-end copy, and on the high-cardinality shape the
-exact-count readback on a capacity overflow and the four-copy readback of a record bound past the one-copy limit.
+Every shape is trained quantized (stochastic) and non-quantized. Quantized, every depth-limited shape grows on the
+complete device tree: its select lists each level's categorical splits, one
+kernel per level builds their bitsets, the apply reads them there and the tree records the level with one kernel at
+offsets summed on the device, into record buffers presized for the tree's worst case; the record is read back once
+per tree. The host level loop (cuda_plan key device_tree:off, also the forest slots' flow) records each level with
+CUDATree::SplitLevel, growing its buffers when a level's worst case passes their capacity; every shape is also
+trained there and must give the same model text and predictions. Non-quantized, the trees grow on the one-sync host
+level loop (reason `categorical`), which records by level with SplitLevel too. max_cat_32 and max_cat_64 have a categorical
+feature whose largest value is a multiple of 32 (its bitset needs max_cat_value / 32 + 1 words; with values 0..64 a
+bitset sized one word short failed training with an invalid-argument CUDA copy). FALCATA_DEBUG=diag reports per tree
+what the level record did; the test checks that the device tree grew the tree and the fast path ran: one tree-end
+copy, no growth inside a tree, and on the high-cardinality shape the four-copy readback of a record bound past the
+one-copy limit (and, on the host level loop, the exact-count readback on a capacity overflow). When the presized
+record does not fit beside the device tree's scratch in half of free device memory, the tree takes the host level
+loop with reason `categorical` and the same model.
 """
 
 import hashlib
@@ -129,25 +135,37 @@ _DIAG = re.compile(
     r"cat_level_record: levels=(\d+) cat_splits=(\d+) record_launches=\d+ saved_launches=\d+ saved_d2d=\d+ "
     r"saved_length_readbacks=\d+ tohost_copies=(\d+) overflow_readbacks=(\d+)"
 )
+_ROUTE = re.compile(r"\[hybrid-diag\] device_tree: (?:(complete) |fallback \((\w+)\) route=(\w+))")
 _DIAG_TRAIN = """
-import json, sys
+import hashlib, json, sys
 import numpy as np
 import falcata as flc
 d = np.load(sys.argv[1])
 params = json.loads(sys.argv[2])
 ds = flc.Dataset(d["x"], d["y"], categorical_feature=[int(c) for c in d["cats"]], params=params)
-flc.train(params, ds, num_boost_round=int(sys.argv[3]))
+bst = flc.train(params, ds, num_boost_round=int(sys.argv[3]))
+text = bst.model_to_string()
+out, skip = [], False
+for line in text.splitlines():
+    if line.startswith("parameters:"):
+        skip = True
+    if not skip:
+        out.append(line)
+    if line.startswith("end of parameters"):
+        skip = False
+print("MD5 " + hashlib.md5("\\n".join(out).encode()).hexdigest())
 """
 
 
-def _diag_lines(params, data_kw, rounds):
-    """(levels, cat_splits, tohost_copies, overflow_readbacks) per tree of a training under FALCATA_DEBUG=diag in a
-    fresh process (the debug options are read once per process)."""
+def _diag_run(params, data_kw, rounds, debug="diag"):
+    """A training under FALCATA_DEBUG=<debug> in a fresh process (the debug options are read once per process):
+    ((levels, cat_splits, tohost_copies, overflow_readbacks) per tree, the routes reported in first-seen order
+    (("complete",) or (reason, route)), the model md5)."""
     x, y, cats = _data(20000, 3, **data_kw)
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "data.npz")
         np.savez(path, x=x, y=y, cats=np.array(cats))
-        env = dict(os.environ, FALCATA_DEBUG="diag")
+        env = dict(os.environ, FALCATA_DEBUG=debug)
         out = subprocess.run(
             [sys.executable, "-c", _DIAG_TRAIN, path, json.dumps(params), str(rounds)],
             env=env,
@@ -155,7 +173,14 @@ def _diag_lines(params, data_kw, rounds):
             text=True,
             check=True,
         )
-    return [tuple(int(v) for v in m.groups()) for m in _DIAG.finditer(out.stderr)]
+    lines = [tuple(int(v) for v in m.groups()) for m in _DIAG.finditer(out.stderr)]
+    routes = []
+    for complete, reason, route in _ROUTE.findall(out.stderr):
+        entry = ("complete",) if complete else (reason, route)
+        if entry not in routes:
+            routes.append(entry)
+    md5 = next(line[4:] for line in out.stdout.splitlines() if line.startswith("MD5 "))
+    return lines, routes, md5
 
 
 def _train(params, data_kw, rounds):
@@ -178,10 +203,11 @@ def _per_tree_words(text, key):
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("quant", ["stochastic", "none"])
 @pytest.mark.parametrize("shape", list(SHAPES))
-def test_cuda_categorical_record(shape):
+def test_cuda_categorical_record(shape, quant):
     extra, data_kw, rounds = SHAPES[shape]
-    params = {**BASE, **extra}
+    params = {**BASE, "quant_mode": quant, **extra}
     bst, x, xv = _train(params, data_kw, rounds)
     text = bst.model_to_string()
     assert sum(int(line[8:]) for line in text.splitlines() if line.startswith("num_cat=")) > 0, "no categorical split"
@@ -204,26 +230,61 @@ def test_cuda_categorical_record(shape):
         np.testing.assert_allclose(_device_scores(bst, 0, x.shape[0], num_class), bst.predict(x), rtol=1e-9, atol=1e-12)
 
     if shape == "high_cardinality":
-        # one tree's real-value record is longer than the presize, so the buffer grew while that tree recorded
+        # one tree's real-value record is longer than the presize, so the record buffers hold more than it
         assert max(_per_tree_words(text, "cat_threshold")) > _PRESIZE_CAP_WORDS
-    # cuda_plan key cat_level_record off: the per-split record loop gives the same model
+    # the host level loop (cuda_plan key device_tree:off; SplitLevel per level) gives the same model
     plan = params.get("cuda_plan", "auto")
-    per_split, _, _ = _train({**params, "cuda_plan": plan + ",cat_level_record:off"}, data_kw, rounds)
-    assert _md5(per_split.model_to_string()) == _md5(text)
-    np.testing.assert_array_equal(per_split.predict(xv), bst.predict(xv))
+    host_loop, _, _ = _train({**params, "cuda_plan": plan + ",device_tree:off"}, data_kw, rounds)
+    assert _md5(host_loop.model_to_string()) == _md5(text)
+    np.testing.assert_array_equal(host_loop.predict(xv), bst.predict(xv))
 
-    # the level record ran (FALCATA_DEBUG=diag): a silent fallback to the per-split loop or the four-copy readback fails
-    lines = _diag_lines(params, data_kw, min(rounds, 4))
+    # the level record ran (FALCATA_DEBUG=diag): a silent fallback or the four-copy readback fails
+    lines, routes, _ = _diag_run(params, data_kw, min(rounds, 4))
     assert lines, "no tree took the level record"
     assert all(levels > 0 and splits > 0 for levels, splits, _, _ in lines)
-    if shape == "high_cardinality":
-        # the stride-bound words pass the capacity (exact-count readback, growth) and the one-copy limit
-        assert any(overflow > 0 for _, _, _, overflow in lines)
-        assert any(copies == 4 for _, _, copies, _ in lines)
+    if shape == "rf_forest_slots":
+        assert routes == [("forest_slots", "forest_slots")], routes
+    elif quant == "none":
+        # the non-quantized one-sync host loop (its SplitLevel record grows past its capacity on high cardinality)
+        assert routes == [("categorical", "one_sync")], routes
+        if shape == "high_cardinality":
+            assert any(overflow > 0 for _, _, _, overflow in lines)
+            assert any(copies == 4 for _, _, copies, _ in lines)
+        else:
+            assert all(copies == 1 and overflow == 0 for _, _, copies, overflow in lines), lines
+        return
     else:
-        assert all(copies == 1 and overflow == 0 for _, _, copies, overflow in lines), lines
+        # quantized, every depth-limited shape grows on the complete device tree
+        assert routes == [("complete",)], routes
+    # the device tree's record is presized for the whole tree: nothing grows inside it
+    assert all(overflow == 0 for _, _, _, overflow in lines), lines
+    if shape == "high_cardinality":
+        # the stride-bound words pass the one-copy limit
+        assert any(copies == 4 for _, _, copies, _ in lines)
+        # the host level loop grows its buffers past their capacity while a tree records (exact-count readback)
+        host_lines, host_routes, _ = _diag_run({**params, "cuda_plan": "auto,device_tree:off"}, data_kw, 3)
+        assert host_routes == [("plan_off", "host_two_sync")], host_routes
+        assert any(overflow > 0 for _, _, _, overflow in host_lines)
+        assert any(copies == 4 for _, _, copies, _ in host_lines)
+    else:
+        assert all(copies == 1 for _, _, copies, _ in lines), lines
 
     if shape == "rf_forest_slots":
         # concurrent slots grow the same forest as sequential training
         seq, _, _ = _train({**params, "cuda_plan": "auto,forest_batched:off"}, data_kw, rounds)
         assert _md5(seq.model_to_string()) == _md5(text)
+
+
+@_REQUIRES_CUDA
+def test_cuda_categorical_record_memory_fallback():
+    """The device tree presizes the tree's categorical record for its worst case (every split categorical at the
+    bitset stride: about 16 MB on the high-cardinality shape); under a device memory cap (FALCATA_DEBUG=vramfree=N
+    MiB) in which the device tree's scratch fits but the record does not, the tree takes the host level loop with
+    reason `categorical`, and the model is the device tree's."""
+    extra, data_kw, _ = SHAPES["high_cardinality"]
+    params = {**BASE, "quant_mode": "stochastic", **extra}
+    _, routes, md5 = _diag_run(params, data_kw, 3)
+    assert routes == [("complete",)], routes
+    _, capped_routes, capped_md5 = _diag_run(params, data_kw, 3, debug="diag,vramfree=16")
+    assert capped_routes == [("categorical", "host_two_sync")], capped_routes
+    assert capped_md5 == md5

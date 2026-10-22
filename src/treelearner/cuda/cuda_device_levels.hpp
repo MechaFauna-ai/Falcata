@@ -67,7 +67,9 @@ struct CUDAHybridGraphFeatureMeta {
   uint8_t mfb_is_na;
   /*! \brief 0 when the feature is alone in its column (min_bin forced to 1) */
   uint8_t use_min_bin;
-  uint8_t padding_[3];
+  /*! \brief a categorical feature (the partition's per-feature choice in SplitLevelBatched) */
+  uint8_t is_categorical;
+  uint8_t padding_[2];
 };
 
 /*! \brief per-tree data source of one inner feature's column (the packed compact matrix is per-tree and
@@ -127,6 +129,14 @@ struct CUDADeviceLevelState {
   data_size_t root_num_data;
   /*! \brief blocks of the level sync that wrote their leaf entry (the last one runs the next level's select) */
   unsigned int sync_blocks_done;
+  /*! \brief categorical datasets (CUDADeviceLevelCatConfig): the level's split record in launch order, numerical
+   *  splits first and then the categorical ones (CUDATree::SplitLevel's order); these three ints are read together as
+   *  the categorical record's device counts {numerical splits, categorical splits of the earlier levels, categorical
+   *  splits of the level} (CUDATree::LaunchSplitLevelKernelsDevice). Numerical datasets: live_num_splits ==
+   *  live_splits, the others stay 0. */
+  int live_num_splits;
+  int cat_split_base;
+  int live_cat_splits;
   // ---- written by DeviceLevelPairsKernel (the children's search) ----
   /*! \brief pairs of the search in flight (== the applied level's splits) */
   int live_pairs;
@@ -176,6 +186,27 @@ struct CUDADeviceLevelConstructShape {
   int code5_epilogue_flat;
 };
 
+/*! \brief categorical datasets on the complete device tree: the per-level categorical split list the select emits and
+ *  the bitset slab the level's bitset kernel (LaunchDeviceLevelCatBitsets) builds from it, as the host level loop's
+ *  ApplyLevelBatched builds them per level (BatchConstructCatBitsetsKernel). The c-th categorical split of a level (in
+ *  the level's apply order) is infos[c] / inner_features[c] / split_index[c] (its apply descriptor); its real-value
+ *  bitset sits at bitset_slab + c * bitset_stride, its inner-bin bitset at bitset_inner_slab + c * bitset_inner_stride
+ *  and their word counts at lens[2c] / lens[2c + 1]. Every buffer holds the tree's widest level (presized: nothing
+ *  grows inside the levels). infos == nullptr: no categorical feature. */
+struct CUDADeviceLevelCatConfig {
+  const CUDASplitInfo** infos;
+  int* inner_features;
+  int* split_index;
+  uint32_t* bitset_slab;
+  uint32_t* bitset_inner_slab;
+  uint64_t* lens;
+  int bitset_stride;
+  int bitset_inner_stride;
+  /*! \brief the learner's categorical bin -> value tables (SetRealThresholdKernel's) */
+  const int* bin_to_value;
+  const int* bin_offsets;
+};
+
 /*! \brief static inputs of the select and pairs kernels (by value) */
 struct CUDADeviceLevelConfig {
   CUDADeviceLevelState* state;
@@ -223,6 +254,8 @@ struct CUDADeviceLevelConfig {
   /*! \brief host-side launch choice (the kernels do not read it): the selective prefix's partition launches take the
    *  whole tree's joint worker bound */
   int joint_grid_bound;
+  /*! \brief categorical datasets (complete device tree only) */
+  CUDADeviceLevelCatConfig cat;
 };
 
 /*! \brief block threads of the select / pairs kernels at a level of at most max_splits splits */
@@ -240,6 +273,11 @@ void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int leve
 /*! \brief DeviceLevelPairsKernel on \p stream for the children of level \p level */
 void LaunchDeviceLevelPairs(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
                             cudaStream_t stream);
+/*! \brief categorical datasets: the level's categorical bitsets (BatchConstructCatBitsetsKernel's body, one block per
+ *  categorical split the select listed, at the level's worst-case grid of \p max_splits blocks) and, from the inner
+ *  bitset, the default directions of their apply descriptors (HybridBuildCatBitsetArenaKernel's patch); after the
+ *  select, before the apply and the tree record (defined in cuda_single_gpu_tree_learner.cu) */
+void LaunchDeviceLevelCatBitsets(const CUDADeviceLevelConfig& config, const int max_splits, cudaStream_t stream);
 /*! \brief zero the state and the journal header before a tree's first device level (on \p stream) */
 void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_leaves, cudaStream_t stream);
 

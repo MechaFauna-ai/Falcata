@@ -368,24 +368,21 @@ size_t CUDABitsetLen(const CUDASplitInfo* best_split_info, const int num_cat_thr
 
 // Level-batched categorical bitset construction: one block per categorical
 // split builds the real-value and inner-bin bitsets into slab regions and
-// writes both word lengths. Replaces the per-split SetRealThreshold +
-// 2x(CalcBitsetLen + ReduceBlockMaxLen + sync D2H) + 2x(memset +
-// ConstructBitset) sequence -- ~six launches and two blocking readbacks PER
-// SPLIT -- with one launch and one readback PER LEVEL.
-__global__ void BatchConstructCatBitsetsKernel(
-  const CUDASplitInfo* const* infos,
-  const int* inner_features,
+// writes both word lengths (the block body of BatchConstructCatBitsetsKernel and
+// of the complete device tree's DeviceLevelCatBitsetsKernel).
+__device__ __forceinline__ void ConstructCatBitsetsBlock(
+  const CUDASplitInfo* info,
+  const int inner_feature,
+  const int c,
   const int* categorical_bin_to_value,
   const int* categorical_bin_offsets,
   uint32_t* bitset_slab, const int bitset_stride,
   uint32_t* bitset_inner_slab, const int bitset_inner_stride,
   uint64_t* lens_out) {
-  const int c = static_cast<int>(blockIdx.x);
-  const CUDASplitInfo* info = infos[c];
   const int n = info->num_cat_threshold;
   const uint32_t* cat_threshold = info->cat_threshold;
   int* cat_threshold_real = info->cat_threshold_real;
-  const int* bin_to_value = categorical_bin_to_value + categorical_bin_offsets[inner_features[c]];
+  const int* bin_to_value = categorical_bin_to_value + categorical_bin_offsets[inner_feature];
   uint32_t* bitset = bitset_slab + static_cast<size_t>(c) * bitset_stride;
   uint32_t* bitset_inner = bitset_inner_slab + static_cast<size_t>(c) * bitset_inner_stride;
   __shared__ uint32_t max_inner_shared;
@@ -416,6 +413,55 @@ __global__ void BatchConstructCatBitsetsKernel(
     lens_out[2 * c] = static_cast<uint64_t>(max_real_shared / 32 + 1);
     lens_out[2 * c + 1] = static_cast<uint64_t>(max_inner_shared / 32 + 1);
   }
+}
+
+// The host level loop's categorical splits of one level (ApplyLevelBatched): replaces the per-split
+// SetRealThreshold + 2x(CalcBitsetLen + ReduceBlockMaxLen + sync D2H) + 2x(memset + ConstructBitset) sequence --
+// ~six launches and two blocking readbacks PER SPLIT -- with one launch per level.
+__global__ void BatchConstructCatBitsetsKernel(
+  const CUDASplitInfo* const* infos,
+  const int* inner_features,
+  const int* categorical_bin_to_value,
+  const int* categorical_bin_offsets,
+  uint32_t* bitset_slab, const int bitset_stride,
+  uint32_t* bitset_inner_slab, const int bitset_inner_stride,
+  uint64_t* lens_out) {
+  const int c = static_cast<int>(blockIdx.x);
+  ConstructCatBitsetsBlock(infos[c], inner_features[c], c, categorical_bin_to_value, categorical_bin_offsets,
+                           bitset_slab, bitset_stride, bitset_inner_slab, bitset_inner_stride, lens_out);
+}
+
+// The complete device tree's categorical splits of one level: the select listed them (CUDADeviceLevelCatConfig);
+// the grid is the level's worst case, blocks past the level's categorical splits exit. After the bitsets, the split's
+// apply descriptor gets its default directions from the inner bitset, exactly as HybridBuildCatBitsetArenaKernel
+// patches SplitLevelBatched's descriptors: the most frequent bin's membership (bin 0 never), read over the
+// descriptor's bin-range cap (the arena region's length there; the slab's words past it are not read)
+__global__ void DeviceLevelCatBitsetsKernel(const CUDADeviceLevelConfig cfg) {
+  const int c = static_cast<int>(blockIdx.x);
+  if (c >= cfg.state->live_cat_splits) {
+    return;
+  }
+  const CUDADeviceLevelCatConfig& cat = cfg.cat;
+  const int inner_feature = cat.inner_features[c];
+  ConstructCatBitsetsBlock(cat.infos[c], inner_feature, c, cat.bin_to_value, cat.bin_offsets, cat.bitset_slab,
+                           cat.bitset_stride, cat.bitset_inner_slab, cat.bitset_inner_stride, cat.lens);
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    CUDAHybridApplyDescriptor* d = cfg.apply_descs + cat.split_index[c];
+    const uint32_t* bits = d->cat_bitset;
+    const uint32_t mfb = cfg.feature_meta[inner_feature].most_freq_bin;
+    const uint32_t word = mfb / 32;
+    const uint8_t to_left = (mfb > 0 && word < static_cast<uint32_t>(d->cat_bitset_len) &&
+                             ((bits[word] >> (mfb % 32)) & 1u) != 0) ? 1 : 0;
+    d->split_default_to_left = to_left;
+    d->split_missing_default_to_left = to_left;
+    d->default_leaf_index = to_left ? d->left_leaf_index : d->right_leaf_index;
+    d->missing_default_leaf_index = d->default_leaf_index;
+  }
+}
+
+void LaunchDeviceLevelCatBitsets(const CUDADeviceLevelConfig& config, const int max_splits, cudaStream_t stream) {
+  DeviceLevelCatBitsetsKernel<<<max_splits, 128, 0, stream>>>(config);
 }
 
 void CUDASingleGPUTreeLearner::LaunchBatchConstructCatBitsetsKernel(const int num_cat_splits) {

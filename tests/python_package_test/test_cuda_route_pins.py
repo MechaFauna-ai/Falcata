@@ -68,9 +68,11 @@ ROUTES_EXPECTED = {
     "route/r04a-nq-l15": [_COMPLETE],
     "route/r04b-nq-onesync": [("nonquant_onesync", "one_sync")],
     "route/r05-nq-selective": [("nonquant_selective", "selective_one_sync")],
-    "route/r06a-cat": [("categorical", "host_two_sync")],
-    "route/r06b-cat-mc": [("categorical", "host_two_sync")],
-    "route/r06c-cat-unbounded": [("categorical", "selective_two_sync")],
+    # quantized categorical datasets take the complete device tree (P5; same md5); the selective shapes keep the host
+    # selective loop, whose device prefix refuses categorical splits
+    "route/r06a-cat": [_COMPLETE],
+    "route/r06b-cat-mc": [_COMPLETE],
+    "route/r06c-cat-unbounded": [("selective_unbounded", "selective_two_sync", "categorical")],
     "route/r07a-bynode-sel": [("bynode_outside_bound", "selective_two_sync")],
     "route/r07b-bynode-d13": [("bynode_outside_bound", "host_two_sync")],
     "route/r08a-ic": [("interaction_constraints", _CLASSIC)],

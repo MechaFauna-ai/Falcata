@@ -52,6 +52,9 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
     st->construct_total_blocks = 0;
     st->max_smaller = 0;
     st->sync_blocks_done = 0;
+    st->live_num_splits = 0;
+    st->cat_split_base = 0;
+    st->live_cat_splits = 0;
   }
   if (threadIdx.x < kDeviceLevelJournalHeader) {
     cfg.journal[threadIdx.x] = 0;

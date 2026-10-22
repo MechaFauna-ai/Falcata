@@ -54,7 +54,7 @@ namespace Falcata {
   X(kPathSmooth, "path_smooth", "13")                                                                  \
   X(kLargeBinLayout, "large_bin_layout", "14")            /* partitions on global-memory histograms */ \
   X(kCompact16Bit, "compact_16bit", "14")                 /* compact column view of non-8-bit rows */  \
-  X(kCategorical, "categorical", "6")                                                                  \
+  X(kCategorical, "categorical", "6")    /* non-quantized, or the presized record over the gate; prefix= */ \
   X(kBynodeHostMasks, "bynode_host_masks", "7")           /* in the bound, device masks unusable */    \
   X(kBynodeOutsideBound, "bynode_outside_bound", "7")     /* per-node masks outside the depth bound */ \
   X(kSelectiveUnbounded, "selective_unbounded", "3")      /* max_depth <= 0 */                         \

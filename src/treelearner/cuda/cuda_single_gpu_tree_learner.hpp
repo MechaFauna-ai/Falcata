@@ -390,6 +390,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  ResetConfig), whether a whole tree's presized scratch fits half of free device memory; when it does not,
    *  DeviceTreeRequested() is false (the prefix flow) */
   void EvaluateDeviceTreeScratchGate();
+  /*! \brief categorical datasets on the complete device tree: the presized worst case of one tree (max_depth
+   *  levels, num_leaves): the tree's categorical record (every split categorical at the bitset strides, in words per
+   *  bitset) and the per-level slab (the widest level's splits) */
+  void DeviceTreeCatWorstCase(size_t* record_splits, size_t* level_splits) const;
   // after the root level's search is enqueued: num_levels device-driven levels (apply + children's search), one
   // readback, the host bookkeeping replayed; host_leaf_best_splits_ then hold the last search's result and *pairs
   // the last level's pairs, as after the host loop's own readback. Returns the splits applied.
@@ -802,6 +806,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool device_levels_disabled_ = false;
   /*! \brief EvaluateDeviceTreeScratchGate's decision: -1 not yet made, 0 over the free-memory gate, 1 fits */
   int device_tree_scratch_gate_ = -1;
+  /*! \brief categorical datasets: whether the device tree's presized categorical record and slab fit beside its
+   *  scratch (EvaluateDeviceTreeScratchGate; -1 not yet made, 0 no: the host level loop with reason categorical) */
+  int device_tree_cat_gate_ = -1;
   /*! \brief pairs SetupDeviceLevels sized the per-pair search scratch for */
   int device_level_max_pairs_ = 0;
   CUDAVector<CUDADeviceLevelState> cuda_device_level_state_;
@@ -978,9 +985,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<uint64_t> cuda_batch_cat_lens_;
   std::vector<const CUDASplitInfo*> host_batch_cat_infos_;
   std::vector<int> host_batch_cat_feats_;
-  std::vector<uint64_t> host_batch_cat_lens_;
-  /*! \brief cuda_plan key cat_level_record: per entry of the level's tree batch, whether it is categorical */
+  /*! \brief per entry of the level's tree batch, whether it is categorical (CUDATree::SplitLevel) */
   std::vector<uint8_t> host_level_is_cat_;
+  /*! \brief complete device tree, categorical datasets: the apply descriptor of the level's c-th categorical split
+   *  (CUDADeviceLevelCatConfig::split_index) */
+  CUDAVector<int> cuda_device_tree_cat_split_index_;
   uint32_t* cuda_bitset_inner_;
   size_t cuda_bitset_inner_len_;
   size_t* cuda_block_bitset_len_buffer_;

@@ -1381,7 +1381,9 @@ the lattice fingerprints caught) and skips a wasted next-level search; and
 the one-sync prefix admits categorical datasets. A third pass replaced the
 gen/aggregate byte hand-off with packed ballot bits.
 
-**Categorical record per level** (`cuda_plan` key `cat_level_record`, default on, October 2026). After the
+**Categorical record per level** (`cuda_plan` key `cat_level_record`, default on, October 2026; the key was removed
+in 1.2 with the per-split record loop it switched back to, and the complete device tree records categorical levels
+the same way on the device, see "Categorical device trees" below). After the
 learner-owned record buffers of #170 (no reallocation per split), the level loop still recorded each categorical split
 on its own: a blocking readback of the level's bitset lengths, then per split one `SplitCategoricalKernel` launch and
 two blocking 4-byte D2D copies (the append of the real-value and the inner bitset). The per-level idle fit on
@@ -2925,8 +2927,9 @@ quantized training as ground truth in
 
 ## Complete bounded device trees by default (`device_tree`)
 
-`device_tree` (default ON, with `device_levels`) runs the complete quantized device controller for scalar,
-numerical single-GPU trees wherever its depth bound holds: positive `max_depth <= 12` and
+`device_tree` (default ON, with `device_levels`) runs the complete quantized device controller for scalar
+single-GPU trees, with numerical and categorical features (categorical since 1.2, see "Categorical device trees"
+below), wherever its depth bound holds: positive `max_depth <= 12` and
 `2^max_depth <= num_leaves + 1`, i.e. every level but the depth-capped last one may split every valid leaf.
 Per-node feature masks (`feature_fraction_bynode < 1` without interaction constraints) are eligible too: the device
 draws them (`device_bynode_masks`, below); forest slots (`boosting=rf` under `forest_batched`) are not, except a
@@ -3186,7 +3189,7 @@ Reasons, in their order (several can hold; the first is reported):
 | `nonquant_selective`, `nonquant_onesync` | `quant_mode=none`: budget-limited; depth-limited with `max_depth > 11` or `num_leaves > 2047` (outside the bound of the removed L1.5 graph, which the device tree serves since P3) | selective one-sync / one-sync |
 | `lambda_l1`, `path_smooth` | the level finder has no batched variant | host two-sync, per-pair search |
 | `large_bin_layout`, `compact_16bit` | partitions on global-memory histograms; compact view of non-8-bit rows | host two-sync, per-pair kernels |
-| `categorical` | a categorical feature | host two-sync |
+| `categorical` | a categorical feature with `quant_mode=none`; quantized, a presized categorical record that does not fit beside the scratch in half of the free memory; as `prefix=`, the `device_levels` and selective prefixes, which take no categorical feature | one-sync / host two-sync |
 | `bynode_outside_bound`, `bynode_host_masks` | per-node masks outside the depth bound; inside it with device masks unusable | host two-sync / selective |
 | `selective_unbounded`, `selective_budget` | `max_depth <= 0`; `2^max_depth > num_leaves + 1` | selective prefix |
 | `depth_gt_12` | depth-limited, `max_depth > 12` | prefix |
@@ -3208,12 +3211,14 @@ outside the complete device tree (with the same tokens).
 train the default model):
 
 - `cuda_plan` keys `batch_kernels`, `batch_apply`, `selective`, `batch_wide`, `cat_hybrid`, `apply_struct_fused`,
-  `gap_copy_fused` and `graph_quant`, with the flows only their non-default value reached: the per-split apply
+  `gap_copy_fused`, `graph_quant` and `cat_level_record`, with the flows only their non-default value reached: the per-split apply
   inside the level loop (`batch_apply:off`), the quantized captured graph prefix (`graph_quant:on`, which still ran
   where the device tree was refused, e.g. with `device_tree:off`; the same plan now takes the `device_levels`
   prefix), the
   classic-loop fence for categorical data (`cat_hybrid:off`), the unfused level apply kernels (kept only for the
-  map-only final level);
+  map-only final level), the per-split categorical record of the host level loop (`cat_level_record:off`: a length
+  readback per level, then a launch and two blocking copies per categorical split; bit-identical to the level record
+  #174 made the default, FULL_DEVICE_PLAN P5);
 - the `FALCATA_DEBUG` tokens `syncpairs`, `maxsplits=N` and `aggressive` (the approximate breadth-biased level
   batching of budget-limited trees) and the `FALCATA_SINGLE_STREAM` switch (the tokens now warn as unknown; the
   environment variable is silently ignored);
