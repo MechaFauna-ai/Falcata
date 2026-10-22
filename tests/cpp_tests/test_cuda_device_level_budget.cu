@@ -258,10 +258,13 @@ TEST(CUDADeviceLevelBudget, BynodeChunkCapKeepsTaskOffsetsInIntRange) {
   constexpr int64_t kIntMax = 2147483647;
   // depth 12 with few tasks: the unchunked layout (one row slot per leaf slot) fits, no cap
   EXPECT_EQ(Falcata::DeviceTreeBynodeChunkCap(4098, 400, 1024), 1024);
-  // depth 17 unchunked: 131074 slots x 20000 tasks overflows; the cap forces chunks whose 1 + 2 P row slots fit
+  // depth 17 unchunked: 131074 slots x 20000 tasks overflows, while every chunk below the widest search fits
   const int64_t slots = 131074;
-  const int64_t tasks = 20000;
   const int pairs = 32768;
+  ASSERT_GT(2 * slots + slots * 20000, kIntMax);
+  EXPECT_EQ(Falcata::DeviceTreeBynodeChunkCap(slots, 20000, pairs), pairs - 1);
+  // 50000 tasks: the cap binds inside the range, at the largest chunk whose 1 + 2 P row slots fit
+  const int64_t tasks = 50000;
   ASSERT_GT(2 * slots + slots * tasks, kIntMax);
   const int cap = Falcata::DeviceTreeBynodeChunkCap(slots, tasks, pairs);
   ASSERT_GE(cap, 1);

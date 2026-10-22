@@ -399,7 +399,7 @@ def test_device_tree_scratch_too_large_falls_back_to_host_loop_cuda():
     capped, diag = _run_md5("deep13", "diag,vramfree=2")
     assert re.search(
         r"device_tree: scratch too large: max_depth 13 needs [\d.]+ MiB at one searched pair per chunk, "
-        r"[\d.]+ MiB free: host level loop",
+        r"[\d.]+ MiB free \(budget half\): host level loop",
         diag,
     ), diag[-3000:]
     assert diag.count("device_tree: fallback (scratch_too_large) route=host_two_sync\n") == 1, diag[-3000:]
