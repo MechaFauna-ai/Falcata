@@ -508,6 +508,7 @@
    "metric_name": "rmse"
   },
   "route/r20-linear-sel": {
+   "md5": "f07578bcdf7471947963501ecac681e2",
    "metric": 1.627,
    "metric_name": "rmse"
   },
@@ -522,8 +523,8 @@
    "metric_name": "rmse"
   },
   "route/r24-churn": {
-   "md5": "78b4f49dc81e325059fb85c7dd9dcd08",
-   "metric": 36.231019,
+   "md5": "11f0ee81723a8cb65e59208c47afecaa",
+   "metric": 5.352947,
    "metric_name": "rmse"
   },
   "route/r27a-goss": {
