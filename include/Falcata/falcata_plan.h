@@ -214,6 +214,15 @@ struct FalcataPlan {
   // rounding residual into the next tree, so round-to-nearest bias telescopes
   // away. Deterministic; changes the model -- NOT an equality key.
   bool quant_ef = true;             // key: quant_ef
+  // the host level loop's categorical splits as one record per level: one kernel appends every categorical split's
+  // two bitsets at offsets prefix-summed on the device and records the splits' nodes, with the word counts kept on
+  // the device until the tree end, where one copy reads the whole categorical record back; instead of a length
+  // readback per level and, per categorical split, a SplitCategoricalKernel launch and two blocking 4-byte D2D
+  // copies into the record. The record buffers are sized for the level's worst case (every split at its maximal
+  // bitset length) before its launch; past their capacity the exact word counts are read back once and the buffers
+  // grow by doubling. Vector leaves keep the per-split loop. The same words, boundaries and nodes in the same order:
+  // bit-identical.
+  bool cat_level_record = true;     // key: cat_level_record
   // experimental compact-view packing codecs (uniform per tree; eligible only
   // when every sampled feature's bin count fits the codec). Bit-identical by
   // construction (lossless packing). Priority radix5 > radix6 > bit3.
@@ -1055,6 +1064,7 @@ struct FalcataPlan {
     if (key == "small_leaf_construct") return &small_leaf_construct;
     if (key == "robust_scale") return &robust_scale;
     if (key == "quant_ef") return &quant_ef;
+    if (key == "cat_level_record") return &cat_level_record;
     if (key == "compact_prefill") return &compact_prefill;
     if (key == "pack_bit3") return &pack_bit3;
     if (key == "pack_radix5") return &pack_radix5;
@@ -1211,8 +1221,9 @@ struct FalcataPlan {
         Log::Warning("cuda_plan key %s was removed (2026-10-15): ignored", kv[0].c_str());
         continue;
       }
-      // removed in 1.2 (FULL_DEVICE_PLAN P1) with the flows only their non-default value reached; every one was
-      // bit-identical, so an old plan string trains the same model
+      // removed in 1.2 (FULL_DEVICE_PLAN P1) with the flows only their non-default value reached: an old plan string
+      // naming them now trains the default model (the keys were documented as bit-identical, batch_kernels:off up to
+      // the order of exact-gain ties)
       if (kv[0] == std::string("batch_kernels") || kv[0] == std::string("batch_apply") ||
           kv[0] == std::string("selective") || kv[0] == std::string("batch_wide") ||
           kv[0] == std::string("cat_hybrid") || kv[0] == std::string("apply_struct_fused") ||

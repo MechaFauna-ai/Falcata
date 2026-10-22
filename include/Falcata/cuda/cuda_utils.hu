@@ -377,6 +377,15 @@ class CUDAVector {
     size_ = 0;
   }
 
+  /*! \brief set Size() to size <= Capacity() without touching the storage: for a buffer whose first size elements
+   *  were written on the device (cuda_plan key cat_level_record) */
+  void SetSizeWithinCapacity(size_t size) {
+    if (size > capacity_) {
+      Log::Fatal("CUDAVector::SetSizeWithinCapacity: size %zu exceeds capacity %zu", size, capacity_);
+    }
+    size_ = size;
+  }
+
   size_t Size() const {
     return size_;
   }

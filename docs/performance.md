@@ -812,7 +812,7 @@ bit-identical in every cell):
     fill's own arithmetic), the one-byte split view of the sampled columns
     whenever the tree learner will build it (its own predicate: no packed
     split read, i.e. no hybrid flow, categorical features,
-    `split_packed_read:off`, forced splits, the aggressive tail) and the
+    `split_packed_read:off`, forced splits) and the
     reserve (the split finder's level output and bit-change
     scratch for `num_leaves / 2 + 2` pairs, the booster's per-row state,
     256 MiB) fit in free device memory at decision time; otherwise mask, with
@@ -1383,6 +1383,41 @@ invalidation for its never-searched children -- the subtle correctness pair
 the lattice fingerprints caught) and skips a wasted next-level search; and
 the one-sync prefix admits categorical datasets. A third pass replaced the
 gen/aggregate byte hand-off with packed ballot bits.
+
+**Categorical record per level** (`cuda_plan` key `cat_level_record`, default on, October 2026). After the
+learner-owned record buffers of #170 (no reallocation per split), the level loop still recorded each categorical split
+on its own: a blocking readback of the level's bitset lengths, then per split one `SplitCategoricalKernel` launch and
+two blocking 4-byte D2D copies (the append of the real-value and the inner bitset). The per-level idle fit on
+categorical-control was 31 µs + 7.1 µs per categorical split. Now one SplitBatch launch applies the level's numerical
+splits and one kernel its categorical ones: each block records its node as before and appends its two bitsets at the
+record end (the boundary array's last entry, on the device) plus the summed lengths of the level's earlier categorical
+splits. No length is read back during the tree; at the tree end one pack kernel and one copy bring the whole record
+(both boundary arrays, both bitsets) to the host instead of four copies. The record buffers must hold the level's worst
+case (every split at the per-split bitset stride) before the launch: the host keeps an upper bound of the words
+recorded so far, and only when that bound plus the level's worst case passes the capacity does it read the exact
+counts back (two ints) and grow by doubling; a record whose word bound is above 64Ki words at the tree end
+(high-cardinality features) keeps the four-copy readback. Vector leaves keep the per-split loop. The same words, boundaries and nodes in the same
+order: bit-identical (lattice 441/441, categorical cells md5-equal to master). `FALCATA_DEBUG=diag` prints a
+`cat_level_record` line per tree with the launches, copies and readbacks saved.
+
+The same change fixes the per-split real-value bitset stride: `(max_cat_value + 31) / 32` words is one short when the
+largest category value is a positive multiple of 32, so the level bitset kernel wrote that word into the next split's
+slab region or past the slab (a categorical feature whose largest value is 64 failed with an invalid-argument copy).
+
+Master (5bec2574) vs this change, default plan, RTX 5090, 6 interleaved pairs of 1000 rounds each, model md5 equal per
+arm:
+
+| cell | master ms/tree | `cat_level_record` ms/tree | ratio |
+|---|---|---|---|
+| categorical-control (3 classes, 32 leaves / depth 5) | 0.695 | 0.594 | 1.170x |
+| same at 255 leaves / depth 8 | 1.249 | 1.061 | 1.177x |
+| airline-cat deep (92M rows, 3 categorical columns, 1023 / 10, stochastic quant) | 45.17 | 42.68 | 1.058x |
+| covtype deep (no categorical features, control) | 0.572 | 0.569 | 1.004x |
+
+Per tree under nsys (categorical-control / airline-cat deep): blocking `cudaMemcpy` 55.1 -> 15.0 / 968 -> 21, of them
+D2D 35.2 -> 3.1 / 940 -> 3.7 and D2H 9.0 -> 1.0 / 11.8 -> 1.0; kernels 87 -> 73 / 829 -> 127 (the per-split record
+launches and the numerical SplitBatch chunks between categorical splits); `cudaDeviceSynchronize` and event syncs
+unchanged (7 and 4 / 12 and 9).
 
 **Official numbers of the 1 August 2026 build** (FAIR interleaved protocol: quiet
 desktop, per regime one warmup round-robin then 3 timed rounds with the four
@@ -3141,16 +3176,19 @@ loop), `forest_slots`.
 `device_levels: host fallback (<reason>)` keeps reporting, once per learner, why the prefix itself declined in flows
 outside the complete device tree (with the same tokens).
 
-**Removed in 1.2** (all bit-identical; old plan strings are accepted with a warning and train the same model):
+**Removed in 1.2** (opt-in or off values only; old plan strings naming these keys are accepted with a warning and now
+train the default model):
 
 - `cuda_plan` keys `batch_kernels`, `batch_apply`, `selective`, `batch_wide`, `cat_hybrid`, `apply_struct_fused`,
   `gap_copy_fused` and `graph_quant`, with the flows only their non-default value reached: the per-split apply
-  inside the level loop (`batch_apply:off`), the quantized captured graph prefix (`graph_quant:on`), the
+  inside the level loop (`batch_apply:off`), the quantized captured graph prefix (`graph_quant:on`, which still ran
+  where the device tree was refused, e.g. with `device_tree:off`; the same plan now takes the `device_levels`
+  prefix), the
   classic-loop fence for categorical data (`cat_hybrid:off`), the unfused level apply kernels (kept only for the
   map-only final level);
 - the `FALCATA_DEBUG` tokens `syncpairs`, `maxsplits=N` and `aggressive` (the approximate breadth-biased level
-  batching of budget-limited trees) and the `FALCATA_SINGLE_STREAM` switch (they are now ignored as unknown, with a
-  warning for the tokens).
+  batching of budget-limited trees) and the `FALCATA_SINGLE_STREAM` switch (the tokens now warn as unknown; the
+  environment variable is silently ignored).
 
 Kept, because each still selects a live behaviour: `hybrid` (`hybrid:off`, the classic per-split loop everywhere: the
 gates' reference arm), `level_bynode_masks` (`:off` restores the 1.0 per-node samples and models), `device_tree`,

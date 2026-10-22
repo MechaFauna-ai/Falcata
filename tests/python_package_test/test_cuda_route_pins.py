@@ -11,6 +11,10 @@ trained through the lattice's own worker, so the pin and the golden describe the
 per cell, the sequence of distinct (reason, route[, prefix]) tuples the run must report, in first-seen order;
 `("complete", "device_tree")` is a complete device tree. A change that moves a cell to another controller (a port to
 the device, a deleted fallback) updates its row here, in the same change.
+
+No cell reaches compact_16bit or large_bin_layout (r14b is refused by the global-memory finder first), sparse_layout
+only non-quantized (r14a; quantized sparse data trains on the dense row bin), and none root_tail_parity
+(test_cuda_device_tree_root_tail.py asserts it where its fixture reaches a host tail).
 """
 
 import importlib
@@ -89,7 +93,8 @@ ROUTES_EXPECTED = {
     "route/r19-forced": [("forced_splits", _CLASSIC)],
     "route/r20-linear-sel": [("linear_budget", _CLASSIC)],
     "route/r21-stump": [("num_leaves_le_2", _CLASSIC)],
-    # no shape reaches the root tail (lattice comment); test_cuda_device_tree_root_tail.py pins root_tail_parity
+    # r22 pins complete device trees (no known shape reaches the root tail, see the lattice comment); root-tail parity
+    # is asserted in test_cuda_device_tree_root_tail.py
     "route/r22-roottail": [_COMPLETE],
     # the selective device prefix turns its graphs off after 9 misses; the host's selective loop grows the rest
     "route/r24-churn": [

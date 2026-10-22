@@ -210,6 +210,105 @@ void CUDATree::SplitBatch(const std::vector<CUDATreeBatchSplit>& splits) {
   }
 }
 
+void CUDATree::SplitLevel(const std::vector<CUDATreeBatchSplit>& splits, const std::vector<uint8_t>& is_categorical,
+                          const CUDATreeCatLevel& cat) {
+  CHECK_EQ(splits.size(), is_categorical.size());
+  if (splits.empty()) {
+    return;
+  }
+  if (cuda_batch_splits_.Size() < splits.size()) {
+    // preallocate for the deepest possible level so this resizes at most once (as SplitBatch)
+    cuda_batch_splits_.Resize(std::max(splits.size(), static_cast<size_t>(max_leaves_ / 2 + 2)));
+  }
+  // launch order: the numerical splits (SplitBatchKernel reads [0, num_numerical)), then the categorical ones in
+  // level order (the categorical kernel reads [num_numerical, size)); the c-th categorical split is the level's c-th
+  host_level_splits_.clear();
+  for (size_t k = 0; k < splits.size(); ++k) {
+    if (is_categorical[k] == 0) {
+      host_level_splits_.push_back(splits[k]);
+    }
+  }
+  const int num_numerical = static_cast<int>(host_level_splits_.size());
+  for (size_t k = 0; k < splits.size(); ++k) {
+    if (is_categorical[k] != 0) {
+      host_level_splits_.push_back(splits[k]);
+    }
+  }
+  const int num_cat_splits = static_cast<int>(splits.size()) - num_numerical;
+  if (num_cat_splits > 0) {
+    // the level's worst case must fit before the launch (its lengths are known only on the device); the bound is
+    // exact again after a readback, so a buffer that keeps up with the record reads nothing back
+    const size_t level_words = static_cast<size_t>(num_cat_splits) * cat.bitset_stride;
+    const size_t level_words_inner = static_cast<size_t>(num_cat_splits) * cat.bitset_inner_stride;
+    if (!cat_record_on_device_) {
+      cat_words_bound_ = cuda_bitset_.Size();
+      cat_words_inner_bound_ = cuda_bitset_inner_.Size();
+    }
+    if (cat_words_bound_ + level_words > cuda_bitset_.Capacity() ||
+        cat_words_inner_bound_ + level_words_inner > cuda_bitset_inner_.Capacity()) {
+      if (cat_record_on_device_) {
+        ++cat_overflow_readbacks_;
+      }
+      SettleCategoricalRecordSizes();
+      cat_words_bound_ = cuda_bitset_.Size();
+      cat_words_inner_bound_ = cuda_bitset_inner_.Size();
+      // grow by doubling, as PushBack (Reserve keeps the Size() words already recorded)
+      if (cat_words_bound_ + level_words > cuda_bitset_.Capacity()) {
+        cuda_bitset_.Reserve(std::max(cat_words_bound_ + level_words, 2 * cuda_bitset_.Capacity()));
+      }
+      if (cat_words_inner_bound_ + level_words_inner > cuda_bitset_inner_.Capacity()) {
+        cuda_bitset_inner_.Reserve(std::max(cat_words_inner_bound_ + level_words_inner,
+                                            2 * cuda_bitset_inner_.Capacity()));
+      }
+    }
+  }
+  // async H2D on cuda_stream_, ordered after any earlier kernel of this stream reading the buffer (see SplitBatch)
+  CopyFromHostToCUDADeviceAsync<CUDATreeBatchSplit>(cuda_batch_splits_.RawData(),
+    host_level_splits_.data(), host_level_splits_.size(), cuda_stream_, __FILE__, __LINE__);
+  if (num_numerical > 0) {
+    LaunchSplitBatchKernel(num_numerical);
+  }
+  if (num_cat_splits > 0) {
+    LaunchSplitCategoricalLevelKernel(num_numerical, num_cat_splits, cat);
+    cat_words_bound_ += static_cast<size_t>(num_cat_splits) * cat.bitset_stride;
+    cat_words_inner_bound_ += static_cast<size_t>(num_cat_splits) * cat.bitset_inner_stride;
+    cat_record_on_device_ = true;
+    ++cat_level_launches_;
+    cat_level_splits_ += num_cat_splits;
+  }
+  // host mirrors, in the exact order the per-split loop would apply them
+  for (size_t k = 0; k < splits.size(); ++k) {
+    const CUDATreeBatchSplit& split = splits[k];
+    CHECK_EQ(split.num_leaves_at_split, num_leaves_);
+    RecordBranchFeatures(split.leaf_index, num_leaves_, split.real_feature_index);
+    leaf_depth_[num_leaves_] = leaf_depth_[split.leaf_index] + 1;
+    leaf_depth_[split.leaf_index]++;
+    ++num_leaves_;
+    if (is_categorical[k] != 0) {
+      ++num_cat_;
+    }
+  }
+}
+
+void CUDATree::SettleCategoricalRecordSizes() {
+  if (!cat_record_on_device_) {
+    return;
+  }
+  cat_record_on_device_ = false;
+  if (num_cat_ == 0) {
+    cuda_bitset_.SetSizeWithinCapacity(0);
+    cuda_bitset_inner_.SetSizeWithinCapacity(0);
+    return;
+  }
+  // boundaries[num_cat_] is the record's word count (legacy-stream copies wait for the blocking tree stream)
+  int words = 0;
+  int words_inner = 0;
+  CopyFromCUDADeviceToHost<int>(&words, cuda_cat_boundaries_.RawData() + num_cat_, 1, __FILE__, __LINE__);
+  CopyFromCUDADeviceToHost<int>(&words_inner, cuda_cat_boundaries_inner_.RawData() + num_cat_, 1, __FILE__, __LINE__);
+  cuda_bitset_.SetSizeWithinCapacity(static_cast<size_t>(words));
+  cuda_bitset_inner_.SetSizeWithinCapacity(static_cast<size_t>(words_inner));
+}
+
 int CUDATree::SplitCategorical(const int leaf_index,
            const int real_feature_index,
            const MissingType missing_type,
@@ -218,6 +317,11 @@ int CUDATree::SplitCategorical(const int leaf_index,
            size_t cuda_bitset_len,
            uint32_t* cuda_bitset_inner,
            size_t cuda_bitset_inner_len) {
+  // a per-split categorical split after SplitLevel's (the leaf-wise tail) appends at the exact end of the record
+  if (cat_record_on_device_) {
+    ++cat_tail_settles_;
+  }
+  SettleCategoricalRecordSizes();
   LaunchSplitCategoricalKernel(leaf_index, real_feature_index,
     missing_type, cuda_split_info,
     cuda_bitset_len, cuda_bitset_inner_len);
@@ -409,14 +513,17 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
   if (num_cat_ > 0) {
     // the first num_cat_ + 1 boundaries are the record (the buffers hold max_leaves or more)
     const size_t num_boundaries = static_cast<size_t>(num_cat_) + 1;
-    cat_boundaries_.resize(num_boundaries);
-    cat_boundaries_inner_.resize(num_boundaries);
-    CopyFromCUDADeviceToHost<int>(cat_boundaries_.data(), cuda_cat_boundaries_.RawData(), num_boundaries,
-                                  __FILE__, __LINE__);
-    CopyFromCUDADeviceToHost<int>(cat_boundaries_inner_.data(), cuda_cat_boundaries_inner_.RawData(),
-                                  num_boundaries, __FILE__, __LINE__);
-    cat_threshold_ = cuda_bitset_.ToHost();
-    cat_threshold_inner_ = cuda_bitset_inner_.ToHost();
+    if (!ReadCategoricalRecordOneCopy()) {
+      SettleCategoricalRecordSizes();
+      cat_boundaries_.resize(num_boundaries);
+      cat_boundaries_inner_.resize(num_boundaries);
+      CopyFromCUDADeviceToHost<int>(cat_boundaries_.data(), cuda_cat_boundaries_.RawData(), num_boundaries,
+                                    __FILE__, __LINE__);
+      CopyFromCUDADeviceToHost<int>(cat_boundaries_inner_.data(), cuda_cat_boundaries_inner_.RawData(),
+                                    num_boundaries, __FILE__, __LINE__);
+      cat_threshold_ = cuda_bitset_.ToHost();
+      cat_threshold_inner_ = cuda_bitset_inner_.ToHost();
+    }
     if (cat_arena_ == nullptr) {
       // no arena: shrink to the record as before (the retained inner copies are what prediction reads)
       cuda_cat_boundaries_inner_.Resize(num_boundaries);
@@ -431,6 +538,57 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
   }
 
   ShrinkHostVectorsAndReleaseDevice();
+}
+
+bool CUDATree::ReadCategoricalRecordOneCopy() {
+  // cuda_plan key cat_level_record: the boundaries hold the word counts, so one pack kernel gathers both boundary
+  // arrays and both bitsets (each up to its bound) into the arena's staging and one copy brings them over, instead
+  // of four copies of which two wait for the other two's counts. When the bound passes kMaxWords (high-cardinality
+  // features) the four copies stay: the bound may then be far above the record.
+  constexpr size_t kMaxWords = static_cast<size_t>(1) << 16;
+  if (cat_level_launches_ == 0 || cat_arena_ == nullptr || num_cat_ == 0) {
+    return false;
+  }
+  if (!cat_record_on_device_) {
+    // settled since the last level record (a per-split tail split appended at the exact end): the bounds are exact
+    cat_words_bound_ = cuda_bitset_.Size();
+    cat_words_inner_bound_ = cuda_bitset_inner_.Size();
+  }
+  const size_t num_boundaries = static_cast<size_t>(num_cat_) + 1;
+  const size_t words_bound = std::min(cat_words_bound_, cuda_bitset_.Capacity());
+  const size_t words_inner_bound = std::min(cat_words_inner_bound_, cuda_bitset_inner_.Capacity());
+  const size_t total = 2 * num_boundaries + words_bound + words_inner_bound;
+  if (total > kMaxWords) {
+    return false;
+  }
+  CUDAVector<uint32_t>& staging = cat_arena_->readback;
+  if (staging.Size() < total) {
+    staging.ResizeDiscard(std::max(total, 2 * staging.Size()));
+  }
+  LaunchPackCategoricalRecordKernel(staging.RawData(), words_bound, words_inner_bound);
+  // host staging kept by the learner's arena (no allocation per tree once it has grown)
+  std::vector<uint32_t>& packed = cat_arena_->readback_host;
+  if (packed.size() < total) {
+    packed.resize(total);
+  }
+  // legacy-stream copy: waits for the pack kernel on the (blocking) tree stream
+  CopyFromCUDADeviceToHost<uint32_t>(packed.data(), staging.RawData(), total, __FILE__, __LINE__);
+  cat_boundaries_.resize(num_boundaries);
+  cat_boundaries_inner_.resize(num_boundaries);
+  std::memcpy(cat_boundaries_.data(), packed.data(), num_boundaries * sizeof(int));
+  std::memcpy(cat_boundaries_inner_.data(), packed.data() + num_boundaries, num_boundaries * sizeof(int));
+  const size_t words = static_cast<size_t>(cat_boundaries_[num_cat_]);
+  const size_t words_inner = static_cast<size_t>(cat_boundaries_inner_[num_cat_]);
+  CHECK_LE(words, words_bound);
+  CHECK_LE(words_inner, words_inner_bound);
+  const uint32_t* words_begin = packed.data() + 2 * num_boundaries;
+  cat_threshold_.assign(words_begin, words_begin + words);
+  cat_threshold_inner_.assign(words_begin + words_bound, words_begin + words_bound + words_inner);
+  cuda_bitset_.SetSizeWithinCapacity(words);
+  cuda_bitset_inner_.SetSizeWithinCapacity(words_inner);
+  cat_record_on_device_ = false;
+  cat_record_one_copy_ = true;
+  return true;
 }
 
 void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
@@ -531,6 +689,8 @@ void CUDATree::ReturnCategoricalArena() {
   if (cat_arena_ == nullptr) {
     return;
   }
+  // a record SplitLevel left pending (no ToHost in between) gets its exact sizes first
+  SettleCategoricalRecordSizes();
   // AddPredictionToScore traverses this tree's categorical nodes through the inner bitsets for the tree's whole
   // lifetime: copy the record into exact-size owned buffers (two allocations, no free). The copies are ordered on
   // the default stream before the next tree's writes to the arena (tree streams are blocking streams). A tree

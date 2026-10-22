@@ -17,7 +17,9 @@ namespace Falcata {
  *   [hybrid-diag] device_tree: fallback (<reason>) route=<route>[ prefix=<reason>]
  *
  * once for its first such tree and again whenever the line would change (the reason, the route, or why a device
- * prefix did not run), so a run logs its route changes, not one line per tree. Trees the complete device tree grew
+ * prefix did not run), so a run logs its route changes, not one line per tree. The comparison is with the learner's
+ * last fallback line: complete trees in between do not make the same line print again. Every learner prints its own
+ * lines (one per rank under num_gpu > 1, one per forest slot). Trees the complete device tree grew
  * keep their `device_tree: complete ...` line. <reason> is the first refusal in the order of this list that holds for
  * the tree (several can hold at once; the order puts the long-lived fallbacks first, so a later port changes the
  * fewest pins). `prefix=` names why a device_levels prefix did not run in a flow that would otherwise have taken one
