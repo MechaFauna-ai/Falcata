@@ -97,7 +97,7 @@ def _md5(params, plan, X, y, rounds):
         ("binary", "binary", "none", {}),
         ("regression", "regression", "stochastic", {}),
         ("multiclass", "multiclass", "stochastic", {}),
-        # per-node masks: the host draw (keyed) until the device masks cover the complete tree
+        # per-node masks: device-drawn in a solo tree, host-drawn in a slot (keyed: the same masks)
         ("binary", "binary", "stochastic", {"feature_fraction_bynode": 0.5}),
         # per-tree samples drawn in tree order by the forest trainer
         ("binary", "binary", "stochastic", {"feature_fraction": 0.6}),
@@ -204,15 +204,17 @@ def test_forest_single_job_auto_switches_modes_cuda():
     [
         # a round of several class trees is one group of several jobs: slots
         ({"objective": "multiclass", "num_class": 4}, "slots"),
-        # per-node masks: alone, but the complete device tree waits for device per-node masks
+        # per-node masks: alone, a complete device tree with device-drawn masks
         ({"feature_fraction_bynode": 0.5}, "solo"),
     ],
 )
 def test_forest_single_job_modes_cuda(extra, mode):
-    solo, slots, _ = _diag(_engage_params(cuda_plan="auto,forest_group:1", **extra), 6)
+    solo, slots, complete = _diag(_engage_params(cuda_plan="auto,forest_group:1", **extra), 6)
     if mode == "slots":
         assert not solo, solo + slots
         assert len(slots) == 6, solo + slots
+        assert complete == 0
     else:
         assert len(solo) == 6, solo + slots
         assert not slots, solo + slots
+        assert complete == 6

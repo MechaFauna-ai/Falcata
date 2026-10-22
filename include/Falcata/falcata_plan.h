@@ -720,8 +720,9 @@ struct FalcataPlan {
   // forest_batched: a group of ONE tree (forest_group 1, a binary or regression forest's auto size settled at one round,
   // the last group of a forest_group N training, a memory-bound group shrunk to one round) trains on the booster's
   // learner as sequential training does, not as a forest slot: no other slot thread runs while it trains, so its
-  // stream capture is safe and the tree takes the flows a slot never takes (the complete device tree, the
-  // device_levels prefix, the graph prefixes). A group of two or more trees stays in slot mode. The trees are the
+  // stream capture is safe and the tree takes the flows a slot never takes (the complete device tree with device
+  // per-node masks, the device_levels prefix, the quantized graph prefix; not the non-quantized graph loop, which is
+  // not run-to-run deterministic). A group of two or more trees stays in slot mode. The trees are the
   // sequential ones either way: bit-identical. FALCATA_DEBUG=diag names each group's mode ([forest-diag] ... mode).
   // Off: every group in slot mode, as before.
   bool forest_single_job_device = true;  // key: forest_single_job_device

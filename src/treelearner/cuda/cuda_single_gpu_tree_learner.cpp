@@ -3628,7 +3628,9 @@ void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
 // ---- cuda_plan key device_bynode_masks (see CUDADeviceBynodeConfig) ----
 
 bool CUDASingleGPUTreeLearner::DeviceBynodeMasksUsable() const {
-  return FalcataPlan::Get().device_bynode_masks && bynode_keyed_ && LevelFlowsTakeNodeMasks() && !forest_slot_ &&
+  // a forest slot beside other slot threads keeps the host draw; a group's only tree (forest_single_job_device) runs
+  // alone and takes the device masks (same keys: the trainer gives it the sequential tree counters)
+  return FalcataPlan::Get().device_bynode_masks && bynode_keyed_ && LevelFlowsTakeNodeMasks() && !ForestSlotShared() &&
     !FalcataDebug().bynode &&
     // the kernels' static shared memory (the block scan's ~132 bytes) beside the dynamic bitmap: a 1 KB margin
     DeviceBynodeSharedBytes(train_data_->num_features()) + 1024 <= 48 * 1024;
