@@ -99,7 +99,9 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   ASSERT_EQ(cudaMemcpy(best.data(), splits.data(), leaves * sizeof(CUDASplitInfo), cudaMemcpyHostToDevice), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(counts.data(), host_counts.data(), leaves * sizeof(data_size_t), cudaMemcpyHostToDevice), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(starts.data(), host_starts.data(), leaves * sizeof(data_size_t), cudaMemcpyHostToDevice), cudaSuccess);
+  DeviceBuffer<int> block_start(leaves + 1);  // the block map (the reset sets this pointer in production)
   CUDADeviceLevelState state{};
+  state.construct_block_start = block_start.data();
   state.num_leaves = leaves;
   state.split_info_base = cursor;
   state.levels_applied = level;
@@ -130,6 +132,7 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   cfg.feature_source = device_source.data();
   cfg.real_thresholds = thresholds.data();
   cfg.journal = device_journal.data();
+  cfg.construct_block_start = block_start.data();
   cfg.max_depth = level + (final_depth ? 1 : 2);
   cfg.num_leaves_budget = budget;
   cfg.whole_tree = 1;
