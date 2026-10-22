@@ -17,7 +17,7 @@ repo and tests it, so nothing inbound can trigger execution.
 
 | Detector | Mechanism |
 |---|---|
-| invalid trees / silent behavior change | **md5 lattice**: 98 fingerprinted deterministic cells across 32 path-engineered dataset profiles (of 441 cells: 98 md5, 341 plan-flip equality, 2 metric; `lattice.py --list`); baselines in `md5_lattice.json` |
+| invalid trees / silent behavior change | **md5 lattice**: 131 fingerprinted deterministic cells across 32 path-engineered dataset profiles (of 475 cells: 131 md5, 341 plan-flip equality, 3 metric; `lattice.py --list`); baselines in `md5_lattice.json` |
 | plan decision changes the model | **equality cells**: every `cuda_plan` key flipped vs its base cell must be bit-identical |
 | broken models | validity asserts in every cell: round-trip, finite preds, tree count |
 | quality regression | metric recorded per cell; nondeterministic (non-quant / fp32) cells gate on metric floor with 2% tolerance |
@@ -27,6 +27,27 @@ repo and tests it, so nothing inbound can trigger execution.
 lattice by design. Re-baseline explicitly -- `lattice.py --update <cell-id> ...`
 (or `--baseline` for everything) -- and commit the `md5_lattice.json` diff; the
 diff review shows exactly which cells moved and is itself the review artifact.
+
+**Route goldens (`route/*`).** 34 cells (33 fingerprinted; the budget-limited
+linear tree is metric-only, its leaf coefficients vary run to run), one per configuration
+the complete CUDA device tree refuses today (the inventory rows of the
+full-device-controller program, recorded on master 5bec2574): deep and
+memory-gated trees, binding leaf budgets, non-quantized, categorical, per-node
+masks, interaction and monotone constraints, forests, vector leaves, the
+unbatched finders and layouts, CEGB, forced splits, budget-limited linear
+trees, stumps, graph churn, GOSS and leaf renewal. A PR that moves one of these
+configurations onto the device controller, or deletes the host path that
+serves it, must keep its md5. A PR that changes a model on purpose (CEGB
+becomes level-wise: `route/r18-cegb`) re-baselines only its own cells and
+names its PR number in the commit:
+
+    .gates-venv/bin/python tests/gates/lattice.py --update route/r18-cegb --only route/r18-cegb
+    .gates-venv/bin/python tests/gates/lattice.py --check --only 'route/*'   # every route golden
+
+Cell ids for `--update` and `--only` are fnmatch patterns. Two cell fields
+serve these cells: `debug` (extra `FALCATA_DEBUG` tokens such as
+`vramfree=1`; the cell runs alone in a worker) and `forced_splits` (a JSON
+object written to a temporary `forcedsplits_filename`).
 
 ## Nightly (`nightly_local.sh`, cron)
 
