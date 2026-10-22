@@ -363,6 +363,300 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   }
 }
 
+/*! \brief cuda_plan key selective_prefix_select_fast: DeviceLevelSelectBlock for a nonbinding prefix level (no whole
+ *  tree), as the copy fused into the selective prefix's level sync runs it (cfg staged in shared memory by the
+ *  caller). Each thread holds at most CHUNK leaves and CHUNK splits (2 * MAX_SPLITS <= CHUNK * blockDim.x; past it
+ *  the level stops with the error flag) and first loads every input of them into registers, then stores: the plain
+ *  block interleaves dependent global loads with stores the compiler must assume alias them, so a thread's leaves,
+ *  splits and journal words each cost a memory round trip in sequence. Same results as the plain block on such a
+ *  level, element for element:
+ *   - split set and order: the valid leaves in leaf-ascending order (contiguous per-thread runs and an exclusive
+ *     scan, as there); a nonbinding level splits every one of them, which is also its split mark;
+ *   - per split: the same descriptor fields from the same inputs; the slot prefix (num_blocks + 1 per split) equals
+ *     the flat prefix plus the split index, so one scan gives both;
+ *   - gaps: the leaves not split (not valid) with rows, leaf-ascending, the same descriptors;
+ *   - journal: the same ints, and the same 8-byte words of each split's best-split record (read after the sync);
+ *   - tree-record descriptors only when cfg.skip_tree_record is 0. */
+template <int MAX_SPLITS, int CHUNK = 4>
+__device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevelConfig& cfg, const int level) {
+  constexpr int kMaxLeaves = 2 * MAX_SPLITS;
+  __shared__ int s_leaves[MAX_SPLITS];
+  __shared__ int s_warp[32];
+  __shared__ int s_total;
+  CUDADeviceLevelState* st = cfg.state;
+  if (st->done) {
+    return;
+  }
+  const int tid = static_cast<int>(threadIdx.x);
+  const int nt = static_cast<int>(blockDim.x);
+  const int cur_leaves = st->num_leaves + st->live_splits;
+  const int split_cursor = st->split_info_base + st->live_splits;
+  const auto stop = [&](const bool flag) {
+    if (tid == 0) {
+      if (flag) {
+        atomicOr(cfg.journal + 2, 1);
+      }
+      st->done = 1;
+      st->live_splits = 0;
+      st->total_flat_blocks = 0;
+      st->num_gaps = 0;
+      st->gap_flat_blocks = 0;
+      st->num_leaves = cur_leaves;
+      st->split_info_base = split_cursor;
+    }
+  };
+  const int leaf_chunk = (cur_leaves + nt - 1) / nt;
+  if (cfg.whole_tree || cur_leaves > kMaxLeaves || leaf_chunk > CHUNK) {
+    stop(true);  // outside this variant's regime (the learner launches it only inside it)
+    return;
+  }
+  const int leaf_begin = min(tid * leaf_chunk, cur_leaves);
+  const int leaf_end = min(leaf_begin + leaf_chunk, cur_leaves);
+  // ---- one load pass over this thread's leaves ----
+  bool valid[CHUNK];
+  data_size_t num[CHUNK];
+  data_size_t start[CHUNK];
+#pragma unroll
+  for (int c = 0; c < CHUNK; ++c) {
+    const int leaf = leaf_begin + c;
+    const bool in = leaf < leaf_end;
+    valid[c] = in && cfg.leaf_best_split_info[leaf].is_valid;
+    num[c] = in ? cfg.leaf_num_data[leaf] : 0;
+    start[c] = in ? cfg.leaf_data_start[leaf] : 0;
+  }
+  int my_count = 0;
+#pragma unroll
+  for (int c = 0; c < CHUNK; ++c) {
+    my_count += valid[c] ? 1 : 0;
+  }
+  // ---- CollectSplittableLeaves: leaf-ascending is_valid scan ----
+  int write_pos = DeviceLevelBlockScan(my_count, s_warp, &s_total);
+  const int n = s_total;
+  if (n > MAX_SPLITS) {
+    stop(true);
+    return;
+  }
+#pragma unroll
+  for (int c = 0; c < CHUNK; ++c) {
+    if (valid[c]) {
+      s_leaves[write_pos++] = leaf_begin + c;
+    }
+  }
+  __syncthreads();
+  if (n == 0) {
+    stop(false);  // no splittable leaf: the tree is complete; later kernels see done / zero live counts
+    return;
+  }
+  const int split_chunk = (n + nt - 1) / nt;
+  if (split_chunk > CHUNK) {
+    stop(true);
+    return;
+  }
+  const int k_begin = min(tid * split_chunk, n);
+  const int k_end = min(k_begin + split_chunk, n);
+  const bool record = cfg.skip_tree_record == 0;
+  // ---- per split, loads: the leaf's entry and window, then the feature's tables ----
+  int s_leaf[CHUNK];
+  int s_feature[CHUNK];
+  uint32_t s_threshold[CHUNK];
+  bool s_default_left[CHUNK];
+  data_size_t s_num[CHUNK];
+  data_size_t s_start[CHUNK];
+#pragma unroll
+  for (int c = 0; c < CHUNK; ++c) {
+    const int k = k_begin + c;
+    if (k < k_end) {
+      const int leaf = s_leaves[k];
+      const CUDASplitInfo* info = cfg.leaf_best_split_info + leaf;
+      s_leaf[c] = leaf;
+      s_feature[c] = info->inner_feature_index;
+      s_threshold[c] = info->threshold;
+      s_default_left[c] = info->default_left;
+      s_num[c] = cfg.leaf_num_data[leaf];
+      s_start[c] = cfg.leaf_data_start[leaf];
+    }
+  }
+  CUDAHybridGraphFeatureMeta s_meta[CHUNK];
+  CUDAHybridGraphFeatureSource s_src[CHUNK];
+  double s_real_threshold[CHUNK];
+#pragma unroll
+  for (int c = 0; c < CHUNK; ++c) {
+    if (k_begin + c < k_end) {
+      s_meta[c] = cfg.feature_meta[s_feature[c]];
+      s_src[c] = cfg.feature_source[s_feature[c]];
+    }
+  }
+  if (record) {
+#pragma unroll
+    for (int c = 0; c < CHUNK; ++c) {
+      if (k_begin + c < k_end) {
+        s_real_threshold[c] = cfg.real_thresholds[s_meta[c].real_threshold_offset + s_threshold[c]];
+      }
+    }
+  }
+  // ---- per split, stores: apply descriptor, tree record, journal ----
+  int my_flat = 0;
+  int s_blocks[CHUNK];
+#pragma unroll
+  for (int c = 0; c < CHUNK; ++c) {
+    const int k = k_begin + c;
+    if (k >= k_end) {
+      continue;
+    }
+    const int leaf = s_leaf[c];
+    const int right = cur_leaves + k;
+    const uint32_t threshold = s_threshold[c];
+    const CUDAHybridGraphFeatureMeta& m = s_meta[c];
+    const CUDAHybridGraphFeatureSource& src = s_src[c];
+    const CUDASplitInfo* info = cfg.leaf_best_split_info + leaf;
+    if (record) {
+      CUDATreeBatchSplit& ts = cfg.tree_batch_splits[k];
+      ts.leaf_index = leaf;
+      ts.num_leaves_at_split = right;
+      ts.real_feature_index = m.real_feature_index;
+      ts.real_threshold = s_real_threshold[c];
+      ts.missing_type = m.missing_type;
+      ts.split_info = info;
+    }
+    uint32_t th = threshold + m.min_bin;
+    uint32_t t_zero_bin = m.min_bin + m.default_bin;
+    if (m.most_freq_bin == 0) {
+      --th;
+      --t_zero_bin;
+    }
+    uint8_t split_default_to_left = 0;
+    uint8_t split_missing_default_to_left = 0;
+    int default_leaf_index = right;
+    int missing_default_leaf_index = right;
+    if (m.most_freq_bin <= threshold) {
+      split_default_to_left = 1;
+      default_leaf_index = leaf;
+    }
+    if ((m.missing_is_zero || m.missing_is_na) && s_default_left[c]) {
+      split_missing_default_to_left = 1;
+      missing_default_leaf_index = leaf;
+    }
+    const data_size_t parent_num_data = s_num[c];
+    const int num_blocks = (parent_num_data + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
+      SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+    s_blocks[c] = num_blocks;
+    my_flat += num_blocks;
+    CUDAHybridApplyDescriptor& d = cfg.apply_descs[k];
+    d.column_data = src.column_data;
+    d.best_split_info = info;
+    d.smaller_leaf_splits = cfg.pair_slots + 2 * k;
+    d.larger_leaf_splits = cfg.pair_slots + 2 * k + 1;
+    d.leaf_data_start = s_start[c];
+    d.num_data_in_leaf = parent_num_data;
+    d.num_blocks = num_blocks;
+    d.left_leaf_index = leaf;
+    d.right_leaf_index = right;
+    d.th = th;
+    d.t_zero_bin = t_zero_bin;
+    d.max_bin = m.max_bin;
+    d.min_bin = m.min_bin;
+    d.default_leaf_index = default_leaf_index;
+    d.missing_default_leaf_index = missing_default_leaf_index;
+    d.split_default_to_left = split_default_to_left;
+    d.split_missing_default_to_left = split_missing_default_to_left;
+    d.packed_row_stride = src.packed_row_stride;
+    d.bit_type = src.bit_type;
+    d.packed_shift = src.packed_shift;
+    d.min_is_max = (m.min_bin < m.max_bin) ? 0 : 1;
+    d.missing_is_zero = m.missing_is_zero;
+    d.missing_is_na = m.missing_is_na;
+    d.mfb_is_zero = m.mfb_is_zero;
+    d.mfb_is_na = m.mfb_is_na;
+    d.max_bin_to_left = (m.max_bin <= th) ? 1 : 0;
+    d.use_min_bin = m.use_min_bin;
+    d.cat_bitset_len = 0;
+    d.cat_bitset = nullptr;
+    d.cat_mfb_offset = 0;
+    cfg.journal[kDeviceLevelJournalHeader + 2 * (split_cursor + k)] = leaf;
+    cfg.journal[kDeviceLevelJournalHeader + 2 * (split_cursor + k) + 1] = s_feature[c];
+  }
+  // flat chunks (num_blocks per split) in split order; block-offset slots (num_blocks + 1 per split) = flat + index
+  int flat_pos = DeviceLevelBlockScan(my_flat, s_warp, &s_total);
+  const int total_flat_blocks = s_total;
+#pragma unroll
+  for (int c = 0; c < CHUNK; ++c) {
+    const int k = k_begin + c;
+    if (k < k_end) {
+      CUDAHybridApplyDescriptor& d = cfg.apply_descs[k];
+      d.block_offset_start = flat_pos + k;
+      d.flat_block_start = flat_pos;
+      flat_pos += s_blocks[c];
+    }
+  }
+  // ---- terminal-region gaps: this level splits exactly the valid leaves ----
+  int my_gaps = 0;
+  int my_gap_flat = 0;
+#pragma unroll
+  for (int c = 0; c < CHUNK; ++c) {
+    if (leaf_begin + c < leaf_end && !valid[c] && num[c] > 0) {
+      ++my_gaps;
+      my_gap_flat += (num[c] + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+    }
+  }
+  int gap_pos = DeviceLevelBlockScan(my_gaps, s_warp, &s_total);
+  const int num_gaps = s_total;
+  int gap_flat_pos = DeviceLevelBlockScan(my_gap_flat, s_warp, &s_total);
+  const int gap_flat_blocks = s_total;
+#pragma unroll
+  for (int c = 0; c < CHUNK; ++c) {
+    if (leaf_begin + c < leaf_end && !valid[c] && num[c] > 0) {
+      CUDAHybridApplyDescriptor& g = cfg.apply_descs[n + gap_pos];
+      memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
+      g.left_leaf_index = leaf_begin + c;  // the final whole apply also maps this terminal leaf
+      g.leaf_data_start = start[c];
+      g.num_data_in_leaf = num[c];
+      g.num_blocks = (num[c] + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
+      g.flat_block_start = total_flat_blocks + gap_flat_pos;
+      ++gap_pos;
+      gap_flat_pos += (num[c] + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+    }
+  }
+  // ---- the journaled best-split records: kUnroll independent word loads per thread before their stores ----
+  if (cfg.split_info_journal != nullptr) {
+    static_assert(sizeof(CUDASplitInfo) % sizeof(uint64_t) == 0, "CUDASplitInfo is copied as 8-byte words");
+    constexpr int kWords = static_cast<int>(sizeof(CUDASplitInfo) / sizeof(uint64_t));
+    constexpr int kUnroll = 8;
+    const uint64_t* src_words = reinterpret_cast<const uint64_t*>(cfg.leaf_best_split_info);
+    uint64_t* dst_words = reinterpret_cast<uint64_t*>(cfg.split_info_journal + split_cursor);
+    const int total_words = n * kWords;
+    for (int base = 0; base < total_words; base += kUnroll * nt) {
+      uint64_t v[kUnroll];
+#pragma unroll
+      for (int u = 0; u < kUnroll; ++u) {
+        const int i = base + u * nt + tid;
+        if (i < total_words) {
+          const int k = i / kWords;
+          v[u] = src_words[static_cast<size_t>(s_leaves[k]) * kWords + (i - k * kWords)];
+        }
+      }
+#pragma unroll
+      for (int u = 0; u < kUnroll; ++u) {
+        const int i = base + u * nt + tid;
+        if (i < total_words) {
+          dst_words[i] = v[u];
+        }
+      }
+    }
+  }
+  if (tid == 0) {
+    st->live_splits = n;
+    st->total_flat_blocks = total_flat_blocks;
+    st->num_gaps = num_gaps;
+    st->gap_flat_blocks = gap_flat_blocks;
+    st->split_info_base = split_cursor;
+    st->num_leaves = cur_leaves;
+    st->levels_applied = level + 1;
+    cfg.journal[kDeviceLevelJournalLevels + level] = n;
+    cfg.journal[0] = level + 1;
+    cfg.journal[1] = split_cursor + n;
+  }
+}
+
 /*! \brief the children's search descriptors of the level just applied, as EnqueueLevelBestSplitSearch builds them from
  *  the host's bookkeeping (FinishLevelBookkeeping: the partition's exact counts, the split infos' hessian sums, the
  *  bit widths of SetNumBitsInHistogramBin), and the construct's grid layout for them

@@ -469,7 +469,10 @@ class CUDABestSplitFinder {
   void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
   /*! \brief cuda_plan key device_levels: the next level's select runs in the last block of the level sync launched
    *  while this is set (the used-task sync only; LastSyncRanSelect tells whether it did) */
-  void SetDeviceLevelSelect(const CUDADeviceLevelConfig* cfg) { device_level_select_cfg_ = cfg; }
+  void SetDeviceLevelSelect(const CUDADeviceLevelConfig* cfg, const bool fast = false) {
+    device_level_select_cfg_ = cfg;
+    device_level_select_fast_ = cfg != nullptr && fast;
+  }
   bool LastSyncRanSelect() const { return last_sync_ran_select_; }
   /*! \brief cuda_plan key device_level_graph: the pointers and per-tree task layout a captured level search bakes in */
   void DeviceLevelGraphKey(std::vector<const void*>* key) const {
@@ -710,6 +713,8 @@ class CUDABestSplitFinder {
   const CUDADeviceLevelState* device_level_state_ = nullptr;
   /*! \brief cuda_plan key device_levels: see SetDeviceLevelSelect */
   const CUDADeviceLevelConfig* device_level_select_cfg_ = nullptr;
+  /*! \brief cuda_plan key selective_prefix_select_fast: the select's FAST variant (config staged in shared memory) */
+  bool device_level_select_fast_ = false;
   bool last_sync_ran_select_ = false;
   bool leaf_mirror_written_ = false;
   int max_num_bin_in_feature_;

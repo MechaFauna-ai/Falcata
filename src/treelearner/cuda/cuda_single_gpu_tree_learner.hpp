@@ -315,6 +315,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     const std::vector<int>& batch_info,
     std::vector<HybridPendingPair>* next_pairs,
     int* num_splits);
+  // the same over 18 ints per applied split at batch_info (cuda_plan key selective_prefix_lean_handoff: the prefix's
+  // split-batch readback in place, without a per-level slice copy)
+  void FinishLevelBookkeeping(const std::vector<HybridAppliedSplit>& applied,
+    const int* batch_info,
+    std::vector<HybridPendingPair>* next_pairs,
+    int* num_splits);
   // Grow full levels until the next level could exceed num_leaves. Returns the
   // number of splits applied; afterwards every current leaf has a valid cached
   // best-split candidate and smaller_/larger_leaf_index_ name the last applied pair.
