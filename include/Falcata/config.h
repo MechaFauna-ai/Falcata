@@ -1203,10 +1203,11 @@ struct Config {
   // desc = if ``0``, only 1 GPU will be used
   // desc = used in both single-machine and distributed learning applications
   // desc = in distributed learning application, each machine can use different number of GPUs
-  // desc = **Note**: ``num_gpu>1`` loads ``libnccl.so.2`` at runtime; install it with the ``multigpu`` extra (``pip install "falcata[multigpu]"``, which pins ``nvidia-nccl-cu12``) or any NCCL 2.x wheel such as ``nvidia-nccl-cu13``; both verified on the CUDA 13 wheel (falcata 1.1.0, 2x RTX A4000, driver 580)
-  // desc = **Note**: with quantized gradients (``quant_mode`` other than ``none``, e.g. via ``use_quantized_grad=true`` or ``deterministic=true``; the default ``quant_mode=auto`` resolves to ``none`` otherwise) multi-GPU needs a depth-limited configuration, a positive ``max_depth`` with ``2^max_depth <= num_leaves + 1``, and no forced splits; otherwise training stops with the Fatal "multi-GPU + quantized gradients requires the hybrid level flow". Example: ``num_leaves=127`` needs ``max_depth<=7``
+  // desc = **Note**: ``num_gpu>1`` loads ``libnccl.so.2`` at runtime; install it with the ``multigpu`` extra (``pip install "falcata[multigpu]"``, which pins ``nvidia-nccl-cu12``), or an NCCL 2.x wheel that installs into ``nvidia/nccl/lib`` (e.g. ``nvidia-nccl-cu13``), or a system ``libnccl.so.2`` on the loader path; both wheels verified on the CUDA 13 wheel
+  // desc = **Note**: if ``libnccl.so.2`` is not found, training logs a warning and continues on one GPU; it does not stop
+  // desc = **Note**: with quantized gradients (``quant_mode`` other than ``none``, e.g. via ``use_quantized_grad=true`` or ``deterministic=true``; the default ``quant_mode=auto`` resolves to ``none`` otherwise) multi-GPU needs at least a positive ``max_depth`` with ``2^max_depth <= num_leaves + 1`` and no forced splits, and is unavailable with categorical features or CEGB; otherwise training stops with the Fatal "multi-GPU + quantized gradients requires the hybrid level flow". Example: ``num_leaves=127`` needs ``max_depth<=7``
   // desc = **Note**: ranks exchange histograms over host-staged NCCL transport (the trainer sets ``NCCL_P2P_DISABLE=1`` and logs a warning); multi-GPU is for data that does not fit one card, not for speed: on small data it is several times slower than one GPU
-  // desc = **Note**: models from ``num_gpu>1`` differ from single-GPU models (histogram reduction order); they are run-to-run deterministic for quantized and non-quantized training in the verified configuration
+  // desc = **Note**: models from ``num_gpu>1`` differ from single-GPU models (histogram reduction order) and are not guaranteed run-to-run deterministic (see ``deterministic``)
   int num_gpu = 1;
 
   // desc = floating-point precision of CUDA histogram accumulation and split-gain math (Falcata)
