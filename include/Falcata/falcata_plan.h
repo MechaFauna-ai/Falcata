@@ -957,6 +957,16 @@ struct FalcataPlan {
   // two or more levels only (a one-level tree measured slower on the lean end and keeps the full tree end). The same
   // kernels write the same map and leaf values: bit-identical.
   bool device_tree_lean_end = true;  // key: device_tree_lean_end
+  // selective (grow-then-prune) growth, i.e. a binding leaf budget (2^max_depth > num_leaves + 1) or unlimited depth:
+  // run its first K = min(floor(log2(num_leaves)), max_depth - 1, 10) levels as the captured device_levels prefix,
+  // then hand the tree to the host's selective loop. On those levels the host's greedy simulation provably selects
+  // every valid candidate (applied splits + frontier <= 2^(k+1) - 1 <= num_leaves - 1), which is exactly the prefix's
+  // "split every valid leaf". The prefix also journals each applied split's best-split record; the host rebuilds its
+  // selective records (parents, windows, depths, gains) from the journal and continues at level K. Leaf indices are
+  // assigned leaf-ascending instead of in greedy order, which no search, simulation or renumbering reads: bit-identical.
+  // Engages only when K >= 2 (num_leaves >= 4 and, with a depth limit, max_depth >= 3), like the prefix itself.
+  // Quantized, two-sync, single GPU, no categorical features, per-node masks or vector leaves (device_levels' gate).
+  bool selective_device_prefix = true;  // key: selective_device_prefix
   // the complete device tree under per-node feature masks (feature_fraction_bynode < 1, no interaction constraints,
   // level_bynode_masks): each node's keyed sample (ColSampler::GetByNodeKeyed: the generator seeded by the seed, the
   // tree count and the node's path, Random::Sample, then the node's task list) is drawn by a device kernel on a side
@@ -1147,6 +1157,7 @@ struct FalcataPlan {
     if (key == "device_levels") return &device_levels;
     if (key == "device_tree") return &device_tree;
     if (key == "device_tree_lean_end") return &device_tree_lean_end;
+    if (key == "selective_device_prefix") return &selective_device_prefix;
     if (key == "device_bynode_masks") return &device_bynode_masks;
     if (key == "device_level_graph") return &device_level_graph;
     if (key == "device_level_graph_update") return &device_level_graph_update;

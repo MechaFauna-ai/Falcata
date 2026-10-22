@@ -233,6 +233,17 @@ class CUDATree : public Tree {
     ++num_leaves_;
   }
 
+  /*! \brief undo ReplaySplitHostMirrors (cuda_plan key selective_device_prefix): selective growth rebuilds the tree
+   *  from its own records (RebuildFromHostSplits), which needs the host mirrors in their constructor state; the
+   *  prefix's device records are never read (the rebuild uploads every leaf value it produces) */
+  void UndoReplayedHostMirrors() {
+    CHECK(!track_branch_features_);
+    for (int leaf = 0; leaf < num_leaves_; ++leaf) {
+      leaf_depth_[leaf] = 0;
+    }
+    num_leaves_ = 1;
+  }
+
   /*! \brief Build the final tree structure host-side from a replayed split
    *  sequence (selective grow-then-prune hybrid growth). The device tree arrays
    *  were never written during growth; this replays SplitKernel's per-field

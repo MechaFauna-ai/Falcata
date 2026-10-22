@@ -299,6 +299,16 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
     atomicOr(&s_split_bits[leaf >> 5], 1u << (leaf & 31));
     cfg.journal[kDeviceLevelJournalHeader + 2 * (split_cursor + k)] = leaf;
     cfg.journal[kDeviceLevelJournalHeader + 2 * (split_cursor + k) + 1] = inner_feature;
+    if (cfg.split_info_journal != nullptr) {
+      // the selective prefix's record of this split (the host rebuilds its applied records from it): the bytes the
+      // host's own best-split readback would have copied, before the children's search reuses the leaf's entry
+      static_assert(sizeof(CUDASplitInfo) % sizeof(uint64_t) == 0, "CUDASplitInfo is copied as 8-byte words");
+      const uint64_t* src_words = reinterpret_cast<const uint64_t*>(info);
+      uint64_t* dst_words = reinterpret_cast<uint64_t*>(cfg.split_info_journal + split_cursor + k);
+      for (size_t w = 0; w < sizeof(CUDASplitInfo) / sizeof(uint64_t); ++w) {
+        dst_words[w] = src_words[w];
+      }
+    }
   }
   // block-offset slots (num_blocks + 1 per split) and flat chunks (num_blocks per split), in split order
   int slot_pos = DeviceLevelBlockScan(my_slots, s_warp, &s_total);
