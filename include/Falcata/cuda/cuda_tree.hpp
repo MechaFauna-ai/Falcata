@@ -129,6 +129,19 @@ struct CUDATreeHostSplit {
   std::vector<uint32_t> cat_bitset_inner;
 };
 
+/*! \brief Device growth buffers for the categorical split record of the tree being grown (the bitsets over real
+ *  and inner values and their boundaries), owned by the tree learner and reused by every tree it grows. A tree
+ *  takes them over in its constructor and hands them back in ToHost()/RebuildFromHostSplits(), so their capacity
+ *  carries over: appends are plain stream-ordered copies, and the storage reallocates (by doubling) only when a
+ *  tree records more categorical words than any tree before it. Without it every categorical split reallocated
+ *  both bitsets (cudaMalloc, two copies and a cudaFree, which synchronizes the device). */
+struct CUDATreeCatArena {
+  CUDAVector<uint32_t> bitset;
+  CUDAVector<uint32_t> bitset_inner;
+  CUDAVector<int> boundaries;
+  CUDAVector<int> boundaries_inner;
+};
+
 class CUDATree : public Tree {
  public:
   /*!
@@ -144,10 +157,13 @@ class CUDATree : public Tree {
   *        ToHost() has been called (the tree learner trains one tree at a time
   *        and calls ToHost() before returning it). Only cuda_leaf_value_ is
   *        needed after ToHost(); it is materialized into owned memory there.
+  * \param cat_arena Optional learner-owned categorical record buffers (see CUDATreeCatArena), used when
+  *        has_categorical_feature; the same one-tree-at-a-time contract as the slab applies.
   */
   explicit CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
     const int gpu_device_id, const bool has_categorical_feature,
-    uint8_t* pooled_device_buffer = nullptr, int leaf_value_dim = 1);
+    uint8_t* pooled_device_buffer = nullptr, int leaf_value_dim = 1,
+    CUDATreeCatArena* cat_arena = nullptr);
 
   /*! \brief bytes needed by the pooled per-tree device arrays (16 arrays of
    *  max_leaves entries + the batched split descriptors), 8-byte aligned */
@@ -343,6 +359,11 @@ class CUDATree : public Tree {
    *  release every other per-tree device array + the per-tree stream */
   void ShrinkHostVectorsAndReleaseDevice();
 
+  /*! \brief part of ShrinkHostVectorsAndReleaseDevice(): keep exact-size owned copies of the inner bitsets and
+   *  boundaries (AddPredictionToScore reads them for the tree's lifetime) and give the growth buffers back to the
+   *  learner's arena; no device memory is freed */
+  void ReturnCategoricalArena();
+
   void InitCUDAMemory(uint8_t* pooled_device_buffer);
 
   void InitCUDA();
@@ -406,6 +427,8 @@ class CUDATree : public Tree {
   CUDAVector<uint32_t> cuda_bitset_inner_;
   CUDAVector<int> cuda_cat_boundaries_;
   CUDAVector<int> cuda_cat_boundaries_inner_;
+  /*! \brief the learner's arena the four buffers above came from, until ReturnCategoricalArena() */
+  CUDATreeCatArena* cat_arena_ = nullptr;
   /*! \brief device copy of one level's batched split descriptors (SplitBatch) */
   CUDAVector<CUDATreeBatchSplit> cuda_batch_splits_;
   /*! \brief whether the per-tree arrays are views into a pooled slab */
