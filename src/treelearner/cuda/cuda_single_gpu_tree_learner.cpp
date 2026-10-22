@@ -3993,7 +3993,7 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   // The prefix can select in the previous sync's last block; whole trees select in a standalone launch.
   bool select_ran = false;
   const CUDADeviceLevelConfig* cfg_device = cuda_device_level_config_.RawDataReadOnly();
-  // cuda_plan key selective_prefix_no_record: the selective prefix records no tree on the device (nothing reads it;
+  // the selective prefix records no tree on the device (nothing reads it;
   // the selective flow rebuilds the tree from its own records), so the tree stream never joins the levels
   const bool record_tree = cfg.skip_tree_record == 0;
   CHECK(record_tree || (!cfg.whole_tree && cfg.split_info_journal != nullptr));
@@ -4008,7 +4008,7 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
       CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(tree_stream, device_level_select_event_, 0));
     }
     // (the apply's last block writes the children's descriptors and block map: DeviceLevelPairsBlock)
-    // cuda_plan key selective_prefix_joint_grid: the selective prefix's partition launch takes the whole tree's joint
+    // the selective prefix's partition launch takes the whole tree's joint
     // worker bound (a level of a root-start tree partitions at most every row: the same bound holds)
     cuda_data_partition_->LaunchDeviceLevelApply(max_splits, dls, cfg_device,
       inline_all_map && cfg.whole_tree && level + 1 == num_levels,
@@ -4036,8 +4036,7 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     // (the record reads the split leaves' best-split entries, which this level's sync overwrites)
     cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, record_tree ? tree_record_done_event_ : nullptr);
     JoinDeviceBynode();
-    cuda_best_split_finder_->SetDeviceLevelSelect(!cfg.whole_tree && level + 1 < num_levels ? cfg_device : nullptr,
-                                                  cfg.select_fast != 0);
+    cuda_best_split_finder_->SetDeviceLevelSelect(!cfg.whole_tree && level + 1 < num_levels ? cfg_device : nullptr);
     cuda_best_split_finder_->FindBestSplitsForLevel(
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, grad_scale, hess_scale);
     select_ran = cuda_best_split_finder_->LastSyncRanSelect();
@@ -4065,10 +4064,6 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     // cuda_plan key selective_device_prefix: the select captures cfg by value, the journal pointer included (append
     // only: a prefix without it keeps its key)
     key.push_back(static_cast<const void*>(cfg.split_info_journal));
-    // cuda_plan keys selective_prefix_no_record / _select_fast / _joint_grid: the topology, the sync kernels and
-    // the partition grids they choose (the root select captures skip_tree_record by value)
-    key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(
-      (cfg.skip_tree_record != 0 ? 1 : 0) | (cfg.select_fast != 0 ? 2 : 0) | (cfg.joint_grid_bound != 0 ? 4 : 0))));
   }
   if (cfg.whole_tree) {
     // Append only: leave prefix keys and old field indices unchanged; map allocation is independent.
@@ -4302,10 +4297,10 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
       pinned_selective_prefix_split_infos_count_ = static_cast<size_t>(max_prefix_splits);
     }
     cfg.split_info_journal = cuda_selective_prefix_split_infos_.RawData();
-    // the selective prefix's trim (falcata_plan.h)
-    cfg.skip_tree_record = FalcataPlan::Get().selective_prefix_no_record ? 1 : 0;
-    cfg.select_fast = FalcataPlan::Get().selective_prefix_select_fast ? 1 : 0;
-    cfg.joint_grid_bound = FalcataPlan::Get().selective_prefix_joint_grid ? 1 : 0;
+    // the selective prefix: no device tree record and the joint partition bound (falcata_plan.h,
+    // selective_device_prefix)
+    cfg.skip_tree_record = 1;
+    cfg.joint_grid_bound = 1;
   }
   // No current-tree host tail exists for a completed whole tree. Plain unweighted L2 never renews its
   // outputs, and its next BeforeTrain rebuilds root counts/start/bits before any host search. All other
@@ -4448,11 +4443,11 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   int num_splits = 0;
   int cursor = 0;
   pairs->clear();
-  // cuda_plan key selective_prefix_no_record: no device record to mirror (the selective flow starts its tree from the
+  // the selective prefix: no device record to mirror (the selective flow starts its tree from the
   // constructor state; before, the mirrors replayed here were undone right after)
   const bool replay_mirrors = cfg.skip_tree_record == 0;
-  // cuda_plan key selective_prefix_lean_handoff: the level bookkeeping reads the split-batch readback in place
-  const bool lean_batch = record_split_infos && FalcataPlan::Get().selective_prefix_lean_handoff;
+  // the selective prefix: the level bookkeeping reads the split-batch readback in place
+  const bool lean_batch = record_split_infos;
   for (int level = 0; level < levels_applied; ++level) {
     const int level_splits = journal[kDeviceLevelJournalLevels + level];
     CHECK_GE(level_splits, 1);
@@ -5144,10 +5139,6 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
   if (FalcataDebug().diag && !selective_prefix_logged_) {
     selective_prefix_logged_ = true;
     fprintf(stderr, "[hybrid-diag] selective_device_prefix: %d device-driven levels per tree\n", levels);
-    const FalcataPlan& trim = FalcataPlan::Get();
-    fprintf(stderr, "[hybrid-diag] selective_device_prefix_trim: no_record=%d select_fast=%d lean_handoff=%d "
-            "joint_grid=%d\n", trim.selective_prefix_no_record ? 1 : 0, trim.selective_prefix_select_fast ? 1 : 0,
-            trim.selective_prefix_lean_handoff ? 1 : 0, trim.selective_prefix_joint_grid ? 1 : 0);
   }
   CHECK_EQ(static_cast<int>(pairs->size()), 1);
   const HybridPendingPair root_pair = (*pairs)[0];
@@ -5163,9 +5154,8 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
   const int* journal = pinned_device_level_journal_;
   const int levels_applied = journal[0];
   CHECK_EQ(journal[1], num_splits);
-  // (cuda_plan key selective_prefix_no_record: no tree mirrors were replayed)
-  CHECK_EQ(tree->num_leaves(), FalcataPlan::Get().selective_prefix_no_record ? 1 : num_splits + 1);
-  const bool lean = FalcataPlan::Get().selective_prefix_lean_handoff;
+  // (no tree mirrors were replayed: the selective prefix records no device tree)
+  CHECK_EQ(tree->num_leaves(), 1);
   // ---- the selective records, level by level as RunSelectiveLevel would have created them (every candidate
   // selected, no collapse, right-child indices fresh). Within a level the device numbers right children in
   // leaf-ascending order where the host numbers them in greedy order; which hybrid index (and histogram slot) a leaf
@@ -5192,52 +5182,26 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
       CHECK_EQ(batch[5], batch[2] + batch[1]);
       const int new_id = static_cast<int>(sel_applied_.size());
       const int parent = sel_leaf_parent_[left];
-      if (lean) {
-        // cuda_plan key selective_prefix_lean_handoff: the record written in place; CUDASplitInfo's assignment copies
-        // the fields and never the device pointers (a default-constructed destination keeps them null), which is
-        // what the scrubbed copy below hands over
-        const CUDASplitInfo& raw = raw_infos[s];
-        CHECK(raw.is_valid);
-        CHECK_EQ(raw.inner_feature_index, journal[kDeviceLevelJournalHeader + 2 * s + 1]);
-        CHECK_EQ(raw.num_cat_threshold, 0);
-        sel_applied_.emplace_back();
-        SelectiveApplied& node = sel_applied_.back();
-        node.parent = parent;
-        node.left_leaf = left;
-        node.right_leaf = right;
-        node.kid_left = -1;
-        node.kid_right = -1;
-        node.dead = false;
-        node.selected = true;
-        node.data_start = window_start[left];
-        node.num_data = window_num[left];
-        node.info = raw;
-        node.gain = node.info.gain;
-      } else {
-        SelectiveApplied node;
-        node.parent = parent;
-        node.left_leaf = left;
-        node.right_leaf = right;
-        node.kid_left = -1;
-        node.kid_right = -1;
-        node.dead = false;
-        node.selected = true;
-        node.data_start = window_start[left];
-        node.num_data = window_num[left];
-        // the bytes SyncAllLeafBestSplitsToHost would have read for this leaf, scrubbed the same way
-        CUDASplitInfo info;
-        std::memcpy(reinterpret_cast<void*>(&info), reinterpret_cast<const void*>(raw_infos + s),
-                    sizeof(CUDASplitInfo));
-        info.cat_threshold = nullptr;
-        info.cat_threshold_real = nullptr;
-        info.vec_payload = nullptr;
-        CHECK(info.is_valid);
-        CHECK_EQ(info.inner_feature_index, journal[kDeviceLevelJournalHeader + 2 * s + 1]);
-        CHECK_EQ(info.num_cat_threshold, 0);
-        node.gain = info.gain;
-        node.info = info;
-        sel_applied_.push_back(node);
-      }
+      // the record written in place (one copy of the journaled record); CUDASplitInfo's assignment copies
+      // the fields and never the device pointers (a default-constructed destination keeps them null), which is
+      // what the host's own scrubbed best-split readback (ReadPrefetchedLeafBestSplits) hands over
+      const CUDASplitInfo& raw = raw_infos[s];
+      CHECK(raw.is_valid);
+      CHECK_EQ(raw.inner_feature_index, journal[kDeviceLevelJournalHeader + 2 * s + 1]);
+      CHECK_EQ(raw.num_cat_threshold, 0);
+      sel_applied_.emplace_back();
+      SelectiveApplied& node = sel_applied_.back();
+      node.parent = parent;
+      node.left_leaf = left;
+      node.right_leaf = right;
+      node.kid_left = -1;
+      node.kid_right = -1;
+      node.dead = false;
+      node.selected = true;
+      node.data_start = window_start[left];
+      node.num_data = window_num[left];
+      node.info = raw;
+      node.gain = node.info.gain;
       if (parent >= 0) {
         SelectiveApplied& p = sel_applied_[parent];
         if (p.left_leaf == left) {
@@ -5265,8 +5229,8 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
   sel_num_splits_ = num_splits;
   sel_stat_applied_ += num_splits;
   sel_stat_levels_ += levels_applied;
-  // the tree is rebuilt from the records (SelectiveFinalize); the prefix's device records are never read
-  tree->UndoReplayedHostMirrors();
+  // the tree is rebuilt from the records (SelectiveFinalize); the prefix recorded no device tree and replayed no host
+  // mirrors, so the tree is still in its constructor state
   if (levels_applied == 0) {
     // the root found no valid split: the host loop's first readback, with its root pair
     pairs->assign(1, root_pair);

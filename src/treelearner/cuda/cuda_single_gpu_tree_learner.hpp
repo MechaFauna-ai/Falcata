@@ -320,7 +320,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     const std::vector<int>& batch_info,
     std::vector<HybridPendingPair>* next_pairs,
     int* num_splits);
-  // the same over 18 ints per applied split at batch_info (cuda_plan key selective_prefix_lean_handoff: the prefix's
+  // the same over 18 ints per applied split at batch_info (the selective prefix's hand-off: the prefix's
   // split-batch readback in place, without a per-level slice copy)
   void FinishLevelBookkeeping(const std::vector<HybridAppliedSplit>& applied,
     const int* batch_info,

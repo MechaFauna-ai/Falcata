@@ -975,27 +975,12 @@ struct FalcataPlan {
   // assigned leaf-ascending instead of in greedy order, which no search, simulation or renumbering reads: bit-identical.
   // Engages only when K >= 2 (num_leaves >= 4 and, with a depth limit, max_depth >= 3), like the prefix itself.
   // Quantized, two-sync, single GPU, no categorical features, per-node masks or vector leaves (device_levels' gate).
+  // The selective prefix records no device tree (selective growth rebuilds its tree from its own records), builds the
+  // host records in place at the hand-off, and bounds each level's partition launch by the complete device tree's
+  // joint worker bound. Every prefix (selective or not) selects with register-batched loads and a block-wide journal
+  // copy, the copy fused into each level's sync kernel from a shared-memory config: the same descriptors, journal and
+  // records.
   bool selective_device_prefix = true;  // key: selective_device_prefix
-  // selective_device_prefix's trim (each switchable for A/B attribution; all four act on the selective prefix only:
-  // the complete device tree and the plain device_levels prefix keep their launches):
-  // - no device tree record on the prefix's levels: the select writes no batch-split descriptors, the per-level
-  //   SplitBatch launch and its stream edges go, and the host replays no tree mirrors it would undo. The selective flow
-  //   rebuilds the tree from its own records (RebuildFromHostSplits uploads every leaf value), so nothing read them.
-  bool selective_prefix_no_record = true;  // key: selective_prefix_no_record
-  // - the select that runs in the last block of each level's sync kernel (a serial tail after every pair block)
-  //   stages the config in shared memory (it was read through a global pointer, re-read after every store), loads
-  //   each thread's leaves and splits into registers before any store, takes the slot offsets from the flat scan
-  //   (one block scan less), and copies the journaled best-split records with the whole block, eight independent
-  //   word loads per thread before their stores (they were one dependent load per word). The same leaf-ascending
-  //   is_valid scan, the same descriptors, journal and record bytes.
-  bool selective_prefix_select_fast = true;  // key: selective_prefix_select_fast
-  // - the hand-off writes the selective records in place (one copy of each journaled record instead of three) and
-  //   runs the level bookkeeping on the pinned split-batch readback without per-level slice copies.
-  bool selective_prefix_lean_handoff = true;  // key: selective_prefix_lean_handoff
-  // - the fused partition launch of each prefix level takes the complete device tree's joint worker bound
-  //   (ceil(rows / 1024) + 2 * 2^level - 1 workers, plus the descriptor block) instead of three worst-case extents;
-  //   its grid-stride loop visits every descriptor and chunk either way.
-  bool selective_prefix_joint_grid = true;  // key: selective_prefix_joint_grid
   // the complete device tree under per-node feature masks (feature_fraction_bynode < 1, no interaction constraints,
   // level_bynode_masks): each node's keyed sample (ColSampler::GetByNodeKeyed: the generator seeded by the seed, the
   // tree count and the node's path, Random::Sample, then the node's task list) is drawn by a device kernel on a side
@@ -1188,10 +1173,6 @@ struct FalcataPlan {
     if (key == "device_tree") return &device_tree;
     if (key == "device_tree_lean_end") return &device_tree_lean_end;
     if (key == "selective_device_prefix") return &selective_device_prefix;
-    if (key == "selective_prefix_no_record") return &selective_prefix_no_record;
-    if (key == "selective_prefix_select_fast") return &selective_prefix_select_fast;
-    if (key == "selective_prefix_lean_handoff") return &selective_prefix_lean_handoff;
-    if (key == "selective_prefix_joint_grid") return &selective_prefix_joint_grid;
     if (key == "device_bynode_masks") return &device_bynode_masks;
     if (key == "device_level_graph") return &device_level_graph;
     if (key == "device_level_graph_update") return &device_level_graph_update;

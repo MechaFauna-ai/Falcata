@@ -174,13 +174,12 @@ struct CUDADeviceLevelConfig {
   /*! \brief cuda_plan key selective_device_prefix: per applied split (in applied order, at the journal's split
    *  index) a raw copy of the split's best-split record as the select reads it; nullptr: not recorded */
   CUDASplitInfo* split_info_journal;
-  /*! \brief cuda_plan key selective_prefix_no_record: the select writes no tree-record descriptors (tree_batch_splits)
-   *  and the enqueue launches no tree record (the selective flow rebuilds the tree from its own records) */
+  /*! \brief the selective prefix (set together with split_info_journal): the select writes no tree-record descriptors
+   *  (tree_batch_splits) and the enqueue launches no tree record (the selective flow rebuilds the tree from its own
+   *  records) */
   int skip_tree_record;
-  /*! \brief host-side launch choices of the selective prefix (the kernels do not read them): cuda_plan keys
-   *  selective_prefix_select_fast (the fused select's variant) and selective_prefix_joint_grid (the partition's
-   *  worker bound) */
-  int select_fast;
+  /*! \brief host-side launch choice (the kernels do not read it): the selective prefix's partition launches take the
+   *  whole tree's joint worker bound */
   int joint_grid_bound;
 };
 

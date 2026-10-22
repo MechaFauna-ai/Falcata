@@ -62,13 +62,19 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
   }
 }
 
-// One level's host decisions between its search and its apply (DeviceLevelSelectBlock, cuda_device_levels.cuh), as a
-// launch of its own where the level's sync does not run them in its last block (MAX_SPLITS: kDeviceLevelMaxPairs for
-// the prefix, kDeviceTreeMaxSplits for a whole tree, whose final level has up to 2^(max_depth - 1) splits)
+// One level's host decisions between its search and its apply (cuda_device_levels.cuh), as a launch of its own where
+// the level's sync does not run them in its last block (the prefix's root level, or every level when the sync kernel
+// is not the used-task one). MAX_SPLITS: kDeviceLevelMaxPairs for the prefix (never binding: DeviceLevelSelectBlockFast,
+// the body the fused copy runs), kDeviceTreeMaxSplits for a whole tree (DeviceLevelSelectBlock, whose final level has
+// up to 2^(max_depth - 1) splits and may bind)
 template <int MAX_SPLITS>
 __global__ void DeviceLevelSelectKernel(const CUDADeviceLevelConfig cfg, const int level) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the level sync's leaf entries are complete and visible
-  DeviceLevelSelectBlock<MAX_SPLITS>(cfg, level);
+  if constexpr (MAX_SPLITS == kDeviceTreeMaxSplits) {
+    DeviceLevelSelectBlock<MAX_SPLITS>(cfg, level);
+  } else {
+    DeviceLevelSelectBlockFast<MAX_SPLITS>(cfg, level);
+  }
 }
 
 // The children's search descriptors of the level just applied (DeviceLevelPairsBlock, cuda_device_levels.cuh), as a

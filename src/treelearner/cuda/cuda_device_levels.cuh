@@ -363,9 +363,8 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   }
 }
 
-/*! \brief cuda_plan key selective_prefix_select_fast: DeviceLevelSelectBlock for a nonbinding prefix level (no whole
- *  tree), as the copy fused into the selective prefix's level sync runs it (cfg staged in shared memory by the
- *  caller). Each thread holds at most CHUNK leaves and CHUNK splits (2 * MAX_SPLITS <= CHUNK * blockDim.x; past it
+/*! \brief DeviceLevelSelectBlock for a nonbinding prefix level (no whole tree): the copy fused into every prefix's
+ *  level sync (cfg staged in shared memory by the caller) and the prefix's standalone select (cfg by value). Each thread holds at most CHUNK leaves and CHUNK splits (2 * MAX_SPLITS <= CHUNK * blockDim.x; past it
  *  the level stops with the error flag) and first loads every input of them into registers, then stores: the plain
  *  block interleaves dependent global loads with stores the compiler must assume alias them, so a thread's leaves,
  *  splits and journal words each cost a memory round trip in sequence. Same results as the plain block on such a

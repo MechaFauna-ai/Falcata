@@ -250,61 +250,29 @@ def test_selective_device_prefix_bynode_same_model_cuda(objective):
     assert "device_levels: host fallback (unsupported prefix kernels or configuration)" in on
 
 
-# the prefix's trim (cuda_plan keys selective_prefix_no_record / _select_fast / _lean_handoff / _joint_grid, default
-# on): each switched off alone, all four off, and the prefix off must give the default's model, with the prefix taken
-# on every tree whenever selective_device_prefix is on
-_TRIM_KEYS = (
-    "selective_prefix_no_record",
-    "selective_prefix_select_fast",
-    "selective_prefix_lean_handoff",
-    "selective_prefix_joint_grid",
-)
-_TRIM_PLANS = (
-    "auto",
-    *(f"auto,{key}:off" for key in _TRIM_KEYS),
-    "auto," + ",".join(f"{key}:off" for key in _TRIM_KEYS),
-)
-
-
-def _same_trim(params, X, y, rounds=8, suffix=""):
-    md5 = {}
-    for plan in _TRIM_PLANS:
-        md5[plan], trees, lines = _train_diag({**params, "cuda_plan": plan + suffix}, X, y, rounds)
-        assert len(lines) == trees, (plan, trees, len(lines))
-    md5["off"], _, lines = _train_diag({**params, "cuda_plan": "auto" + _OFF + suffix}, X, y, rounds)
-    assert not lines
-    assert len(set(md5.values())) == 1, md5
-
-
+# the selective prefix records no device tree, selects in the fused sync tail from registers, rebuilds the host records
+# in place and bounds its partition launches; the default must still give the host flow's model where the prefix's
+# levels reach every select path (with _SHAPES: leaves without a valid split, bagging, exact fits)
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("objective", ["regression", "binary", "multiclass"])
 @pytest.mark.parametrize(
     ("leaves", "depth", "extra"),
     [
-        (63, -1, {}),
-        (32, -1, {}),  # exact fit
         (63, 10, {"min_data_in_leaf": 150}),  # binding budget, leaves without a valid split on the prefix levels
-        (63, -1, {"bagging_fraction": 0.6, "bagging_freq": 1}),
+        (63, 10, {"bagging_fraction": 0.6, "bagging_freq": 1}),  # binding budget under row bagging
     ],
 )
-def test_selective_prefix_trim_same_model_cuda(objective, leaves, depth, extra):
+def test_selective_device_prefix_trimmed_levels_same_model_cuda(objective, leaves, depth, extra):
     X, y = _data(objective)
-    _same_trim(_params(objective, leaves, depth, **extra), X, y)
+    _same(_params(objective, leaves, depth, **extra), X, y)
 
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["on", "off"])
-def test_selective_prefix_trim_wide_same_model_cuda(graph):
-    # K = 10: the fused select's widest level (512 splits over 1024 leaves, two splits per thread of its block)
-    X, y = _data("regression", rows=40000)
-    _same_trim(_params("regression", 1024, -1), X, y, rounds=4, suffix=f",device_level_graph:{graph}")
-
-
-@_REQUIRES_CUDA
-def test_selective_prefix_trim_diag_cuda():
-    params = {"objective": "regression", "num_leaves": 63, "max_depth": -1, "min_data_in_leaf": 5}
-    on, _ = _diag({**params, "cuda_plan": "auto"}, 2)
-    assert "selective_device_prefix_trim: no_record=1 select_fast=1 lean_handoff=1 joint_grid=1" in on
-    off_plan = "auto," + ",".join(f"{key}:off" for key in _TRIM_KEYS)
-    off, _ = _diag({**params, "cuda_plan": off_plan}, 2)
-    assert "selective_device_prefix_trim: no_record=0 select_fast=0 lean_handoff=0 joint_grid=0" in off
+def test_selective_device_prefix_wide_same_model_cuda(graph):
+    # K = 10 with a level over 256 splits: the fused select's two splits per thread of its 256-thread block. Levels
+    # 0-8 hold at most 511 splits, so more than 767 prefix splits put more than 256 on level 9 (this data: ~810-830)
+    X, y = _data("regression", rows=100000)
+    plans = tuple(f"{p},device_level_graph:{graph}" for p in ("auto", "auto" + _OFF, "auto,device_levels:off"))
+    lines = _same(_params("regression", 1024, -1), X, y, rounds=3, plans=plans)
+    assert all(levels == 10 and applied == 10 and splits > 767 for levels, applied, splits, _, _ in lines), lines
