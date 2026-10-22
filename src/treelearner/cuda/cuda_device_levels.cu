@@ -53,6 +53,7 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
     st->construct_total_blocks = 0;
     st->max_smaller = 0;
     st->sync_blocks_done = 0;
+    st->construct_block_start = cfg.construct_block_start;
   }
   if (threadIdx.x < kDeviceLevelJournalHeader) {
     cfg.journal[threadIdx.x] = 0;
@@ -65,13 +66,14 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
 // One level's host decisions between its search and its apply (cuda_device_levels.cuh), as a launch of its own where
 // the level's sync does not run them in its last block (the prefix's root level, or every level when the sync kernel
 // is not the used-task one). MAX_SPLITS: kDeviceLevelMaxPairs for the prefix (never binding: DeviceLevelSelectBlockFast,
-// the body the fused copy runs), kDeviceTreeMaxSplits for a whole tree (DeviceLevelSelectBlock, whose final level has
-// up to 2^(max_depth - 1) splits and may bind)
-template <int MAX_SPLITS>
+// the body the fused copy runs), kDeviceTreeSharedSplits for a whole tree (DeviceLevelSelectBlock, whose final level
+// has up to 2^(max_depth - 1) splits and may bind); GLOBAL: a whole tree's level wider than kDeviceTreeSharedSplits
+// (the select's arrays in global scratch)
+template <int MAX_SPLITS, bool GLOBAL = false>
 __global__ void DeviceLevelSelectKernel(const CUDADeviceLevelConfig cfg, const int level) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the level sync's leaf entries are complete and visible
-  if constexpr (MAX_SPLITS == kDeviceTreeMaxSplits) {
-    DeviceLevelSelectBlock<MAX_SPLITS>(cfg, level);
+  if constexpr (GLOBAL || MAX_SPLITS == kDeviceTreeSharedSplits) {
+    DeviceLevelSelectBlock<MAX_SPLITS, GLOBAL>(cfg, level);
   } else {
     DeviceLevelSelectBlockFast<MAX_SPLITS>(cfg, level);
   }
@@ -100,7 +102,7 @@ __device__ __forceinline__ uint64_t DeviceBynodeMixKey(uint64_t z) {
 // the generator's draws in Random::Sample's order (each draw depends on the ones before it); the block clears and
 // writes the row and compacts the task list in ascending task index.
 __device__ __forceinline__ void DeviceBynodeDrawNode(const CUDADeviceBynodeConfig& cfg, const uint64_t key,
-                                                     const int leaf) {
+                                                     const int leaf, const int slot) {
   extern __shared__ uint32_t s_bits[];
   __shared__ int s_warp[32];
   __shared__ int s_total;
@@ -151,7 +153,7 @@ __device__ __forceinline__ void DeviceBynodeDrawNode(const CUDADeviceBynodeConfi
       }
     }
   }
-  int8_t* row = cfg.rows + static_cast<size_t>(leaf) * static_cast<size_t>(cfg.num_features);
+  int8_t* row = cfg.rows + static_cast<size_t>(slot) * static_cast<size_t>(cfg.num_features);
   for (int f = tid; f < cfg.num_features; f += nt) {
     row[f] = 0;
   }
@@ -163,7 +165,7 @@ __device__ __forceinline__ void DeviceBynodeDrawNode(const CUDADeviceBynodeConfi
   }
   __syncthreads();
   // the tasks of the sampled features, ascending (CommitLevelNodeMasks sorts each row's tasks)
-  int* list = cfg.tasks + 2 * cfg.num_slots + static_cast<size_t>(leaf) * static_cast<size_t>(cfg.max_tasks);
+  int* list = cfg.tasks + 2 * cfg.num_slots + static_cast<size_t>(slot) * static_cast<size_t>(cfg.max_tasks);
   int count = 0;
   for (int base = 0; base < cfg.num_tasks; base += nt) {
     const int t = base + tid;
@@ -175,8 +177,11 @@ __device__ __forceinline__ void DeviceBynodeDrawNode(const CUDADeviceBynodeConfi
     count += s_total;
   }
   if (tid == 0) {
-    cfg.tasks[2 * leaf] = 2 * cfg.num_slots + leaf * cfg.max_tasks;
+    cfg.tasks[2 * leaf] = 2 * cfg.num_slots + slot * cfg.max_tasks;
     cfg.tasks[2 * leaf + 1] = min(count, cfg.max_tasks);
+    if (cfg.table != nullptr) {
+      cfg.table[leaf] = row;  // pair chunking: the leaf's row lives in its chunk slot
+    }
   }
 }
 
@@ -184,13 +189,15 @@ __global__ void DeviceBynodeRootMaskKernel(const CUDADeviceBynodeConfig cfg, con
   if (threadIdx.x == 0) {
     cfg.keys[0] = root_key;
   }
-  DeviceBynodeDrawNode(cfg, root_key, 0);
+  DeviceBynodeDrawNode(cfg, root_key, 0, 0);
 }
 
-// block (k, side): side 0 the left child of the level's split k (the parent's leaf index), side 1 the right child
+// block (k, side): side 0 the left child of the level's split chunk_base + k (the parent's leaf index), side 1 the
+// right child. Pair chunking (cfg.table): the child's row slot is 1 + 2 k + side within the chunk; otherwise its leaf
 __global__ void DeviceBynodeLevelMasksKernel(const CUDADeviceBynodeConfig cfg, const CUDADeviceLevelState* st,
-                                             const CUDAHybridApplyDescriptor* apply_descs, const int level) {
-  const int k = static_cast<int>(blockIdx.x);
+                                             const CUDAHybridApplyDescriptor* apply_descs, const int level,
+                                             const int chunk_base) {
+  const int k = chunk_base + static_cast<int>(blockIdx.x);
   if (k >= st->live_pairs) {
     return;
   }
@@ -203,7 +210,8 @@ __global__ void DeviceBynodeLevelMasksKernel(const CUDADeviceBynodeConfig cfg, c
   if (threadIdx.x == 0) {
     cfg.keys[static_cast<size_t>((level + 1) & 1) * cfg.num_slots + leaf] = key;
   }
-  DeviceBynodeDrawNode(cfg, key, leaf);
+  DeviceBynodeDrawNode(cfg, key, leaf, cfg.table != nullptr ? 1 + 2 * static_cast<int>(blockIdx.x) +
+                                                                  static_cast<int>(blockIdx.y) : leaf);
 }
 
 }  // anonymous namespace
@@ -215,10 +223,10 @@ void LaunchDeviceBynodeRootMask(const CUDADeviceBynodeConfig& config, const uint
 
 void LaunchDeviceBynodeLevelMasks(const CUDADeviceBynodeConfig& config, const CUDADeviceLevelState* state,
                                   const CUDAHybridApplyDescriptor* apply_descs, const int level, const int max_splits,
-                                  cudaStream_t stream) {
+                                  const int chunk_base, cudaStream_t stream) {
   DeviceBynodeLevelMasksKernel<<<dim3(max_splits, 2), kDeviceBynodeThreads,
                                  DeviceBynodeSharedBytes(config.num_features), stream>>>(
-    config, state, apply_descs, level);
+    config, state, apply_descs, level, chunk_base);
 }
 
 void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_leaves, cudaStream_t stream) {
@@ -228,8 +236,12 @@ void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_l
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
                              cudaStream_t stream) {
   // cuda_plan key pdl_level_chain: a programmatic dependent of the level sync launched just before on this stream
-  if (config.whole_tree) {
-    LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceTreeMaxSplits>, dim3(1),
+  if (config.whole_tree && max_splits > kDeviceTreeSharedSplits) {
+    // a level wider than the shared select: the same select over global scratch (DeviceLevelBitonicSortGlobal)
+    LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceTreeSharedSplits, true>, dim3(1),
+                           dim3(DeviceLevelThreads(max_splits)), 0, stream, config, level);
+  } else if (config.whole_tree) {
+    LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceTreeSharedSplits>, dim3(1),
                            dim3(DeviceLevelThreads(max_splits)), 0, stream, config, level);
   } else {
     LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceLevelMaxPairs>, dim3(1),

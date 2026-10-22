@@ -1334,7 +1334,7 @@ def build_cells():
     for cid, profile, params, rounds, extra in [
         ("r01-depth13", "dense", {"num_leaves": 8191, "max_depth": 13, "min_data_in_leaf": 1}, 5, {}),
         # vramfree=1 caps every free-memory check, the histogram constructor's (view regime, column-major fill
-        # reserves) as well as the device tree's scratch gate
+        # reserves) as well as the device tree's pair-chunk plan (its level searches run in pair chunks)
         (
             "r02-memgate",
             "dense",
