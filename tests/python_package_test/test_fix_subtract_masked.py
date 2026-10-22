@@ -5,7 +5,7 @@ cuda_plan key fix_subtract_masked runs the most-frequent-bin fix of the smaller 
 subtract of the larger leaf in one launch: the subtract blocks skip the need-fix features' most-frequent bins, and
 the fix block of each such feature subtracts its fixed value. Integer arithmetic per bin in the same bit-width
 cases, so the trained model must be byte-identical with the key on or off. The sweep covers where it runs: the
-host-launched level path, the captured graph level loop (graph_quant:on), the classic leaf-wise loop (no depth
+complete device tree, the host-launched level path (device_tree:off), the classic leaf-wise loop (no depth
 limit; columns stored sparse), feature sampling with columns wider than fix_subtract_fused serves, bagging, and leaves
 large enough for 32-bit histogram bins (the bit-change buffer case).
 """
@@ -57,7 +57,7 @@ def _train(rows, density, params, rounds=12):
 
 CASES = [
     pytest.param(60_001, 0.6, {}, id="level"),
-    pytest.param(60_001, 0.6, {"num_leaves": 15, "max_depth": 4, "plan": "graph_quant:on"}, id="graph-level"),
+    pytest.param(60_001, 0.6, {"num_leaves": 15, "max_depth": 4, "plan": "device_tree:off"}, id="prefix-level"),
     pytest.param(60_001, 0.12, {"num_leaves": 63, "max_depth": -1}, id="leaf-wise-sparse"),
     pytest.param(60_001, 0.6, {"feature_fraction": 0.5}, id="feature-sampling"),
     pytest.param(60_001, 0.6, {"bagging_fraction": 0.7, "bagging_freq": 1}, id="bagging"),

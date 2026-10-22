@@ -54,8 +54,8 @@ What makes it fast
 - **An execution planner.** Shape-conditional kernel choices are resolved once
   from the data and parameters (`cuda_plan=auto`) instead of from a pile of
   environment variables — every decision bit-identical except where the
-  `cuda_plan` documentation says otherwise (`robust_scale`, and the tie order
-  of `batch_kernels`), and individually overridable for experiments.
+  `cuda_plan` documentation says otherwise (`robust_scale`), and individually
+  overridable for experiments.
 - **GPU inference via NVIDIA FIL.** `Booster.predict()` transparently runs on
   cuML's Forest Inference Library when available (see below); CuPy arrays stay
   on the device end to end.

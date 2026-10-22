@@ -64,10 +64,8 @@ CUDABestSplitFinder::CUDABestSplitFinder(
 }
 
 CUDABestSplitFinder::~CUDABestSplitFinder() {
-  if (std::getenv("FALCATA_SINGLE_STREAM") == nullptr) {
-    gpuAssert(cudaStreamDestroy(cuda_streams_[0]), __FILE__, __LINE__);
-    gpuAssert(cudaStreamDestroy(cuda_streams_[1]), __FILE__, __LINE__);
-  }
+  gpuAssert(cudaStreamDestroy(cuda_streams_[0]), __FILE__, __LINE__);
+  gpuAssert(cudaStreamDestroy(cuda_streams_[1]), __FILE__, __LINE__);
   cuda_streams_.clear();
   cuda_streams_.shrink_to_fit();
   if (pinned_leaf_best_split_info_ != nullptr) {
@@ -125,13 +123,8 @@ void CUDABestSplitFinder::InitFeatureMetaInfo(const Dataset* train_data) {
 void CUDABestSplitFinder::Init() {
   InitCUDAFeatureMetaInfo();
   cuda_streams_.resize(2);
-  if (std::getenv("FALCATA_SINGLE_STREAM") != nullptr) {
-    // Diagnostic: legacy default stream orders against every blocking stream.
-    cuda_streams_[0] = cuda_streams_[1] = cudaStreamLegacy;
-  } else {
-    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[0]));
-    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[1]));
-  }
+  CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[0]));
+  CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[1]));
   cuda_best_split_info_buffer_.Resize(8);
   if (use_global_memory_) {
     // 2x: separate staging regions for the forward and reverse direction

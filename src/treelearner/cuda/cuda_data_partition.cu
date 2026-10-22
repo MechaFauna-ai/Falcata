@@ -1135,10 +1135,7 @@ void CUDADataPartition::LaunchSplitInnerKernel(
   double* left_leaf_sum_of_gradients_ref,
   double* right_leaf_sum_of_gradients_ref,
   data_size_t* global_left_leaf_num_data,
-  data_size_t* global_right_leaf_num_data,
-  const bool point_structs_at_main,
-  const int deferred_slot,
-  const data_size_t leaf_data_start_for_copy) {
+  data_size_t* global_right_leaf_num_data) {
   EnsureLevelPartitioned();  // cuda_plan key final_map_only
   level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
   int num_blocks_final_ref = grid_dim_ - 1;
@@ -1192,15 +1189,14 @@ void CUDADataPartition::LaunchSplitInnerKernel(
 
   global_timer.Start("CUDADataPartition::SplitTreeStructureKernel");
 
-  int* split_info_ptr = cuda_split_info_buffer_.RawData() +
-    (deferred_slot >= 0 ? 18 * static_cast<size_t>(deferred_slot) : 0);
+  int* split_info_ptr = cuda_split_info_buffer_.RawData();
 #define SPLIT_TREE_ARGS \
   left_leaf_index, right_leaf_index, \
   cuda_block_data_to_left_offset_.RawData(), \
   cuda_block_data_to_right_offset_.RawData(), cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), \
   cuda_leaf_num_data_.RawData(), cuda_out_data_indices_in_leaf_.RawData(), \
   cuda_data_indices_.RawData(), \
-  point_structs_at_main, \
+  /*point_structs_at_main=*/false, \
   best_split_info, \
   smaller_leaf_splits, \
   larger_leaf_splits, \
@@ -1225,16 +1221,6 @@ void CUDADataPartition::LaunchSplitInnerKernel(
 
 #undef SPLIT_TREE_ARGS
   global_timer.Stop("CUDADataPartition::SplitTreeStructureKernel");
-  if (deferred_slot >= 0) {
-    // deferred (level-batched) mode: no per-split synchronization. The copy's
-    // destination and size are host-known (the split leaf's region); split info
-    // is read back once per level via FinishSplitBatch.
-    CopyDataIndicesKernel<<<grid_dim_, block_dim_, 0, cuda_streams_[2]>>>(
-      num_data_in_leaf, cuda_out_data_indices_in_leaf_.RawData(),
-      cuda_data_indices_.RawData() + leaf_data_start_for_copy);
-    CUDASUCCESS_OR_FATAL(cudaEventRecord(indices_copy_done_event_, cuda_streams_[2]));
-    return;
-  }
   std::vector<int> cpu_split_info_buffer(18);
   const double* cpu_sum_hessians_info = reinterpret_cast<const double*>(cpu_split_info_buffer.data() + 8);
   global_timer.Start("CUDADataPartition::CopyFromCUDADeviceToHostAsync");
@@ -1981,7 +1967,7 @@ __global__ void HybridSplitInnerBatchKernel(
 // Batched apply always points child structs at the main index array. Each
 // split uses one warp, retaining the ordinary kernel's lane-to-field mapping.
 // the per-split body of HybridSplitTreeStructureBatchKernel (global_thread_index in [0, 32)); also run by warp 0
-// of the split's struct block in HybridSplitInnerFusedBatchKernel (cuda_plan key apply_struct_fused)
+// of the split's struct block in HybridSplitInnerFusedBatchKernel
 template <bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
 __device__ __forceinline__ void HybridSplitTreeStructureSplit(
   const CUDAHybridApplyDescriptor& d,
@@ -2086,7 +2072,7 @@ void CUDADataPartition::CollapseLeafWindows(const std::vector<CUDACollapseWindow
     cuda_data_index_to_leaf_index_.RawData());
 }
 
-// cuda_plan keys apply_struct_fused / gap_copy_fused: HybridSplitInnerBatchKernel's host-launched flat grid with two
+// HybridSplitInnerBatchKernel's host-launched flat grid with two
 // more kinds of flat id. [0, num_struct_blocks): HybridSplitTreeStructureBatchKernel's body for split flat in warp 0
 // (its inputs, the aggregate's child counts and starts and the level's split infos, are final before this kernel; it
 // writes the tree-structure outputs nobody here reads), first so its short dependent chain overlaps the partition.
@@ -2482,11 +2468,11 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
     // FinishSplitBatch waits on this instead of the device (split_counts_early)
     CUDASUCCESS_OR_FATAL(cudaEventRecord(aggregate_done_event_, cuda_streams_[0]));
   }
-  // cuda_plan keys apply_struct_fused / gap_copy_fused: the tree-structure update and the gap copy as extra flat ids
-  // of the partition kernel. cuda_plan key final_map_only (map_only): only the row -> leaf map is written, not the
+  // the tree-structure update and the gap copy as extra flat ids of the partition kernel. cuda_plan key
+  // final_map_only (map_only): only the row -> leaf map is written, not the
   // children's index windows (no partition, no gap copy below; the caller guarantees nothing reads them), by the
   // unfused map-only split-inner kernel followed by the unfused tree-structure kernel
-  const bool struct_fused = !map_only && FalcataPlan::Get().apply_struct_fused;
+  const bool struct_fused = !map_only;
   const bool gap_fused = !map_only && num_gaps > 0 && gap_flat_blocks > 0;
   // cuda_plan key device_levels: only the fused tree-structure and gap ids read the device counts
   CHECK(dls == nullptr || (struct_fused && gap_fused));

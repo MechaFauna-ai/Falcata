@@ -86,7 +86,7 @@ def test_device_tree_root_tail_matches_host_cuda(graph):
     )
     # every device tree engaged (no plan fallback)
     assert len(events) == len(data["device"]), result.stderr
-    assert "device_tree: host fallback" not in result.stderr
+    assert "device_tree: fallback (" not in result.stderr
     # the device must not record an empty tree where the host grows one, and the models must be identical
     stumps = [i for i, (h, d) in enumerate(zip(data["host"], data["device"], strict=True)) if d == 1 and h > 1]
     assert not stumps, f"device stumps where the host grows trees: {stumps}"

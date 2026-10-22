@@ -92,7 +92,7 @@ def test_cuda_nibble_reader_ordering(tmp_path):
             assert not events, diag
         else:
             assert len(events) == _ROUNDS, diag
-            assert "device_tree: host fallback" not in diag
+            assert "device_tree: fallback (" not in diag
             assert "quantized construct: pair_hist (device levels) kernel" in diag
             assert "pair_code5_words (device levels)" not in diag
             for event, leaves in zip(events, data["leaves"], strict=True):

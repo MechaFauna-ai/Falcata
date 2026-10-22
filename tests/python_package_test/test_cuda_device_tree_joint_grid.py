@@ -68,7 +68,7 @@ def test_whole_joint_grid_reference_cuda(graph, scenario):
         diag,
     )
     assert len(events) == data["stages"], diag
-    assert "device_tree: host fallback" not in diag
+    assert "device_tree: fallback (" not in diag
     if scenario == "full":
         assert tuple(map(int, events[0][:3])) == (10, 10, 1023)
     else:

@@ -31,9 +31,9 @@
 namespace Falcata {
 
 /*! \brief Host-side per-split input for the batched (per-level) apply phase of the
- *  hybrid growth: everything the per-split Split() call would receive, restricted
- *  to numerical splits in deferred mode with point_structs_at_main semantics. The
- *  deferred split-info slot of split k is k (18 ints each, see FinishSplitBatch). */
+ *  hybrid growth: everything the per-split Split() call receives, with the children's
+ *  structs pointed at the main index array. The split-info slot of split k is k (18
+ *  ints each, see FinishSplitBatch). */
 struct CUDAHybridApplySplitInput {
   const CUDASplitInfo* best_split_info;
   int left_leaf_index;
@@ -270,13 +270,11 @@ class CUDADataPartition: public NCCLInfo {
     double* left_leaf_sum_of_gradients,
     double* right_leaf_sum_of_gradients,
     data_size_t* global_left_leaf_num_data,
-    data_size_t* global_right_leaf_num_data,
-    const bool point_structs_at_main = false,
-    const int deferred_slot = -1);
+    data_size_t* global_right_leaf_num_data);
 
-  // Deferred split-info readback for the hybrid level-batched growth: one device
+  // Split-info readback for the hybrid level-batched growth: one device
   // synchronization + one transfer for all of a level's splits (18 ints per split,
-  // laid out by the deferred_slot passed to Split). Layout per slot: [0] left leaf,
+  // slot k for the level's split k). Layout per slot: [0] left leaf,
   // [1] left count, [2] left start, [4] right count, [5] right start, [6] right leaf,
   // ints [8..15] reinterpreted as 4 doubles: left/right sum_hessians, left/right
   // sum_gradients.
@@ -300,9 +298,9 @@ class CUDADataPartition: public NCCLInfo {
    *  numerical splits of a level with one launch per kernel family (gen bit
    *  vector, update data-index-to-leaf-index, aggregate block offsets, split
    *  inner, split tree structure, copy indices) and ZERO host synchronization.
-   *  Equivalent to calling Split(..., point_structs_at_main=true, deferred_slot=k)
-   *  for k = 0..n-1: split k writes deferred split-info slot k, read back by the
-   *  caller via FinishSplitBatch(n). Requires the level's splits to partition
+   *  Equivalent to n per-split Split calls whose children's structs point at the
+   *  main index array: split k writes split-info slot k, read back by the caller
+   *  via FinishSplitBatch(n). Requires the level's splits to partition
    *  disjoint index regions (host-known leaf_data_start/num_data from the
    *  previous level's readback). */
   /*! \brief write_leaf_map: the level is known to be the tree's last (children
@@ -503,7 +501,7 @@ class CUDADataPartition: public NCCLInfo {
    *  MFB-membership (the classic flow needs a host D2H for this) */
   void LaunchBuildCatBitsetArenaKernel(const int num_splits, const std::vector<int>& cat_desc_indices,
                                        const std::vector<uint32_t>& cat_mfb_bins);
-  /*! \brief gap_flat_blocks > 0 (cuda_plan key gap_copy_fused): the gap descriptors' 1024-row chunks, numbered by
+  /*! \brief gap_flat_blocks > 0: the gap descriptors' 1024-row chunks, numbered by
    *  their flat_block_start from total_flat_blocks on, run in the partition kernel's flat grid instead of the separate
    *  gap copy kernel */
   void LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
@@ -551,10 +549,7 @@ class CUDADataPartition: public NCCLInfo {
     double* left_leaf_sum_of_gradients,
     double* right_leaf_sum_of_gradients,
     data_size_t* global_left_leaf_num_data,
-    data_size_t* global_right_leaf_num_data,
-    const bool point_structs_at_main,
-    const int deferred_slot,
-    const data_size_t leaf_data_start_for_copy);
+    data_size_t* global_right_leaf_num_data);
 
   // kernel launch functions
   void LaunchFillDataIndicesBeforeTrain();
@@ -580,10 +575,7 @@ class CUDADataPartition: public NCCLInfo {
     double* left_leaf_sum_of_gradients,
     double* right_leaf_sum_of_gradients,
     data_size_t* global_left_leaf_num_data,
-    data_size_t* global_right_leaf_num_data,
-    const bool point_structs_at_main,
-    const int deferred_slot,
-    const data_size_t leaf_data_start_for_copy);
+    data_size_t* global_right_leaf_num_data);
 
   void LaunchGenDataToLeftBitVectorKernel(
     const data_size_t num_data_in_leaf,
