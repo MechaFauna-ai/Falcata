@@ -1382,6 +1382,41 @@ the lattice fingerprints caught) and skips a wasted next-level search; and
 the one-sync prefix admits categorical datasets. A third pass replaced the
 gen/aggregate byte hand-off with packed ballot bits.
 
+**Categorical record per level** (`cuda_plan` key `cat_level_record`, default on, October 2026). After the
+learner-owned record buffers of #170 (no reallocation per split), the level loop still recorded each categorical split
+on its own: a blocking readback of the level's bitset lengths, then per split one `SplitCategoricalKernel` launch and
+two blocking 4-byte D2D copies (the append of the real-value and the inner bitset). The per-level idle fit on
+categorical-control was 31 µs + 7.1 µs per categorical split. Now one SplitBatch launch applies the level's numerical
+splits and one kernel its categorical ones: each block records its node as before and appends its two bitsets at the
+record end (the boundary array's last entry, on the device) plus the summed lengths of the level's earlier categorical
+splits. No length is read back during the tree; at the tree end one pack kernel and one copy bring the whole record
+(both boundary arrays, both bitsets) to the host instead of four copies. The record buffers must hold the level's worst
+case (every split at the per-split bitset stride) before the launch: the host keeps an upper bound of the words
+recorded so far, and only when that bound plus the level's worst case passes the capacity does it read the exact
+counts back (two ints) and grow by doubling; a record above 64Ki words at the tree end (high-cardinality features)
+keeps the four-copy readback. Vector leaves keep the per-split loop. The same words, boundaries and nodes in the same
+order: bit-identical (lattice 441/441, categorical cells md5-equal to master). `FALCATA_DEBUG=diag` prints a
+`cat_level_record` line per tree with the launches, copies and readbacks saved.
+
+The same change fixes the per-split real-value bitset stride: `(max_cat_value + 31) / 32` words is one short when the
+largest category value is a positive multiple of 32, so the level bitset kernel wrote that word into the next split's
+slab region or past the slab (a categorical feature whose largest value is 64 failed with an invalid-argument copy).
+
+Master (5bec2574) vs this change, default plan, RTX 5090, 6 interleaved pairs of 1000 rounds each, model md5 equal per
+arm:
+
+| cell | master ms/tree | `cat_level_record` ms/tree | ratio |
+|---|---|---|---|
+| categorical-control (3 classes, 32 leaves / depth 5) | 0.695 | 0.594 | 1.170x |
+| same at 255 leaves / depth 8 | 1.249 | 1.061 | 1.177x |
+| airline-cat deep (92M rows, 3 categorical columns, 1023 / 10, stochastic quant) | 45.17 | 42.68 | 1.058x |
+| covtype deep (no categorical features, control) | 0.571 | 0.569 | 1.004x |
+
+Per tree under nsys (categorical-control / airline-cat deep): blocking `cudaMemcpy` 55.1 -> 15.0 / 968 -> 21, of them
+D2D 35.2 -> 3.1 / 940 -> 3.7 and D2H 9.0 -> 1.0 / 11.8 -> 1.0; kernels 87 -> 73 / 829 -> 127 (the per-split record
+launches and the numerical SplitBatch chunks between categorical splits); `cudaDeviceSynchronize` and event syncs
+unchanged (7 and 4 / 12 and 9).
+
 **Official numbers of the 1 August 2026 build** (FAIR interleaved protocol: quiet
 desktop, per regime one warmup round-robin then 3 timed rounds with the four
 engines interleaved per round — earlier mixed-condition numbers had up to
