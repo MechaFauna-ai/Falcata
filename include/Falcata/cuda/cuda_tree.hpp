@@ -216,21 +216,12 @@ class CUDATree : public Tree {
    *  device batch buffer), one launch instead of one per split. */
   void SetVectorLeafValuesFromSplitBatch(const int num_splits);
 
-  /*! \brief graphs L1 body capture: launch SplitBatchKernel with a placeholder
-   *  grid on \p stream (the graph controller resizes it per level); the batch
-   *  split descriptors are read from the pooled device buffer the controller
-   *  writes (hybrid_graph_batch_splits()). \p graph_live_split_count is the
-   *  device address of the loop state's live split count: the controller
-   *  freezes the grid at a pow2 bucket and idle blocks guard on it (A2) */
-  void CaptureHybridGraphSplitBatchKernel(cudaStream_t stream,
-                                          const int* graph_live_split_count);
-
   /*! \brief cuda_plan key device_levels: the batch-split kernel of a device-driven level, at its worst-case grid
    *  (max_splits blocks) on the tree stream; blocks past *live_split_count exit */
   void LaunchSplitBatchKernelDevice(const int max_splits, const int* live_split_count);
 
   /*! \brief pooled device buffer of the batched split descriptors (written by
-   *  the graphs L1 device controller; stable across pooled trees) */
+   *  the device levels' select kernel; stable across pooled trees) */
   CUDATreeBatchSplit* hybrid_graph_batch_splits() { return cuda_batch_splits_.RawData(); }
 
   /*! \brief Replace the recorded node counts with the data partition's exact
@@ -240,9 +231,9 @@ class CUDATree : public Tree {
    *  no count), which is exact only for a constant-hessian objective. */
   void SyncNodeCountsFromPartition(const std::vector<data_size_t>& leaf_num_data);
 
-  /*! \brief graphs L1 post-prefix replay: the host-mirror half of SplitBatch
+  /*! \brief device level replay: the host-mirror half of SplitBatch
    *  (branch features, leaf depth, num_leaves_) for ONE split whose device
-   *  updates already ran inside the graph */
+   *  updates already ran on the device */
   void ReplaySplitHostMirrors(const int leaf_index, const int real_feature_index) {
     RecordBranchFeatures(leaf_index, num_leaves_, real_feature_index);
     leaf_depth_[num_leaves_] = leaf_depth_[leaf_index] + 1;

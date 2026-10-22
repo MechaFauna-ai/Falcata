@@ -34,6 +34,12 @@
 
 #include <cstdint>
 
+// device-updatable graph launches and the cached level graphs (cuda_plan keys device_level_graph, device_tree) need
+// CUDA 12.4; older toolkits build the host level flows only
+#if CUDART_VERSION >= 12040
+#define FALCATA_HYBRID_GRAPH_SUPPORTED 1
+#endif  // CUDART_VERSION >= 12040
+
 namespace Falcata {
 
 struct CUDASplitInfo;
@@ -41,8 +47,38 @@ struct CUDATreeBatchSplit;
 struct CUDAHybridApplyDescriptor;
 struct CUDAHybridPairDescriptor;
 struct CUDALeafSplitsStruct;
-struct CUDAHybridGraphFeatureMeta;
-struct CUDAHybridGraphFeatureSource;
+
+/*! \brief static (per-dataset) split metadata of one inner feature, mirroring the host-side math of
+ *  CUDADataPartition::SplitLevelBatched and the CUDATree::SplitBatch input fields (the device select's apply
+ *  descriptors and tree records) */
+struct CUDAHybridGraphFeatureMeta {
+  uint32_t default_bin;
+  uint32_t most_freq_bin;
+  /*! \brief already single-feature-in-column adjusted (1 when single) */
+  uint32_t min_bin;
+  uint32_t max_bin;
+  int real_feature_index;
+  int missing_type;
+  /*! \brief offset of this feature's bin values in the real-threshold table */
+  uint32_t real_threshold_offset;
+  uint8_t missing_is_zero;
+  uint8_t missing_is_na;
+  uint8_t mfb_is_zero;
+  uint8_t mfb_is_na;
+  /*! \brief 0 when the feature is alone in its column (min_bin forced to 1) */
+  uint8_t use_min_bin;
+  uint8_t padding_[3];
+};
+
+/*! \brief per-tree data source of one inner feature's column (the packed compact matrix is per-tree and
+ *  double-buffered, so pointers change per tree); rebuilt and uploaded before every tree's device levels */
+struct CUDAHybridGraphFeatureSource {
+  const void* column_data;
+  int packed_row_stride;
+  uint8_t packed_shift;
+  uint8_t bit_type;  // 4 == packed compact source
+  uint8_t padding_[2];
+};
 
 /*! \brief most pairs of one device level of the prefix (the select / pairs kernels' block covers 2 * this); also the
  *  select capacity of the copy fused into the prefix's level sync (SyncBestSplitForLevelUsedTasksKernel) */
@@ -53,6 +89,11 @@ constexpr int kDeviceLevelMaxPairs = 512;
 constexpr int kDeviceTreeMaxDepth = 12;
 constexpr int kDeviceTreeMaxSplits = 1 << (kDeviceTreeMaxDepth - 1);
 constexpr int kDeviceTreeMaxPairs = kDeviceTreeMaxSplits / 2;
+/*! \brief the complete device tree's bound under non-quantized training: the shapes the non-quantized graph loop
+ *  (removed in 1.2) served, where the device tree's fixed-point levels train its models; deeper or wider shapes keep
+ *  the one-sync host flow, whose double-slot deterministic construct equals the fixed-point one only empirically */
+constexpr int kNonquantDeviceTreeMaxDepth = 11;
+constexpr int kNonquantDeviceTreeMaxLeaves = 2047;
 static_assert(kDeviceTreeMaxPairs >= kDeviceLevelMaxPairs, "the block map covers the prefix's widest search");
 /*! \brief launch columns of a device level's construct that claim block rows dynamically */
 constexpr int kDeviceLevelClaimColumns = 64;
@@ -139,7 +180,8 @@ struct CUDADeviceLevelConstructShape {
 struct CUDADeviceLevelConfig {
   CUDADeviceLevelState* state;
   const CUDASplitInfo* leaf_best_split_info;
-  /*! \brief fixed root statistics and pooled tree output; complete trees seed root output before the first split */
+  /*! \brief fixed root statistics and pooled tree output; complete quantized trees seed root output before the first
+   *  split (tree_leaf_value nullptr: not seeded, the non-quantized tree's internal_value[0] stays 0) */
   const CUDALeafSplitsStruct* root_struct;
   double* tree_leaf_value;
   const data_size_t* leaf_num_data;

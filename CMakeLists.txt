@@ -768,7 +768,6 @@ set(
       src/treelearner/cuda/cuda_histogram_constructor_bin8.cu
       src/treelearner/cuda/cuda_histogram_constructor_bin16.cu
       src/treelearner/cuda/cuda_histogram_constructor_bin32.cu
-      src/treelearner/cuda/cuda_hybrid_graph.cu
       src/treelearner/cuda/cuda_device_levels.cu
       src/treelearner/cuda/cuda_leaf_splits.cu
       src/treelearner/cuda/cuda_single_gpu_tree_learner.cu

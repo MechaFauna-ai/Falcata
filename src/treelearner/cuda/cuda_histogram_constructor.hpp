@@ -30,7 +30,6 @@
 
 #include "cuda_device_levels.hpp"
 #include "cuda_leaf_splits.hpp"
-#include "cuda_hybrid_graph.hpp"
 
 #define NUM_DATA_PER_THREAD (400)
 
@@ -158,9 +157,8 @@ __host__ __device__ inline int HybridBatchedConstructGridDimY(
 /*! \brief maximum safe rows-per-thread of the quantized construct kernels'
  *  packed 16+16-bit shared-memory accumulation (see the .cpp comment above
  *  CUDAHistogramConstructor::QuantConstructMaxRowsPerThread, the single host
- *  caller). Shared verbatim by the host grid sizing, the graph controller's
- *  frozen-bucket computation and the quantized construct kernel's device
- *  row-grouping replica. */
+ *  caller). Shared verbatim by the host grid sizing and the device levels'
+ *  construct geometry (DeviceLevelPairsKernel). */
 __host__ __device__ inline int HybridQuantConstructMaxRowsPerThread(
     const int num_grad_quant_bins, const int block_dim_y) {
   const int max_rows_per_block = 65534 / (num_grad_quant_bins > 1 ? num_grad_quant_bins : 1);
@@ -604,86 +602,6 @@ class CUDAHistogramConstructor {
     return 0;
   }
 
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  /*! \brief graphs L1 body capture: construct + fix/subtract kernels with
-   *  placeholder grids on the hist stream, node handles + roles collected for
-   *  the device controller; records subtract_done_events_[0] (the find phase
-   *  waits on it inside the graph exactly like the host flow) */
-  /*! \brief det_max_level_pairs > 0 captures the deterministic construct +
-   *  merge node pair (clamping the det block dy to the slab carve at that
-   *  pair bound) instead of the atomic construct node; 0 keeps the atomic
-   *  capture. The caller passes the SAME choice for every level body (node
-   *  counts must be body-uniform) with each body's own pair bound. */
-  void CaptureHybridGraphSearchKernels(const CUDAHybridPairDescriptor* pair_descs,
-                                       const data_size_t* level_smaller_num_data,
-                                       const CUDAHybridGraphLoopState* gstate,
-                                       const int det_max_level_pairs,
-                                       std::vector<cudaGraphNode_t>* nodes,
-                                       std::vector<int>* roles,
-                                       std::vector<int>* role_static_x);
-
-  /*! \brief static launch extents of the batched construct kernel (grid x and
-   *  block dim y), for the controller's per-level grid-y formula */
-  void HybridGraphConstructDims(int* grid_x, int* block_dim_y) const;
-
-  int hybrid_graph_min_grid_dim_y() const { return min_grid_dim_y_; }
-
-  /*! \brief gradient quantization bin count for the graph loop state (0 for
-   *  non-quantized training: disables the controller's overflow guard and the
-   *  device hist-bits derivation) */
-  int hybrid_graph_num_grad_quant_bins() const {
-    return use_quantized_grad_ ? num_grad_quant_bins_ : 0;
-  }
-
-  /*! \brief quantized graph loop: preallocate the 64->32-bit histogram
-   *  compaction scratch for the worst-case pair count, so the captured buffer
-   *  pointer never reallocates (the host path resizes it lazily) */
-  void EnsureHybridGraphBitChangeCapacity(const int max_pairs) {
-    if (!use_quantized_grad_) {
-      return;
-    }
-    const size_t needed = BitChangeScratchEntries(max_pairs);
-    if (hist_buffer_for_num_bit_change_.Size() < needed) {
-      hist_buffer_for_num_bit_change_.Resize(needed);
-    }
-  }
-
-  /*! \brief per-tree pointers/flags baked into captured construct kernel
-   *  params: a graph instance is only valid for trees whose key matches (the
-   *  compact metadata buffers grow to the running-max sampled column count,
-   *  so their pointers stabilize after the first few trees) */
-  void HybridGraphKeyPointers(std::vector<const void*>* key) const {
-    key->push_back(use_compact_view_ ?
-      static_cast<const void*>(compact_data_uint8_t_.RawDataReadOnly()) : nullptr);
-    key->push_back(use_compact_view_ ?
-      static_cast<const void*>(compact_column_hist_offsets_.RawDataReadOnly()) : nullptr);
-    key->push_back(use_compact_view_ ?
-      static_cast<const void*>(compact_feature_partition_column_index_offsets_.RawDataReadOnly()) : nullptr);
-    key->push_back(use_compact_view_ ?
-      static_cast<const void*>(compact_packed_partition_byte_offsets_.RawDataReadOnly()) : nullptr);
-    // colmajor_direct: a tree without a compact view reads the full view, which is refilled across regimes
-    key->push_back(use_compact_view_ ? nullptr : static_cast<const void*>(full_view_.RawDataReadOnly()));
-    key->push_back(static_cast<const void*>(cuda_gradients_));
-    key->push_back(static_cast<const void*>(cuda_hessians_));
-    key->push_back(static_cast<const void*>(cuda_gradients_hessians_.RawDataReadOnly()));
-    key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
-    key->push_back(static_cast<const void*>(cuda_is_column_used_bytree_.RawDataReadOnly()));
-    key->push_back(any_feature_unused_bytree_ ? this : nullptr);
-    // quantized subtract scratch, baked into the captured subtract/copy params
-    // (presized by EnsureHybridGraphBitChangeCapacity; defensive)
-    key->push_back(use_quantized_grad_ ?
-      static_cast<const void*>(hist_buffer_for_num_bit_change_.RawDataReadOnly()) : nullptr);
-  }
-
-  /*! \brief graphs L1 + compact view: the batched construct BLOCK dims follow
-   *  the per-tree sampled column count and cannot be updated inside a graph
-   *  (only grids are device-updatable), so the construct shape is part of the
-   *  graph key: one instance per distinct shape, each captured with the exact
-   *  host block dims (keeps results bit-identical to the host loop) */
-  int HybridGraphCompactShapeKey() const {
-    return use_compact_view_ ? std::max(1, max_num_compact_cols_per_partition_) : 0;
-  }
-#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   void ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states);
 
@@ -706,11 +624,31 @@ class CUDAHistogramConstructor {
     // is passed to that kernel, fix/subtract, or the finder. All true kernel args and buffer identities stay keyed.
     const bool whole_code_words = shape != nullptr && shape->pair_mode == 1 && shape->kernel_kind == 4 &&
       shape->whole_row_partitions > 0;
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-    HybridGraphKeyPointers(key);
+    // the per-tree pointers baked into captured construct kernel params (the compact metadata buffers grow to the
+    // running-max sampled column count, so their pointers stabilize after the first few trees)
+    key->push_back(use_compact_view_ ?
+      static_cast<const void*>(compact_data_uint8_t_.RawDataReadOnly()) : nullptr);
+    key->push_back(use_compact_view_ ?
+      static_cast<const void*>(compact_column_hist_offsets_.RawDataReadOnly()) : nullptr);
+    key->push_back(use_compact_view_ ?
+      static_cast<const void*>(compact_feature_partition_column_index_offsets_.RawDataReadOnly()) : nullptr);
+    key->push_back(use_compact_view_ ?
+      static_cast<const void*>(compact_packed_partition_byte_offsets_.RawDataReadOnly()) : nullptr);
+    // colmajor_direct: a tree without a compact view reads the full view, which is refilled across regimes
+    key->push_back(use_compact_view_ ? nullptr : static_cast<const void*>(full_view_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_gradients_));
+    key->push_back(static_cast<const void*>(cuda_hessians_));
+    key->push_back(static_cast<const void*>(cuda_gradients_hessians_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_is_column_used_bytree_.RawDataReadOnly()));
+    key->push_back(any_feature_unused_bytree_ ? this : nullptr);
+    // quantized subtract scratch, baked into the captured subtract/copy params (presized by
+    // EnsureDeviceLevelCapacity)
+    key->push_back(use_quantized_grad_ ?
+      static_cast<const void*>(hist_buffer_for_num_bit_change_.RawDataReadOnly()) : nullptr);
+    // the compact view's construct block shape follows the per-tree sampled column count
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(
-      whole_code_words ? 0 : HybridGraphCompactShapeKey())));
-#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+      whole_code_words || !use_compact_view_ ? 0 : std::max(1, max_num_compact_cols_per_partition_))));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(code5_valid_ ? 1 : 0)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(use_compact_view_ ? 1 : 0)));
     // the per-tree layout values the construct and fix/subtract launches pass by value
@@ -746,6 +684,11 @@ class CUDAHistogramConstructor {
   void LaunchDeviceLevelPairJoint(const CUDAHybridPairDescriptor* pair_descs);
   int DeviceLevelConstructMinGridDimY() const { return min_grid_dim_y_; }
   int DeviceLevelNumGradQuantBins() const { return use_quantized_grad_ ? num_grad_quant_bins_ : 0; }
+  /*! \brief cuda_plan key device_level_graph, non-quantized training: the construct instantiation a captured level
+   *  bakes in (fixed point, interleaved gradient pairs, fp32 histograms) */
+  int NonquantDeviceLevelKey() const {
+    return (NonquantFixedActive() ? 1 : 0) | (gh_interleave_valid_ ? 2 : 0) | (hist_fp32_ ? 4 : 0);
+  }
   /*! \brief cuda_plan key device_levels: block rows (times the grid's x) a device level's construct launches */
   static int DeviceLevelConstructTargetBlocks();
   /*! \brief the 64->32-bit compaction scratch of a level of max_pairs pairs, in its hist_t (8 byte) storage units:
@@ -769,22 +712,11 @@ class CUDAHistogramConstructor {
 
   void SetDetBatchedAllowed(bool allowed) { det_batched_allowed_ = allowed; }
 
-  /*! \brief whether the graph loop's construct nodes can be the deterministic
-   *  construct+merge pair for a prefix whose widest level has at most
-   *  max_level_pairs sibling pairs: same shape gates as the host batched det
-   *  arm, plus the slab must give every pair of the widest level at least one
-   *  slot row (the block dy is clamped to that carve at capture, so the
-   *  frozen block never overruns a pair's region) */
-  bool DetDenseGraphEligible(const int max_level_pairs) const;
-
-  /*! \brief total slot rows of the deterministic dense slab (the graph
-   *  controller carves this by the live pair count) */
+  /*! \brief total slot rows of the deterministic dense slab */
   int det_dense_total_slot_rows() const {
     return kNumHistPipelines * det_dense_tile_cap_ * det_dense_dy_;
   }
 
-  /*! \brief kDetRowsPerThread for the graph controller's tile-extent replica */
-  static constexpr int det_rows_per_thread() { return kDetRowsPerThread; }
 
   void BeforeTrain(const score_t* gradients, const score_t* hessians);
 
@@ -1056,11 +988,10 @@ class CUDAHistogramConstructor {
 
   /*! \brief nonquant_deterministic: converts the level's fixed-point smaller-leaf histograms (int64 words written by
    *  the fixed-point batched construct) in place to hist_t, under the construct's own per-pair gates (blockIdx.y =
-   *  pair; gstate: the graph loop's live-pair guard, nullptr on the host path). Returns the grid's x extent. */
+   *  pair; a device level's launch exits past its live pairs). Returns the grid's x extent. */
   int LaunchConvertFixedHistBatched(
     const CUDAHybridPairDescriptor* pair_descs,
-    const int num_pairs,
-    CUDAHybridGraphLoopStateOpt gstate);
+    const int num_pairs);
 
   /*! \brief dynamic shared bytes for a batched construct launch: the fixed-point table's under a fixed-point launch
    *  (raising the kernel's max-dynamic-shared attribute once), else 0 (static tables) */
@@ -1068,8 +999,8 @@ class CUDAHistogramConstructor {
 
   /*! \brief whether the batched non-quantized construct of a num_pairs-wide
    *  level takes the deterministic dense construct+merge instead of the atomic
-   *  kernel (shape gates mirror the per-leaf det arm; graph capture and levels
-   *  too wide for the slot slab keep the atomic kernel -- see the .cu) */
+   *  kernel (shape gates mirror the per-leaf det arm; device levels and levels
+   *  too wide for the slot slab keep the fixed-point / atomic kernel -- see the .cu) */
   bool DetDenseBatchedEligible(const int num_pairs) const;
 
 
@@ -1097,7 +1028,7 @@ class CUDAHistogramConstructor {
     const DetDenseSource* source = nullptr);
 
   /*! \brief cuda_plan key forest_count_hist: whether a level of the batched construct takes the count construct
-   *  (count codes set, no compact view, no graph capture, det batched allowed: the det arm's gates without the slot
+   *  (count codes set, no compact view, not a device level, det batched allowed: the det arm's gates without the slot
    *  slab's pair cap) */
   bool CountBatchedEligible() const;
 
@@ -1126,36 +1057,11 @@ class CUDAHistogramConstructor {
    *  attribute cache (Init / ResetTrainingData). */
   void InitNonquantFixed();
 
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  /*! \brief captures the deterministic construct + merge kernels as two graph
-   *  nodes (roles kHybridGraphNodeConstructDet / ...DetMerge) with placeholder
-   *  grids; the det block dy is clamped so a pair region of the
-   *  max_level_pairs-wide carve always fits the frozen block */
-  void CaptureHybridGraphDetConstructMerge(
-    const CUDAHybridPairDescriptor* pair_descs,
-    const CUDAHybridGraphLoopState* gstate,
-    const int max_level_pairs,
-    std::vector<cudaGraphNode_t>* nodes,
-    std::vector<int>* roles,
-    std::vector<int>* role_static_x);
-
-  template <typename BIN_TYPE>
-  void CaptureHybridGraphDetConstructMergeInner(
-    const CUDAHybridPairDescriptor* pair_descs,
-    const CUDAHybridGraphLoopState* gstate,
-    const int block_dim_x,
-    const int grid_dim_x,
-    const int dy,
-    std::vector<cudaGraphNode_t>* nodes,
-    std::vector<int>* roles,
-    std::vector<int>* role_static_x);
-#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   void LaunchSubtractHistogramBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
-    const bool any_pair_needs_bit_change_copy,
-    const CUDAHybridGraphLoopStateOpt gstate = nullptr);
+    const bool any_pair_needs_bit_change_copy);
 
   // ---- small-leaf level launchers (hybrid growth, non-quantized only) ----
 
@@ -1190,8 +1096,7 @@ class CUDAHistogramConstructor {
   }
   void LaunchFixSubtractDiscretizedMaskedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
-    const int num_pairs,
-    const CUDAHybridGraphLoopStateOpt gstate);
+    const int num_pairs);
   /*! \brief cuda_plan key device_tree_live_grid: grid rows of a live-pair launch whose rows have grid_x blocks: about
    *  device_tree_live_grid blocks per SM in all, at least 1 and at most the level's worst-case num_pairs */
   int LiveGridRows(const int grid_x, const int num_pairs) const {
@@ -1224,8 +1129,7 @@ class CUDAHistogramConstructor {
 
   void LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
-    const int num_pairs,
-    const CUDAHybridGraphLoopStateOpt gstate = nullptr);
+    const int num_pairs);
 
   /*! \brief one tiny launch per speculative level: reduce the level's actual
    *  smaller-child sizes and apply the exact host grid-sizing formula, writing
@@ -1292,11 +1196,6 @@ class CUDAHistogramConstructor {
   bool has_categorical_feature_ = false;
   /*! \brief non-quantized global histograms stored as float pairs (see hist_fp32()) */
   bool hist_fp32_ = false;
-  /*! \brief graphs A2: loop-state pointer passed to the batched construct
-   *  kernel while capturing a graph body (set only inside
-   *  CaptureHybridGraphSearchKernels); nullptr on every host launch, so the
-   *  host path keeps its exact-grid arithmetic bit-for-bit */
-  CUDAHybridGraphLoopStateOpt hybrid_graph_capture_gstate_ = nullptr;
   /*! \brief cuda_plan key device_levels: see SetDeviceLevelState */
   const CUDADeviceLevelState* device_level_state_ = nullptr;
   bool device_level_whole_tree_ = false;
