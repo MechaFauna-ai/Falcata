@@ -60,14 +60,6 @@ class CUDAColumnData {
             const std::vector<uint8_t>& feature_mfb_is_na,
             const std::vector<int>& feature_to_column);
 
-  /*!
-   * \brief Make this object a second view of source's columns (cuda_plan key forest_batched): the same column
-   *        buffers (not copied; source owns them and must outlive this view) with a pointer table, bit types and
-   *        compact or packed per-tree view of its own, so a learner growing a tree alongside others installs its
-   *        per-tree view here without touching the view source publishes. Call on a freshly constructed object.
-   */
-  void InitViewOf(const CUDAColumnData* source);
-
   const uint8_t* GetColumnData(const int column_index) const {
     // Return what is PUBLISHED for this column, which is what
     // column_bit_type(column_index) describes. While a per-tree compact view is
@@ -87,12 +79,8 @@ class CUDAColumnData {
     return OriginalColumnPointer(column_index);
   }
 
-  /*! \brief The original device buffer of a column (the view source's for a view made by InitViewOf; nullptr where
-   *  the per-column allocation was skipped) */
+  /*! \brief The original device buffer of a column (nullptr where the per-column allocation was skipped) */
   uint8_t* OriginalColumnPointer(const int column_index) const {
-    if (view_source_ != nullptr) {
-      return view_source_->OriginalColumnPointer(column_index);
-    }
     const std::unique_ptr<CUDAVector<uint8_t>>& buffer = data_by_column_[column_index];
     return buffer ? reinterpret_cast<uint8_t*>(buffer->RawData()) : nullptr;
   }
@@ -303,8 +291,6 @@ class CUDAColumnData {
     return data_by_column_pointers;
   }
 
-  /*! \brief InitViewOf: the object whose column buffers this view reads (nullptr: this object owns them) */
-  const CUDAColumnData* view_source_ = nullptr;
   int gpu_device_id_;
   int num_threads_;
   data_size_t num_data_;

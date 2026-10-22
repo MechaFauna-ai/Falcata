@@ -179,26 +179,18 @@ TEST(CUDAMetadata, LazyAccessRestoresCallerDevice) {
   EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
 }
 
-TEST(CUDAMetadata, MissingFlagsRemainCorrectInViewsAndReusedSubsets) {
+TEST(CUDAMetadata, MissingFlagsRemainCorrectInReusedSubsets) {
   CUDAColumnData source(4, 0);
   InitColumns(&source, false);
-  CUDAColumnData view(4, 0);
-  view.InitViewOf(&source);
   const data_size_t indices[] = {0, 3};
   CUDAColumnData subset(2, 0);
   subset.CopySubrow(&source, indices, 2);
   ExpectFlags(source, false);
-  ExpectFlags(view, false);
   ExpectFlags(subset, false);
 
   CUDAColumnData changed(4, 0);
   InitColumns(&changed, true);
   subset.CopySubrow(&changed, indices, 2);
   ExpectFlags(subset, true);
-  ExpectFlags(view, false);
   ExpectFlags(source, false);
-  // Metadata is owned by a view even though its column buffers are borrowed.
-  CUDAColumnData second_view(4, 0);
-  second_view.InitViewOf(&changed);
-  ExpectFlags(second_view, true);
 }

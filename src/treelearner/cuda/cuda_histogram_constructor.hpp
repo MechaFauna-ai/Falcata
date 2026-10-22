@@ -280,9 +280,9 @@ struct CUDACountHistCodes {
 };
 
 /*!
- * \brief cuda_plan key forest_count_hist: the codes of each constant gradient array a forest's learners train on,
- *        keyed by the array's device pointer, built on first use (Get) and shared by a booster learner and its forest
- *        slots (thread-safe). Cleared when the training data or config is reset (the arrays may then hold other values).
+ * \brief cuda_plan key forest_count_hist: the codes of each constant gradient array a forest's learner trains on,
+ *        keyed by the array's device pointer, built on first use (Get). Cleared when the training data or config is
+ *        reset (the arrays may then hold other values).
  */
 class CUDACountHistCache {
  public:
@@ -434,14 +434,6 @@ class CUDAHistogramConstructor {
   size_t CompactViewGrowthBytes() const;
   /*! \brief bytes the 64->32-bit compaction scratch can still grow by for levels of up to max_pairs pairs */
   size_t BitChangeScratchGrowthBytes(int max_pairs) const;
-  /*! \brief cuda_plan key forest_batched: the quantized bit-change scratch sized for levels of up to max_pairs pairs
-   *  now, unless that takes more than max_bytes (a growth during training stalls every forest slot) */
-  void PresizeBitChangeScratch(const int max_pairs, const size_t max_bytes) {
-    const size_t bytes = BitChangeScratchGrowthBytes(max_pairs);
-    if (bytes > 0 && bytes <= max_bytes) {
-      hist_buffer_for_num_bit_change_.Resize(bytes / sizeof(hist_t));
-    }
-  }
 
   /*! \brief one-line gate dump for FALCATA_DEBUG=diag */
   std::string BatchedLevelGateDiag() const {
@@ -845,11 +837,6 @@ class CUDAHistogramConstructor {
   // Expose internal CUDARowData so the tree learner can build a per-tree compact
   // column view from the on-GPU row-major bin matrix.
   const CUDARowData* cuda_row_data_internal() const { return cuda_row_data_.get(); }
-  /*! \brief cuda_plan key forest_batched: the row data (bin matrix), for a forest slot's constructor to share */
-  const std::shared_ptr<CUDARowData>& row_data_shared() const { return cuda_row_data_; }
-  /*! \brief Before Init: take this row data (another constructor's of the same data and config, read-only after its
-   *  Init) instead of building a copy (a forest slot shares the booster learner's) */
-  void ShareRowData(const std::shared_ptr<CUDARowData>& row_data) { shared_row_data_ = row_data; }
 
   /*! \brief The bin matrix in the row-major layout, for every reader that reads it whole (the full-matrix construct
    *  kernels, the split view builder, colmajor_fill's transpose). Without colmajor_direct this is the row data's own
@@ -1295,8 +1282,6 @@ class CUDAHistogramConstructor {
 
   /*! \brief CUDA row wise data */
   std::shared_ptr<CUDARowData> cuda_row_data_;
-  /*! \brief ShareRowData: the row data Init takes instead of building its own (nullptr: build) */
-  std::shared_ptr<CUDARowData> shared_row_data_;
   /*! \brief number of bins per feature */
   CUDAVector<uint32_t> cuda_feature_num_bins_;
   /*! \brief offsets in histogram of all features */

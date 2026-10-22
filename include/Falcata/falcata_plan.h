@@ -710,31 +710,6 @@ struct FalcataPlan {
   // Interaction constraints keep the shared stream and the per-split loop. bynode = 1: nothing is drawn or
   // uploaded and the finders get a null table: bit-identical. Off: the per-split loop with the shared stream.
   bool level_bynode_masks = true;  // key: level_bynode_masks
-  // random forest (boosting=rf) on one CUDA device with the device objective: the trees of several rounds (every
-  // class tree of each round) are grown concurrently, one tree per learner ("slot") and per host thread
-  // (CUDAForestTrainer, docs/design/batched-forest.md), instead of one after the other. Slot 0 is the booster's
-  // learner; each other slot is a learner of the same config with its own partition, histograms and split finder,
-  // a private view of the dataset's columns and the booster learner's bin matrix. The first round of a group trains
-  // the group (whole rounds: forest_group trees, or auto: one round first, then doubling while the measured time per
-  // tree, the mean of two steady-state groups, drops by 15%, up to 32 trees; capped by num_iterations and by device
-  // memory); the other rounds of the
-  // group take their trees from it. Every tree gets what sequential training gives it, in tree order: its round's
-  // bag, its class's gradients, the next per-tree feature_fraction sample of the booster learner's sampler, and the
-  // tree counters of the bynode node keys and the stochastic rounding noise: the same trees as sequential training,
-  // whatever the group size (the graph loop is off in the slots, whose stream capture other threads' legacy-stream
-  // work would join). Rounds are grouped only without cross-tree state (fixedpoint error feedback groups the class
-  // trees of one round). Off: one tree after another (stage-1 behaviour), also without the conditions (bagging or
-  // no sampling, no GOSS, linear trees, forced splits, CEGB, multi-GPU, vector leaves, compact_prefill).
-  bool forest_batched = true;  // key: forest_batched
-  // forest_batched: a group of ONE tree (forest_group 1, a binary or regression forest's auto size settled at one round,
-  // the last group of a forest_group N training, a memory-bound group shrunk to one round) trains on the booster's
-  // learner as sequential training does, not as a forest slot: no other slot thread runs while it trains, so its
-  // stream capture is safe and the tree takes the flows a slot never takes (the complete device tree with device
-  // per-node masks, the device_levels prefix, the quantized graph prefix; not the non-quantized graph loop, which is
-  // not run-to-run deterministic). A group of two or more trees stays in slot mode. The trees are the
-  // sequential ones either way: bit-identical. FALCATA_DEBUG=diag names each group's mode ([forest-diag] ... mode).
-  // Off: every group in slot mode, as before.
-  bool forest_single_job_device = true;  // key: forest_single_job_device
   // random forest (boosting=rf, objective binary, multiclass, multiclassova or regression, the device objective, no
   // GOSS, no weights, one GPU, not quantized): the forest's gradients are constant per class and take few values, so
   // where the non-quantized learner runs the deterministic fp64 construct (per-row-group slot rows of doubles in
@@ -1028,9 +1003,6 @@ struct FalcataPlan {
   // preserving at any value (order-invariant integer atomics).
   int quant_small_leaf_rows = 1024;
   int construct_column_cap = -1;    // -1 = auto sizing
-  // forest_batched: trees per group (key forest_group, cuda_plan=auto,forest_group:N; 0 = auto); every value trains
-  // the same model
-  int forest_group = 0;
   // device_tree's level fix/subtract and bit-change copy over the level's LIVE pairs: a bounded grid of about this
   // many blocks per SM whose rows stride over the live pairs (and the copy over the pairs whose bit width changes),
   // read on the device, instead of one block row per pair of the level's worst case (2^level) of which the rows past
@@ -1149,8 +1121,6 @@ struct FalcataPlan {
     if (key == "rf_device_objective") return &rf_device_objective;
     if (key == "rf_lazy_train_score") return &rf_lazy_train_score;
     if (key == "level_bynode_masks") return &level_bynode_masks;
-    if (key == "forest_batched") return &forest_batched;
-    if (key == "forest_single_job_device") return &forest_single_job_device;
     if (key == "forest_count_hist") return &forest_count_hist;
     if (key == "zero_slots_kernel") return &zero_slots_kernel;
     if (key == "root_sums_warp") return &root_sums_warp;
@@ -1246,6 +1216,12 @@ struct FalcataPlan {
         Log::Warning("cuda_plan key %s was removed (2026-10-15): ignored", kv[0].c_str());
         continue;
       }
+      // the forest slot keys (every random forest tree trains on the booster's learner, one after another)
+      if (kv[0] == std::string("forest_batched") || kv[0] == std::string("forest_group") ||
+          kv[0] == std::string("forest_single_job_device")) {
+        Log::Warning("cuda_plan key %s was removed (2026-10-23): ignored", kv[0].c_str());
+        continue;
+      }
       // the non-boolean keys: view_mode, pin_bins and the view_* numbers
       if (kv[0] == std::string("pin_bins")) {
         if (kv[1] == std::string("auto")) {
@@ -1297,17 +1273,6 @@ struct FalcataPlan {
                      "[0, 4096])", kv[1].c_str());
         }
         plan.device_tree_live_grid = static_cast<int>(value);
-        overridden = true;
-        continue;
-      }
-      if (kv[0] == std::string("forest_group")) {
-        char* end = nullptr;
-        const long value = std::strtol(kv[1].c_str(), &end, 10);  // NOLINT(runtime/int)
-        if (end == kv[1].c_str() || *end != '\0' || value < 0 || value > 1024) {
-          Log::Fatal("cuda_plan: bad value \"%s\" for key \"forest_group\" (expected an integer in [0, 1024])",
-                     kv[1].c_str());
-        }
-        plan.forest_group = static_cast<int>(value);
         overridden = true;
         continue;
       }

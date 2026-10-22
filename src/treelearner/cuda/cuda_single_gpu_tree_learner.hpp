@@ -79,51 +79,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     fp_merge_state_ = state;
   }
 
-  // ---- cuda_plan key forest_batched: this learner grows trees of a random forest alongside other learners, one tree
-  // per host thread (CUDAForestTrainer) ----
-  /*! \brief Before Init: mark the learner a forest slot. With private_column_view the per-tree column views go to a
-   *  view of the dataset's columns of its own (CUDAColumnData::InitViewOf) instead of the dataset's, which the
-   *  booster's own learner (slot 0) keeps; with row_data_source the bin matrix (CUDARowData) is that learner's,
-   *  not a copy; no compact prefill, no graph loop (its stream capture would forbid the other threads' API calls). */
-  void EnableForestSlot(bool private_column_view, const CUDASingleGPUTreeLearner* row_data_source = nullptr) {
-    forest_slot_ = true;
-    forest_private_column_view_ = private_column_view;
-    forest_row_data_source_ = row_data_source;
-  }
-  /*! \brief The level buffers that grow with the widest level seen, sized now for any level the tree shape allows
-   *  (num_leaves / 2 + 2 pairs, fewer under max_depth), each up to an eighth of the device: a growth during training
-   *  is a device synchronize, which stalls every forest slot, and holds the old block beside the new one (a forest's
-   *  slots growing together took the device to its limit: numerai's level output is ~2 GiB per slot). Presized, the
-   *  buffers count in the slot's Init footprint (CUDAForestTrainer::EnsureSlots) */
-  void PresizeLevelBuffers();
-  /*! \brief The booster learner leaves forest mode (its trainer is gone): graph loop and compact prefill as before */
-  void LeaveForest() {
-    forest_slot_ = false;
-    forest_next_sample_ready_ = false;
-  }
-  /*! \brief cuda_plan key forest_single_job_device: the next Train is the only tree of its group (no other slot thread
-   *  runs until it returns), so it trains as the sequential learner does: the flows forest slots exclude (graph
-   *  capture, the device_levels prefix and the complete device tree) are open to it. The forest trainer sets it around
-   *  one Train; the learner stays a forest slot otherwise (the test hooks keep counting its trees). */
-  void SetForestSoloTree(bool solo) { forest_solo_ = solo; }
-  /*! \brief The per-tree counters the next Train runs under: the tree part of the bynode node keys (bynode) and the
-   *  quantized discretizer's tree counter (stochastic rounding noise, error-feedback slot). Sequential training
-   *  advances each by one per tree; the forest trainer gives every tree the values sequential training would. */
-  struct TreeCounters {
-    uint64_t bynode = 0;
-    int discretizer = 0;
-  };
-  TreeCounters tree_counters() const;
-  void SetTreeCounters(const TreeCounters& counters);
-  /*! \brief The next Train's feature_fraction sample (ColSampler::SetByTreeSample), drawn in tree order by the
-   *  forest trainer from the booster learner's sampler, instead of this learner's own draw */
-  void SetNextTreeSample(const std::vector<int>& used_feature_indices) {
-    forest_next_sample_ = used_feature_indices;
-    forest_next_sample_ready_ = true;
-  }
-  /*! \brief The sampler whose stream gives every tree its feature_fraction sample (the forest trainer draws from the
-   *  booster learner's, in tree order) */
-  ColSampler* mutable_col_sampler() { return &col_sampler_; }
   /*! \brief gpu device this learner trains on */
   int gpu_device_id() const { return gpu_device_id_; }
 
@@ -354,8 +309,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   const CUDACountHistCodes* CountHistCodesForTree();
   // a tree that threw mid-way (tree_in_progress_ still set at the next Train): reset what the next tree trusts
   void AbortedTreeReset();
-  // test hook FALCATA_TEST_FOREST_ABORT_TREE (see the definition)
-  void MaybeInjectTreeFailure(int num_leaves);
   // Lazy one-time setup: static feature tables, journal/staging buffers, and
   // worst-case capacity preallocation of every captured device buffer.
   bool SetupHybridGraphStatics();
@@ -383,7 +336,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void LogDeviceLevelsFallback(const char* reason);
   // ---- cuda_plan key device_bynode_masks ----
   /*! \brief the complete device tree takes this learner's per-node masks: keyed masks in the level flows (no
-   *  interaction constraints, single GPU, the batched phases), no forest slot and no FALCATA_DEBUG=bynode (its BYNODE
+   *  interaction constraints, single GPU, the batched phases) and no FALCATA_DEBUG=bynode (its BYNODE
    *  lines come from the host draws) */
   bool DeviceBynodeMasksUsable() const;
   /*! \brief before a complete device tree's root search: (re)build the device sample inputs and buffers, upload the
@@ -701,25 +654,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     const data_size_t max_num_data_in_smaller_leaf,
     CUDALeafSplitsStruct* plane_slab);
 
-  // cuda_plan key forest_batched (EnableForestSlot, SetTreeCount, SetNextTreeSample)
-  bool forest_slot_ = false;
-  // cuda_plan key forest_single_job_device (SetForestSoloTree): this tree is its group's only one
-  bool forest_solo_ = false;
-  /*! \brief whether other slot threads may launch while this tree trains: a forest slot not training a group's only
-   *  tree. Their legacy-stream launches would join this thread's stream capture, so no capture and no device-driven
-   *  level flow then. */
-  bool ForestSlotShared() const { return forest_slot_ && !forest_solo_; }
-  bool forest_private_column_view_ = false;
-  // the learner whose bin matrix (CUDARowData, read-only after its Init) this slot's histogram constructor shares
-  const CUDASingleGPUTreeLearner* forest_row_data_source_ = nullptr;
-  std::unique_ptr<CUDAColumnData> private_column_view_;
-  std::vector<int> forest_next_sample_;
-  bool forest_next_sample_ready_ = false;
-  /*! \brief the column view this learner installs its per-tree views into: its private one (forest slots) or the
-   *  dataset's */
+  /*! \brief the column view this learner installs its per-tree views into: the dataset's */
   CUDAColumnData* ColumnView() const {
-    return private_column_view_ ? private_column_view_.get() :
-      const_cast<CUDAColumnData*>(train_data_->cuda_column_data());
+    return const_cast<CUDAColumnData*>(train_data_->cuda_column_data());
   }
 
   // number of threads on CPU
@@ -930,14 +867,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::unique_ptr<CUDADataPartition> cuda_data_partition_;
   // for histogram construction
   std::unique_ptr<CUDAHistogramConstructor> cuda_histogram_constructor_;
-  // cuda_plan key forest_count_hist: codes per gradient array (shared with the forest slots) and the diag line's state
+  // cuda_plan key forest_count_hist: codes per gradient array and the diag line's state
   std::shared_ptr<CUDACountHistCache> count_hist_cache_;
   bool count_hist_logged_ = false;
   // a tree started and not completed (Train threw): the next Train resets what it would take from it
   bool tree_in_progress_ = false;
-  // FALCATA_TEST_FOREST_ABORT_TREE: trees the booster learner started in forest mode, and whether the hook fired
-  int forest_main_trees_started_ = 0;
-  bool injected_tree_failure_ = false;
   // cuda_plan key tree_meta_batch: staging of the tree start's metadata uploads (see cuda_meta_batch.hpp)
   TreeStartMetaBatch tree_meta_batch_;
   // for best split information finding, given the histograms

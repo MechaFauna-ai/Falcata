@@ -92,29 +92,6 @@ class ColSampler {
     }
   }
 
-  /*! \brief Whether ResetByTree draws a per-tree sample (feature_fraction < 1) */
-  bool need_reset_bytree() const { return need_reset_bytree_; }
-
-  /*! \brief The current per-tree sample (indices into the valid features; meaningful when need_reset_bytree()) */
-  const std::vector<int>& used_feature_indices() const { return used_feature_indices_; }
-
-  /*!
-   * \brief Install a per-tree sample drawn by another sampler of the same config and data (the CUDA forest trainer,
-   *        cuda_plan key forest_batched, draws every tree's sample in tree order with one sampler and hands each to
-   *        the learner that grows the tree): the state ResetByTree leaves after drawing used_feature_indices. A no-op
-   *        without a per-tree sample. Does not touch the shared stream.
-   */
-  void SetByTreeSample(const std::vector<int>& used_feature_indices) {
-    if (!need_reset_bytree_) {
-      return;
-    }
-    std::memset(is_feature_used_.data(), 0, sizeof(int8_t) * is_feature_used_.size());
-    used_feature_indices_ = used_feature_indices;
-    for (const int i : used_feature_indices_) {
-      is_feature_used_[train_data_->InnerFeatureIndex(valid_feature_indices_[i])] = 1;
-    }
-  }
-
   std::vector<int8_t> GetByNode(const Tree* tree, int leaf) {
     // get interaction constraints for current branch
     std::unordered_set<int> allowed_features;

@@ -83,7 +83,7 @@ struct WholeMapOnlyFaultPeer {
     if (c == nullptr || c->target != l) return;
     const State s = Observe(l);
     Need(s.progress, "checkpoint must be inside the actual Train/recovery lifetime");
-    Need(!l->forest_slot_ && l->config_->boosting == "gbdt" && l->config_->objective == "regression",
+    Need(l->config_->boosting == "gbdt" && l->config_->objective == "regression",
          "not a canonical GBDT learner");
     if (point == WholeMapOnlyFaultPoint::BeforePublish || point == WholeMapOnlyFaultPoint::AfterPublish) {
       const int* j = l->pinned_device_level_journal_;
