@@ -136,6 +136,15 @@ needs an NVIDIA driver that supports CUDA 13 (R580 or newer). Older GPUs
 (Pascal and Volta: P100, GTX 10xx, V100) fail fast with a message pointing at
 the source build below; build with CUDA 12.x for those.
 
+**Multi-GPU training** (`num_gpu > 1`) with the prebuilt wheel loads
+`libnccl.so.2` at runtime: install it with `pip install "falcata[multigpu]"`,
+or an NCCL 2.x wheel that installs into `nvidia/nccl/lib` (e.g.
+`nvidia-nccl-cu13`), or a system `libnccl.so.2` on the loader path (without
+it, training warns and continues on one GPU); with quantized gradients it
+needs at least a positive `max_depth` with `2^max_depth <= num_leaves + 1`,
+and it is meant for data that does not fit one GPU, not for speed (see
+`num_gpu` in [docs/Parameters.rst](docs/Parameters.rst#num_gpu)).
+
 Everywhere else (and with `pip install --no-binary falcata falcata`), pip
 builds from source, which needs the **CUDA toolkit (>= 11.0)**, CMake >= 3.28,
 a C++17 compiler and Python >= 3.10. Nothing else:
