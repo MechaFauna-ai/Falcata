@@ -2863,8 +2863,12 @@ quantized training as ground truth in
 ## Complete bounded device trees by default (`device_tree`)
 
 `device_tree` (default ON, with `device_levels`) runs the complete quantized device controller for scalar,
-numerical single-GPU trees wherever its depth bound holds: positive `max_depth <= 10` and
+numerical single-GPU trees wherever its depth bound holds: positive `max_depth <= 12` and
 `2^max_depth <= num_leaves + 1`, i.e. every level but the depth-capped last one may split every valid leaf.
+The controller presizes its per-level scratch for the deepest level it searches (2^(max_depth-2) pairs: split-finder
+output and the quantized bit-change histograms, which grow with the total bin count); where that estimate exceeds
+half of the free device memory at the first tree, the prefix flow grows the trees instead (`FALCATA_DEBUG=diag`
+prints the estimate and `device_tree: fallback to the prefix flow (device tree scratch exceeds free memory)`).
 Every level's select, apply and search plus the final apply run on the GPU, with one growth readback and no host
 growth tail. Against the `device_levels` prefix (section 10w) it removes, once per tree, the prefix readback, the
 host replay and the host-driven final level (its uploads, launches and readbacks). Elsewhere (unlimited or deeper
@@ -3036,7 +3040,7 @@ Eligible quantized, numerical, scalar, single-GPU two-sync depth-limited trees e
 smaller-child rule; worst-case launches guard on device counts. One prefix-boundary readback replays the journal
 and resumes host growth. Root work, the remaining host levels/tail, score updates, metrics and final tree transfer
 remain. This is a prefix optimization; it does not build an arbitrary whole tree without host synchronization.
-Where the complete device tree's depth bound holds (positive `max_depth <= 10`, `2^max_depth <= num_leaves + 1`),
+Where the complete device tree's depth bound holds (positive `max_depth <= 12`, `2^max_depth <= num_leaves + 1`),
 the default runs `device_tree` instead of this prefix; the prefix is the default flow for the other eligible shapes,
 and `device_tree:off` makes it the flow for all of them.
 

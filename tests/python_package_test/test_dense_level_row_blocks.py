@@ -43,7 +43,12 @@ SHAPES = {
     "fixedpoint_bagged": (50_003, 20, {"quant_mode": "fixedpoint", "bagging_fraction": 0.6, "bagging_freq": 1}),
     "quant_bins64": (40_001, 12, {"num_grad_quant_bins": 64, "min_data_in_leaf": 1}),
     "bins15_no_pair": (40_001, 40, {"max_bin": 15, "feature_fraction": 0.5, "cuda_plan": "pair_hist:off"}),
-    "pairs_over_prefix": (90_001, 6, {"num_leaves": 4095, "max_depth": 12, "min_data_in_leaf": 1}),
+    # device_tree:off: depth 12 is the complete device tree's by default; keep covering the >256-pair prefix path
+    "pairs_over_prefix": (
+        90_001,
+        6,
+        {"num_leaves": 4095, "max_depth": 12, "min_data_in_leaf": 1, "cuda_plan": "device_tree:off"},
+    ),
     "three_leaves": (5_001, 4, {"num_leaves": 3, "max_depth": 2}),
     # the graph level loop: the rows-per-thread floor is derived on the device from the level's sizes
     "graph_loop": (60_001, 30, {"num_leaves": 63, "max_depth": 6, "cuda_plan": "graph_quant:on"}),

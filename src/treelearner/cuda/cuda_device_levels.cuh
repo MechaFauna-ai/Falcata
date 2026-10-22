@@ -104,11 +104,15 @@ __device__ __forceinline__ uint8_t DeviceLevelHistBits(const data_size_t n, cons
  *  descriptor per such leaf, adjacent windows not merged: the same rows, copied once each) and the flat layout.
  *  A binding final level applies the host's gain-descending, lower-leaf-tie top-K order; nonbinding levels stay
  *  leaf-ascending. Any block of a multiple of 32 threads; each thread takes contiguous runs of leaves and splits.
- *  Reads every leaf's best split after the level's sync. */
+ *  Reads every leaf's best split after the level's sync. MAX_SPLITS is the block's capacity (static shared memory
+ *  12 * MAX_SPLITS + MAX_SPLITS / 4 bytes): kDeviceLevelMaxPairs in the copy fused into the prefix's level sync,
+ *  kDeviceTreeMaxSplits in the standalone launch of a whole tree. A level past it stops with the error flag. */
+template <int MAX_SPLITS>
 __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConfig& cfg, const int level) {
-  constexpr int kMaxLeaves = 2 * kDeviceLevelMaxPairs;
-  __shared__ int s_leaves[kDeviceLevelMaxPairs];
-  __shared__ double s_gains[kDeviceLevelMaxPairs];
+  static_assert(MAX_SPLITS >= 32 && (MAX_SPLITS & (MAX_SPLITS - 1)) == 0, "the bitonic sort needs a power of two");
+  constexpr int kMaxLeaves = 2 * MAX_SPLITS;
+  __shared__ int s_leaves[MAX_SPLITS];
+  __shared__ double s_gains[MAX_SPLITS];
   __shared__ unsigned int s_split_bits[kMaxLeaves / 32];
   __shared__ int s_warp[32];
   __shared__ int s_total;
@@ -151,7 +155,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   }
   int write_pos = DeviceLevelBlockScan(my_count, s_warp, &s_total);
   int n = s_total;
-  if (n > kDeviceLevelMaxPairs) {
+  if (n > MAX_SPLITS) {
     stop(true);
     return;
   }

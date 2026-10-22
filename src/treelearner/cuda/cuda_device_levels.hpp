@@ -44,8 +44,16 @@ struct CUDALeafSplitsStruct;
 struct CUDAHybridGraphFeatureMeta;
 struct CUDAHybridGraphFeatureSource;
 
-/*! \brief most pairs of one device level (the select / pairs kernels' block covers 2 * this) */
+/*! \brief most pairs of one device level of the prefix (the select / pairs kernels' block covers 2 * this); also the
+ *  select capacity of the copy fused into the prefix's level sync (SyncBestSplitForLevelUsedTasksKernel) */
 constexpr int kDeviceLevelMaxPairs = 512;
+/*! \brief cuda_plan key device_tree: deepest complete bounded device tree, and the most splits of one of its levels
+ *  (the final level: 2^(max_depth - 1)), the capacity of the standalone select launch of a whole tree. The final
+ *  level is applied without a child search, so a whole tree searches at most 2^(max_depth - 2) pairs. */
+constexpr int kDeviceTreeMaxDepth = 12;
+constexpr int kDeviceTreeMaxSplits = 1 << (kDeviceTreeMaxDepth - 1);
+constexpr int kDeviceTreeMaxPairs = kDeviceTreeMaxSplits / 2;
+static_assert(kDeviceTreeMaxPairs >= kDeviceLevelMaxPairs, "the block map covers the prefix's widest search");
 /*! \brief launch columns of a device level's construct that claim block rows dynamically */
 constexpr int kDeviceLevelClaimColumns = 64;
 /*! \brief journal layout (ints): [0] applied levels, [1] total splits, [2] error flags, [3, 5) reserved,
@@ -54,6 +62,7 @@ constexpr int kDeviceLevelClaimColumns = 64;
 constexpr int kDeviceLevelMaxLevels = 16;
 constexpr int kDeviceLevelJournalLevels = 5;
 constexpr int kDeviceLevelJournalHeader = kDeviceLevelJournalLevels + kDeviceLevelMaxLevels;
+static_assert(kDeviceTreeMaxDepth <= kDeviceLevelMaxLevels, "the journal header counts every level of a whole tree");
 
 /*! \brief device-side counts of the level in flight, written by the select and pairs kernels and read by the
  *  worst-case launches (nullptr everywhere on the host-launched path) */
@@ -93,8 +102,8 @@ struct CUDADeviceLevelState {
   data_size_t max_smaller;
   int padding_;
   /*! \brief block map: pair p's block rows start at construct_block_start[p] (p < live_pairs; [live_pairs] =
-   *  construct_total_blocks) */
-  int construct_block_start[kDeviceLevelMaxPairs + 1];
+   *  construct_total_blocks); live_pairs is at most kDeviceLevelMaxPairs (prefix) or kDeviceTreeMaxPairs (whole) */
+  int construct_block_start[kDeviceTreeMaxPairs + 1];
 };
 
 /*! \brief the tree-constant shape of a device level's construct (CUDAHistogramConstructor::DeviceLevelConstructShape):
