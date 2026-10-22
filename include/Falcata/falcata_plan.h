@@ -1219,7 +1219,7 @@ struct FalcataPlan {
       // the forest slot keys (every random forest tree trains on the booster's learner, one after another)
       if (kv[0] == std::string("forest_batched") || kv[0] == std::string("forest_group") ||
           kv[0] == std::string("forest_single_job_device")) {
-        Log::Warning("cuda_plan key %s was removed (2026-10-23): ignored", kv[0].c_str());
+        Log::Warning("cuda_plan key %s was removed (2026-10-22): ignored", kv[0].c_str());
         continue;
       }
       // the non-boolean keys: view_mode, pin_bins and the view_* numbers

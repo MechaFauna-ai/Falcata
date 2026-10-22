@@ -2265,6 +2265,7 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
   applied->clear();
   applied->reserve(splittable.size());
   const int base_num_leaves = tree->num_leaves();
+  MaybeInjectTreeFailure(base_num_leaves);
   host_tree_batch_splits_.clear();
   host_apply_split_inputs_.clear();
   // cuda_plan key level_apply_first: without categorical splits or vector leaves the partition's apply goes out
@@ -5412,6 +5413,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     AbortedTreeReset();
   }
   tree_in_progress_ = true;
+  ++trees_started_;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   if (device_bynode_active_) {
     EndDeviceBynode();  // the last tree threw between its root search and its device levels
@@ -6460,6 +6462,21 @@ void CUDASingleGPUTreeLearner::AllocateBitset() {
   }
   cuda_bitset_len_ = 0;
   cuda_bitset_inner_len_ = 0;
+}
+
+void CUDASingleGPUTreeLearner::MaybeInjectTreeFailure(const int num_leaves) {
+  // test hook (FALCATA_TEST_ABORT_TREE=n): the n-th tree (0-based) this learner starts fails once, in the host level
+  // loop's apply after it has at least 4 leaves (histograms of its first levels written), as a device-memory failure
+  // inside a tree would; the caller catches the error and trains on (AbortedTreeReset)
+  static const int inject_tree = [] {
+    const char* v = std::getenv("FALCATA_TEST_ABORT_TREE");
+    return v != nullptr ? std::atoi(v) : -1;
+  }();
+  if (inject_tree < 0 || num_leaves < 4 || injected_tree_failure_ || trees_started_ - 1 != inject_tree) {
+    return;
+  }
+  injected_tree_failure_ = true;
+  throw std::runtime_error("[CUDA] out of memory allocating 0.00 GiB (injected inside a tree for a test)");
 }
 
 void CUDASingleGPUTreeLearner::AbortedTreeReset() {

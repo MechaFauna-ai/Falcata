@@ -178,7 +178,7 @@ class CUDATree : public Tree {
   *        has_categorical_feature. The tree holds the arena's buffers from here until ToHost() or
   *        RebuildFromHostSplits() hands them back. A second tree constructed on the same arena in between would
   *        start from empty buffers and allocate its own (correct, only not reused); the tree learner does not do
-  *        that: it grows one tree at a time, and forest slots each have their own learner and arena.
+  *        that: it grows one tree at a time.
   */
   explicit CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
     const int gpu_device_id, const bool has_categorical_feature,

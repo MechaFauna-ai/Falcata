@@ -2228,7 +2228,8 @@ trains a round's class trees in class order on the booster's learner, as it did 
 takes what a gbdt tree takes: the complete device tree where its bound holds (with device per-node masks), the
 `device_levels` prefix and the selective device prefix outside it. A non-quantized forest keeps the host level loop with
 the forest count construct (10n, `forest_count_hist`) and never takes the non-quantized graph loop, as the slots never
-did. The slots' trees were the sequential ones, so no model changes: md5 equal to master 5bec2574 on 27 probe shapes
+did; that includes the non-quantized forests 1.1 trained without slots (GOSS, `bagging_freq` > 1, balanced bagging),
+which took the graph loop there (same md5 on regression, multiclass and binary probes; their speed is not measured). The slots' trees were the sequential ones, so no model changes: md5 equal to master 5bec2574 on 27 probe shapes
 (binary, multiclass, regression, L1, quantile; stochastic, fixedpoint with error feedback, none; per-node and per-tree
 sampling; bounded, unbounded and leaf-budget shapes; GOSS and `bagging_freq` 2), on the readers' cases (metrics every
 round, early stopping, a parameter reset with rollbacks) and on the lattice (475/475 cells, the 11 rf cells and the 34
@@ -2961,8 +2962,8 @@ quantized training as ground truth in
 numerical single-GPU trees wherever its depth bound holds: positive `max_depth <= 12` and
 `2^max_depth <= num_leaves + 1`, i.e. every level but the depth-capped last one may split every valid leaf.
 Per-node feature masks (`feature_fraction_bynode < 1` without interaction constraints) are eligible too: the device
-draws them (`device_bynode_masks`, below); forest slots (`boosting=rf` under `forest_batched`) are not, except a
-forest group's only tree (`forest_single_job_device`, section 10r).
+draws them (`device_bynode_masks`, below). Random-forest trees are eligible like gbdt trees (since 1.2 they all train
+one after another on the booster's learner, section 10r).
 The controller presizes its per-level scratch for the deepest level it searches (2^(max_depth-2) pairs: split-finder
 output and the quantized bit-change histograms, which grow with the total bin count); where that estimate exceeds
 half of the free device memory at the first tree, the prefix flow grows the trees instead (`FALCATA_DEBUG=diag`
@@ -2972,9 +2973,7 @@ growth tail. Against the `device_levels` prefix (section 10w) it removes, once p
 host replay and the host-driven final level (its uploads, launches and readbacks). Elsewhere (unlimited or deeper
 trees, smaller leaf budgets) the prefix flows and the host flow run exactly as before, and `FALCATA_DEBUG=diag`
 reports `device_tree: fallback to the prefix/host flow (depth bound or leaf budget)`; unsupported kernels,
-constraints and data keep the host flow and report the fallback as the prefix does. Random-forest slots (10r) keep the host flow while other
-slots train beside them; a forest group of one tree takes the device tree like sequential training
-(`forest_single_job_device`). There is no automatic
+constraints and data keep the host flow and report the fallback as the prefix does. There is no automatic
 selector: `cuda_plan=auto,device_tree:off` restores the prefix flow everywhere, `cuda_plan=auto,device_levels:off`
 the host flow (in 1.1 the opt-in spelling was `auto,device_levels:off,device_tree:on`; that string now selects the
 host flow). No training parameters or split rules change: the same selector, kernels and order, bit-identical
@@ -3022,8 +3021,8 @@ tree) and the tree's slab comes back through the one-kernel active readback. Per
 D2H copy, the host replay of every split's statistics and the post-tree `MaterializeLeafMapKernel` pass (covtype:
 13-15 us of GPU and a ~19 us host gap per tree, 7 trees a round). A bagged tree writes its bag's map inline (the
 tree-end full pass wrote the same in-bag windows); `final_map_only`, whose deferred count check assumes every row,
-stays off there. Objectives boosted on the host (custom ones; cross-entropy in this build), categorical, NCCL and
-forest slots keep the full host cache. Models are identical (md5): key on/off sweep in
+stays off there. Objectives boosted on the host (custom ones; cross-entropy in this build), categorical and NCCL keep
+the full host cache. Models are identical (md5): key on/off sweep in
 `test_cuda_device_tree_lean_end.py`, lattice 441/441.
 
 Search-night lineage numbers (open5, against the older master 1408ee79, before the device tree became the default; not
@@ -3165,8 +3164,7 @@ and `device_tree:off` makes it the flow for all of them.
 
 `device_level_graph` caches the prefix launches. Cache identity includes resizable buffers, task/layout values,
 packing codec and GOSS's changing ridge. Repeated cache misses switch subsequent trees to the host path. Both
-modes exclude forest slots (except a forest group's only tree, `forest_single_job_device`, section 10r) and
-legacy single-stream diagnostics. Unsupported kernels, nonquantized training,
+modes exclude legacy single-stream diagnostics. Unsupported kernels, nonquantized training,
 node masks, categorical/vector leaves, constraints and forced splits keep their host flows; selective growth runs
 its first levels on this prefix (`selective_device_prefix`, below).
 Configuration/data resets invalidate captures and static tables; quantizer row and leaf-budget storage is also

@@ -183,6 +183,29 @@ CASES = {
         {"bagging_fraction": 1.0, "bagging_freq": 0, "feature_fraction": 0.8},
         "33314612a497099fb25f0a0c9a3dd4a3",
     ),
+    # non-quantized forests master trained sequentially (no slots: GOSS, bagging_freq > 1, balanced bagging) took the
+    # non-quantized graph loop there; they now keep the host level loop (many distinct regression gradients: the
+    # deterministic construct; multiclass: the count construct). Same md5 as master
+    "regression-none-goss": (
+        "regression",
+        "none",
+        {"data_sample_strategy": "goss", "bagging_fraction": 1.0, "bagging_freq": 0},
+        None,
+    ),
+    "multiclass-none-goss": (
+        "multiclass",
+        "none",
+        {"data_sample_strategy": "goss", "bagging_fraction": 1.0, "bagging_freq": 0},
+        None,
+    ),
+    "regression-none-freq2": ("regression", "none", {"bagging_freq": 2}, None),
+    "multiclass-none-freq2": ("multiclass", "none", {"bagging_freq": 2}, None),
+    "binary-none-balanced-bagging": (
+        "binary",
+        "none",
+        {"pos_bagging_fraction": 0.8, "neg_bagging_fraction": 0.6},
+        None,
+    ),
     # leaf renewal against the init score column
     "regression-l1": ("regression_l1", "stochastic", {}, "1e8272aa01c746a7eba5ad38721bfa4a"),
     "quantile-fixedpoint": ("quantile", "fixedpoint", {"alpha": 0.7}, "7337ef15108759d5b45c590f5a0dd85e"),
@@ -200,6 +223,7 @@ def test_forest_sequential_same_model_cuda(case):
 # metrics every round on the training and a validation set, then early stopping: md5 on master 5bec2574, and the
 # iteration early stopping ended at
 READERS = {
+    "every-round-train-score": None,
     "every-round": "a17289db912fcdfda59ba0017dcc6998",
     "early-stopping": ("7c288d15448c3cc651fd18aae81a8437", 23),
 }
@@ -212,6 +236,9 @@ def test_forest_sequential_readers_cuda():
     params["feature_fraction"] = 0.7
     booster, evals = _train(params, X, y, 12, valid=(Xv, yv), eval_train=True)
     assert _md5(booster) == READERS["every-round"]
+    # the train score itself, to the last bit, as master's per-slot updates left it
+    train_score = np.asarray(booster._Booster__inner_predict(data_idx=0), dtype=np.float64)
+    assert hashlib.md5(train_score.tobytes()).hexdigest() == READERS["every-round-train-score"]
     assert len(evals["train"]["multi_logloss"]) == 12
     # the train score the metric read is the forest's average over the trees (the deferred score synced)
     np.testing.assert_allclose(
@@ -350,7 +377,7 @@ def test_forest_removed_keys_ignored_cuda(plan):
     params = _engage_params(objective="multiclass", num_class=4, verbose=0)
     stdout, lines = _run({**params, "cuda_plan": plan}, 4, diag=False)
     for key in [kv.split(":")[0] for kv in plan.split(",")[1:]]:
-        assert f"cuda_plan key {key} was removed (2026-10-23): ignored" in stdout + "\n".join(lines), key
+        assert f"cuda_plan key {key} was removed (2026-10-22): ignored" in stdout + "\n".join(lines), key
     X, y = _data("multiclass")
     p = _params("multiclass", "stochastic")
     assert _md5(_train({**p, "cuda_plan": plan}, X, y, 6)[0]) == _md5(_train(p, X, y, 6)[0])

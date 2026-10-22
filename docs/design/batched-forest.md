@@ -1,7 +1,7 @@
 # Growing the trees of a random forest together (forest stage 2)
 
 Status: design spike and first implementation (cuda_plan key `forest_batched`, default on), 2026-10-15. **Removed
-in 1.2** (2026-10-23): the slots are deleted and every forest tree trains on the booster's learner, one after another,
+in 1.2** (2026-10-22): the slots are deleted and every forest tree trains on the booster's learner, one after another,
 taking the device flows a gbdt tree takes (`docs/performance.md` §10r). This note is kept as the record of the design.
 Plan: kernel-evo `runs/forest/PLAN_batched_forest.md` §3 stage 2. Numbers: one RTX 5090, relaxed (desktop on),
 master 929fdbea (after #113 `level_bynode_masks` and #114) unless a line says otherwise.
