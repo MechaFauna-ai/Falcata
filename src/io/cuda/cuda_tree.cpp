@@ -317,11 +317,10 @@ int CUDATree::SplitCategorical(const int leaf_index,
            size_t cuda_bitset_len,
            uint32_t* cuda_bitset_inner,
            size_t cuda_bitset_inner_len) {
-  // a per-split categorical split after SplitLevel's (the leaf-wise tail) appends at the exact end of the record
-  if (cat_record_on_device_) {
-    ++cat_tail_settles_;
-  }
-  SettleCategoricalRecordSizes();
+  // a tree records its categorical splits either all with SplitLevel or all here: the level flows that record by
+  // level grow the tree to the end (depth-limited: the budget binds at most on the final level, applied as one
+  // partial level; selective growth records the whole tree), so no per-split categorical split follows a level record
+  CHECK(!cat_record_on_device_);
   LaunchSplitCategoricalKernel(leaf_index, real_feature_index,
     missing_type, cuda_split_info,
     cuda_bitset_len, cuda_bitset_inner_len);
@@ -548,11 +547,6 @@ bool CUDATree::ReadCategoricalRecordOneCopy() {
   constexpr size_t kMaxWords = static_cast<size_t>(1) << 16;
   if (cat_level_launches_ == 0 || cat_arena_ == nullptr || num_cat_ == 0) {
     return false;
-  }
-  if (!cat_record_on_device_) {
-    // settled since the last level record (a per-split tail split appended at the exact end): the bounds are exact
-    cat_words_bound_ = cuda_bitset_.Size();
-    cat_words_inner_bound_ = cuda_bitset_inner_.Size();
   }
   const size_t num_boundaries = static_cast<size_t>(num_cat_) + 1;
   const size_t words_bound = std::min(cat_words_bound_, cuda_bitset_.Capacity());
