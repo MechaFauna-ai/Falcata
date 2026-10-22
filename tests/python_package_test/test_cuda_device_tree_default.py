@@ -115,7 +115,7 @@ def test_device_tree_default_engages_cuda():
     ("leaves", "depth", "flow"),
     [
         (8192, 13, "prefix"),  # deeper than 12: the device_levels prefix, then host levels
-        (40, 6, "selective"),  # a binding leaf budget: selective growth on the host, as before
+        (40, 6, "selective"),  # a binding leaf budget: selective growth, its first levels as the device prefix
         (255, -1, "selective"),
     ],
 )
@@ -128,4 +128,7 @@ def test_device_tree_default_reports_fallback_cuda(leaves, depth, flow):
     if flow == "prefix":
         assert "device-driven levels per tree" in diag
     else:
-        assert "device_levels: host fallback (selective growth)" in diag
+        # cuda_plan key selective_device_prefix (default on); off, the host's selective loop runs every level
+        assert "selective_device_prefix: levels=" in diag
+        off = _diag("auto,selective_device_prefix:off", leaves, depth)
+        assert "device_levels: host fallback (selective growth)" in off
