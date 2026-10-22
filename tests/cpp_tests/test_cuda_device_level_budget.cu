@@ -13,7 +13,6 @@
 
 #include "../../src/treelearner/cuda/cuda_data_partition.hpp"
 #include "../../src/treelearner/cuda/cuda_device_levels.hpp"
-#include "../../src/treelearner/cuda/cuda_hybrid_graph.hpp"
 #include "../../src/treelearner/cuda/cuda_leaf_splits.hpp"
 
 namespace {

@@ -192,7 +192,21 @@ def _run(name, graph="on", base_plan="auto"):
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["off", "on"])
 @pytest.mark.parametrize(
-    "case", ["fivebin", "full", "deep11", "deep12", "early", "stump", "shallow", "layouts", "reuse", "reset", "bynode"]
+    "case",
+    [
+        "fivebin",
+        "full",
+        "deep11",
+        "deep12",
+        "early",
+        "stump",
+        "shallow",
+        "layouts",
+        "reuse",
+        "reset",
+        "bynode",
+        "nonquant",
+    ],
 )
 def test_device_tree_complete_cuda(case, graph):
     data, diag = _run(case, graph)
@@ -339,7 +353,6 @@ def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
         ("too_deep", "auto", "(depth_gt_12) route=prefix"),
         # per-node masks drawn on the host: the host flow
         ("bynode", "auto,device_bynode_masks:off", "(plan_off) route=host_two_sync prefix=bynode_host_masks"),
-        ("nonquant", "auto", "(nonquant_l15) route=l15_graph"),
         ("two_leaf", "auto", "(num_leaves_le_2) route=classic"),
         ("l1", "auto", "(lambda_l1) route=host_two_sync"),
     ],

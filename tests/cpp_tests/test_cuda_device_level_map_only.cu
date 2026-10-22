@@ -101,8 +101,8 @@ Snapshot Run(const Dataset* dataset, bool map_only, const std::string& action) {
   partition.EnsureDeviceLevelCapacity(kLeaves);
   partition.BeforeTrain();
   Check(cudaDeviceSynchronize());
-  auto* old_main = partition.hybrid_graph_main_indices();
-  auto* old_out = partition.hybrid_graph_out_indices();
+  auto* old_main = partition.device_level_main_indices();
+  auto* old_out = partition.device_level_out_indices();
   std::vector<data_size_t> original(rows);
   std::iota(original.rbegin(), original.rend(), 0);  // shuffled old parent row IDs; not child order
   Put(old_main, original);
