@@ -134,7 +134,8 @@ def test_device_bynode_outside_bound_keeps_host_draws_cuda():
 
 
 def test_device_bynode_rf_unchanged_cuda():
-    # boosting=rf trains on forest slots: they keep the host level loop and the host draws, key on or off
+    # boosting=rf: forest slots keep the host level loop and the host draws; a group's only tree
+    # (forest_single_job_device) draws on the device. The same masks either way, key on or off
     X, y = _data("binary")
     params = _params("binary", 0.5, boosting="rf", bagging_fraction=0.632, bagging_freq=1)
     off = _model_md5({**params, "cuda_plan": "auto,device_bynode_masks:off"}, X, y, rounds=6)
