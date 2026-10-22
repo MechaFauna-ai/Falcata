@@ -314,6 +314,23 @@ class CUDABestSplitFinder {
    *  ahead of its construct: the find kernels wait for that stream's subtract event) */
   void CommitLevelNodeMasks(const std::vector<int>& leaves, const std::vector<int>& row_feature_begin,
                             const std::vector<int>& row_features, cudaStream_t stream);
+  /*! \brief cuda_plan key device_bynode_masks: until ClearDeviceNodeMasks the level finders read a device-drawn row
+   *  table (a row pointer per leaf slot) and task lists (CommitLevelNodeMasks's layout) instead of the last commit's,
+   *  and launch max_tasks blocks per leaf (blocks past a leaf's list exit) */
+  void SetDeviceNodeMasks(const int8_t* const* table, const int* tasks, const int max_tasks) {
+    CHECK(level_node_masks_);
+    device_node_table_ = table;
+    device_node_tasks_ = tasks;
+    device_node_max_tasks_ = max_tasks;
+  }
+  void ClearDeviceNodeMasks() {
+    device_node_table_ = nullptr;
+    device_node_tasks_ = nullptr;
+    device_node_max_tasks_ = 0;
+  }
+  /*! \brief cuda_plan key device_bynode_masks: every task's inner feature, and the most tasks a sample of k features
+   *  can list (the sum of the k largest per-feature task counts) */
+  void NodeTaskTables(const int k, std::vector<int>* task_inner_feature, int* max_tasks) const;
 
   // ---- forced-split support (forcedsplits_filename) ----
   // Compute split information for a FORCED split of the given leaf at the given
@@ -473,6 +490,10 @@ class CUDABestSplitFinder {
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_order_pad_)));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_narrow_mixed_direction_ ? 1 : 0)));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(level_node_max_tasks_)));
+    // cuda_plan key device_bynode_masks: the device-drawn table, lists and grid the level finders capture
+    key->push_back(static_cast<const void*>(device_node_table_));
+    key->push_back(static_cast<const void*>(device_node_tasks_));
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(device_node_max_tasks_)));
   }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
@@ -846,16 +867,30 @@ class CUDABestSplitFinder {
   std::vector<int> feature_task_begin_;
   std::vector<int> feature_task_ids_;
   void EnsureLevelNodeMaskCapacity();
-  /*! \brief the level finders' node mask table: null unless level_node_masks_ (and never inside a captured graph,
-   *  which the tree learner does not run with per-node masks) */
+  /*! \brief the level finders' node mask table: null unless level_node_masks_, and null for the graph loop (gstate);
+   *  the device tree's captured levels read the device-drawn table of SetDeviceNodeMasks */
   const int8_t* const* LevelNodeMaskTable(const CUDAHybridGraphLoopStateOpt gstate) const {
-    return level_node_masks_ && gstate == nullptr ?
-      reinterpret_cast<const int8_t* const*>(cuda_level_node_masks_.RawDataReadOnly()) : nullptr;
+    if (!level_node_masks_ || gstate != nullptr) {
+      return nullptr;
+    }
+    return device_node_table_ != nullptr ? device_node_table_ :
+      reinterpret_cast<const int8_t* const*>(cuda_level_node_masks_.RawDataReadOnly());
   }
   /*! \brief the level finders' and syncs' per-leaf task lists: null unless level_node_masks_ (as the table) */
   const int* LevelNodeTaskLists(const CUDAHybridGraphLoopStateOpt gstate) const {
-    return level_node_masks_ && gstate == nullptr ? cuda_level_node_tasks_.RawDataReadOnly() : nullptr;
+    if (!level_node_masks_ || gstate != nullptr) {
+      return nullptr;
+    }
+    return device_node_tasks_ != nullptr ? device_node_tasks_ : cuda_level_node_tasks_.RawDataReadOnly();
   }
+  /*! \brief the block find's grid x under per-leaf task lists: the level's longest list (host commit) or the bound */
+  int LevelNodeGridX() const {
+    return device_node_tasks_ != nullptr ? device_node_max_tasks_ : level_node_max_tasks_;
+  }
+  // cuda_plan key device_bynode_masks: see SetDeviceNodeMasks
+  const int8_t* const* device_node_table_ = nullptr;
+  const int* device_node_tasks_ = nullptr;
+  int device_node_max_tasks_ = 0;
 
   // CUDA memory, held by other object
   const hist_t* cuda_hist_;

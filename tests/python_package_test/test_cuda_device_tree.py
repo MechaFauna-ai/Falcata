@@ -192,7 +192,7 @@ def _run(name, graph="on", base_plan="auto"):
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["off", "on"])
 @pytest.mark.parametrize(
-    "case", ["fivebin", "full", "deep11", "deep12", "early", "stump", "shallow", "layouts", "reuse", "reset"]
+    "case", ["fivebin", "full", "deep11", "deep12", "early", "stump", "shallow", "layouts", "reuse", "reset", "bynode"]
 )
 def test_device_tree_complete_cuda(case, graph):
     data, diag = _run(case, graph)
@@ -330,9 +330,20 @@ def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("case", ["binding", "unbounded", "too_deep", "bynode", "nonquant", "two_leaf", "l1"])
-def test_device_tree_unsupported_cuda(case):
-    _, diag = _run(case)
+@pytest.mark.parametrize(
+    ("case", "plan"),
+    [
+        ("binding", "auto"),
+        ("unbounded", "auto"),
+        ("too_deep", "auto"),
+        ("bynode", "auto,device_bynode_masks:off"),  # per-node masks drawn on the host: the host flow
+        ("nonquant", "auto"),
+        ("two_leaf", "auto"),
+        ("l1", "auto"),
+    ],
+)
+def test_device_tree_unsupported_cuda(case, plan):
+    _, diag = _run(case, base_plan=plan)
     # outside the depth bound the prefix grows the tree; unsupported configurations use the host flow
     bound = case in {"binding", "unbounded", "too_deep"}
     assert ("device_tree: fallback to the prefix/host flow" if bound else "device_tree: host fallback") in diag

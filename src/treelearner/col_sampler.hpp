@@ -14,6 +14,7 @@
 #include <Falcata/utils/random.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <unordered_set>
@@ -240,6 +241,45 @@ class ColSampler {
         inner_features->push_back(inner_feature);
       }
     }
+  }
+
+  /*! \brief GetByNodeKeyed's inputs that do not depend on the key, for a device port of it (cuda_plan key
+   *         device_bynode_masks): the candidates' inner features in candidate order (Random::Sample's index i is
+   *         candidate i), the sample size, Random::Sample's branch for (candidates, sample size) as it takes it
+   *         (computed here with the same expression, so the device needs no log2), and MixKey(seed) (a node's
+   *         generator is seeded by the high half of MixKey(seed_mix ^ key)).
+   */
+  struct KeyedNodeSample {
+    int num_candidates = 0;
+    int num_sampled = 0;
+    /*! \brief 0: no feature (K > N or K <= 0); 1: every candidate (K == N); 2: the sequential selection scan
+     *  (K > 1 && K > N / log2(K)); 3: Floyd's draw into a set */
+    int mode = 0;
+    uint64_t seed_mix = 0;
+  };
+  KeyedNodeSample GetByNodeKeyedShape(std::vector<int>* candidate_inner_features) const {
+    const std::vector<int>& candidates = need_reset_bytree_ ? used_feature_indices_ : valid_feature_indices_;
+    KeyedNodeSample shape;
+    shape.num_candidates = static_cast<int>(candidates.size());
+    shape.num_sampled = GetCnt(candidates.size(), fraction_bynode_);
+    const int N = shape.num_candidates;
+    const int K = shape.num_sampled;
+    if (K > N || K <= 0) {
+      shape.mode = 0;
+    } else if (K == N) {
+      shape.mode = 1;
+    } else if (K > 1 && K > (N / std::log2(K))) {
+      shape.mode = 2;
+    } else {
+      shape.mode = 3;
+    }
+    shape.seed_mix = MixKey(static_cast<uint64_t>(static_cast<uint32_t>(seed_)));
+    candidate_inner_features->resize(candidates.size());
+    for (size_t i = 0; i < candidates.size(); ++i) {
+      const int used_feature = need_reset_bytree_ ? valid_feature_indices_[candidates[i]] : candidates[i];
+      (*candidate_inner_features)[i] = train_data_->InnerFeatureIndex(used_feature);
+    }
+    return shape;
   }
 
   const std::vector<int8_t>& is_feature_used_bytree() const {

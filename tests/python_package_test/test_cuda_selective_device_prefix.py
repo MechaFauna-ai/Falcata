@@ -198,3 +198,23 @@ def test_selective_device_prefix_declines_forced_splits_cuda(tmp_path):
     assert "selective_device_prefix" not in on
     X, y = _data("regression")
     _same(_params("regression", 63, -1, forcedsplits_filename=str(forced)), X, y, rounds=4)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("objective", ["binary", "multiclass"])
+def test_selective_device_prefix_bynode_same_model_cuda(objective):
+    # per-node feature masks (feature_fraction_bynode < 1) with unlimited depth: the device masks
+    # (device_bynode_masks) serve only the complete device tree, so the prefix declines (the masks are drawn on the
+    # host per level) and selective growth runs on the host with its keyed masks; the model must not change
+    X, y = _data(objective)
+    _same(_params(objective, 63, -1, feature_fraction_bynode=0.5), X, y)
+    params = {
+        "objective": "regression",
+        "num_leaves": 63,
+        "max_depth": -1,
+        "min_data_in_leaf": 5,
+        "feature_fraction_bynode": 0.5,
+    }
+    on, _ = _diag({**params, "cuda_plan": "auto"}, 2)
+    assert "selective_device_prefix" not in on
+    assert "device_levels: host fallback (unsupported prefix kernels or configuration)" in on
