@@ -209,12 +209,14 @@ class CUDAVector {
  public:
   CUDAVector() {
     size_ = 0;
+    capacity_ = 0;
     data_ = nullptr;
     owns_ = true;
   }
 
   explicit CUDAVector(size_t size) {
     size_ = size;
+    capacity_ = size;
     owns_ = true;
     AllocateCUDAMemory<T>(&data_, size_, __FILE__, __LINE__);
   }
@@ -236,6 +238,7 @@ class CUDAVector {
     ReleaseStorage();
     data_ = new_data;
     size_ = size;
+    capacity_ = size;
     owns_ = true;
   }
 
@@ -279,6 +282,7 @@ class CUDAVector {
     CUDASUCCESS_OR_FATAL(status);
     data_ = reinterpret_cast<T*>(new_data);
     size_ = size;
+    capacity_ = size;
     owns_ = true;
     return true;
   }
@@ -296,6 +300,7 @@ class CUDAVector {
   void Clear() {
     ReleaseStorage();
     size_ = 0;
+    capacity_ = 0;
     owns_ = true;
   }
 
@@ -307,6 +312,7 @@ class CUDAVector {
     ReleaseStorage();
     data_ = data;
     size_ = size;
+    capacity_ = size;
     owns_ = false;
   }
 
@@ -320,6 +326,7 @@ class CUDAVector {
     AllocateCUDAMemory<T>(&new_data, size_, __FILE__, __LINE__);
     CopyFromCUDADeviceToCUDADevice<T>(new_data, data_, size_, __FILE__, __LINE__);
     data_ = new_data;
+    capacity_ = size_;
     owns_ = true;
   }
 
@@ -331,30 +338,58 @@ class CUDAVector {
     ReleaseStorage();
     data_ = data;
     size_ = size;
+    capacity_ = size;
     owns_ = true;
   }
 
-  void PushBack(const T* values, size_t len) {
+  /*! \brief grow the owned storage to hold at least capacity elements, keeping the first Size() of them; no-op
+   *  when the storage already holds that many (a view is copied into owned memory, as Resize does) */
+  void Reserve(size_t capacity) {
+    if (capacity <= capacity_) {
+      return;
+    }
     T* new_data = nullptr;
-    AllocateCUDAMemory<T>(&new_data, size_ + len, __FILE__, __LINE__);
+    AllocateCUDAMemory<T>(&new_data, capacity, __FILE__, __LINE__);
     if (size_ > 0 && data_ != nullptr) {
       CopyFromCUDADeviceToCUDADevice<T>(new_data, data_, size_, __FILE__, __LINE__);
     }
-    CopyFromCUDADeviceToCUDADevice<T>(new_data + size_, values, len, __FILE__, __LINE__);
     ReleaseStorage();
-    size_ += len;
     data_ = new_data;
+    capacity_ = capacity;
     owns_ = true;
+  }
+
+  /*! \brief append len device elements. The storage grows by doubling (Reserve), so n appends reallocate
+   *  O(log n) times instead of once each: every reallocation is a cudaMalloc, a copy of the old content and a
+   *  cudaFree, which synchronizes the device. Within capacity an append is one stream-ordered D2D copy. */
+  void PushBack(const T* values, size_t len) {
+    if (size_ + len > capacity_) {
+      Reserve(std::max(size_ + len, 2 * capacity_));
+    }
+    if (len > 0) {
+      CopyFromCUDADeviceToCUDADevice<T>(data_ + size_, values, len, __FILE__, __LINE__);
+    }
+    size_ += len;
+  }
+
+  /*! \brief set Size() to 0 and keep the storage (and its capacity) for the next round of PushBack */
+  void ClearKeepCapacity() {
+    size_ = 0;
   }
 
   size_t Size() const {
     return size_;
   }
 
+  size_t Capacity() const {
+    return capacity_;
+  }
+
   /*! \brief O(1) exchange of the underlying device buffers (double-buffering) */
   void Swap(CUDAVector<T>* other) {
     std::swap(data_, other->data_);
     std::swap(size_, other->size_);
+    std::swap(capacity_, other->capacity_);
     std::swap(owns_, other->owns_);
   }
 
@@ -384,6 +419,7 @@ class CUDAVector {
 
   T* MoveTo() {
     size_ = 0;
+    capacity_ = 0;
     T* old_data = data_;
     data_ = nullptr;
     return old_data;
@@ -393,6 +429,7 @@ class CUDAVector {
   void MoveFrom(CUDAVector<OTHER_T>& other, size_t new_size) {
     data_ = reinterpret_cast<T*>(other.MoveTo());
     size_ = new_size;
+    capacity_ = new_size;
   }
 
  private:
@@ -406,7 +443,10 @@ class CUDAVector {
   }
 
   T* data_;
+  /*! \brief elements in use: what ToHost, Size and every reader see */
   size_t size_;
+  /*! \brief elements the storage holds (>= size_); only Reserve and PushBack leave it above size_ */
+  size_t capacity_;
   /*! \brief false when data_ is a view into externally owned memory */
   bool owns_;
 };
