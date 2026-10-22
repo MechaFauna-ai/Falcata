@@ -111,12 +111,24 @@ def _case(name):
             params["feature_fraction_bynode"] = 0.5
         elif name == "l1":
             params["lambda_l1"] = 0.7
+        elif name == "smooth":
+            params["path_smooth"] = 3.0
+        elif name == "l1_smooth":
+            params.update(lambda_l1=0.7, path_smooth=3.0)
+        elif name == "l1_nonquant":
+            params.update(lambda_l1=0.7, path_smooth=3.0, quant_mode="none")
         elif name == "nonquant":
             params["quant_mode"] = "none"
         elif name == "shallow":
             params.update(num_leaves=4, max_depth=1)
         elif name == "two_leaf":
             params.update(num_leaves=2, max_depth=1)
+        elif name == "two_leaf_unbounded":
+            params.update(num_leaves=2, max_depth=-1)
+        elif name == "two_leaf_nonquant":
+            params.update(num_leaves=2, max_depth=-1, quant_mode="none")
+        elif name == "l1_bynode":
+            params.update(lambda_l1=0.7, feature_fraction_bynode=0.5)
         elif name not in {"fivebin", "reset", "reset_auto_budget"}:
             raise ValueError(name)
     return X, y, params, rounds
@@ -206,6 +218,12 @@ def _run(name, graph="on", base_plan="auto"):
         "reset",
         "bynode",
         "nonquant",
+        # P6: the level finder's L1 / path-smoothing instantiations, quantized stumps (depth 1)
+        "l1",
+        "smooth",
+        "l1_smooth",
+        "two_leaf",
+        "two_leaf_unbounded",
     ],
 )
 def test_device_tree_complete_cuda(case, graph):
@@ -244,6 +262,9 @@ def test_device_tree_complete_cuda(case, graph):
     elif case == "stump":
         assert data["counts"] == [1]
         assert int(events[0][1]) == 0
+    elif case in {"two_leaf", "two_leaf_unbounded"}:
+        assert data["counts"] == [2] * data["rounds"]
+        assert all(e[:3] == ("1", "1", "1") for e in events)
     elif case == "layouts" and graph == "on":
         # Exceed the ordinary prefix's nine-miss cutoff and still require every complete tree above.
         assert int(events[-1][5]) >= 9
@@ -353,8 +374,11 @@ def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
         ("too_deep", "auto", "(depth_gt_12) route=prefix"),
         # per-node masks drawn on the host: the host flow
         ("bynode", "auto,device_bynode_masks:off", "(plan_off) route=host_two_sync prefix=bynode_host_masks"),
-        ("two_leaf", "auto", "(num_leaves_le_2) route=classic"),
-        ("l1", "auto", "(lambda_l1) route=host_two_sync"),
+        # L1 / path smoothing and stumps keep their routes where the level flows would change the model (P6):
+        # non-quantized (fixed-point level histograms), per-node masks (the per-split loop's leaf numbers)
+        ("l1_nonquant", "auto", "(lambda_l1) route=host_two_sync"),
+        ("l1_bynode", "auto", "(lambda_l1) route=classic"),
+        ("two_leaf_nonquant", "auto", "(num_leaves_le_2) route=classic"),
     ],
 )
 def test_device_tree_unsupported_cuda(case, plan, line):
@@ -420,18 +444,52 @@ def test_device_tree_root_output_cuda(case, graph):
     assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
 
 
+def _empty_probe():
+    X, y, params, _ = _case("fivebin")
+    X = np.ones_like(X)  # every feature constant: the Dataset keeps none
+    models = []
+    for plan in ["auto", "auto,device_levels:off", "auto,device_tree:off"]:
+        for quant_mode in ["stochastic", "none"]:
+            p = {**params, "quant_mode": quant_mode, "cuda_plan": plan}
+            booster = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=3)
+            info = booster.dump_model()["tree_info"]
+            assert [t["num_leaves"] for t in info] == [1], info
+            models.append("\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line))
+    assert all(model == models[0] for model in models), "plans grow different trees without a feature"
+    print(json.dumps({"models": len(models)}))
+
+
+@_REQUIRES_CUDA
+def test_device_tree_empty_task_list_cuda():
+    # FULL_DEVICE_PLAN row 23, no searchable feature: unreachable for the CUDA learner. The booster grows the one-leaf
+    # tree itself when the Dataset keeps no feature (GBDT::TrainOneIter never calls the tree learner), and otherwise
+    # every tree's feature sample keeps at least one feature (ColSampler::GetCnt), each with a split task. Pin that:
+    # one identical one-leaf model under every controller, quantized or not, and no learner report at all.
+    code = "import runpy,sys; runpy.run_path(sys.argv[1])['_empty_probe']()"
+    result = subprocess.run(
+        [sys.executable, "-c", code, __file__],
+        env=dict(os.environ, FALCATA_DEBUG="diag"),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(result.stdout.splitlines()[-1]) == {"models": 6}
+    assert not re.search(r"device_tree: (complete|fallback)", result.stderr), result.stderr[-3000:]
+
+
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["off", "on"])
 def test_device_tree_reset_auto_budget_cuda(graph):
     # A depth-only reset to one automatically reduces the native leaf budget to two. Later depth-only resets do
-    # not raise it again: this is the documented Config::Set adjustment, and two-leaf trees use host growth.
+    # not raise it again: this is the documented Config::Set adjustment. Two-leaf trees are complete device trees of
+    # depth 1 whatever max_depth says (P6).
     data, diag = _run("reset_auto_budget", graph)
     assert data["budgets"] == [2] * 4
     assert len(data["counts"]) == data["rounds"] == 12
     assert all(count <= 2 for count in data["counts"])
     assert all(depth <= 1 for depth in data["depths"])
-    assert "device_tree: fallback (num_leaves_le_2) route=classic" in diag
-    assert "device_tree: complete" not in diag
+    assert re.findall(r"device_tree: complete depth=(\d+) ", diag) == ["1"] * 12
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
 
 
 # Draft V9 coverage: publish/consume markers prove byte reuse; exact models and live training scores guard it.

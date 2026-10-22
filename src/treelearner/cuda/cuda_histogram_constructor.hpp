@@ -387,8 +387,8 @@ class CUDAHistogramConstructor {
   /*! \brief why the batched per-level construct/fix/subtract path does not support the
    *  current data layout (kNone: it does: dense, shared-memory histograms). The compact
    *  column view (feature_fraction sampling gathered into a dense per-tree copy) is
-   *  supported through the same batched dense kernel fed with the compact pointers/dims,
-   *  for 8-bit rows. */
+   *  supported through the same batched dense kernel fed with the compact pointers/dims;
+   *  it exists for 8-bit rows only (ScanCompactLayout), and 16-bit rows read the full matrix. */
   DeviceTreeReason BatchedLevelRefusal() const {
     if (NonquantClassicFallback()) {
       return DeviceTreeReason::kNoSharedMemory;
@@ -400,10 +400,11 @@ class CUDAHistogramConstructor {
       return DeviceTreeReason::kSparseLayout;
     }
     if (cuda_row_data_->NumLargeBinPartition() != 0) {
-      return DeviceTreeReason::kLargeBinLayout;
-    }
-    if (use_compact_view_ && cuda_row_data_->bit_type() != 8) {
-      return DeviceTreeReason::kCompact16Bit;
+      // A large-bin partition is one column of more than a shared partition's bins (at least 2588). On CUDA a
+      // feature group of two or more features is capped at 256 bins (FindGroups), so that column is one feature of
+      // more than 256 bins: the split finder's global-memory search (non-quantized, the per-pair fallback) or the
+      // quantized Init refusal holds as well.
+      return DeviceTreeReason::kNonquantGt256Bins;
     }
     return DeviceTreeReason::kNone;
   }

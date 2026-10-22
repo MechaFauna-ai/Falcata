@@ -48,6 +48,7 @@ CUDABestSplitFinder::CUDABestSplitFinder(
   cuda_hist_(cuda_hist),
   train_data_(train_data) {
   feature_contri_ = config->feature_contri;
+  use_quantized_grad_ = config->use_quantized_grad;
   InitFeatureMetaInfo(train_data);
   // Build a per-inner-feature monotone constraint vector. config->monotone_constraints
   // is indexed by REAL feature index (see FeatureHistogram feature-meta init), so map
@@ -442,6 +443,7 @@ void CUDABestSplitFinder::ResetConfig(const Config* config, const hist_t* cuda_h
   extra_trees_ = config->extra_trees;
   extra_seed_ = config->extra_seed;
   use_smoothing_ = (config->path_smooth > 0.0f);
+  use_quantized_grad_ = config->use_quantized_grad;
   path_smooth_ = config->path_smooth;
   max_delta_step_ = config->max_delta_step;
   cuda_hist_ = cuda_hist;
