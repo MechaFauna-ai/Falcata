@@ -10,17 +10,15 @@ objectives, leaf budgets, gain and data gates, bagging and graph capture; FALCAT
 tree with the levels taken, so the tests also check that the prefix ran.
 """
 
-import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 import numpy as np
 import pytest
-
-import falcata as flc
 
 _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
@@ -65,19 +63,42 @@ def _params(objective, leaves, depth, **extra):
     return params
 
 
-def _model_md5(params, X, y, rounds):
-    booster = flc.train(params, flc.Dataset(X, label=y, params=params), num_boost_round=rounds)
-    lines = [line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line]
-    return hashlib.md5("\n".join(lines).encode()).hexdigest()
+_TRAIN = (
+    "import sys, json, hashlib, numpy as np, falcata as flc\n"
+    "d = np.load(sys.argv[1])\n"
+    "p = json.loads(sys.argv[2])\n"
+    "b = flc.train(p, flc.Dataset(d['X'], label=d['y'], params=p), num_boost_round=int(sys.argv[3]))\n"
+    "lines = [x for x in b.model_to_string().splitlines() if 'cuda_plan' not in x]\n"
+    "print(json.dumps({'md5': hashlib.md5('\\n'.join(lines).encode()).hexdigest(), 'trees': b.num_trees()}))\n"
+)
 
 
-def _same(params, X, y, rounds=8, plans=("auto", "auto" + _OFF, "auto,device_levels:off")):
-    md5 = {plan: _model_md5({**params, "cuda_plan": plan}, X, y, rounds) for plan in plans}
+def _train_diag(params, X, y, rounds):
+    # one training in a fresh process under FALCATA_DEBUG=diag: the model md5, the tree count and the prefix lines
+    with tempfile.TemporaryDirectory() as tmp:
+        data = os.path.join(tmp, "data.npz")
+        np.savez(data, X=X, y=y)
+        env = dict(os.environ, FALCATA_DEBUG="diag")
+        args = [sys.executable, "-c", _TRAIN, data, json.dumps(params), str(rounds)]
+        out = subprocess.run(args, env=env, capture_output=True, text=True, check=True)
+    res = json.loads(out.stdout.strip().splitlines()[-1])
+    return res["md5"], res["trees"], [tuple(int(v) for v in m.groups()) for m in _LINE.finditer(out.stderr)]
+
+
+def _same(params, X, y, rounds=8, plans=("auto", "auto" + _OFF, "auto,device_levels:off"), engaged=True):
+    # the same model under every plan; the first plan (the default) took the prefix on every tree iff engaged, the
+    # others never did
+    md5 = {}
+    for i, plan in enumerate(plans):
+        md5[plan], trees, lines = _train_diag({**params, "cuda_plan": plan}, X, y, rounds)
+        assert len(lines) == (trees if engaged and i == 0 else 0), (plan, trees, len(lines))
     assert len(set(md5.values())) == 1, md5
 
 
 _SHAPES = [
     (31, -1, {}),
+    (32, -1, {}),  # exact fit: 2^K = num_leaves, the last prefix level can fill the budget
+    (64, -1, {}),  # exact fit
     (63, -1, {}),
     (127, -1, {}),
     (63, 10, {}),  # binding budget at a finite depth: 2^10 > 64
@@ -180,6 +201,8 @@ def test_selective_device_prefix_partial_levels_cuda():
     lines = [tuple(int(v) for v in m.groups()) for m in _LINE.finditer(on)]
     assert len(lines) == 3
     assert any(splits + 1 < 2**applied for _, applied, splits, _, _ in lines), lines
+    X, y = _data("regression")
+    _same(_params("regression", 63, -1, min_data_in_leaf=900), X, y)
 
 
 @_REQUIRES_CUDA
@@ -197,7 +220,7 @@ def test_selective_device_prefix_declines_forced_splits_cuda(tmp_path):
     on, _ = _diag({**params, "cuda_plan": "auto"}, 2)
     assert "selective_device_prefix" not in on
     X, y = _data("regression")
-    _same(_params("regression", 63, -1, forcedsplits_filename=str(forced)), X, y, rounds=4)
+    _same(_params("regression", 63, -1, forcedsplits_filename=str(forced)), X, y, rounds=4, engaged=False)
 
 
 @_REQUIRES_CUDA
@@ -207,7 +230,7 @@ def test_selective_device_prefix_bynode_same_model_cuda(objective):
     # (device_bynode_masks) serve only the complete device tree, so the prefix declines (the masks are drawn on the
     # host per level) and selective growth runs on the host with its keyed masks; the model must not change
     X, y = _data(objective)
-    _same(_params(objective, 63, -1, feature_fraction_bynode=0.5), X, y)
+    _same(_params(objective, 63, -1, feature_fraction_bynode=0.5), X, y, engaged=False)
     params = {
         "objective": "regression",
         "num_leaves": 63,

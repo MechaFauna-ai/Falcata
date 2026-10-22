@@ -3608,6 +3608,7 @@ void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
   device_level_graphs_.clear();
   device_levels_ready_ = false;
   device_levels_disabled_ = false;
+  selective_prefix_logged_ = false;  // a new config reports its levels again
   device_tree_scratch_gate_ = -1;
   device_level_graph_disabled_ = false;
   device_level_graph_hits_ = 0;
@@ -4250,7 +4251,10 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.max_depth = config_->max_depth;
   cfg.num_leaves_budget = config_->num_leaves;
   cfg.whole_tree = DeviceTreeRequested() ? 1 : 0;
-  // cuda_plan key selective_device_prefix: the applied splits' best-split records, for the selective records
+  // cuda_plan key selective_device_prefix: the applied splits' best-split records, for the selective records. Sized
+  // here, outside SetupDeviceLevels, because only selective trees ask for them (the device tree and the plain prefix
+  // never allocate them); the growth happens before any level is enqueued or captured, and K is config-constant, so
+  // it happens once per learner (ReleaseHybridGraphs keeps the buffers: a larger K regrows them here)
   const int max_prefix_splits = std::min((1 << num_levels) - 1, config_->num_leaves - 1);
   if (record_split_infos) {
     CHECK(!cfg.whole_tree);

@@ -964,6 +964,7 @@ struct FalcataPlan {
   // "split every valid leaf". The prefix also journals each applied split's best-split record; the host rebuilds its
   // selective records (parents, windows, depths, gains) from the journal and continues at level K. Leaf indices are
   // assigned leaf-ascending instead of in greedy order, which no search, simulation or renumbering reads: bit-identical.
+  // Engages only when K >= 2 (num_leaves >= 4 and, with a depth limit, max_depth >= 3), like the prefix itself.
   // Quantized, two-sync, single GPU, no categorical features, per-node masks or vector leaves (device_levels' gate).
   bool selective_device_prefix = true;  // key: selective_device_prefix
   // the complete device tree under per-node feature masks (feature_fraction_bynode < 1, no interaction constraints,

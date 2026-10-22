@@ -3143,7 +3143,8 @@ A binding leaf budget (`2^max_depth > num_leaves + 1`) or unlimited depth trains
 growth: per level the host reads every leaf's best split back, runs a greedy leaf-wise simulation over the applied
 splits and the new candidates, collapses displaced subtrees, applies the selected candidates and reads the split
 counts back, two blocking readbacks per level. `selective_device_prefix` (default ON) runs the first
-`K = min(floor(log2(num_leaves)), max_depth - 1, 10)` levels as this section's prefix instead. On level k the
+`K = min(floor(log2(num_leaves)), max_depth - 1, 10)` levels as this section's prefix instead (only when `K >= 2`,
+like the prefix itself). On level k the
 simulation holds at most `2^k - 1` applied splits and `2^k` candidates, all reachable from the root; while
 `2^(k+1) <= num_leaves` that is within the budget `num_leaves - 1`, so it selects every valid candidate and collapses
 nothing, which is the prefix's "split every valid leaf" (the same `is_valid` set; gain, data and hessian gates act
