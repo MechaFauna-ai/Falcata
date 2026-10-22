@@ -1469,6 +1469,14 @@ GPU Parameters
 
    -  in distributed learning application, each machine can use different number of GPUs
 
+   -  **Note**: ``num_gpu>1`` loads ``libnccl.so.2`` at runtime; install it with the ``multigpu`` extra (``pip install "falcata[multigpu]"``, which pins ``nvidia-nccl-cu12``) or any NCCL 2.x wheel such as ``nvidia-nccl-cu13``; both verified on the CUDA 13 wheel (falcata 1.1.0, 2x RTX A4000, driver 580)
+
+   -  **Note**: with quantized gradients (``quant_mode`` other than ``none``, e.g. via ``use_quantized_grad=true`` or ``deterministic=true``; the default ``quant_mode=auto`` resolves to ``none`` otherwise) multi-GPU needs a depth-limited configuration, a positive ``max_depth`` with ``2^max_depth <= num_leaves + 1``, and no forced splits; otherwise training stops with the Fatal "multi-GPU + quantized gradients requires the hybrid level flow". Example: ``num_leaves=127`` needs ``max_depth<=7``
+
+   -  **Note**: ranks exchange histograms over host-staged NCCL transport (the trainer sets ``NCCL_P2P_DISABLE=1`` and logs a warning); multi-GPU is for data that does not fit one card, not for speed: on small data it is several times slower than one GPU
+
+   -  **Note**: models from ``num_gpu>1`` differ from single-GPU models (histogram reduction order); they are run-to-run deterministic for quantized and non-quantized training in the verified configuration
+
 -  ``cuda_precision`` :raw-html:`<a id="cuda_precision" title="Permalink to this parameter" href="#cuda_precision">&#x1F517;&#xFE0E;</a>`, default = ``fp64``, type = string
 
    -  floating-point precision of CUDA histogram accumulation and split-gain math (Falcata)
