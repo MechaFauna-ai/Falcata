@@ -133,11 +133,9 @@ def test_count_hist_same_model(objective, kind, shape):
     "extra",
     [
         {"feature_fraction_bynode": 1.0},  # no per-node sampling
-        {"cuda_plan_extra": "forest_batched:off"},  # one tree after another (stage-1 learner)
-        {"cuda_plan_extra": "forest_group:3"},
         {"max_bin": 255},
     ],
-    ids=["bynode1", "sequential", "group3", "bin255"],
+    ids=["bynode1", "bin255"],
 )
 def test_count_hist_same_model_variants(extra):
     X, y = _data("multiclass")
@@ -350,7 +348,7 @@ def test_count_hist_layouts_same_model(labels):
 
 
 def test_count_hist_default_plan():
-    # the default plan (graph loop allowed: the forest slots never take it)
+    # the default plan (a non-quantized forest never takes the graph loop)
     X, y = _data("binary")
     params = _params("binary", "selective")
     ref = _train(params, "auto,forest_count_hist:off", X, y, 6)
@@ -396,95 +394,3 @@ def test_count_hist_level_beyond_det_pairs():
     # wide levels: about 1000 pairs at depth 11 (the slot slab holds fewer rows of this 76.5k-bin histogram)
     assert max(t["num_leaves"] for t in got.dump_model()["tree_info"]) > 1500
     np.testing.assert_array_equal(got.predict(X[:5000]), ref.predict(X[:5000]))
-
-
-_OOM_CHILD = """
-import hashlib, json, sys
-import numpy as np
-import falcata as flc
-rng = np.random.default_rng(3)
-X = rng.standard_normal((20000, 16)).astype(np.float32)
-y = (X[:, 0] + 0.3 * rng.standard_normal(20000) > 0).astype(np.float32)
-params = json.loads(sys.argv[1])
-ds = flc.Dataset(X, label=y, params={"max_bin": 63, "verbose": -1})
-b = flc.train(params, ds, num_boost_round=24)
-model = b.model_to_string()
-out, skip = [], False
-for line in model.splitlines():
-    if line.startswith("parameters:"):
-        skip = True
-    if not skip:
-        out.append(line)
-    if line.startswith("end of parameters"):
-        skip = False
-print("MD5", hashlib.md5("\\n".join(out).encode()).hexdigest())
-"""
-
-
-def _oom_child(params, inject, hook="FALCATA_TEST_FOREST_OOM_GROUP"):
-    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-    if inject is not None:
-        env[hook] = str(inject)
-    res = subprocess.run(
-        [sys.executable, "-c", _OOM_CHILD, json.dumps(params)],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=900,
-        check=False,
-    )
-    assert res.returncode == 0, res.stderr[-3000:]
-    md5 = [line.split()[1] for line in res.stdout.splitlines() if line.startswith("MD5 ")]
-    return md5[0], res.stdout + res.stderr
-
-
-@pytest.mark.parametrize("quant_mode", ["none", "stochastic"])
-def test_forest_group_out_of_memory_retried(quant_mode):
-    # a group that fails for device memory is grown again on one round's slots (the others freed), with a warning:
-    # the same forest as an undisturbed run (the trees do not depend on the group size)
-    params = {
-        "boosting": "rf",
-        "device_type": "cuda",
-        "objective": "binary",
-        "num_leaves": 63,
-        "bagging_fraction": 0.632,
-        "bagging_freq": 1,
-        "feature_fraction_bynode": 0.5,
-        "quant_mode": quant_mode,
-        "metric": "None",
-        "seed": 3,
-        "verbose": 0,
-        "cuda_plan": "auto,forest_group:4",
-    }
-    want, _ = _oom_child(params, None)
-    got, log = _oom_child(params, 1)
-    assert got == want
-    assert "ran out of device memory" in log, log[-3000:]
-
-
-@pytest.mark.parametrize("quant_mode", ["stochastic", "none"])
-def test_forest_group_out_of_memory_inside_a_tree(quant_mode):
-    # the failure INSIDE a tree of the booster's own learner (slot 0, which the retry keeps), after it wrote histograms
-    # of its first levels; depth-limited trees that grow from tree to tree, so the aborted tree used histogram slots
-    # beyond the last completed tree's: the next tree on that learner zeroes every slot first (the accumulating
-    # quantized construct would add the leftovers), and the forest is the undisturbed one
-    params = {
-        "boosting": "rf",
-        "device_type": "cuda",
-        "objective": "binary",
-        "num_leaves": 255,
-        "max_depth": 8,
-        "min_data_in_leaf": 1,
-        "bagging_fraction": 0.632,
-        "bagging_freq": 1,
-        "feature_fraction_bynode": 0.5,
-        "quant_mode": quant_mode,
-        "metric": "None",
-        "seed": 3,
-        "verbose": 0,
-        "cuda_plan": "auto,forest_group:4",
-    }
-    want, _ = _oom_child(params, None)
-    got, log = _oom_child(params, 5, hook="FALCATA_TEST_FOREST_ABORT_TREE")
-    assert "ran out of device memory" in log, log[-3000:]
-    assert got == want

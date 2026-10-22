@@ -301,14 +301,15 @@ def test_device_levels_nonquant_fallback_cuda(graph):
 
 
 @_REQUIRES_CUDA
-def test_device_levels_forest_slots_fallback_cuda():
+def test_device_levels_rf_multiclass_cuda():
+    # a multiclass forest's class trees train one after another on the booster's learner (the forest slots are gone):
+    # the host flow, the device_levels prefix (direct and graph) and the complete device tree grow the same trees
     X, y = _data(30011, 16, "multiclass", 69)
     _same(
         _params("multiclass", 63, 6, "fixedpoint", boosting="rf", bagging_fraction=0.632, bagging_freq=1),
         X,
         y,
         12,
-        base_plan="auto,forest_group:3",
     )
 
 
