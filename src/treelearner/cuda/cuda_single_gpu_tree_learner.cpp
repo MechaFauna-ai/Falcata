@@ -6067,10 +6067,9 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     const int levels = tree->cat_level_launches();
     const int splits = tree->cat_level_splits();
     fprintf(stderr, "[hybrid-diag] cat_level_record: levels=%d cat_splits=%d record_launches=%d "
-            "saved_launches=%d saved_d2d=%d saved_length_readbacks=%d tohost_copies=%d overflow_readbacks=%d "
-            "tail_settles=%d\n",
+            "saved_launches=%d saved_d2d=%d saved_length_readbacks=%d tohost_copies=%d overflow_readbacks=%d\n",
             levels, splits, levels, splits - levels, 2 * splits, levels, tree->cat_record_one_copy() ? 1 : 4,
-            tree->cat_overflow_readbacks(), tree->cat_tail_settles());
+            tree->cat_overflow_readbacks());
   }
   last_tree_is_linear_ = false;
   if (config_->linear_tree) {
