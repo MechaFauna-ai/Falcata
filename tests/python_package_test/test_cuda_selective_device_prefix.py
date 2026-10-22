@@ -192,10 +192,10 @@ def test_selective_device_prefix_engages_cuda(leaves, depth, levels):
         # the host's selective loop continued from the prefix's frontier to the leaf budget
         assert frontier > 0
         assert final_leaves == leaves
-    assert "host fallback (selective growth)" not in on
+    assert "device_levels: host fallback" not in on
     off, off_leaves = _diag({**params, "cuda_plan": "auto" + _OFF}, rounds)
     assert "selective_device_prefix" not in off
-    assert "device_levels: host fallback (selective growth)" in off
+    assert "device_levels: host fallback (plan_off)" in off
     assert off_leaves == tree_leaves
 
 
@@ -247,7 +247,8 @@ def test_selective_device_prefix_bynode_same_model_cuda(objective):
     }
     on, _ = _diag({**params, "cuda_plan": "auto"}, 2)
     assert "selective_device_prefix" not in on
-    assert "device_levels: host fallback (unsupported prefix kernels or configuration)" in on
+    assert "device_levels: host fallback (bynode_outside_bound)" in on
+    assert "device_tree: fallback (bynode_outside_bound) route=selective_two_sync\n" in on
 
 
 # the selective prefix records no device tree, selects in the fused sync tail from registers, rebuilds the host records

@@ -1473,7 +1473,7 @@ GPU Parameters
 
    -  **Note**: if ``libnccl.so.2`` is not found, training logs a warning and continues on one GPU; it does not stop
 
-   -  **Note**: with quantized gradients (``quant_mode`` other than ``none``, e.g. via ``use_quantized_grad=true`` or ``deterministic=true``; the default ``quant_mode=auto`` resolves to ``none`` otherwise) multi-GPU needs at least a positive ``max_depth`` with ``2^max_depth <= num_leaves + 1`` and no forced splits, and is unavailable with CEGB (or with categorical features under ``cuda_plan`` ``cat_hybrid:off``); otherwise training stops with the Fatal "multi-GPU + quantized gradients requires the hybrid level flow". Example: ``num_leaves=127`` needs ``max_depth<=7``
+   -  **Note**: with quantized gradients (``quant_mode`` other than ``none``, e.g. via ``use_quantized_grad=true`` or ``deterministic=true``; the default ``quant_mode=auto`` resolves to ``none`` otherwise) multi-GPU needs at least a positive ``max_depth`` with ``2^max_depth <= num_leaves + 1`` and no forced splits, and is unavailable with CEGB; otherwise training stops with the Fatal "multi-GPU + quantized gradients requires the hybrid level flow". Example: ``num_leaves=127`` needs ``max_depth<=7``
 
    -  **Note**: ranks exchange histograms over host-staged NCCL transport (the trainer sets ``NCCL_P2P_DISABLE=1`` and logs a warning); multi-GPU is for data that does not fit one card, not for speed: on small data it is several times slower than one GPU
 
@@ -1497,7 +1497,7 @@ GPU Parameters
 
    -  experts can pin individual decisions with comma-separated ``key:on|off`` overrides after ``auto``, e.g. ``auto,graph_loop:off,row_batch:off``
 
-   -  nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires, and ``batch_kernels`` may break exact-gain ties in a different order
+   -  nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires
 
    -  **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
 

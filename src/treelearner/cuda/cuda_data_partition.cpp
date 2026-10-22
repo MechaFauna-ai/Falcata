@@ -180,9 +180,7 @@ void CUDADataPartition::Split(
   double* left_leaf_sum_of_gradients,
   double* right_leaf_sum_of_gradients,
   data_size_t* global_left_leaf_num_data,
-  data_size_t* global_right_leaf_num_data,
-  const bool point_structs_at_main,
-  const int deferred_slot) {
+  data_size_t* global_right_leaf_num_data) {
   // cuda_plan key final_map_only: before GenDataToLeftBitVector reuses the offset buffers and direction bits a
   // pending map-only level's partition needs
   EnsureLevelPartitioned();
@@ -246,10 +244,7 @@ void CUDADataPartition::Split(
              left_leaf_sum_of_gradients,
              right_leaf_sum_of_gradients,
              global_left_leaf_num_data,
-             global_right_leaf_num_data,
-             point_structs_at_main,
-             deferred_slot,
-             leaf_data_start);
+             global_right_leaf_num_data);
   global_timer.Stop("SplitInner");
 }
 
@@ -577,7 +572,7 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
       desc.leaf_data_start = start;
       desc.num_data_in_leaf = num;
       desc.num_blocks = (num + gap_block_dim - 1) / gap_block_dim;
-      // cuda_plan key gap_copy_fused: the gap's chunks in the partition kernel's flat grid, after the splits'
+      // the gap's chunks in the partition kernel's flat grid, after the splits'
       desc.flat_block_start = total_flat_blocks + gap_flat_blocks;
       gap_flat_blocks += (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
       if (desc.num_blocks > max_gap_blocks) {
@@ -686,7 +681,7 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
                                     cat_desc_indices, cat_mfb_bins);
   }
   LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks, num_gaps, max_gap_blocks,
-                                 total_flat_blocks, FalcataPlan::Get().gap_copy_fused ? gap_flat_blocks : 0,
+                                 total_flat_blocks, gap_flat_blocks,
                                  write_leaf_map, map_only);
   if (map_only) {
     // cuda_plan key final_map_only: nothing was written to the out buffer; the main array keeps every unsplit
@@ -725,10 +720,7 @@ void CUDADataPartition::SplitInner(
   double* left_leaf_sum_of_gradients,
   double* right_leaf_sum_of_gradients,
   data_size_t* global_left_leaf_num_data,
-  data_size_t* global_right_leaf_num_data,
-  const bool point_structs_at_main,
-  const int deferred_slot,
-  const data_size_t leaf_data_start_for_copy) {
+  data_size_t* global_right_leaf_num_data) {
   EnsureLevelPartitioned();  // cuda_plan key final_map_only
   level_shared_gaps_valid_ = false;  // the per-split path writes both index buffers
   LaunchSplitInnerKernel(
@@ -747,10 +739,7 @@ void CUDADataPartition::SplitInner(
     left_leaf_sum_of_gradients,
     right_leaf_sum_of_gradients,
     global_left_leaf_num_data,
-    global_right_leaf_num_data,
-    point_structs_at_main,
-    deferred_slot,
-    leaf_data_start_for_copy);
+    global_right_leaf_num_data);
   ++cur_num_leaves_;
 }
 

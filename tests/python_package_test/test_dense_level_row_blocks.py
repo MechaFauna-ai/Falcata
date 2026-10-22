@@ -8,7 +8,7 @@ change only which block adds which row to the packed integer histogram, so every
 either key off. The shapes cover 8-bit columns (the kernel's main user), 4-bit columns with pair_hist off, bagging,
 high quant_bins (the packed partials' overflow guard), a level with more pairs than the block map's prefix holds
 (launched as one mapped grid per prefix-full of pairs),
-a 3-leaf tree (one pair per level: neither key engages) and the graph level loop (graph_quant).
+a 3-leaf tree (one pair per level: neither key engages) and the complete device tree.
 """
 
 import os
@@ -50,8 +50,8 @@ SHAPES = {
         {"num_leaves": 4095, "max_depth": 12, "min_data_in_leaf": 1, "cuda_plan": "device_tree:off"},
     ),
     "three_leaves": (5_001, 4, {"num_leaves": 3, "max_depth": 2}),
-    # the graph level loop: the rows-per-thread floor is derived on the device from the level's sizes
-    "graph_loop": (60_001, 30, {"num_leaves": 63, "max_depth": 6, "cuda_plan": "graph_quant:on"}),
+    # the complete device tree: the rows-per-thread floor is derived on the device from the level's sizes
+    "device_tree": (60_001, 30, {"num_leaves": 63, "max_depth": 6}),
 }
 
 OFF = "dense_level_row_blocks:off,dense_block_map:off"

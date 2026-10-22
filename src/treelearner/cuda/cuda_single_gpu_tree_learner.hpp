@@ -13,6 +13,8 @@
 
 #ifdef USE_CUDA
 
+#include <Falcata/cuda/cuda_device_tree_reason.hpp>
+
 #include "cuda_leaf_splits.hpp"
 #include "cuda_feature_parallel.hpp"
 #include "cuda_histogram_constructor.hpp"
@@ -204,13 +206,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   // Apply a split (device CUDASplitInfo + host-known feature/threshold) to the tree
   // and the data partition. Shared by the main loop and the forced-split pre-pass.
-  // Returns the new (right) leaf index. When smaller_slot/larger_slot are given the
-  // data partition writes the children's leaf-splits structs into them instead of the
-  // fixed pair structs (used by the hybrid level-batched growth phase).
-  int ApplySplit(CUDATree* tree, const CUDASplitInfo* best_split_info, const int leaf_index,
-                 CUDALeafSplitsStruct* smaller_slot = nullptr,
-                 CUDALeafSplitsStruct* larger_slot = nullptr,
-                 int deferred_slot = -1);
+  // Returns the new (right) leaf index.
+  int ApplySplit(CUDATree* tree, const CUDASplitInfo* best_split_info, const int leaf_index);
   // cuda_plan key split_counts_early: when the previous level's readback returned before its partition kernels and
   // tree record finished (ApplyInFlight), order the histogram stream after the partition and the finder's stream
   // after the record, and clear the flag; nothing otherwise
@@ -380,7 +377,16 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // 2^(L + 1) <= num_leaves (the budget cannot bind) and L + 1 < max_depth (the children are searched), when every
   // kernel of the flow has a device-count variant; 0 = the host loop as before
   int DeviceLevelsToRun(bool batched_level_kernels, bool batched_level_apply);
-  void LogDeviceLevelsFallback(const char* reason);
+  /*! \brief DeviceLevelsToRun refused: record why (device_levels_refusal_) and, under FALCATA_DEBUG=diag for a flow
+   *  outside the complete device tree, report the prefix's own fallback once */
+  void LogDeviceLevelsFallback(DeviceTreeReason reason);
+  /*! \brief FALCATA_DEBUG=diag: why the complete device tree did not grow this tree (the first refusal in the order
+   *  of FALCATA_DEVICE_TREE_REASONS that holds), from the learner's state after the tree's growth */
+  DeviceTreeReason DeviceTreeRefusal() const;
+  /*! \brief FALCATA_DEBUG=diag, at the end of a tree the complete device tree did not grow: the reason line
+   *  `device_tree: fallback (<reason>) route=<route>[ prefix=<reason>]`, printed when it differs from this learner's
+   *  last one */
+  void LogDeviceTreeFallback();
   // ---- cuda_plan key device_bynode_masks ----
   /*! \brief the complete device tree takes this learner's per-node masks: keyed masks in the level flows (no
    *  interaction constraints, single GPU, the batched phases), no forest slot and no FALCATA_DEBUG=bynode (its BYNODE
@@ -756,14 +762,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool use_hybrid_growth_ = false;
   CUDAVector<CUDALeafSplitsStruct> hybrid_pair_slots_;
   std::vector<CUDASplitInfo> host_leaf_best_splits_;
-  // hybrid growth: batched per-level kernels (FALCATA_HYBRID_BATCH_KERNELS,
-  // default on; "0" falls back to the per-pair kernel launches)
-  bool use_hybrid_batch_kernels_ = false;
   std::vector<CUDAHybridPairDescriptor> host_hybrid_pair_descs_;
   CUDAVector<CUDAHybridPairDescriptor> cuda_hybrid_pair_descs_;
-  // hybrid growth: batched per-level APPLY phase (FALCATA_HYBRID_BATCH_APPLY,
-  // default on; "0" falls back to the per-split deferred ApplySplit loop)
-  bool use_hybrid_batch_apply_ = false;
   std::vector<CUDATreeBatchSplit> host_tree_batch_splits_;
   std::vector<CUDAHybridApplySplitInput> host_apply_split_inputs_;
   /*! \brief the final level's split-inner wrote the leaf map inline; the
@@ -805,10 +805,13 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // hybrid growth: single-sync (speculative) level pipeline
   // (FALCATA_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
   bool use_hybrid_one_sync_ = false;
-  // selective (grow-then-prune) hybrid growth for budget-limited configs
-  // (FALCATA_HYBRID_SELECTIVE, default on; "0" falls back to the classic loop)
-  bool use_hybrid_selective_ = false;
   bool selective_active_ = false;
+  /*! \brief the controller that grew the current tree (FALCATA_DEBUG=diag reason line), set where each one runs */
+  GrowthRoute growth_route_ = GrowthRoute::kClassic;
+  /*! \brief why DeviceLevelsToRun refused a device_levels prefix this tree (kNone: it did not, or was not asked) */
+  DeviceTreeReason device_levels_refusal_ = DeviceTreeReason::kNone;
+  /*! \brief the last reason line this learner printed (LogDeviceTreeFallback prints only changes) */
+  std::string last_device_tree_fallback_line_;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   // ---- graphs L1 state ----
   bool hybrid_graph_statics_ready_ = false;
@@ -833,8 +836,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool device_tree_completed_ = false;
   bool device_levels_logged_ = false;
   bool device_levels_fallback_logged_ = false;
-  /*! \brief cuda_plan key device_tree: its depth-bound fallback to the prefix was reported (FALCATA_DEBUG=diag) */
-  bool device_tree_fallback_logged_ = false;
   bool device_levels_ready_ = false;
   bool device_levels_disabled_ = false;
   /*! \brief EvaluateDeviceTreeScratchGate's decision: -1 not yet made, 0 over the free-memory gate, 1 fits */

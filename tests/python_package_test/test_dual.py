@@ -1275,16 +1275,10 @@ def _quant_model_md5(profile, extra_params=None):
 
 # (profile, params-for-the-DEFAULT-variant, params-for-the-OTHER-variant, name).
 # The two variants must produce bit-identical models: every cuda_plan decision is
-# perf-only by contract. GRAPH tests opt into the quant graph path with
-# graph_quant:on (quant needs the explicit opt-in), then compare graph level-loop
-# on (default) vs graph_loop:off.
+# perf-only by contract. (The quantized graph level loop's graph_quant:on vs
+# graph_loop:off case went with the key in 1.2; graph_loop now serves only
+# non-quantized training, which the lattice's nonquant graph cells cover.)
 _KILL_SWITCH_CASES = [
-    (
-        "graph",
-        {"cuda_plan": "auto,graph_quant:on"},
-        {"cuda_plan": "auto,graph_quant:on,graph_loop:off"},
-        "graph_loop",
-    ),
     ("fewbin", {}, {"cuda_plan": "auto,rowdata_4bit:off"}, "rowdata_4bit"),
     ("dense", {}, {"cuda_plan": "auto,fast_rowdata:off"}, "fast_rowdata"),
     ("dense", {}, {"cuda_plan": "auto,gpu_construct:off"}, "gpu_construct"),

@@ -10,6 +10,7 @@ shapes outside the bound, whose models must not change either.
 
 import hashlib
 import os
+import re
 import subprocess
 import sys
 
@@ -100,35 +101,41 @@ def test_device_tree_default_engages_cuda():
     on = _diag("auto")
     assert "device_levels: 6 device-driven levels per tree" in on
     assert on.count("device_tree: complete depth=6 ") == 3
-    assert "device_tree: fallback to the prefix/host flow" not in on
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", on)
     assert "host fallback" not in on
     prefix = _diag("auto,device_tree:off")
     assert "device_levels: 5 device-driven levels per tree" in prefix
     assert "device_tree: complete" not in prefix
+    assert "device_tree: fallback (plan_off) route=prefix" in prefix
     host = _diag("auto,device_levels:off")
     assert "device-driven levels per tree" not in host
     assert "device_tree: complete" not in host
+    assert "device_tree: fallback (plan_off) route=host_two_sync" in host
 
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    ("leaves", "depth", "flow"),
+    ("leaves", "depth", "flow", "reason"),
     [
-        (8192, 13, "prefix"),  # deeper than 12: the device_levels prefix, then host levels
-        (40, 6, "selective"),  # a binding leaf budget: selective growth, its first levels as the device prefix
-        (255, -1, "selective"),
+        (8192, 13, "prefix", "depth_gt_12"),  # deeper than 12: the device_levels prefix, then host levels
+        # a binding leaf budget: selective growth, its first levels as the device prefix
+        (40, 6, "selective", "selective_budget"),
+        (255, -1, "selective", "selective_unbounded"),
     ],
 )
-def test_device_tree_default_reports_fallback_cuda(leaves, depth, flow):
+def test_device_tree_default_reports_fallback_cuda(leaves, depth, flow, reason):
     # outside the depth bound the default reports the fallback under diag and keeps the flow master ran
     diag = _diag("auto", leaves, depth)
     assert "device_tree: complete" not in diag
-    # once per learner (one binary learner here), not once per tree
-    assert diag.count("device_tree: fallback to the prefix/host flow (depth bound or leaf budget)") == 1
+    # once per route change (one binary learner on one route here), not once per tree
+    route = "prefix" if flow == "prefix" else "selective_prefix"
+    assert diag.count("device_tree: fallback (") == 1, diag[-3000:]
+    assert diag.count(f"device_tree: fallback ({reason}) route={route}\n") == 1, diag[-3000:]
     if flow == "prefix":
         assert "device-driven levels per tree" in diag
     else:
         # cuda_plan key selective_device_prefix (default on); off, the host's selective loop runs every level
         assert "selective_device_prefix: levels=" in diag
         off = _diag("auto,selective_device_prefix:off", leaves, depth)
-        assert "device_levels: host fallback (selective growth)" in off
+        assert "device_levels: host fallback (plan_off)" in off
+        assert f"device_tree: fallback ({reason}) route=selective_two_sync" in off

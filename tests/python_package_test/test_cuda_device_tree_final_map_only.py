@@ -64,7 +64,7 @@ def test_device_tree_final_map_only_cuda(graph, setting):
         r"device_tree_final_all_map: enabled=(\d+) complete=(\d+) final_splits=(\d+) leaves=(\d+)", diag
     )
     assert len(complete) == len(mode) == len(inline) == data["stages"], diag
-    assert "device_tree: host fallback" not in diag
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
     enabled = setting not in {"end_gate", "weighted", "renewal"}
     for event, receipt, mapped in zip(complete, mode, inline, strict=True):
         depth, applied, total = map(int, event[:3])

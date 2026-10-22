@@ -178,11 +178,6 @@
    "metric": 0.73955,
    "metric_name": "mlogloss"
   },
-  "graph/flipbase-graph_loop": {
-   "md5": "d64cb4fba1b8cdd92e9b97db20f6ea74",
-   "metric": 0.754484,
-   "metric_name": "mlogloss"
-  },
   "graph/nonquant": {
    "md5": "69bdc16fd0e2c827be57e9395fb7426d",
    "metric": 0.608904,

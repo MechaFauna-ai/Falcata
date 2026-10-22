@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include <Falcata/cuda/cuda_device_tree_reason.hpp>
 #include <Falcata/cuda/cuda_random.hpp>
 #include <Falcata/cuda/cuda_split_info.hpp>
 
@@ -226,15 +227,33 @@ class CUDABestSplitFinder {
    *  per-node feature selection; categorical tasks run the shared
    *  categorical body per block). Wide shapes
    *  (num_tasks > one sync block) use the multi-block batched sync mirroring
-   *  the per-pair two-stage reduction; cuda_plan=auto,batch_wide:off disables that.
+   *  the per-pair two-stage reduction.
    *
    *  cat_random_search is excluded for the reason extra_trees is: one launch
    *  covers every sibling pair of the level, so the blocks of a level share the
    *  per-task CUDARandom and their draws would race. */
-  bool SupportsBatchedLevel() const {
-    return !extra_trees_ && cat_random_search_ == 0 && lambda_l1_ <= 0.0f && !use_smoothing_ &&
-           !use_global_memory_ && (!select_features_by_node_ || level_node_masks_) &&
-           (num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK || FalcataBatchWideEnabled());
+  bool SupportsBatchedLevel() const { return BatchedLevelRefusal() == DeviceTreeReason::kNone; }
+  /*! \brief why SupportsBatchedLevel() is false (kNone when it is true) */
+  DeviceTreeReason BatchedLevelRefusal() const {
+    if (use_global_memory_) {
+      return DeviceTreeReason::kNonquantGt256Bins;
+    }
+    if (extra_trees_) {
+      return DeviceTreeReason::kExtraTrees;
+    }
+    if (cat_random_search_ != 0) {
+      return DeviceTreeReason::kCatRandomSearch;
+    }
+    if (!(lambda_l1_ <= 0.0f)) {
+      return DeviceTreeReason::kLambdaL1;
+    }
+    if (use_smoothing_) {
+      return DeviceTreeReason::kPathSmooth;
+    }
+    if (select_features_by_node_ && !level_node_masks_) {
+      return DeviceTreeReason::kBynodeHostMasks;  // shared-stream per-node draws (the per-split loop's)
+    }
+    return DeviceTreeReason::kNone;
   }
 
   /*! \brief one-line gate dump for FALCATA_DEBUG=diag */
@@ -242,12 +261,12 @@ class CUDABestSplitFinder {
     char buf[256];
     snprintf(buf, sizeof(buf),
              "finder: extra_trees=%d cat_random_search=%d l1=%f smoothing=%d global_mem=%d "
-             "by_node=%d categorical=%d num_tasks=%d (cap %d, batch_wide=%d)",
+             "by_node=%d categorical=%d num_tasks=%d (cap %d)",
              static_cast<int>(extra_trees_), cat_random_search_, lambda_l1_,
              static_cast<int>(use_smoothing_), static_cast<int>(use_global_memory_),
              static_cast<int>(select_features_by_node_),
              static_cast<int>(has_categorical_feature_), num_tasks_,
-             NUM_TASKS_PER_SYNC_BLOCK, static_cast<int>(FalcataBatchWideEnabled()));
+             NUM_TASKS_PER_SYNC_BLOCK);
     return std::string(buf);
   }
 

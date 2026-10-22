@@ -333,11 +333,12 @@ def test_view_pair_rule_cuda(shape, fraction, regime):
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("plan_keys", ["pack_bit3:on", "graph_quant:on"])
+@pytest.mark.parametrize("plan_keys", ["pack_bit3:on"])
 def test_view_pair_rule_declines_where_the_construct_always_does_cuda(plan_keys):
-    """The pair-joint construct never reads a pack-codec view (pack_bit3 takes chunked's 6-bin columns) nor runs on
-    graph_quant's captured levels: there the rule must not keep the compact regime, so chunked at 0.9 takes mask (as
-    the threshold alone did), and trains the colmajor_direct:off model."""
+    """The pair-joint construct never reads a pack-codec view (pack_bit3 takes chunked's 6-bin columns): there the
+    rule must not keep the compact regime, so chunked at 0.9 takes mask (as the threshold alone did), and trains the
+    colmajor_direct:off model. (graph_quant's captured levels were the other such case until the key was removed in
+    1.2.)"""
     plan = f"auto,{plan_keys}"
     out, md5 = _child("chunked", plan=plan, feature_fraction=0.9)
     assert out.count(MASK) == 1, out[-3000:]
