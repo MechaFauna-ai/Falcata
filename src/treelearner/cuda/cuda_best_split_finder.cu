@@ -2241,6 +2241,8 @@ __device__ __forceinline__ void SyncBestSplitForLevelUsedTasksBody(
   MirrorLeafBestSplitEntry(cuda_split_info, mirror_entry);
 }
 
+// DL (cuda_plan key device_levels): the last block runs the next prefix level's select (DeviceLevelSelectBlockFast,
+// the config staged in shared memory)
 template <bool BATCHED, bool DL = false>
 __global__ void SyncBestSplitForLevelUsedTasksKernel(
   const CUDAHybridPairDescriptor* pair_descs,
@@ -2278,9 +2280,18 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
     __syncthreads();
     if (s_last != 0) {
       __threadfence();
-      DeviceLevelSelectBlock<kDeviceLevelMaxPairs>(*select_cfg, dls->levels_applied);
+      // read through the global pointer, every field access after a store is a reload (the compiler cannot rule
+      // out aliasing); one shared copy of the config serves the whole select
+      __shared__ CUDADeviceLevelConfig s_cfg;
+      static_assert(sizeof(CUDADeviceLevelConfig) % sizeof(uint64_t) == 0, "the config is copied as 8-byte words");
+      constexpr int kCfgWords = static_cast<int>(sizeof(CUDADeviceLevelConfig) / sizeof(uint64_t));
+      for (int w = static_cast<int>(threadIdx.x); w < kCfgWords; w += static_cast<int>(blockDim.x)) {
+        reinterpret_cast<uint64_t*>(&s_cfg)[w] = reinterpret_cast<const uint64_t*>(select_cfg)[w];
+      }
+      __syncthreads();
+      DeviceLevelSelectBlockFast<kDeviceLevelMaxPairs>(s_cfg, dls->levels_applied);
       if (threadIdx.x == 0) {
-        select_cfg->state->sync_blocks_done = 0;
+        s_cfg.state->sync_blocks_done = 0;
       }
     }
   }

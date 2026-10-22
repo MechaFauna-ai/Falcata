@@ -248,3 +248,31 @@ def test_selective_device_prefix_bynode_same_model_cuda(objective):
     on, _ = _diag({**params, "cuda_plan": "auto"}, 2)
     assert "selective_device_prefix" not in on
     assert "device_levels: host fallback (unsupported prefix kernels or configuration)" in on
+
+
+# the selective prefix records no device tree, selects in the fused sync tail from registers, rebuilds the host records
+# in place and bounds its partition launches; the default must still give the host flow's model where the prefix's
+# levels reach every select path (with _SHAPES: leaves without a valid split, bagging, exact fits)
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("objective", ["regression", "binary", "multiclass"])
+@pytest.mark.parametrize(
+    ("leaves", "depth", "extra"),
+    [
+        (63, 10, {"min_data_in_leaf": 150}),  # binding budget, leaves without a valid split on the prefix levels
+        (63, 10, {"bagging_fraction": 0.6, "bagging_freq": 1}),  # binding budget under row bagging
+    ],
+)
+def test_selective_device_prefix_trimmed_levels_same_model_cuda(objective, leaves, depth, extra):
+    X, y = _data(objective)
+    _same(_params(objective, leaves, depth, **extra), X, y)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["on", "off"])
+def test_selective_device_prefix_wide_same_model_cuda(graph):
+    # K = 10 with a level over 256 splits: the fused select's two splits per thread of its 256-thread block. Levels
+    # 0-8 hold at most 511 splits, so more than 767 prefix splits put more than 256 on level 9 (this data: ~810-830)
+    X, y = _data("regression", rows=100000)
+    plans = tuple(f"{p},device_level_graph:{graph}" for p in ("auto", "auto" + _OFF, "auto,device_levels:off"))
+    lines = _same(_params("regression", 1024, -1), X, y, rounds=3, plans=plans)
+    assert all(levels == 10 and applied == 10 and splits > 767 for levels, applied, splits, _, _ in lines), lines
