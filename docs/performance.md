@@ -2261,8 +2261,8 @@ parameter reset with rollbacks; where the key engages.
 
 **A group of one tree trains off slot mode (`forest_single_job_device`, default on).** A group often holds one tree: a
 binary or regression forest under `forest_group:1`, the auto size when it settles back at one round (the usual case:
-the doubling's second slot rarely gains 15%), the last group of a `forest_group:N` training, a group shrunk by device
-memory. The slot exclusions above exist because other slot threads launch while a slot captures; with one job no
+the doubling's second slot rarely gains 15%), the last group of a `forest_group:N` training, every round of a binary or
+regression forest under fixedpoint error feedback (one round per group), a group shrunk by device memory. The slot exclusions above exist because other slot threads launch while a slot captures; with one job no
 other thread runs (the trainer grows it on the calling thread, the previous group's threads were joined), so the
 trainer marks that tree solo and it takes what the sequential learner takes: the complete device tree where its depth
 bound holds, the `device_levels` prefix, the selective device prefix (`selective_device_prefix`: unbounded depth or a

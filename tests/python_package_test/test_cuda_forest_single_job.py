@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 KEY_OFF = ",forest_single_job_device:off"
-PLANS = ["auto", "auto,forest_group:1", "auto,forest_group:3"]
+PLANS = ["auto", "auto,forest_group:1", "auto,forest_group:2", "auto,forest_group:3"]
 
 
 def _strip_parameters(model_str):
@@ -104,6 +104,8 @@ def _md5(params, plan, X, y, rounds):
         # outside the device tree's bound: the device_levels prefix / quantized graph prefix and the selective tail
         ("binary", "binary", "stochastic", {"num_leaves": 127, "max_depth": -1}),
         ("regression", "regression", "stochastic", {"num_leaves": 255, "max_depth": 8, "min_data_in_leaf": 1}),
+        # no row sampling (rf needs bagging or a per-tree feature sample): every tree on every row
+        ("binary", "binary", "stochastic", {"bagging_fraction": 1.0, "bagging_freq": 0, "feature_fraction": 0.8}),
         # a binding leaf budget (2^7 > 40 + 1): selective growth with the selective device prefix in a solo tree
         ("binary", "binary", "stochastic", {"num_leaves": 40, "max_depth": 7}),
     ],
@@ -234,3 +236,15 @@ def test_forest_single_job_takes_the_selective_device_prefix_cuda(shape):
         assert sum(line.endswith("mode single job (non-slot)") for line in lines) == want
         assert sum("selective_device_prefix: levels=" in line for line in lines) == want
         assert not any("device_tree: complete" in line for line in lines)
+
+
+def test_forest_single_job_no_nonquantized_graph_loop_cuda():
+    # a solo non-quantized tree keeps the slots' level loop: the non-quantized graph loop is not run-to-run
+    # deterministic, so a forest's model would depend on its group sizes. Sequential training (forest_batched off)
+    # takes it on this shape: the diag line is the graph loop's
+    graph_line = "[hybrid-diag] graphs L1.5: instantiated"
+    sequential = _diag_lines(_engage_params(quant_mode="none", cuda_plan="auto,forest_batched:off"), 6)
+    assert any(graph_line in line for line in sequential), sequential[-20:]
+    lines = _diag_lines(_engage_params(quant_mode="none", cuda_plan="auto,forest_group:1"), 6)
+    assert sum(line.endswith("mode single job (non-slot)") for line in lines) == 6
+    assert not any(graph_line in line for line in lines), [line for line in lines if graph_line in line]
