@@ -52,7 +52,7 @@ It then writes every value as an integer multiple of one power of two: `u = 2^L`
 over the nonzero values (`v_j = M_j u`, `M_j` an integer), takes `a = v_0`, `g = gcd(M_j - M_0)`, `b = g u`, and the
 value table `t_j = (M_j - M_0) / g` (so `v_j = a + b t_j` exactly). Each row gets the one-byte index `j` of its value;
 the codes (one byte per row) and the table go to the device and are kept for the training (a cache keyed by the
-gradient pointer, shared with the forest slots, cleared when the training data, config or learner is reset).
+gradient pointer, cleared when the training data, config or learner is reset).
 
 **The construct.** Where the learner would launch the deterministic construct (per leaf, compact view included, or
 batched per level), it launches the count construct instead (the batched one also takes the levels the slot slab's

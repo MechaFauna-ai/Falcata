@@ -2218,7 +2218,39 @@ binary, key off vs on, tuner off, 4 pairs, median steady ms per round: NaN-Numer
 binary, 1023 leaves, depth 10, bagging 0.8) 1.048 (5.100 / 5.089 / 5.099 / 5.113 -> 4.887 / 4.870 / 4.849 / 4.868), the
 fewbin and epsilon-like shapes (no missing values) 1.001 / 1.001; md5 identical.
 
-## 10r. A random forest's trees grown together (`forest_batched`, `forest_group`, `zero_slots_kernel`)
+## 10r. A random forest's trees grown together (`forest_batched`, `forest_group`: removed in 1.2; `zero_slots_kernel`)
+
+**Removed in 1.2: every forest tree trains on the booster's learner, one after another.** The forest slots described
+below (`CUDAForestTrainer`, the slot threads and per-slot learners, `EnsureSlots`' footprint measurement and the
+out-of-memory retry, the auto group size) and the `cuda_plan` keys `forest_batched`, `forest_group` and
+`forest_single_job_device` are deleted (the keys are still accepted, with a warning, and ignored). `RF::TrainOneIter`
+trains a round's class trees in class order on the booster's learner, as it did with `forest_batched:off`, and each tree
+takes what a gbdt tree takes: the complete device tree where its bound holds (with device per-node masks), the
+`device_levels` prefix and the selective device prefix outside it. A non-quantized forest keeps the host level loop with
+the forest count construct (10n, `forest_count_hist`) and never takes the non-quantized graph loop, as the slots never
+did. The slots' trees were the sequential ones, so no model changes: md5 equal to master 5bec2574 on 27 probe shapes
+(binary, multiclass, regression, L1, quantile; stochastic, fixedpoint with error feedback, none; per-node and per-tree
+sampling; bounded, unbounded and leaf-budget shapes; GOSS and `bagging_freq` 2), on the readers' cases (metrics every
+round, early stopping, a parameter reset with rollbacks) and on the lattice (475/475 cells, the 11 rf cells and the 34
+route goldens included). `tests/python_package_test/test_cuda_forest_sequential.py` freezes those md5s.
+
+The cost, strict gpuq, RTX 5090, 6 alternating pairs, fresh process per run, median `flc.train` wall (>1: the
+sequential trees are faster):
+
+| cell | slots | sequential | slots / sequential |
+|---|---:|---:|---:|
+| rf-control (binary 128 leaves / depth 7, bagging 0.7, bynode 0.5, quant stochastic), 1000 rounds | 0.394 s | 0.377 s | 1.046 |
+| covtype-rf-std (7 classes, 255 leaves / depth 8, quant none, bynode sqrt(F)), 100 rounds | 0.544 s | 0.646 s | 0.843 |
+| higgs-rf-deep (binary, depth 12, quant none, bynode sqrt(F)), 100 rounds | 0.721 s | 0.722 s | 0.998 |
+| covtype-rf-deep (7 classes, 4095 leaves, unbounded depth, quant stochastic, bynode sqrt(F)), 100 rounds | 3.655 s | 10.128 s | **0.361** |
+
+The binary forests lose nothing (their auto group size had settled at one tree, which #173 had already moved off the
+slots). The multiclass forests lose the overlap of their seven class trees: 16% on covtype-rf-std (non-quantized, the
+host level loop either way) and 2.8x on covtype-rf-deep, whose unbounded trees with per-node sampling run the host
+selective loop with host mask draws (the selective device prefix does not take per-node masks), about 101 ms per round
+against the slots' 36. That shape gets its speed back from the device selective controller and device masks in every
+regime (full-device-controller program), not from host threads.
+
 
 **Before.** `RF::TrainOneIter` trained a round's `num_class` trees one after the other on the booster's learner, and
 the next round after the last. After 10n (stage 1) the deep covtype forest (7 trees per round, 4095 leaves, unlimited
@@ -2232,7 +2264,7 @@ Design and analysis: `docs/design/batched-forest.md`.
 one kernel on the legacy default stream (where the memsets ran) instead of one memset per slot: the same zeros,
 bit-identical; gbdt's selective growth takes it too. covtype-rf-deep sequentially 115 -> 96 ms per round.
 
-**`forest_batched` (default on).** For `boosting=rf` on one CUDA device with the device objective, the booster grows
+**`forest_batched` (removed in 1.2, see above).** For `boosting=rf` on one CUDA device with the device objective, the booster grows
 the class trees of one or more rounds together and hands out one round per `TrainOneIter`. Each tree in flight has its
 own learner ("slot": `CUDAForestTrainer`; slot 0 is the booster's learner; the others have their own partition,
 histograms, split finder, discretizer and tree record, a private view of the dataset's columns and the booster
@@ -2294,7 +2326,7 @@ GPU-bound shapes need less histogram work (forest stage 3), not more trees in fl
 key off across objectives, quantization modes, shapes, samplings, group sizes, metrics every round, early stopping, a
 parameter reset with rollbacks; where the key engages.
 
-**A group of one tree trains off slot mode (`forest_single_job_device`, default on).** A group often holds one tree: a
+**A group of one tree trains off slot mode (`forest_single_job_device`, #173; removed with the slots).** A group often holds one tree: a
 binary or regression forest under `forest_group:1`, the auto size when it settles back at one round (the usual case:
 the doubling's second slot rarely gains 15%), the last group of a `forest_group:N` training, every round of a binary or
 regression forest under fixedpoint error feedback (one round per group), a group shrunk by device memory. The slot exclusions above exist because other slot threads launch while a slot captures; with one job no
