@@ -369,6 +369,20 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // kernel of the flow has a device-count variant; 0 = the host loop as before
   int DeviceLevelsToRun(bool batched_level_kernels, bool batched_level_apply);
   void LogDeviceLevelsFallback(const char* reason);
+  // ---- cuda_plan key device_bynode_masks ----
+  /*! \brief the complete device tree takes this learner's per-node masks: keyed masks in the level flows (no
+   *  interaction constraints, single GPU, the batched phases), no forest slot and no FALCATA_DEBUG=bynode (its BYNODE
+   *  lines come from the host draws) */
+  bool DeviceBynodeMasksUsable() const;
+  /*! \brief before a complete device tree's root search: (re)build the device sample inputs and buffers, upload the
+   *  tree's candidates where they changed, draw the root's mask on the side stream and point the finder at the device
+   *  rows; device_bynode_active_ until EndDeviceBynode */
+  void BeginDeviceBynode();
+  void EndDeviceBynode();
+  /*! \brief the masks of the root (level < 0) or of level \p level's children on the side stream, forked off \p stream
+   *  (after the apply); JoinDeviceBynode orders the next level find after them */
+  void EnqueueDeviceBynodeMasks(cudaStream_t stream, const int level, const int max_splits);
+  void JoinDeviceBynode();
   // one-time buffers and static tables of the device levels; false disables them
   bool SetupDeviceLevels(const int num_levels);
   // after the root level's search is enqueued: num_levels device-driven levels (apply + children's search), one
@@ -817,6 +831,25 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int device_level_graph_update_misses_ = 0;
   // the cudaGraphExecUpdateResult of the last refused update (-1: none), for FALCATA_DEBUG=diag
   int device_level_graph_update_last_refusal_ = -1;
+  // ---- cuda_plan key device_bynode_masks state ----
+  bool device_bynode_logged_ = false;
+  CUDADeviceBynodeConfig device_bynode_cfg_ = {};
+  // the row table (a pointer per leaf slot, padded to 256 bytes), then the rows
+  CUDAVector<int8_t> cuda_bynode_rows_;
+  size_t bynode_table_bytes_ = 0;
+  CUDAVector<int> cuda_bynode_tasks_;
+  CUDAVector<uint64_t> cuda_bynode_keys_;
+  CUDAVector<int> cuda_bynode_sample_;
+  CUDAVector<int> cuda_bynode_task_inner_;
+  // the sample inputs last uploaded (CUDADeviceBynodeConfig::sample's layout), and this tree's
+  std::vector<int> host_bynode_sample_;
+  std::vector<int> bynode_sample_scratch_;
+  std::vector<int> bynode_candidates_scratch_;
+  // the side stream the mask kernels run on beside the construct, its fork and join events
+  cudaStream_t bynode_stream_ = nullptr;
+  cudaEvent_t bynode_fork_event_ = nullptr;
+  cudaEvent_t bynode_join_event_ = nullptr;
+  bool bynode_join_pending_ = false;
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   std::vector<SelectiveApplied> sel_applied_;
   std::vector<SelectiveFrontier> sel_frontier_;
@@ -904,6 +937,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool bynode_keyed_ = false;
   // ... and the level flows run with them (the batched level kernels and apply are available)
   bool bynode_level_masks_ = false;
+  // cuda_plan key device_bynode_masks: this tree's masks are drawn on the device (BeginDeviceBynode .. EndDeviceBynode)
+  bool device_bynode_active_ = false;
   // trees this learner has trained (the tree part of the node keys)
   uint64_t bynode_tree_count_ = 0;
   // per leaf index: the key of the node the leaf currently is

@@ -956,6 +956,13 @@ struct FalcataPlan {
   // two or more levels only (a one-level tree measured slower on the lean end and keeps the full tree end). The same
   // kernels write the same map and leaf values: bit-identical.
   bool device_tree_lean_end = true;  // key: device_tree_lean_end
+  // the complete device tree under per-node feature masks (feature_fraction_bynode < 1, no interaction constraints,
+  // level_bynode_masks): each node's keyed sample (ColSampler::GetByNodeKeyed: the generator seeded by the seed, the
+  // tree count and the node's path, Random::Sample, then the node's task list) is drawn by a device kernel on a side
+  // stream beside each level's histogram construct, inside the captured level sequence, instead of on the host per
+  // level with an upload; the root's mask too. Off: those trees keep the host two-sync level loop. The same samples,
+  // task lists and kernels: bit-identical.
+  bool device_bynode_masks = true;  // key: device_bynode_masks
   // device_levels' launches as one cached CUDA graph for the prefix (root work and the host tail remain). Trees
   // whose keys keep changing use the host loop after the cache-miss budget: the same model, bit-identical.
   bool device_level_graph = true;   // key: device_level_graph
@@ -1139,6 +1146,7 @@ struct FalcataPlan {
     if (key == "device_levels") return &device_levels;
     if (key == "device_tree") return &device_tree;
     if (key == "device_tree_lean_end") return &device_tree_lean_end;
+    if (key == "device_bynode_masks") return &device_bynode_masks;
     if (key == "device_level_graph") return &device_level_graph;
     if (key == "device_level_graph_update") return &device_level_graph_update;
     if (key == "index_parity_canonical") return &index_parity_canonical;
@@ -1333,7 +1341,9 @@ inline bool FalcataVerifyEnabled() {
  *    inner feature and the per-node feature mask that leaf was searched with
  *    (feature_fraction_bynode < 1 or interaction constraints; per-split loop
  *    and, under level_bynode_masks, every split the level flows apply,
- *    including selective splits pruned later); does not change any result
+ *    including selective splits pruned later; keeps those trees off the
+ *    device-drawn masks of device_bynode_masks, whose draws it would not
+ *    see); does not change any result
  * The growth tokens (debug, syncpairs, maxsplits) also disable the CUDA-graph
  * controller path (the device controller does not replicate these hooks).
  */
