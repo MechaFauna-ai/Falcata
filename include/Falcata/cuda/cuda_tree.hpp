@@ -290,12 +290,11 @@ class CUDATree : public Tree {
                   const CUDATreeCatLevel& cat);
 
   /*! \brief cuda_plan key cat_level_record: counters of this tree (FALCATA_DEBUG=diag): SplitLevel categorical
-   *  launches, the categorical splits they recorded, exact-count readbacks on a capacity overflow and before a
-   *  per-split categorical split of the leaf-wise tail, and whether ToHost read the record back with one copy */
+   *  launches, the categorical splits they recorded, exact-count readbacks on a capacity overflow, and whether ToHost
+   *  read the record back with one copy */
   int cat_level_launches() const { return cat_level_launches_; }
   int cat_level_splits() const { return cat_level_splits_; }
   int cat_overflow_readbacks() const { return cat_overflow_readbacks_; }
-  int cat_tail_settles() const { return cat_tail_settles_; }
   bool cat_record_one_copy() const { return cat_record_one_copy_; }
 
   int SplitCategorical(
@@ -505,7 +504,6 @@ class CUDATree : public Tree {
   int cat_level_launches_ = 0;
   int cat_level_splits_ = 0;
   int cat_overflow_readbacks_ = 0;
-  int cat_tail_settles_ = 0;
   bool cat_record_one_copy_ = false;
   /*! \brief SplitLevel's descriptors in launch order (numerical, then categorical); kept until the next level as
    *  SplitBatch's caller keeps its vector */
