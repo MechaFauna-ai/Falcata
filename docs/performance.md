@@ -2299,8 +2299,8 @@ the doubling's second slot rarely gains 15%), the last group of a `forest_group:
 regression forest under fixedpoint error feedback (one round per group), a group shrunk by device memory. The slot exclusions above exist because other slot threads launch while a slot captures; with one job no
 other thread runs (the trainer grows it on the calling thread, the previous group's threads were joined), so the
 trainer marks that tree solo and it takes what the sequential learner takes: the complete device tree where its depth
-bound holds, the `device_levels` prefix, the selective device prefix (`selective_device_prefix`: unbounded depth or a
-binding leaf budget) and the quantized graph prefix elsewhere (the non-quantized graph loop stays
+bound holds, the `device_levels` prefix, the selective device levels (unbounded depth or a binding leaf budget, up
+to the first binding level) and the quantized graph prefix elsewhere (the non-quantized graph loop stays
 off: it is not run-to-run deterministic, so a forest would change with its group sizes). Groups of two or more trees
 (every multiclass round) keep slot mode, and a learner switches between the modes from group to group (graph caches
 are captured and replayed only in solo trees, on the calling thread). The tree gets the same bag, gradients, feature
@@ -3166,7 +3166,9 @@ Under `FALCATA_DEBUG=diag` every CUDA tree the complete device tree did not grow
 
 once for the learner's first such tree and again whenever the line changes (a route change: a prefix that turns
 its graphs off, a forest group switching mode), not once per tree; trees the device tree grew keep
-their `device_tree: complete ...` line. `<reason>` is the first refusal that holds in a fixed order, `<route>` the
+their `device_tree: complete ...` line, and a selective tree the device levels grew up to its first binding level
+reports `device_tree: selective hand-off at level <k> (binding|complete) ...` instead, once per tree (section 10w,
+"Selective growth on the device levels"). `<reason>` is the first refusal that holds in a fixed order, `<route>` the
 controller that grew the tree, and `prefix=` (on the `host_two_sync` and `selective_two_sync` routes) why a
 `device_levels` prefix did not run where that flow would take one. Each token belongs to one row of the refusal
 inventory of the full device controller program; the vocabulary is `FALCATA_DEVICE_TREE_REASONS` and
@@ -3198,7 +3200,7 @@ Reasons, in their order (several can hold; the first is reported):
 | `large_bin_layout`, `compact_16bit` | partitions on global-memory histograms; compact view of non-8-bit rows | host two-sync, per-pair kernels |
 | `categorical` | a categorical feature | host two-sync |
 | `bynode_outside_bound`, `bynode_host_masks` | per-node masks outside the depth bound; inside it with device masks unusable | host two-sync / selective |
-| `selective_unbounded`, `selective_budget` | `max_depth <= 0`; `2^max_depth > num_leaves + 1` | selective prefix |
+| `selective_unbounded`, `selective_budget` | `max_depth <= 0`; `2^max_depth > num_leaves + 1` | selective two-sync (only where the selective device levels did not run, e.g. `prefix=prefix_graph_churn`; where they ran, the tree reports its hand-off line instead) |
 | `scratch_too_large` | the complete tree's scratch at one searched pair per chunk exceeds half of the free memory, or the per-node task offsets overflow at one pair | host two-sync / one-sync |
 | `setup_failed` | the device levels could not be set up | host two-sync |
 | `prefix_graph_churn` | (as `prefix=` only) sampled layouts kept missing the graph cache: the prefix turned itself off | host two-sync / selective two-sync |
@@ -3207,7 +3209,8 @@ Reasons, in their order (several can hold; the first is reported):
 | `unclassified` | none of the above (a bug; the route pins fail on it) | |
 
 Routes: `device_tree`, `prefix` (device_levels prefix, then the host two-sync loop), `host_two_sync`,
-`selective_prefix`, `selective_two_sync`, `selective_one_sync`, `one_sync`, `classic` (the per-split loop),
+`selective_device` (never printed: those trees report their hand-off line), `selective_two_sync`,
+`selective_one_sync`, `one_sync`, `classic` (the per-split loop),
 `forest_slots` (`l15_graph`, the non-quantized graph loop, went in P3: its shapes report `device_tree: complete`).
 
 `device_levels: host fallback (<reason>)` keeps reporting, once per learner, why the prefix itself declined in flows
@@ -3230,12 +3233,15 @@ train the default model):
   device controller: its shapes take the complete device tree, which trains `graph_loop:on`'s models. `graph_loop:off`
   selected the one-sync host flow with the double-slot deterministic construct, now `device_tree:off`; `graph_det:on`
   captured that construct inside the graph. Both models equal the default only empirically (on every lattice and
-  article shape measured), so an old string naming either key may train a slightly different model.
+  article shape measured), so an old string naming either key may train a slightly different model;
+- `cuda_plan` key `selective_device_prefix` (FULL_DEVICE_PLAN P7): selective trees run on the device levels up to
+  their first binding level whenever `device_tree` and `device_levels` are on (the same model); `device_tree:off` is
+  their host reference (the host's selective loop for every level), `selective_device_prefix:off`'s flow.
 
 Kept, because each still selects a live behaviour: `hybrid` (`hybrid:off`, the classic per-split loop everywhere: the
 gates' reference arm), `level_bynode_masks` (`:off` restores the 1.0 per-node samples and models), `device_tree`,
-`device_levels`, `device_bynode_masks`, `selective_device_prefix` (their off values select the prefix and host flows
-that still serve every fallback above; the tests' reference arms) and `one_sync`.
+`device_levels`, `device_bynode_masks` (their off values select the prefix and host flows that still serve every
+fallback above; the tests' reference arms) and `one_sync`.
 
 ## 10w. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
 
@@ -3254,7 +3260,7 @@ packing codec and GOSS's changing ridge. Repeated cache misses switch subsequent
 modes exclude forest slots (except a forest group's only tree, `forest_single_job_device`, section 10r) and
 legacy single-stream diagnostics. Unsupported kernels, nonquantized training,
 node masks, categorical/vector leaves, constraints and forced splits keep their host flows; selective growth runs
-its first levels on this prefix (`selective_device_prefix`, below).
+on the device levels up to its first binding level (below).
 Configuration/data resets invalidate captures and static tables; quantizer row and leaf-budget storage is also
 refreshed, retaining its stochastic tree counter. Empty histogram work returns before claiming rows, and stopped
 levels initialize their claim counters.

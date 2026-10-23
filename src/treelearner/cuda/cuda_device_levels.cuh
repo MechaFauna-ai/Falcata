@@ -170,6 +170,20 @@ __device__ __forceinline__ void DeviceLevelBitonicSortGlobal(int* leaves, double
   }
 }
 
+/*! \brief selective trees (CUDADeviceLevelConfig::r1_binding): whether a level of cur_leaves leaves (cur_leaves - 1
+ *  applied splits) with n valid leaves binds, i.e. the host's greedy simulation would not select all of its
+ *  candidates (applied + valid > num_leaves - 1). A level with no valid leaf never binds (cur_leaves <= the budget) */
+__device__ __forceinline__ bool DeviceLevelR1Binds(const CUDADeviceLevelConfig& cfg, const int cur_leaves,
+                                                   const int n) {
+  return cfg.r1_binding != 0 && cur_leaves + n > cfg.num_leaves_budget;
+}
+/*! \brief the first binding level: record it in the journal (the caller stops the tree) */
+__device__ __forceinline__ void DeviceLevelStopBinding(const CUDADeviceLevelConfig& cfg, const int tid) {
+  if (tid == 0) {
+    cfg.journal[3] = 1;
+  }
+}
+
 /*! \brief one level's host decisions between its search and its apply: the leaf-ascending valid scan of
  *  CollectSplittableLeaves, then per split the apply descriptor (SplitLevelBatched's host math), the tree record
  *  (ApplyLevelBatched's CUDATreeBatchSplit) and the journal entry, the terminal-region gaps (the windows of the leaves
@@ -182,7 +196,7 @@ __device__ __forceinline__ void DeviceLevelBitonicSortGlobal(int* leaves, double
  *  a complete tree's level wider than that, with the same arrays in global scratch of cfg.select_capacity splits (the
  *  same steps and sort network, DeviceLevelBitonicSortGlobal). A level past the capacity stops with the error flag. */
 template <int MAX_SPLITS, bool GLOBAL = false>
-__device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConfig& cfg, const int level) {
+__device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConfig& cfg, const int level_arg) {
   static_assert(MAX_SPLITS >= 32 && (MAX_SPLITS & (MAX_SPLITS - 1)) == 0, "the bitonic sort needs a power of two");
   constexpr int kSharedSplits = GLOBAL ? 1 : MAX_SPLITS;
   __shared__ int s_leaves_shared[kSharedSplits];
@@ -199,6 +213,8 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   if (st->done) {
     return;
   }
+  // (a relaunched body of selective levels passes level < 0: the level the state reached)
+  const int level = level_arg >= 0 ? level_arg : st->levels_applied;
   const int tid = static_cast<int>(threadIdx.x);
   const int nt = static_cast<int>(blockDim.x);
   // the previous level's values are still in the state: this level's leaves and split-info slab base follow them
@@ -234,6 +250,11 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   }
   int write_pos = DeviceLevelBlockScan(my_count, s_warp, &s_total);
   int n = s_total;
+  if (DeviceLevelR1Binds(cfg, cur_leaves, n)) {
+    DeviceLevelStopBinding(cfg, tid);
+    stop(false);
+    return;
+  }
   if (n > max_splits) {
     stop(true);
     return;
@@ -308,13 +329,15 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
     const uint32_t threshold = info->threshold;
     const CUDAHybridGraphFeatureMeta m = cfg.feature_meta[inner_feature];
     const CUDAHybridGraphFeatureSource src = cfg.feature_source[inner_feature];
-    CUDATreeBatchSplit& ts = cfg.tree_batch_splits[k];
-    ts.leaf_index = leaf;
-    ts.num_leaves_at_split = right;
-    ts.real_feature_index = m.real_feature_index;
-    ts.real_threshold = cfg.real_thresholds[m.real_threshold_offset + threshold];
-    ts.missing_type = m.missing_type;
-    ts.split_info = info;
+    if (cfg.skip_tree_record == 0) {
+      CUDATreeBatchSplit& ts = cfg.tree_batch_splits[k];
+      ts.leaf_index = leaf;
+      ts.num_leaves_at_split = right;
+      ts.real_feature_index = m.real_feature_index;
+      ts.real_threshold = cfg.real_thresholds[m.real_threshold_offset + threshold];
+      ts.missing_type = m.missing_type;
+      ts.split_info = info;
+    }
     uint32_t th = threshold + m.min_bin;
     uint32_t t_zero_bin = m.min_bin + m.default_bin;
     if (m.most_freq_bin == 0) {
@@ -487,7 +510,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
  *   - journal: the same ints, and the same 8-byte words of each split's best-split record (read after the sync);
  *   - tree-record descriptors only when cfg.skip_tree_record is 0. */
 template <int MAX_SPLITS, int CHUNK = 4>
-__device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevelConfig& cfg, const int level) {
+__device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevelConfig& cfg, const int level_arg) {
   constexpr int kMaxLeaves = 2 * MAX_SPLITS;
   __shared__ int s_leaves[MAX_SPLITS];
   __shared__ int s_warp[32];
@@ -496,6 +519,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevel
   if (st->done) {
     return;
   }
+  const int level = level_arg >= 0 ? level_arg : st->levels_applied;  // (level < 0: see DeviceLevelSelectBlock)
   const int tid = static_cast<int>(threadIdx.x);
   const int nt = static_cast<int>(blockDim.x);
   const int cur_leaves = st->num_leaves + st->live_splits;
@@ -541,6 +565,11 @@ __device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevel
   // ---- CollectSplittableLeaves: leaf-ascending is_valid scan ----
   int write_pos = DeviceLevelBlockScan(my_count, s_warp, &s_total);
   const int n = s_total;
+  if (DeviceLevelR1Binds(cfg, cur_leaves, n)) {
+    DeviceLevelStopBinding(cfg, tid);
+    stop(false);
+    return;
+  }
   if (n > MAX_SPLITS) {
     stop(true);
     return;

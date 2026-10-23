@@ -406,6 +406,8 @@ class CUDABestSplitFinder {
    *  staging buffer, so the learner's single post-tree stream sync covers
    *  it; consume with ReadPrefetchedLeafBestSplits after synchronizing */
   void PrefetchLeafBestSplitsAsync(const int num_leaves, cudaStream_t stream) const;
+  /*! \brief the raw prefetched entries (device pointers not scrubbed), after synchronizing the prefetch's stream */
+  const CUDASplitInfo* PrefetchedLeafBestSplits() const { return pinned_leaf_best_split_info_; }
 
   /*! \brief consume a prefetched per-leaf best-split cache (host memcpy +
    *  device-pointer scrub only; the caller already synchronized the prefetch

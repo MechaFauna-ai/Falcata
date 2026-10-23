@@ -230,11 +230,12 @@ def test_forest_single_job_modes_cuda(extra, mode):
 
 @pytest.mark.parametrize("shape", [{"num_leaves": 127, "max_depth": -1}, {"num_leaves": 40, "max_depth": 7}])
 def test_forest_single_job_takes_the_selective_device_prefix_cuda(shape):
-    # unbounded depth / a binding leaf budget: selective growth, whose first levels run on the device in a solo tree
+    # unbounded depth / a binding leaf budget: selective growth, whose levels up to the first binding level run on the
+    # device in a solo tree
     for key, want in (("", 6), (KEY_OFF, 0)):
         lines = _diag_lines(_engage_params(cuda_plan="auto,forest_group:1" + key, **shape), 6)
         assert sum(line.endswith("mode single job (non-slot)") for line in lines) == want
-        assert sum("selective_device_prefix: levels=" in line for line in lines) == want
+        assert sum("device_tree: selective hand-off at level" in line for line in lines) == want
         assert not any("device_tree: complete" in line for line in lines)
 
 

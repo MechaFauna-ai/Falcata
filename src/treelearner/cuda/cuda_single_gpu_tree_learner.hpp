@@ -7,6 +7,7 @@
 #ifndef FALCATA_SRC_TREELEARNER_CUDA_CUDA_SINGLE_GPU_TREE_LEARNER_HPP_
 #define FALCATA_SRC_TREELEARNER_CUDA_CUDA_SINGLE_GPU_TREE_LEARNER_HPP_
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -355,8 +356,30 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool DeviceTreeRequested() const;
   // How many of the classic quantized prefix's first levels run device-driven for this tree: the levels L with
   // 2^(L + 1) <= num_leaves (the budget cannot bind) and L + 1 < max_depth (the children are searched), when every
-  // kernel of the flow has a device-count variant; 0 = the host loop as before
+  // kernel of the flow has a device-count variant; 0 = the host loop as before. Selective trees on the device
+  // (SelectiveDeviceTree): their unrolled levels (SelectiveUnrolledLevels)
   int DeviceLevelsToRun(bool batched_level_kernels, bool batched_level_apply);
+  /*! \brief cuda_plan keys device_tree + device_levels: selective (budget-bound or unbounded-depth) quantized trees run
+   *  on the device levels until their first binding level (dynamic R1, CUDADeviceLevelConfig::r1_binding), then the
+   *  host's selective loop continues; DeviceLevelsToRun adds the flow's gates */
+  bool SelectiveDeviceTree() const;
+  /*! \brief selective device levels captured unrolled: the levels k < floor(log2 num_leaves) (at most max_depth), on
+   *  which R1 cannot fail, each with its own worst case; every later level has the shape num_leaves / 2
+   *  (SelectiveLevelMaxSplits) and runs in the relaunched two-level body */
+  int SelectiveUnrolledLevels() const;
+  /*! \brief ceil(log2 num_leaves): the device level buffers of a selective tree hold 2^that leaves */
+  int SelectiveCapacityLevels() const;
+  /*! \brief a selective level k's most splits, min(2^k, num_leaves / 2): S <= its leaves <= 2^k, and R1 (leaves + S <=
+   *  num_leaves) gives S <= num_leaves / 2; and its most leaves, min(2^k, num_leaves) */
+  int SelectiveLevelMaxSplits(const int level) const {
+    return level >= 30 ? config_->num_leaves / 2 : std::min(1 << level, config_->num_leaves / 2);
+  }
+  int SelectiveLevelMaxLeaves(const int level) const {
+    return level >= 30 ? config_->num_leaves : std::min(1 << level, config_->num_leaves);
+  }
+  /*! \brief the relaunched body's flag in mapped pinned memory (pinned_device_level_flag_); false where the device
+   *  cannot map host memory (the selective device levels decline) */
+  bool SetupSelectiveFlag();
   /*! \brief DeviceLevelsToRun refused: record why (device_levels_refusal_) and, under FALCATA_DEBUG=diag for a flow
    *  outside the complete device tree, report the prefix's own fallback once */
   void LogDeviceLevelsFallback(DeviceTreeReason reason);
@@ -402,21 +425,28 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // after the root level's search is enqueued: num_levels device-driven levels (apply + children's search), one
   // readback, the host bookkeeping replayed; host_leaf_best_splits_ then hold the last search's result and *pairs
   // the last level's pairs, as after the host loop's own readback. Returns the splits applied.
-  // record_split_infos (cuda_plan key selective_device_prefix): the select also journals every applied split's
-  // best-split record, read back with the journal into pinned_selective_prefix_split_infos_
+  // record_split_infos (selective trees, SelectiveDeviceTree): num_levels unrolled levels (on which R1 cannot fail),
+  // then, while R1 holds for the next level (tested on the host from the readback, then per level on the device),
+  // relaunched two-level bodies; the select also journals every applied split's best-split record
   int TrainDeviceLevels(CUDATree* tree, const int num_levels, std::vector<HybridPendingPair>* pairs,
                         bool record_split_infos = false);
-  // cuda_plan key selective_device_prefix: the selective flow's first levels as the device_levels prefix (the root
-  // search, then TrainDeviceLevels), and the selective records rebuilt from its journal. True when it ran: the host
-  // loop then continues with the readback of the last prefix level's search (host_leaf_best_splits_, *pairs).
+  // selective trees: the levels up to the first binding level on the device (the root search, then
+  // TrainDeviceLevels), and the selective records rebuilt from its journal. True when it ran: the host loop then
+  // continues with the readback of the last applied level's search (host_leaf_best_splits_, *pairs).
   bool TrainSelectiveDevicePrefix(CUDATree* tree, std::vector<HybridPendingPair>* pairs);
-  // the device levels' launches and stream edges (capturable: nothing on the legacy stream, nothing read back)
+  // the device levels' launches and stream edges (capturable: nothing on the legacy stream, nothing read back);
+  // body: a selective tree's relaunched two-level body (num_levels == 2), which starts with the apply of the level
+  // selected before it and ends with the next level's select and its flag
   void EnqueueDeviceLevels(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels,
-                           const bool inline_all_map, const bool final_map_only);
+                           const bool inline_all_map, const bool final_map_only, const bool body = false);
+  // selective trees (cfg.r1_binding): count levels from first_level (first_level < 0: a relaunched body, the levels
+  // the device state reached), each its apply, its children's search and the next level's select (the unrolled
+  // levels: not after the last one), a body then its flag (LaunchDeviceLevelSegmentEnd)
+  void EnqueueSelectiveDeviceLevels(const CUDADeviceLevelConfig& cfg, const int first_level, const int count);
   // cuda_plan key device_level_graph: launch the levels as a cached graph (captured on a key's first tree); false
   // when this tree cannot use one (the caller enqueues the levels)
   bool LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels,
-                              const bool inline_all_map, const bool final_map_only);
+                              const bool inline_all_map, const bool final_map_only, const bool body = false);
   struct DeviceLevelGraph {
     std::vector<const void*> key;
     cudaGraph_t graph = nullptr;
@@ -831,11 +861,20 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<CUDADeviceLevelConfig> cuda_device_level_config_;
   CUDADeviceLevelConfig host_device_level_config_;
   CUDAVector<int> cuda_device_level_journal_;
-  // cuda_plan key selective_device_prefix: the applied splits' best-split records (device journal, pinned readback)
+  // selective trees: the applied splits' best-split records (device journal, mapped pinned readback)
   CUDAVector<CUDASplitInfo> cuda_selective_prefix_split_infos_;
   void* pinned_selective_prefix_split_infos_ = nullptr;
   size_t pinned_selective_prefix_split_infos_count_ = 0;
   bool selective_prefix_logged_ = false;
+  /*! \brief selective trees: the relaunched body's flag (mapped pinned, 4 ints) and its device alias; the bodies
+   *  relaunched for the current tree and whether its hand-off level was binding */
+  int* pinned_device_level_flag_ = nullptr;
+  int* device_level_flag_device_ = nullptr;
+  int selective_bodies_ = 0;
+  bool selective_binding_ = false;
+  /*! \brief selective trees: the unrolled levels end with level U's select on the device and the flag (the previous
+   *  tree went past them), instead of the host's boundary test on the speculative readback */
+  bool selective_device_boundary_ = false;
   int* pinned_device_level_journal_ = nullptr;
   size_t device_level_journal_size_ = 0;
   CUDAVector<CUDAHybridGraphFeatureMeta> cuda_device_level_feature_meta_;

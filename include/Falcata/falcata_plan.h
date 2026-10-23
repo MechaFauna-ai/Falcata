@@ -953,6 +953,16 @@ struct FalcataPlan {
   // graph loop's kernels and models (bit-identical to it). Every other non-quantized shape keeps the one-sync host
   // flow, whose double-slot deterministic construct equals the fixed-point one only empirically; device_tree:off
   // restores that flow for every non-quantized tree (graph_loop:off's flow, removed with its key).
+  // Selective trees (FULL_DEVICE_PLAN P7; quantized, a binding leaf budget 2^max_depth > num_leaves + 1 or unlimited
+  // depth, single GPU, no categorical features, per-node masks or vector leaves): the device levels run every level
+  // where applied splits + valid leaves <= num_leaves - 1 (there the host's greedy simulation provably selects every
+  // candidate, so "split every valid leaf" is its decision), tested on the device per level; the first level where
+  // it fails (the first binding level) and everything after stays with the host's selective loop, which continues
+  // from the levels' journal (the selective records rebuilt from it). Levels below ceil(log2 num_leaves) are captured
+  // unrolled; later ones share one shape (num_leaves / 2 pairs) and run as a captured two-level body, relaunched while
+  // a mapped device flag says the tree continues. Leaf indices are assigned leaf-ascending instead of in greedy order,
+  // which no search, simulation or renumbering reads: bit-identical. device_tree:off: the host's selective loop for
+  // the whole tree (the removed selective_device_prefix key's static first levels are gone).
   bool device_tree = true;          // key: device_tree
   // the complete device tree's lean tree end (no split-batch readback or host leaf bookkeeping, the final level's
   // inline leaf map (the map-only pass when every row is in the tree) and the one-kernel slab readback) for every
@@ -961,21 +971,6 @@ struct FalcataPlan {
   // two or more levels only (a one-level tree measured slower on the lean end and keeps the full tree end). The same
   // kernels write the same map and leaf values: bit-identical.
   bool device_tree_lean_end = true;  // key: device_tree_lean_end
-  // selective (grow-then-prune) growth, i.e. a binding leaf budget (2^max_depth > num_leaves + 1) or unlimited depth:
-  // run its first K = min(floor(log2(num_leaves)), max_depth - 1, 10) levels as the captured device_levels prefix,
-  // then hand the tree to the host's selective loop. On those levels the host's greedy simulation provably selects
-  // every valid candidate (applied splits + frontier <= 2^(k+1) - 1 <= num_leaves - 1), which is exactly the prefix's
-  // "split every valid leaf". The prefix also journals each applied split's best-split record; the host rebuilds its
-  // selective records (parents, windows, depths, gains) from the journal and continues at level K. Leaf indices are
-  // assigned leaf-ascending instead of in greedy order, which no search, simulation or renumbering reads: bit-identical.
-  // Engages only when K >= 2 (num_leaves >= 4 and, with a depth limit, max_depth >= 3), like the prefix itself.
-  // Quantized, two-sync, single GPU, no categorical features, per-node masks or vector leaves (device_levels' gate).
-  // The selective prefix records no device tree (selective growth rebuilds its tree from its own records), builds the
-  // host records in place at the hand-off, and bounds each level's partition launch by the complete device tree's
-  // joint worker bound. Every prefix (selective or not) selects with register-batched loads and a block-wide journal
-  // copy, the copy fused into each level's sync kernel from a shared-memory config: the same descriptors, journal and
-  // records.
-  bool selective_device_prefix = true;  // key: selective_device_prefix
   // the complete device tree under per-node feature masks (feature_fraction_bynode < 1, no interaction constraints,
   // level_bynode_masks): each node's keyed sample (ColSampler::GetByNodeKeyed: the generator seeded by the seed, the
   // tree count and the node's path, Random::Sample, then the node's task list) is drawn by a device kernel on a side
@@ -1158,7 +1153,6 @@ struct FalcataPlan {
     if (key == "device_levels") return &device_levels;
     if (key == "device_tree") return &device_tree;
     if (key == "device_tree_lean_end") return &device_tree_lean_end;
-    if (key == "selective_device_prefix") return &selective_device_prefix;
     if (key == "device_bynode_masks") return &device_bynode_masks;
     if (key == "device_level_graph") return &device_level_graph;
     if (key == "device_level_graph_update") return &device_level_graph_update;
@@ -1232,7 +1226,10 @@ struct FalcataPlan {
           // (FULL_DEVICE_PLAN P3) the non-quantized graph loop's keys: the complete device tree trains graph_loop:on's
           // model; graph_loop:off's (the one-sync flow, now device_tree:off) and graph_det:on's (double-slot nodes)
           // equal it only empirically
-          kv[0] == std::string("graph_loop") || kv[0] == std::string("graph_det")) {
+          kv[0] == std::string("graph_loop") || kv[0] == std::string("graph_det") ||
+          // (FULL_DEVICE_PLAN P7) selective trees run on the device levels up to their first binding level whenever
+          // device_tree and device_levels are on (dynamic R1, the same model); device_tree:off is their host reference
+          kv[0] == std::string("selective_device_prefix")) {
         Log::Warning("cuda_plan key %s was removed in 1.2: ignored", kv[0].c_str());
         continue;
       }
