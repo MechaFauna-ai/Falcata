@@ -96,6 +96,80 @@ __device__ __forceinline__ uint8_t DeviceLevelHistBits(const data_size_t n, cons
 }
 
 
+/*! \brief one compare-exchange of the select's bitonic network at positions i < j = i ^ stride of a stage of width
+ *  \p width: candidates order by gain descending, then leaf ascending (the host's stable_sort of leaf-ascending
+ *  candidates); padding (leaf -1) sorts after every candidate */
+__device__ __forceinline__ void DeviceLevelSortStep(int* leaves, double* gains, const int i, const int j,
+                                                    const bool ascending_block) {
+  const int a = leaves[i];
+  const int b = leaves[j];
+  const double ga = gains[i];
+  const double gb = gains[j];
+  const bool a_first = a >= 0 && (b < 0 || ga > gb || (ga == gb && a < b));
+  const bool b_first = b >= 0 && (a < 0 || gb > ga || (gb == ga && b < a));
+  if (ascending_block ? b_first : a_first) {
+    leaves[i] = b;
+    leaves[j] = a;
+    gains[i] = gb;
+    gains[j] = ga;
+  }
+}
+
+/*! \brief the select's bitonic network over sort_size (a power of two) entries of global scratch, one block: the same
+ *  compare-exchanges as the shared-memory sort of DeviceLevelSelectBlock, stage by stage. Within a stage the pairs are
+ *  disjoint, so the order in which they run cannot matter; the stages of stride < kTile touch only pairs inside one
+ *  aligned tile of kTile entries and run in shared memory, one tile at a time (each tile all of its consecutive
+ *  sub-tile stages before the next tile), the wider strides run over global memory. The result is the shared sort's,
+ *  entry for entry. */
+__device__ __forceinline__ void DeviceLevelBitonicSortGlobal(int* leaves, double* gains, const int sort_size) {
+  constexpr int kTile = kDeviceTreeSharedSplits;
+  __shared__ int t_leaves[kTile];
+  __shared__ double t_gains[kTile];
+  const int tid = static_cast<int>(threadIdx.x);
+  const int nt = static_cast<int>(blockDim.x);
+  const int tile = sort_size < kTile ? sort_size : kTile;
+  // the tile stages of widths [first_width, last_width] (strides below tile only, from width / 2 or tile / 2)
+  const auto tile_pass = [&](const int first_width, const int last_width) {
+    for (int base = 0; base < sort_size; base += tile) {
+      __syncthreads();
+      for (int i = tid; i < tile; i += nt) {
+        t_leaves[i] = leaves[base + i];
+        t_gains[i] = gains[base + i];
+      }
+      __syncthreads();
+      for (int width = first_width; width <= last_width; width <<= 1) {
+        for (int stride = (width < tile ? width : tile) >> 1; stride > 0; stride >>= 1) {
+          for (int i = tid; i < tile; i += nt) {
+            const int j = i ^ stride;
+            if (j > i) {
+              DeviceLevelSortStep(t_leaves, t_gains, i, j, ((base + i) & width) == 0);
+            }
+          }
+          __syncthreads();
+        }
+      }
+      for (int i = tid; i < tile; i += nt) {
+        leaves[base + i] = t_leaves[i];
+        gains[base + i] = t_gains[i];
+      }
+    }
+    __syncthreads();
+  };
+  tile_pass(2, tile);
+  for (int width = tile << 1; width <= sort_size; width <<= 1) {
+    for (int stride = width >> 1; stride >= tile; stride >>= 1) {
+      for (int i = tid; i < sort_size; i += nt) {
+        const int j = i ^ stride;
+        if (j > i) {
+          DeviceLevelSortStep(leaves, gains, i, j, (i & width) == 0);
+        }
+      }
+      __syncthreads();
+    }
+    tile_pass(width, width);
+  }
+}
+
 /*! \brief one level's host decisions between its search and its apply: the leaf-ascending valid scan of
  *  CollectSplittableLeaves, then per split the apply descriptor (SplitLevelBatched's host math), the tree record
  *  (ApplyLevelBatched's CUDATreeBatchSplit) and the journal entry, the terminal-region gaps (the windows of the leaves
@@ -104,15 +178,21 @@ __device__ __forceinline__ uint8_t DeviceLevelHistBits(const data_size_t n, cons
  *  A binding final level applies the host's gain-descending, lower-leaf-tie top-K order; nonbinding levels stay
  *  leaf-ascending. Any block of a multiple of 32 threads; each thread takes contiguous runs of leaves and splits.
  *  Reads every leaf's best split after the level's sync. MAX_SPLITS is the block's capacity (static shared memory
- *  12 * MAX_SPLITS + MAX_SPLITS / 4 bytes): kDeviceLevelMaxPairs in the copy fused into the prefix's level sync,
- *  kDeviceTreeMaxSplits in the standalone launch of a whole tree. A level past it stops with the error flag. */
-template <int MAX_SPLITS>
+ *  12 * MAX_SPLITS + MAX_SPLITS / 4 bytes): kDeviceTreeSharedSplits in the standalone launch of a whole tree. GLOBAL:
+ *  a complete tree's level wider than that, with the same arrays in global scratch of cfg.select_capacity splits (the
+ *  same steps and sort network, DeviceLevelBitonicSortGlobal). A level past the capacity stops with the error flag. */
+template <int MAX_SPLITS, bool GLOBAL = false>
 __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConfig& cfg, const int level) {
   static_assert(MAX_SPLITS >= 32 && (MAX_SPLITS & (MAX_SPLITS - 1)) == 0, "the bitonic sort needs a power of two");
-  constexpr int kMaxLeaves = 2 * MAX_SPLITS;
-  __shared__ int s_leaves[MAX_SPLITS];
-  __shared__ double s_gains[MAX_SPLITS];
-  __shared__ unsigned int s_split_bits[kMaxLeaves / 32];
+  constexpr int kSharedSplits = GLOBAL ? 1 : MAX_SPLITS;
+  __shared__ int s_leaves_shared[kSharedSplits];
+  __shared__ double s_gains_shared[kSharedSplits];
+  __shared__ unsigned int s_split_bits_shared[GLOBAL ? 1 : 2 * MAX_SPLITS / 32];
+  int* s_leaves = GLOBAL ? cfg.select_leaves : s_leaves_shared;
+  double* s_gains = GLOBAL ? cfg.select_gains : s_gains_shared;
+  unsigned int* s_split_bits = GLOBAL ? cfg.select_split_bits : s_split_bits_shared;
+  const int max_splits = GLOBAL ? cfg.select_capacity : MAX_SPLITS;
+  const int kMaxLeaves = 2 * max_splits;
   __shared__ int s_warp[32];
   __shared__ int s_total;
   CUDADeviceLevelState* st = cfg.state;
@@ -154,7 +234,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   }
   int write_pos = DeviceLevelBlockScan(my_count, s_warp, &s_total);
   int n = s_total;
-  if (n > MAX_SPLITS) {
+  if (n > max_splits) {
     stop(true);
     return;
   }
@@ -197,26 +277,19 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
       }
     }
     __syncthreads();
-    for (int width = 2; width <= sort_size; width <<= 1) {
-      for (int stride = width >> 1; stride > 0; stride >>= 1) {
-        for (int i = tid; i < sort_size; i += nt) {
-          const int j = i ^ stride;
-          if (j > i) {
-            const int a = s_leaves[i];
-            const int b = s_leaves[j];
-            const double ga = s_gains[i];
-            const double gb = s_gains[j];
-            const bool a_first = a >= 0 && (b < 0 || ga > gb || (ga == gb && a < b));
-            const bool b_first = b >= 0 && (a < 0 || gb > ga || (gb == ga && b < a));
-            if (((i & width) == 0) ? b_first : a_first) {
-              s_leaves[i] = b;
-              s_leaves[j] = a;
-              s_gains[i] = gb;
-              s_gains[j] = ga;
+    if constexpr (GLOBAL) {
+      DeviceLevelBitonicSortGlobal(s_leaves, s_gains, sort_size);
+    } else {
+      for (int width = 2; width <= sort_size; width <<= 1) {
+        for (int stride = width >> 1; stride > 0; stride >>= 1) {
+          for (int i = tid; i < sort_size; i += nt) {
+            const int j = i ^ stride;
+            if (j > i) {
+              DeviceLevelSortStep(s_leaves, s_gains, i, j, (i & width) == 0);
             }
           }
+          __syncthreads();
         }
-        __syncthreads();
       }
     }
     n = remaining;
@@ -261,7 +334,9 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
       missing_default_leaf_index = leaf;
     }
     const data_size_t parent_num_data = cfg.leaf_num_data[leaf];
-    CUDAHybridApplyDescriptor& d = cfg.apply_descs[k];
+    // built in registers and stored whole (wide stores, as the gap descriptors below); the offsets follow
+    CUDAHybridApplyDescriptor d;
+    memset(&d, 0, sizeof(CUDAHybridApplyDescriptor));
     d.column_data = src.column_data;
     d.best_split_info = info;
     d.smaller_leaf_splits = cfg.pair_slots + 2 * k;
@@ -293,11 +368,14 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
     d.cat_bitset_len = 0;
     d.cat_bitset = nullptr;
     d.cat_mfb_offset = 0;
+    cfg.apply_descs[k] = d;
     my_slots += d.num_blocks + 1;
     my_flat += d.num_blocks;
     atomicOr(&s_split_bits[leaf >> 5], 1u << (leaf & 31));
-    cfg.journal[kDeviceLevelJournalHeader + 2 * (split_cursor + k)] = leaf;
-    cfg.journal[kDeviceLevelJournalHeader + 2 * (split_cursor + k) + 1] = inner_feature;
+    int* record = cfg.journal + kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * (split_cursor + k);
+    record[0] = leaf;
+    record[1] = inner_feature;
+    record[2] = level;
     if (cfg.split_info_journal != nullptr) {
       // the selective prefix's record of this split (the host rebuilds its applied records from it): the bytes the
       // host's own best-split readback would have copied, before the children's search reuses the leaf's entry
@@ -334,19 +412,53 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   const int num_gaps = s_total;
   int gap_flat_pos = DeviceLevelBlockScan(my_gap_flat, s_warp, &s_total);
   const int gap_flat_blocks = s_total;
+  if constexpr (GLOBAL) {
+    // A deep level has thousands of terminal leaves, one descriptor each, all written by this one block: each thread
+    // records its gaps' (leaf, flat chunk start) compactly, then consecutive threads write consecutive 8-byte words
+    // of the descriptors (coalesced). The same descriptors as the per-leaf writes below.
+    for (int leaf = leaf_begin; leaf < leaf_end; ++leaf) {
+      const data_size_t num = cfg.leaf_num_data[leaf];
+      if (((s_split_bits[leaf >> 5] >> (leaf & 31)) & 1u) == 0 && num > 0) {
+        cfg.select_gaps[gap_pos] = make_int2(leaf, total_flat_blocks + gap_flat_pos);
+        ++gap_pos;
+        gap_flat_pos += (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+      }
+    }
+    __syncthreads();
+    static_assert(sizeof(CUDAHybridApplyDescriptor) % sizeof(uint64_t) == 0, "descriptors are written as words");
+    constexpr int kWords = static_cast<int>(sizeof(CUDAHybridApplyDescriptor) / sizeof(uint64_t));
+    uint64_t* gap_words = reinterpret_cast<uint64_t*>(cfg.apply_descs + n);
+    for (int w = tid; w < num_gaps * kWords; w += nt) {
+      const int gap = w / kWords;
+      const int2 rec = cfg.select_gaps[gap];
+      const data_size_t num = cfg.leaf_num_data[rec.x];
+      CUDAHybridApplyDescriptor g;
+      memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
+      g.left_leaf_index = rec.x;  // the final whole apply also maps this terminal leaf
+      g.leaf_data_start = cfg.leaf_data_start[rec.x];
+      g.num_data_in_leaf = num;
+      g.num_blocks = (num + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
+      g.flat_block_start = rec.y;
+      gap_words[w] = reinterpret_cast<const uint64_t*>(&g)[w - gap * kWords];
+    }
+  } else {
   for (int leaf = leaf_begin; leaf < leaf_end; ++leaf) {
     const data_size_t num = cfg.leaf_num_data[leaf];
     if (((s_split_bits[leaf >> 5] >> (leaf & 31)) & 1u) == 0 && num > 0) {
-      CUDAHybridApplyDescriptor& g = cfg.apply_descs[n + gap_pos];
+      // built in registers and stored whole (wide stores): a memset of the global descriptor is byte stores, and a
+      // deep level's thousands of terminal leaves made it the select's bottleneck
+      CUDAHybridApplyDescriptor g;
       memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
       g.left_leaf_index = leaf;  // the final whole apply also maps this terminal leaf
       g.leaf_data_start = cfg.leaf_data_start[leaf];
       g.num_data_in_leaf = num;
       g.num_blocks = (num + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
       g.flat_block_start = total_flat_blocks + gap_flat_pos;
+      cfg.apply_descs[n + gap_pos] = g;
       ++gap_pos;
       gap_flat_pos += (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
     }
+  }
   }
   if (tid == 0) {
     st->live_splits = n;
@@ -356,7 +468,6 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
     st->split_info_base = split_cursor;
     st->num_leaves = cur_leaves;
     st->levels_applied = level + 1;
-    cfg.journal[kDeviceLevelJournalLevels + level] = n;
     cfg.journal[0] = level + 1;
     cfg.journal[1] = split_cursor + n;
   }
@@ -570,8 +681,10 @@ __device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevel
     d.cat_bitset_len = 0;
     d.cat_bitset = nullptr;
     d.cat_mfb_offset = 0;
-    cfg.journal[kDeviceLevelJournalHeader + 2 * (split_cursor + k)] = leaf;
-    cfg.journal[kDeviceLevelJournalHeader + 2 * (split_cursor + k) + 1] = s_feature[c];
+    int* record = cfg.journal + kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * (split_cursor + k);
+    record[0] = leaf;
+    record[1] = s_feature[c];
+    record[2] = level;
   }
   // flat chunks (num_blocks per split) in split order; block-offset slots (num_blocks + 1 per split) = flat + index
   int flat_pos = DeviceLevelBlockScan(my_flat, s_warp, &s_total);
@@ -603,13 +716,14 @@ __device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevel
 #pragma unroll
   for (int c = 0; c < CHUNK; ++c) {
     if (leaf_begin + c < leaf_end && !valid[c] && num[c] > 0) {
-      CUDAHybridApplyDescriptor& g = cfg.apply_descs[n + gap_pos];
+      CUDAHybridApplyDescriptor g;  // registers, stored whole (see DeviceLevelSelectBlock)
       memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
       g.left_leaf_index = leaf_begin + c;  // the final whole apply also maps this terminal leaf
       g.leaf_data_start = start[c];
       g.num_data_in_leaf = num[c];
       g.num_blocks = (num[c] + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
       g.flat_block_start = total_flat_blocks + gap_flat_pos;
+      cfg.apply_descs[n + gap_pos] = g;
       ++gap_pos;
       gap_flat_pos += (num[c] + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
     }
@@ -649,9 +763,25 @@ __device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevel
     st->split_info_base = split_cursor;
     st->num_leaves = cur_leaves;
     st->levels_applied = level + 1;
-    cfg.journal[kDeviceLevelJournalLevels + level] = n;
     cfg.journal[0] = level + 1;
     cfg.journal[1] = split_cursor + n;
+  }
+}
+
+/*! \brief pair chunking (cfg.num_chunks > 1): chunk c's state, a copy of the level's with live_pairs = its pairs among
+ *  [c * chunk_pairs, (c + 1) * chunk_pairs) that are live. A chunk's fix/subtract and find read the copy with the
+ *  chunk's descriptors, so they see a level of chunk_pairs pairs. After the level state's last store (block-wide). */
+__device__ __forceinline__ void DeviceLevelWriteChunkStates(const CUDADeviceLevelConfig& cfg,
+                                                            const CUDADeviceLevelState* st) {
+  if (cfg.num_chunks <= 1) {
+    return;
+  }
+  __syncthreads();
+  for (int c = static_cast<int>(threadIdx.x); c < cfg.num_chunks; c += static_cast<int>(blockDim.x)) {
+    CUDADeviceLevelState* chunk = cfg.chunk_states + c;
+    *chunk = *st;
+    const int live = st->live_pairs - c * cfg.chunk_pairs;
+    chunk->live_pairs = live < 0 ? 0 : (live < cfg.chunk_pairs ? live : cfg.chunk_pairs);
   }
 }
 
@@ -683,6 +813,7 @@ __device__ __forceinline__ void DeviceLevelPairsBlock(const CUDADeviceLevelConfi
       st->construct_min_rows = 0;
       st->max_smaller = 0;
     }
+    DeviceLevelWriteChunkStates(cfg, st);
     return;
   }
   const int chunk = (n + nt - 1) / nt;
@@ -836,6 +967,7 @@ __device__ __forceinline__ void DeviceLevelPairsBlock(const CUDADeviceLevelConfi
     st->max_smaller = max_smaller;
     st->live_pairs = n;
   }
+  DeviceLevelWriteChunkStates(cfg, st);
 }
 
 }  // namespace Falcata

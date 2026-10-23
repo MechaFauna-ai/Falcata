@@ -44,11 +44,12 @@ int main() {
   Check(cudaMalloc(&rows, sizeof(*rows)));
   Check(cudaMemset(rows, 0, sizeof(*rows)));
   cfg.leaf_num_data = rows;
+  Check(cudaMalloc(&cfg.construct_block_start, sizeof(int)));
   Check(cudaMemset(cfg.state, 0xff, sizeof(CUDADeviceLevelState)));
   Falcata::LaunchDeviceLevelReset(cfg, 1, nullptr);
   CUDADeviceLevelState actual{};
   Check(cudaMemcpy(&actual, cfg.state, sizeof(actual), cudaMemcpyDeviceToHost));
-  const bool reset_ok = Empty(actual);
+  const bool reset_ok = Empty(actual) && actual.construct_block_start == cfg.construct_block_start;
   CUDADeviceLevelState stopped{};
   for (int& value : stopped.construct_next_block) {
     value = -1;
@@ -56,12 +57,14 @@ int main() {
   stopped.construct_grid_y = -1;
   stopped.construct_min_rows = -1;
   stopped.max_smaller = -1;
+  stopped.construct_block_start = cfg.construct_block_start;
   Check(cudaMemcpy(cfg.state, &stopped, sizeof(stopped), cudaMemcpyHostToDevice));
   Falcata::LaunchDeviceLevelPairs(cfg, 0, 1, nullptr);
   Check(cudaMemcpy(&actual, cfg.state, sizeof(actual), cudaMemcpyDeviceToHost));
   const bool pairs_ok = Empty(actual) && actual.construct_grid_y == 0 && actual.construct_min_rows == 0 &&
     actual.max_smaller == 0;
   Check(cudaFree(rows));
+  Check(cudaFree(cfg.construct_block_start));
   Check(cudaFree(cfg.journal));
   Check(cudaFree(cfg.state));
   std::printf("poisoned empty state: reset=%s pairs=%s\n", reset_ok ? "PASS" : "FAIL", pairs_ok ? "PASS" : "FAIL");

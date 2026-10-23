@@ -2077,6 +2077,19 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
   global_timer.Stop("CUDAHistogramConstructor::ConstructHistogramsForLevel");
 }
 
+void CUDAHistogramConstructor::ConstructHistogramsForLevelOnly(const CUDAHybridPairDescriptor* pair_descs,
+                                                               const int num_pairs) {
+  CHECK(device_level_state_ != nullptr);
+  fused_root_ready_ = false;
+  if (num_pairs <= 0) {
+    return;
+  }
+  global_timer.Start("CUDAHistogramConstructor::ConstructHistogramsForLevel");
+  LaunchConstructHistogramBatchedKernel(pair_descs, num_pairs, /*max_num_data_in_smaller_leaf=*/0,
+                                        /*level_smaller_num_data=*/nullptr);
+  global_timer.Stop("CUDAHistogramConstructor::ConstructHistogramsForLevel");
+}
+
 void CUDAHistogramConstructor::SubtractHistogramsForLevel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,

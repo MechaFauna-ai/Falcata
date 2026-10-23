@@ -1312,6 +1312,7 @@ bool CUDASingleGPUTreeLearner::NonquantDeviceTreeShape() const {
 bool CUDASingleGPUTreeLearner::NonquantDeviceTreeUsable() const {
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   return NonquantDeviceTreeShape() && UseOneSyncPrefix() && DeviceTreeRequested() && !device_levels_disabled_ &&
+    !device_tree_scratch_refused_ &&
     cuda_best_split_finder_->num_used_tasks() > 0;
 #else
   return false;
@@ -2685,8 +2686,8 @@ void CUDASingleGPUTreeLearner::FeatureParallelMergeLevel(const int num_leaves) {
 
 int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  // before this function's first DeviceTreeRequested(): an over-budget complete tree takes the prefix flow
-  EvaluateDeviceTreeScratchGate();
+  // before SetupDeviceLevels sizes a complete tree's search scratch: its pair chunk
+  PlanDeviceTreeChunks();
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   // two struct slots per split of a level, reused across levels; one device
   // slab, sized once (the kernels initialize every slot they use before any
@@ -3043,7 +3044,8 @@ void CUDASingleGPUTreeLearner::ReleaseDeviceLevelGraphs() {
   device_levels_ready_ = false;
   device_levels_disabled_ = false;
   selective_prefix_logged_ = false;  // a new config reports its levels again
-  device_tree_scratch_gate_ = -1;
+  device_tree_chunk_pairs_ = -1;
+  device_tree_scratch_refused_ = false;
   device_level_graph_disabled_ = false;
   device_level_graph_hits_ = 0;
   device_level_graph_misses_ = 0;
@@ -3148,8 +3150,7 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
       return R::kForestSlots;
     }
   }
-  const bool shape_in_bound = depth_limited && depth <= kDeviceTreeMaxDepth;
-  if (select_features_by_node_ && !shape_in_bound) {
+  if (select_features_by_node_ && !depth_limited) {
     return R::kBynodeOutsideBound;
   }
   if (select_features_by_node_ && !DeviceBynodeMasksUsable()) {
@@ -3161,11 +3162,8 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   if (!depth_limited) {
     return R::kSelectiveBudget;
   }
-  if (depth > kDeviceTreeMaxDepth) {
-    return R::kDepthGt12;
-  }
-  if (device_tree_scratch_gate_ == 0) {
-    return R::kMemoryGate;
+  if (device_tree_scratch_refused_) {
+    return R::kScratchTooLarge;
   }
   if (device_levels_disabled_) {
     return R::kSetupFailed;
@@ -3222,28 +3220,40 @@ void CUDASingleGPUTreeLearner::BeginDeviceBynode() {
   cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
   CUDADeviceBynodeConfig& cfg = device_bynode_cfg_;
   const int num_tasks = cuda_best_split_finder_->num_tasks();
+  // pair chunking (PlanDeviceTreeChunks): rows and task lists for one chunk's children (row slot 0 the root, then
+  // 1 + 2 k + side), the mask kernels pointing each leaf's table entry and list range at its slot
+  const bool chunked = DeviceTreeChunks(device_level_max_pairs_) > 1;
+  const int row_slots = chunked ? 1 + 2 * device_tree_chunk_pairs_ : slots;
   // host_bynode_sample_ holds the sample size the static tables were built for (its [1]) until a rebuild clears it
   const bool rebuild = cfg.rows == nullptr || cfg.num_slots != slots || cfg.num_features != num_features ||
-    cfg.num_tasks != num_tasks || host_bynode_sample_.size() < 5 || host_bynode_sample_[1] != shape.num_sampled;
+    cfg.num_tasks != num_tasks || host_bynode_sample_.size() < 5 || host_bynode_sample_[1] != shape.num_sampled ||
+    bynode_row_slots_ != row_slots || (cfg.table != nullptr) != chunked;
   if (rebuild) {
     std::vector<int> task_inner;
     int max_tasks = 0;
     cuda_best_split_finder_->NodeTaskTables(shape.num_sampled, &task_inner, &max_tasks);
+    CHECK_LE(2 * static_cast<int64_t>(slots) + static_cast<int64_t>(row_slots) * std::max(1, max_tasks),
+             static_cast<int64_t>(std::numeric_limits<int>::max()));
     // every buffer at its training-long size: the level kernels and the finder's captured launches keep them
     bynode_table_bytes_ = (static_cast<size_t>(slots) * sizeof(int8_t*) + 255) / 256 * 256;
-    cuda_bynode_rows_.Resize(bynode_table_bytes_ + static_cast<size_t>(slots) * static_cast<size_t>(num_features));
+    bynode_row_slots_ = row_slots;
+    cuda_bynode_rows_.Resize(bynode_table_bytes_ + static_cast<size_t>(row_slots) * static_cast<size_t>(num_features));
     std::vector<int8_t> table(bynode_table_bytes_, 0);
     int8_t* rows = cuda_bynode_rows_.RawData() + bynode_table_bytes_;
     for (int leaf = 0; leaf < slots; ++leaf) {
-      int8_t* row = rows + static_cast<size_t>(leaf) * static_cast<size_t>(num_features);
+      // chunked: every entry starts at the root's slot; the mask kernels repoint the leaves they draw
+      int8_t* row = rows + static_cast<size_t>(chunked ? 0 : leaf) * static_cast<size_t>(num_features);
       std::memcpy(table.data() + static_cast<size_t>(leaf) * sizeof(int8_t*), &row, sizeof(int8_t*));
     }
     CopyFromHostToCUDADevice<int8_t>(cuda_bynode_rows_.RawData(), table.data(), table.size(), __FILE__, __LINE__);
-    const size_t task_ints = 2 * static_cast<size_t>(slots) + static_cast<size_t>(slots) * std::max(1, max_tasks);
+    const size_t task_ints = 2 * static_cast<size_t>(slots) + static_cast<size_t>(row_slots) * std::max(1, max_tasks);
     cuda_bynode_tasks_.Resize(task_ints);
     std::vector<int> ranges(2 * static_cast<size_t>(slots), 0);
     for (int leaf = 0; leaf < slots; ++leaf) {
-      ranges[2 * leaf] = 2 * slots + leaf * max_tasks;
+      // in int range: PlanDeviceTreeChunks caps the chunk (DeviceTreeBynodeChunkCap)
+      const int64_t offset = 2 * static_cast<int64_t>(slots) + static_cast<int64_t>(chunked ? 0 : leaf) * max_tasks;
+      CHECK_LE(offset, static_cast<int64_t>(std::numeric_limits<int>::max()));
+      ranges[2 * leaf] = static_cast<int>(offset);
     }
     CopyFromHostToCUDADevice<int>(cuda_bynode_tasks_.RawData(), ranges.data(), ranges.size(), __FILE__, __LINE__);
     cuda_bynode_keys_.Resize(2 * static_cast<size_t>(slots));
@@ -3263,6 +3273,7 @@ void CUDASingleGPUTreeLearner::BeginDeviceBynode() {
     cfg.rows = rows;
     cfg.tasks = cuda_bynode_tasks_.RawData();
     cfg.keys = cuda_bynode_keys_.RawData();
+    cfg.table = chunked ? reinterpret_cast<int8_t**>(cuda_bynode_rows_.RawData()) : nullptr;
     host_bynode_sample_.clear();
     if (bynode_stream_ == nullptr) {
       CUDASUCCESS_OR_FATAL(cudaStreamCreateWithFlags(&bynode_stream_, cudaStreamNonBlocking));
@@ -3270,8 +3281,9 @@ void CUDASingleGPUTreeLearner::BeginDeviceBynode() {
       CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&bynode_join_event_, cudaEventDisableTiming));
     }
     if (FalcataDebug().diag) {
-      fprintf(stderr, "[bynode-diag] device masks: candidates=%d sampled=%d mode=%d tasks=%d max_tasks=%d slots=%d\n",
-              shape.num_candidates, shape.num_sampled, shape.mode, num_tasks, max_tasks, slots);
+      fprintf(stderr, "[bynode-diag] device masks: candidates=%d sampled=%d mode=%d tasks=%d max_tasks=%d slots=%d "
+              "row_slots=%d\n", shape.num_candidates, shape.num_sampled, shape.mode, num_tasks, max_tasks, slots,
+              row_slots);
     }
   }
   // the tree's candidates (a feature_fraction sample changes them every tree), ahead of the root's mask kernel
@@ -3301,10 +3313,19 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceBynodeMasks(cudaStream_t stream, con
     LaunchDeviceBynodeRootMask(device_bynode_cfg_, bynode_node_key_[0], bynode_stream_);
   } else {
     LaunchDeviceBynodeLevelMasks(device_bynode_cfg_, cuda_device_level_state_.RawDataReadOnly(),
-                                 cuda_data_partition_->device_level_apply_descs(), level, max_splits, bynode_stream_);
+                                 cuda_data_partition_->device_level_apply_descs(), level, max_splits,
+                                 /*chunk_base=*/0, bynode_stream_);
   }
   CUDASUCCESS_OR_FATAL(cudaEventRecord(bynode_join_event_, bynode_stream_));
   bynode_join_pending_ = true;
+}
+
+void CUDASingleGPUTreeLearner::EnqueueDeviceBynodeChunkMasks(cudaStream_t stream, const int level,
+                                                            const int chunk_base, const int count) {
+  CHECK(!bynode_join_pending_);
+  CHECK(device_bynode_cfg_.table != nullptr);
+  LaunchDeviceBynodeLevelMasks(device_bynode_cfg_, cuda_device_level_state_.RawDataReadOnly(),
+                               cuda_data_partition_->device_level_apply_descs(), level, count, chunk_base, stream);
 }
 
 void CUDASingleGPUTreeLearner::JoinDeviceBynode() {
@@ -3320,12 +3341,13 @@ bool CUDASingleGPUTreeLearner::DeviceTreeRequested() const {
   // cuda_plan key device_tree (default on, with device_levels): only where the complete tree's depth bound holds, so
   // no other shape loses the device_levels prefix or the host flow. Match HybridGrowthUsable's depth-limited regime:
   // only the final depth-capped level can bind, and the device select applies its top-K candidates in the host
-  // arbitration order. Earlier levels still split leaf-ascending.
-  // The scratch gate (EvaluateDeviceTreeScratchGate, before the first tree's level flow) can only turn it off.
+  // arbitration order. Earlier levels still split leaf-ascending. Any depth: a level wider than the shared select
+  // selects over global scratch, and a search whose scratch does not fit the memory budget runs in pair chunks
+  // (PlanDeviceTreeChunks).
   const FalcataPlan& plan = FalcataPlan::Get();
   const int depth = GrowthMaxDepth();
-  return plan.device_tree && plan.device_levels && depth >= 1 && depth <= kDeviceTreeMaxDepth &&
-    (1LL << depth) <= static_cast<int64_t>(config_->num_leaves) + 1 && device_tree_scratch_gate_ != 0;
+  return plan.device_tree && plan.device_levels && depth >= 1 && depth < 31 &&
+    (1LL << depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
 }
 
 int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels, const bool batched_level_apply) {
@@ -3376,6 +3398,11 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     LogDeviceLevelsFallback(refusal);
     return 0;
   }
+  if (device_tree && device_tree_scratch_refused_) {
+    // PlanDeviceTreeChunks: not even one searched pair per chunk fits: the host level loop, not the prefix
+    LogDeviceLevelsFallback(DeviceTreeReason::kScratchTooLarge);
+    return 0;
+  }
   if (device_tree) {
     return GrowthMaxDepth();
   }
@@ -3393,7 +3420,6 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     ++max_levels;
   }
   levels = std::min(levels, max_levels + 1);
-  levels = std::min(levels, kDeviceLevelMaxLevels);
   return levels >= 2 ? levels : 0;
 }
 
@@ -3405,45 +3431,61 @@ int CUDASingleGPUTreeLearner::DeviceLevelSearchPairs(const int num_levels) const
   return DeviceTreeRequested() ? std::max(1, (1 << num_levels) / 4) : (1 << num_levels) / 2;
 }
 
-// cuda_plan key device_tree: the scratch SetupDeviceLevels presizes for a whole tree of max_depth num_levels, against
-// free device memory (FALCATA_DEBUG=vramfree=N caps it, as ChooseViewRegime's), before the first tree's level flow;
-// ReleaseDeviceLevelGraphs (ResetConfig, ResetTrainingData) clears the cached decision, so the next tree evaluates it again. Each buffer counts in full where it must grow (a growing Resize holds the old block until the new
-// one exists): the split finder's per-level output (2 * num_tasks * pairs CUDASplitInfo), the quantized bit-change
-// scratch (pairs * total bins int32), and the per-split descriptors, slots and journal. Over half of the free memory
-// DeviceTreeRequested() turns false for this learner: its trees take the prefix flow (the graph prefix or the
-// device_levels prefix and the host loop), as every shape outside the depth bound does.
-void CUDASingleGPUTreeLearner::EvaluateDeviceTreeScratchGate() {
-  if (device_tree_scratch_gate_ >= 0 || !DeviceTreeRequested()) {
+// cuda_plan key device_tree: the pair chunk of a whole tree of max_depth num_levels, against free device memory
+// (FALCATA_DEBUG=vramfree=N caps it, as ChooseViewRegime's), before the first tree's level flow; ReleaseDeviceLevelGraphs
+// (ResetConfig, ResetTrainingData) clears it, so the next tree plans again. The measure is the bytes SetupDeviceLevels
+// and BeginDeviceBynode still have to allocate (a growing Resize holds the old block until the new one exists): the
+// tree's fixed scratch (per-split descriptors, slots and journal, the block map, the select's global scratch, the
+// bynode keys and tables) plus, for a chunk of P pairs, the split finder's output (2 * num_tasks * P CUDASplitInfo),
+// the quantized bit-change scratch (P * total bins int32), the bynode rows and task lists of 1 + 2 P row slots and the
+// chunk states. The widest search's pairs when that fits half of the free memory; otherwise the most pairs that do
+// (at least one). Chunking changes no float result: a pair's fix/subtract and find read and write only its own
+// histograms, scratch region and leaf entries, and the select reads the level's leaf entries after every chunk.
+void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
+  if (device_tree_chunk_pairs_ >= 0 || !DeviceTreeRequested()) {
     return;
   }
   const int num_levels = GrowthMaxDepth();
   const int pairs = DeviceLevelSearchPairs(num_levels);
   const size_t leaves = static_cast<size_t>(1) << num_levels;
-  // the presized footprint, and what of it still has to be allocated (the gate's measure)
-  const size_t finder_bytes = 2 * static_cast<size_t>(cuda_best_split_finder_->num_tasks()) *
-    static_cast<size_t>(pairs) * sizeof(CUDASplitInfo);
-  const size_t bit_change_bytes = config_->use_quantized_grad ?
-    cuda_histogram_constructor_->BitChangeScratchEntries(pairs) * sizeof(hist_t) : 0;
-  const size_t other_bytes = (static_cast<size_t>(kDeviceLevelJournalHeader) + 2 * leaves + 4) * sizeof(int) +
+  const size_t final_splits = leaves / 2;
+  const size_t select_bytes = final_splits > static_cast<size_t>(kDeviceTreeSharedSplits) ?
+    final_splits * (sizeof(int) + sizeof(double)) + leaves / 32 * sizeof(unsigned int) + leaves * sizeof(int2) : 0;
+  const size_t other_bytes =
+    (static_cast<size_t>(kDeviceLevelJournalHeader) + kDeviceLevelJournalRecord * leaves) * sizeof(int) +
     (leaves + 2) * sizeof(CUDALeafSplitsStruct) + (leaves + 4) * sizeof(CUDAHybridApplyDescriptor) +
-    static_cast<size_t>(pairs) * sizeof(CUDAHybridPairDescriptor);
-  // cuda_plan key device_bynode_masks: BeginDeviceBynode's rows, task lists, keys and sample (slots x (num_features +
-  // 4 x max_tasks) bytes dominate: hundreds of MB at depth 12 with ~10k features)
-  size_t bynode_bytes = 0;
-  if (select_features_by_node_ && DeviceBynodeMasksUsable()) {
-    const size_t slots = std::min(static_cast<size_t>(config_->num_leaves), leaves) + 2;
-    const size_t num_features = static_cast<size_t>(train_data_->num_features());
+    static_cast<size_t>(pairs) * sizeof(CUDAHybridPairDescriptor) + (static_cast<size_t>(pairs) + 1) * sizeof(int) +
+    select_bytes;
+  // cuda_plan key device_bynode_masks: BeginDeviceBynode's table, ranges, keys and sample (per leaf slot) and its rows
+  // and task lists (per row slot: one per leaf slot unchunked, 1 + 2 P chunked; slots x (num_features + 4 x max_tasks)
+  // bytes dominate: hundreds of MB at depth 12 with ~10k features)
+  const bool bynode = select_features_by_node_ && DeviceBynodeMasksUsable();
+  const size_t slots = std::min(static_cast<size_t>(config_->num_leaves), leaves) + 2;
+  const size_t num_features = static_cast<size_t>(train_data_->num_features());
+  size_t bynode_fixed = 0;
+  size_t bynode_per_slot = 0;
+  // the most pairs per chunk whose per-node task-list offsets stay in int range (depth 17 unchunked: 131074 slots)
+  int bynode_cap = pairs;
+  if (bynode) {
     std::vector<int> candidates;
     std::vector<int> task_inner;
     int max_tasks = 0;
     cuda_best_split_finder_->NodeTaskTables(col_sampler_.GetByNodeKeyedShape(&candidates).num_sampled, &task_inner,
                                             &max_tasks);
-    bynode_bytes = (slots * sizeof(int8_t*) + 255) / 256 * 256 + slots * num_features +
-      (2 * slots + slots * static_cast<size_t>(std::max(1, max_tasks))) * sizeof(int) + 2 * slots * sizeof(uint64_t) +
-      (5 + num_features + task_inner.size()) * sizeof(int);
+    bynode_fixed = (slots * sizeof(int8_t*) + 255) / 256 * 256 + 2 * slots * sizeof(int) +
+      2 * slots * sizeof(uint64_t) + (5 + num_features + task_inner.size()) * sizeof(int);
+    bynode_per_slot = num_features + static_cast<size_t>(std::max(1, max_tasks)) * sizeof(int);
+    bynode_cap = DeviceTreeBynodeChunkCap(static_cast<int64_t>(slots), max_tasks, pairs);
   }
-  const size_t growth_bytes = cuda_best_split_finder_->HybridLevelGrowthBytes(pairs) +
-    cuda_histogram_constructor_->BitChangeScratchGrowthBytes(pairs) + other_bytes + bynode_bytes;
+  const auto bynode_bytes = [&](const int chunk) {
+    return bynode ? bynode_fixed + (chunk < pairs ? 1 + 2 * static_cast<size_t>(chunk) : slots) * bynode_per_slot : 0;
+  };
+  const auto growth_bytes = [&](const int chunk) {
+    const size_t chunks = static_cast<size_t>((pairs + chunk - 1) / chunk);
+    return cuda_best_split_finder_->HybridLevelGrowthBytes(chunk) +
+      cuda_histogram_constructor_->BitChangeScratchGrowthBytes(chunk) + other_bytes + bynode_bytes(chunk) +
+      (chunks > 1 ? chunks * sizeof(CUDADeviceLevelState) : 0);
+  };
   size_t free_bytes = 0;
   size_t device_bytes = 0;
   CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &device_bytes));
@@ -3451,17 +3493,47 @@ void CUDASingleGPUTreeLearner::EvaluateDeviceTreeScratchGate() {
   if (cap_mib >= 0) {
     free_bytes = std::min(free_bytes, static_cast<size_t>(cap_mib) << 20);
   }
-  const bool fits = growth_bytes <= free_bytes / 2;
-  device_tree_scratch_gate_ = fits ? 1 : 0;
+  const size_t budget = free_bytes / 2;
+  int chunk = pairs;
+  // pair chunking serves the quantized device tree; a non-quantized tree (NonquantDeviceTreeShape's bound) keeps the
+  // whole search's scratch or, over the budget, its one-sync host flow (scratch_too_large), as before P4
+  const bool chunkable = config_->use_quantized_grad;
+  if (chunkable && (growth_bytes(pairs) > budget || bynode_cap < pairs)) {
+    // the most pairs within the budget (growth_bytes rises with the chunk) and the bynode offset cap, at least one
+    chunk = 1;
+    int lo = 2;
+    int hi = std::min(pairs - 1, bynode_cap);
+    while (lo <= hi) {
+      const int mid = lo + (hi - lo) / 2;
+      if (growth_bytes(mid) <= budget) {
+        chunk = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+  }
+  device_tree_chunk_pairs_ = chunk;
+  // even one pair per chunk exceeds the budget (half of the free memory; vramfree caps it), or the bynode task offsets
+  // overflow at one pair: the host level loop grows this learner's trees (reason scratch_too_large), no CUDA Fatal
+  device_tree_scratch_refused_ = growth_bytes(chunk) > budget || bynode_cap < 1;
+  if (device_tree_scratch_refused_ && FalcataDebug().diag) {
+    fprintf(stderr, "[hybrid-diag] device_tree: scratch too large: max_depth %d needs %.1f MiB at one searched pair "
+            "per chunk, %.1f MiB free (budget half): host level loop\n", num_levels,
+            growth_bytes(chunk) / (1024.0 * 1024.0), free_bytes / (1024.0 * 1024.0));
+  }
   if (FalcataDebug().diag) {
     constexpr double kMiB = 1024.0 * 1024.0;
+    const size_t finder_bytes = 2 * static_cast<size_t>(cuda_best_split_finder_->num_tasks()) *
+      static_cast<size_t>(chunk) * sizeof(CUDASplitInfo);
+    const size_t bit_change_bytes = config_->use_quantized_grad ?
+      cuda_histogram_constructor_->BitChangeScratchEntries(chunk) * sizeof(hist_t) : 0;
     fprintf(stderr, "[hybrid-diag] device_tree: scratch estimate %.1f MiB (finder %.1f, bit-change %.1f, other %.1f, "
-            "bynode %.1f; to allocate %.1f) for max_depth %d, %d searched pairs, %d tasks, %d total bins; free %.1f of "
-            "%.1f MiB: %s\n", (finder_bytes + bit_change_bytes + other_bytes + bynode_bytes) / kMiB,
-            finder_bytes / kMiB, bit_change_bytes / kMiB, other_bytes / kMiB, bynode_bytes / kMiB,
-            growth_bytes / kMiB, num_levels, pairs,
-            cuda_best_split_finder_->num_tasks(), num_total_bin_, free_bytes / kMiB, device_bytes / kMiB,
-            fits ? "fits" : "over half of free memory");
+            "bynode %.1f; to allocate %.1f) for max_depth %d, %d searched pairs, %d chunks of %d pairs, %d tasks, %d "
+            "total bins; free %.1f of %.1f MiB\n", (finder_bytes + bit_change_bytes + other_bytes +
+            bynode_bytes(chunk)) / kMiB, finder_bytes / kMiB, bit_change_bytes / kMiB, other_bytes / kMiB,
+            bynode_bytes(chunk) / kMiB, growth_bytes(chunk) / kMiB, num_levels, pairs, DeviceTreeChunks(pairs),
+            chunk, cuda_best_split_finder_->num_tasks(), num_total_bin_, free_bytes / kMiB, device_bytes / kMiB);
   }
 }
 
@@ -3489,7 +3561,7 @@ bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
   cuda_device_level_config_.Resize(1);
   const int max_prefix_leaves = 1 << num_levels;
   device_level_journal_size_ = static_cast<size_t>(kDeviceLevelJournalHeader) +
-    2 * static_cast<size_t>(max_prefix_leaves) + 4;
+    kDeviceLevelJournalRecord * static_cast<size_t>(max_prefix_leaves);
   cuda_device_level_journal_.Resize(device_level_journal_size_);
   if (pinned_device_level_journal_ != nullptr) {
     cudaFreeHost(pinned_device_level_journal_);
@@ -3509,6 +3581,12 @@ bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
   // pay mid-level (it would also reallocate under in-flight kernels' pointers)
   const int max_pairs = DeviceLevelSearchPairs(num_levels);
   device_level_max_pairs_ = max_pairs;
+  // the per-pair search scratch holds one pair chunk of a complete tree (PlanDeviceTreeChunks), the widest search
+  // otherwise
+  const bool whole_tree = DeviceTreeRequested();
+  const int scratch_pairs = whole_tree && device_tree_chunk_pairs_ > 0 ? std::min(device_tree_chunk_pairs_, max_pairs) :
+    max_pairs;
+  device_level_scratch_pairs_ = scratch_pairs;
   const size_t max_slots = static_cast<size_t>(max_prefix_leaves) + 2;
   if (hybrid_pair_slots_.Size() < max_slots) {
     hybrid_pair_slots_.Resize(max_slots);
@@ -3516,9 +3594,25 @@ bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
   if (cuda_hybrid_pair_descs_.Size() < static_cast<size_t>(max_pairs)) {
     cuda_hybrid_pair_descs_.Resize(static_cast<size_t>(max_pairs));
   }
+  if (cuda_device_level_block_start_.Size() < static_cast<size_t>(max_pairs) + 1) {
+    cuda_device_level_block_start_.Resize(static_cast<size_t>(max_pairs) + 1);
+  }
+  // a complete tree's levels wider than the shared select: its arrays in global scratch (the final level's splits)
+  const size_t final_splits = static_cast<size_t>(max_prefix_leaves) / 2;
+  if (whole_tree && final_splits > static_cast<size_t>(kDeviceTreeSharedSplits) &&
+      cuda_device_level_select_leaves_.Size() < final_splits) {
+    cuda_device_level_select_leaves_.Resize(final_splits);
+    cuda_device_level_select_gains_.Resize(final_splits);
+    cuda_device_level_select_bits_.Resize(2 * final_splits / 32);
+    cuda_device_level_select_gaps_.Resize(2 * final_splits);
+  }
+  const int chunks = whole_tree ? DeviceTreeChunks(max_pairs) : 1;
+  if (chunks > 1 && cuda_device_level_chunk_states_.Size() < static_cast<size_t>(chunks)) {
+    cuda_device_level_chunk_states_.Resize(static_cast<size_t>(chunks));
+  }
   cuda_data_partition_->EnsureDeviceLevelCapacity(max_prefix_leaves);
-  cuda_best_split_finder_->EnsureDeviceLevelCapacity(max_pairs);
-  cuda_histogram_constructor_->EnsureDeviceLevelCapacity(max_pairs);
+  cuda_best_split_finder_->EnsureDeviceLevelCapacity(scratch_pairs);
+  cuda_histogram_constructor_->EnsureDeviceLevelCapacity(scratch_pairs);
   device_levels_ready_ = true;
   return true;
 }
@@ -3591,13 +3685,45 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
       CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(find_stream, tree_record_done_event_, 0));
       break;
     }
+    // the children's search behind the apply, inside the scratch SetupDeviceLevels presized (a growth here would
+    // reallocate under in-flight or captured kernels)
+    CHECK_LE(max_splits, device_level_max_pairs_);
+    const int chunks = cfg.num_chunks > 1 ? DeviceTreeChunks(max_splits) : 1;
+    if (chunks > 1) {
+      // pair chunking: the level's construct over all its pairs (no per-pair scratch), then per chunk of
+      // cfg.chunk_pairs pairs the fix/subtract and the find, each reading the chunk's state (the pairs block wrote
+      // its live pairs) and descriptors and reusing one chunk of scratch; the select reads every chunk's leaf entries
+      CHECK_EQ(cfg.chunk_pairs, device_tree_chunk_pairs_);
+      CHECK_LE(cfg.chunk_pairs, device_level_scratch_pairs_);
+      CHECK_LE(chunks, cfg.num_chunks);
+      cuda_histogram_constructor_->ConstructHistogramsForLevelOnly(cuda_hybrid_pair_descs_.RawDataReadOnly(),
+                                                                   max_splits);
+      // (the record reads the split leaves' best-split entries, which the first chunk's sync starts overwriting)
+      cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, record_tree ? tree_record_done_event_ : nullptr);
+      for (int c = 0; c < chunks; ++c) {
+        const int base = c * cfg.chunk_pairs;
+        const int count = std::min(cfg.chunk_pairs, max_splits - base);
+        const CUDADeviceLevelState* chunk_state = cfg.chunk_states + c;
+        const CUDAHybridPairDescriptor* chunk_descs = cuda_hybrid_pair_descs_.RawDataReadOnly() + base;
+        cuda_histogram_constructor_->SetDeviceLevelState(chunk_state, /*whole_tree=*/true);
+        cuda_best_split_finder_->SetDeviceLevelState(chunk_state);
+        if (device_bynode_active_) {
+          // cuda_plan key device_bynode_masks: the chunk's children's masks into the chunk's row slots
+          EnqueueDeviceBynodeChunkMasks(find_stream, level, base, count);
+        }
+        cuda_histogram_constructor_->SubtractHistogramsForLevel(chunk_descs, count,
+                                                                /*any_pair_needs_bit_change_copy=*/true);
+        cuda_best_split_finder_->FindBestSplitsForLevel(chunk_descs, count, grad_scale, hess_scale);
+      }
+      cuda_histogram_constructor_->SetDeviceLevelState(dls, /*whole_tree=*/true);
+      cuda_best_split_finder_->SetDeviceLevelState(dls);
+      select_ran = false;
+      continue;
+    }
     // cuda_plan key device_bynode_masks: the children's masks on the side stream, beside their construct
     if (device_bynode_active_) {
       EnqueueDeviceBynodeMasks(find_stream, level, max_splits);
     }
-    // the children's search behind the apply, inside the scratch SetupDeviceLevels presized (a growth here would
-    // reallocate under in-flight or captured kernels)
-    CHECK_LE(max_splits, device_level_max_pairs_);
     cuda_histogram_constructor_->ConstructHistogramsForLevel(
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, /*max_num_data_in_smaller_leaf=*/0,
       /*any_pair_needs_bit_change_copy=*/true);
@@ -3645,6 +3771,13 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cfg.gap_block_dim)));
     // The select kernel captures this value too, including when reset/reuse retains the same allocations.
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cfg.num_leaves_budget)));
+    // cuda_device_levels: the block map, the select's global scratch and the pair chunks (the chunk loop's
+    // launches and the states the pairs block writes)
+    key.push_back(static_cast<const void*>(cfg.construct_block_start));
+    key.push_back(static_cast<const void*>(cfg.select_leaves));
+    key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cfg.num_chunks)));
+    key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cfg.chunk_pairs)));
+    key.push_back(static_cast<const void*>(cfg.chunk_states));
     // cuda_plan key device_bynode_masks: the mask kernels and the buffers they capture
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(device_bynode_active_ ? 1 : 0)));
     if (!config_->use_quantized_grad) {
@@ -3659,6 +3792,7 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       key.push_back(static_cast<const void*>(device_bynode_cfg_.keys));
       key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(device_bynode_cfg_.num_slots)));
       key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(device_bynode_cfg_.num_tasks)));
+      key.push_back(static_cast<const void*>(device_bynode_cfg_.table));
     }
   }
   if (!cuda_histogram_constructor_->DeviceLevelGraphCapturable()) {
@@ -3851,6 +3985,23 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.max_depth = GrowthMaxDepth();
   cfg.num_leaves_budget = config_->num_leaves;
   cfg.whole_tree = DeviceTreeRequested() ? 1 : 0;
+  cfg.construct_block_start = cuda_device_level_block_start_.RawData();
+  if (cfg.whole_tree && (1 << (num_levels - 1)) > kDeviceTreeSharedSplits) {
+    // the levels wider than the shared select (SetupDeviceLevels sized the scratch for the final level)
+    CHECK_GE(cuda_device_level_select_leaves_.Size(), static_cast<size_t>(1) << (num_levels - 1));
+    cfg.select_leaves = cuda_device_level_select_leaves_.RawData();
+    cfg.select_gains = cuda_device_level_select_gains_.RawData();
+    cfg.select_split_bits = cuda_device_level_select_bits_.RawData();
+    cfg.select_gaps = cuda_device_level_select_gaps_.RawData();
+    cfg.select_capacity = 1 << (num_levels - 1);
+  }
+  // pair chunking (PlanDeviceTreeChunks): the chunks of the widest search; narrower levels use the first ones
+  cfg.num_chunks = cfg.whole_tree ? DeviceTreeChunks(device_level_max_pairs_) : 1;
+  if (cfg.num_chunks > 1) {
+    CHECK_GE(cuda_device_level_chunk_states_.Size(), static_cast<size_t>(cfg.num_chunks));
+    cfg.chunk_states = cuda_device_level_chunk_states_.RawData();
+    cfg.chunk_pairs = device_tree_chunk_pairs_;
+  }
   // cuda_plan key selective_device_prefix: the applied splits' best-split records, for the selective records. Sized
   // here, outside SetupDeviceLevels, because only selective trees ask for them (the device tree and the plain prefix
   // never allocate them); the growth happens before any level is enqueued or captured, and K is config-constant, so
@@ -3986,8 +4137,8 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // ---- the one growth readback: journal and applied split infos; the prefix also reads leaf-best entries.
   // Whole-tree slab/count copies, when requested, are covered by this same fence. ----
   CopyFromCUDADeviceToHostAsync<int>(pinned_device_level_journal_, cuda_device_level_journal_.RawData(),
-    static_cast<size_t>(kDeviceLevelJournalHeader) + 2 * static_cast<size_t>(max_total_splits), find_stream,
-    __FILE__, __LINE__);
+    static_cast<size_t>(kDeviceLevelJournalHeader) + kDeviceLevelJournalRecord * static_cast<size_t>(max_total_splits),
+    find_stream, __FILE__, __LINE__);
   if (!skip_host_cache) {
     cuda_data_partition_->PrefetchSplitBatchAsync(max_total_splits, find_stream);
   }
@@ -4010,6 +4161,13 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   CHECK_LE(levels_applied, num_levels);
   CHECK_GE(total_splits, 0);
   CHECK_LE(total_splits, max_total_splits);
+  // the splits of each level, from the records' level tags
+  std::vector<int>& level_counts = device_level_journal_counts_;
+  level_counts.resize(static_cast<size_t>(num_levels));
+  CHECK(DeviceLevelJournalCounts(journal, total_splits, num_levels, level_counts.data()));
+  for (int level = levels_applied; level < num_levels; ++level) {
+    CHECK_EQ(level_counts[level], 0);
+  }
   cuda_data_partition_->FinishDeviceLevels(num_levels, levels_applied, total_splits);
   if (!skip_host_cache) {
     cuda_data_partition_->ReadPrefetchedSplitBatch(total_splits, &device_level_batch_info_);
@@ -4025,7 +4183,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // the selective prefix: the level bookkeeping reads the split-batch readback in place
   const bool lean_batch = record_split_infos;
   for (int level = 0; level < levels_applied; ++level) {
-    const int level_splits = journal[kDeviceLevelJournalLevels + level];
+    const int level_splits = level_counts[level];
     CHECK_GE(level_splits, 1);
     CHECK_LE(cursor + level_splits, total_splits);
     if (cfg.whole_tree && level + 1 == num_levels) {
@@ -4035,8 +4193,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
       device_level_applied_.clear();
     }
     for (int k = 0; k < level_splits; ++k) {
-      const int left_leaf = journal[kDeviceLevelJournalHeader + 2 * (cursor + k)];
-      const int inner_feature = journal[kDeviceLevelJournalHeader + 2 * (cursor + k) + 1];
+      const int* record = journal + kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * (cursor + k);
+      const int left_leaf = record[0];
+      const int inner_feature = record[1];
       // the device numbers the level's right children after the leaves before it, in split order
       const int right_leaf = cursor + k + 1;
       if (replay_mirrors) {
@@ -4065,8 +4224,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   }
   CHECK_EQ(cursor, total_splits);
   CHECK_EQ(tree->num_leaves(), replay_mirrors ? total_splits + 1 : 1);
-  const bool all_map_complete = inline_all_map && levels_applied == num_levels &&
-    journal[kDeviceLevelJournalLevels + num_levels - 1] > 0;
+  const bool all_map_complete = inline_all_map && levels_applied == num_levels && level_counts[num_levels - 1] > 0;
   const bool deferred_final = final_map_only && all_map_complete;
   int deferred_splits = 0;
   int deferred_gaps = 0;
@@ -4076,13 +4234,13 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     // The growth fence covers both V15 mapped-copy and unchanged DMA fallback. Four owned counts AND the creation gap width survive staging
     // reuse. Reconstruct exactly the final select's leaf-ordered split/gap descriptors, with wide count sums.
     const int actual_leaves = total_splits + 1;
-    CHECK_LE(actual_leaves, 2 * kDeviceTreeMaxSplits);
-    deferred_splits = journal[kDeviceLevelJournalLevels + num_levels - 1];
+    CHECK_LE(actual_leaves, config_->num_leaves);
+    deferred_splits = level_counts[num_levels - 1];
     const int leaves_before = actual_leaves - deferred_splits;
     CHECK_EQ(leaves_before, prefix_final_leaves_before_);
     const auto* counts = reinterpret_cast<const data_size_t*>(
       static_cast<const uint8_t*>(readback_staging_) + end_counts_offset);
-    std::array<uint8_t, 2 * kDeviceTreeMaxSplits> selected{};
+    std::vector<uint8_t> selected(static_cast<size_t>(leaves_before), 0);
     int64_t root_rows = 0;
     for (int leaf = 0; leaf < actual_leaves; ++leaf) {
       CHECK_GE(counts[leaf], 0);
@@ -4090,7 +4248,8 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     }
     CHECK_EQ(root_rows, static_cast<int64_t>(num_data_));
     for (int k = 0; k < deferred_splits; ++k) {
-      const int left = journal[kDeviceLevelJournalHeader + 2 * (total_splits - deferred_splits + k)];
+      const int left = journal[kDeviceLevelJournalHeader +
+                               kDeviceLevelJournalRecord * (total_splits - deferred_splits + k)];
       CHECK_GE(left, 0);
       CHECK_LT(left, leaves_before);
       CHECK_EQ(selected[left], 0);
@@ -4162,7 +4321,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     if (FalcataDebug().diag) {
       fprintf(stderr, "[hybrid-diag] device_tree_final_all_map: enabled=%d complete=%d "
               "final_splits=%d leaves=%d\n", inline_all_map ? 1 : 0, all_map_complete ? 1 : 0,
-              all_map_complete ? journal[kDeviceLevelJournalLevels + num_levels - 1] : 0,
+              all_map_complete ? level_counts[num_levels - 1] : 0,
               tree->num_leaves());
       fprintf(stderr, "[hybrid-diag] device_tree_final_map_only: enabled=%d deferred=%d "
               "splits=%d gaps=%d flat=%" PRId64 "\n", final_map_only ? 1 : 0, deferred_final ? 1 : 0,
@@ -4730,12 +4889,14 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
   const CUDASplitInfo* raw_infos = static_cast<const CUDASplitInfo*>(pinned_selective_prefix_split_infos_);
   int cursor = 0;
   int leaves = 1;
+  const std::vector<int>& level_counts = device_level_journal_counts_;  // TrainDeviceLevels' tag counts
+  CHECK_GE(static_cast<int>(level_counts.size()), levels_applied);
   for (int level = 0; level < levels_applied; ++level) {
-    const int level_splits = journal[kDeviceLevelJournalLevels + level];
+    const int level_splits = level_counts[level];
     CHECK_GE(level_splits, 1);
     for (int k = 0; k < level_splits; ++k) {
       const int s = cursor + k;
-      const int left = journal[kDeviceLevelJournalHeader + 2 * s];
+      const int left = journal[kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * s];
       const int right = leaves + k;
       const int* batch = device_level_batch_info_.data() + 18 * static_cast<size_t>(s);
       CHECK_EQ(batch[0], left);
@@ -4754,7 +4915,7 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
       // what the host's own scrubbed best-split readback (ReadPrefetchedLeafBestSplits) hands over
       const CUDASplitInfo& raw = raw_infos[s];
       CHECK(raw.is_valid);
-      CHECK_EQ(raw.inner_feature_index, journal[kDeviceLevelJournalHeader + 2 * s + 1]);
+      CHECK_EQ(raw.inner_feature_index, journal[kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * s + 1]);
       CHECK_EQ(raw.num_cat_threshold, 0);
       sel_applied_.emplace_back();
       SelectiveApplied& node = sel_applied_.back();

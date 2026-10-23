@@ -935,15 +935,17 @@ struct FalcataPlan {
   // Same descriptors, same kernels' sums: bit-identical.
   bool device_levels = true;        // key: device_levels
   // The complete depth-bounded quantized tree on the device (default; requires device_levels): wherever positive
-  // max_depth <= 12 and 2^max_depth <= num_leaves + 1 (every level but the depth-capped last one may split every
-  // valid leaf), every level's select, apply and search plus the final apply without its unnecessary child search
-  // run device-driven; one growth journal readback and no host growth tail, instead of the device_levels prefix,
-  // its readback, the host's replay and the host-driven final level. Other shapes keep the prefix and the host flow
-  // (FALCATA_DEBUG=diag reports every such tree as `device_tree: fallback (<reason>) route=<route>`, see
-  // Falcata/cuda/cuda_device_tree_reason.hpp), and so does a shape whose presized per-level scratch (2^(max_depth-2)
-  // pairs) would take more than half of the free device memory; device_tree:off restores the prefix everywhere. A changing sampled
-  // layout can disable graph caching, but never the device controller itself. The same selector, kernels and order:
-  // bit-identical.
+  // max_depth (any depth) and 2^max_depth <= num_leaves + 1 (every level but the depth-capped last one may split
+  // every valid leaf), every level's select, apply and search plus the final apply without its unnecessary child
+  // search run device-driven; one growth journal readback and no host growth tail, instead of the device_levels
+  // prefix, its readback, the host's replay and the host-driven final level. Levels wider than 2048 splits select
+  // over global scratch (the same sort network and tie order). Where the widest search's per-pair scratch
+  // (2^(max_depth-2) pairs) would take more than half of the free device memory, the wider levels' fix/subtract and
+  // search run in pair chunks of the most pairs that fit (the same per-pair work: the model does not change). Other
+  // shapes keep the prefix and the host flow (FALCATA_DEBUG=diag reports every such tree as `device_tree: fallback
+  // (<reason>) route=<route>`, see Falcata/cuda/cuda_device_tree_reason.hpp); device_tree:off restores the prefix
+  // everywhere. A changing sampled layout can disable graph caching, but never the device controller itself. The same
+  // selector, kernels and order: bit-identical.
   // Non-quantized training (FULL_DEVICE_PLAN P3): depth-limited trees with max_depth <= 11 and num_leaves <= 2047 (the
   // bound the removed non-quantized graph loop served; single GPU, scalar leaves, no categorical features, no
   // per-node masks) take the complete device tree too: its levels construct in 64-bit fixed point

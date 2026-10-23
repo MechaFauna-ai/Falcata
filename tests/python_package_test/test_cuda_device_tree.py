@@ -2,11 +2,12 @@
 """Complete bounded device trees must engage, including final depth and changing sampled layouts.
 
 Every comparison uses one binary and identical data/parameters. The host arm disables both device controllers
-(device_levels:off); the complete arm is the default plan (device_tree on), whose shapes outside the depth bound fall
-back to the device_levels prefix. Diagnostics prove engagement on every eligible round, including after graph misses,
+(device_levels:off); the complete arm is the default plan (device_tree on), at any depth where 2^max_depth <=
+num_leaves + 1. Diagnostics prove engagement on every eligible round, including after graph misses,
 rather than merely comparing a fallback.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -64,11 +65,13 @@ def _case(name):
         y = X[:, :8].sum(axis=1) + rng_wide.standard_normal(len(X))
         params["feature_fraction"] = 1.0
         rounds = 3
-    elif name in {"deep11", "deep12"}:
-        # The same exact bit-linear target one and two levels deeper: every one of the 2^depth leaves (65536 / 2^depth
-        # rows each) is reached, so the final level carries 1024 / 2048 splits (the standalone select's widest levels).
+    elif name in {"deep11", "deep12", "deep13", "deep14"}:
+        # The same exact bit-linear target one to four levels deeper: every one of the 2^depth leaves (at least 16
+        # rows each) is reached, so the final level carries 1024 / 2048 splits (the shared select's widest levels) and
+        # 4096 / 8192 splits (the select over global scratch).
         depth = int(name[4:])
-        X = ((np.arange(65536, dtype=np.uint32)[:, None] >> np.arange(depth, dtype=np.uint32)) & 1).astype(np.float32)
+        rows = 1 << max(16, depth + 4)
+        X = ((np.arange(rows, dtype=np.uint32)[:, None] >> np.arange(depth, dtype=np.uint32)) & 1).astype(np.float32)
         y = X @ np.arange(1, depth + 1, dtype=np.float32)
         params.update(
             num_leaves=1 << depth,
@@ -105,8 +108,6 @@ def _case(name):
             params["num_leaves"] = 100
         elif name == "unbounded":
             params["max_depth"] = -1
-        elif name == "too_deep":
-            params.update(num_leaves=8192, max_depth=13)
         elif name == "bynode":
             params["feature_fraction_bynode"] = 0.5
         elif name == "l1":
@@ -210,6 +211,8 @@ def _run(name, graph="on", base_plan="auto"):
         "full",
         "deep11",
         "deep12",
+        "deep13",
+        "deep14",
         "early",
         "stump",
         "shallow",
@@ -240,15 +243,17 @@ def test_device_tree_complete_cuda(case, graph):
         assert data["counts"] == [1024] * data["rounds"]
         assert data["depths"] == [10] * data["rounds"]
         assert all(int(e[1]) == 10 for e in events)
-    elif case in {"deep11", "deep12"}:
+    elif case.startswith("deep"):
         depth = int(case[4:])
         assert data["counts"] == [1 << depth] * data["rounds"]
         assert data["depths"] == [depth] * data["rounds"]
         assert all(int(e[0]) == depth and int(e[1]) == depth for e in events)
-        # the presized scratch passed the free-memory gate, reported once
-        estimates = re.findall(rf"device_tree: scratch estimate .* for max_depth {depth}, (\d+) searched pairs", diag)
-        assert estimates == [str(1 << (depth - 2))], diag
-        assert "over half of free memory" not in diag
+        # the widest search's scratch fits the memory budget: one chunk per level, reported once
+        estimates = re.findall(
+            rf"device_tree: scratch estimate .* for max_depth {depth}, (\d+) searched pairs, (\d+) chunks of (\d+) pairs",
+            diag,
+        )
+        assert estimates == [(str(1 << (depth - 2)), "1", str(1 << (depth - 2)))], diag
         # the live-grid route of every enqueued level (#168), up to the 2^(depth-2)-pair search; at the default budget
         # these narrow levels stay under it (test_device_tree_deep_live_grid_cuda runs them live)
         routes = _LIVE_GRID_LINE.findall(diag)
@@ -370,8 +375,6 @@ def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
     [
         ("binding", "auto", "(selective_budget) route=selective_prefix"),
         ("unbounded", "auto", "(selective_unbounded) route=selective_prefix"),
-        # max_depth 13 is past the standalone select's 2048-split capacity (kDeviceTreeMaxDepth = 12)
-        ("too_deep", "auto", "(depth_gt_12) route=prefix"),
         # per-node masks drawn on the host: the host flow
         ("bynode", "auto,device_bynode_masks:off", "(plan_off) route=host_two_sync prefix=bynode_host_masks"),
         # L1 / path smoothing and stumps keep their routes where the level flows would change the model (P6):
@@ -392,38 +395,89 @@ def test_device_tree_unsupported_cuda(case, plan, line):
     assert "device_tree: complete" not in diag
 
 
-def _gate_probe():
-    X, y, params, rounds = _case("deep12")
-    models = []
-    for plan in ["auto", "auto,device_tree:off"]:
-        p = {**params, "cuda_plan": plan}
-        booster = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=rounds)
-        models.append("\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line))
-    assert models[0] == models[1], "gated default and prefix model bytes differ"
-    print(json.dumps({"rounds": rounds}))
+def _md5_probe(name):
+    X, y, params, rounds = _case(name)
+    booster = flc.train(params, flc.Dataset(X, label=y, params=params), num_boost_round=rounds)
+    text = "\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line)
+    print(json.dumps({"md5": hashlib.md5(text.encode()).hexdigest(), "rounds": rounds}))
 
 
-@_REQUIRES_CUDA
-def test_device_tree_scratch_gate_falls_back_to_prefix_cuda():
-    # FALCATA_DEBUG=vramfree=2 leaves 2 MiB "free": the depth-12 tree's presized scratch (about 2.5 MiB here) is over
-    # half of it, so the default takes the prefix flow for the whole learner, with the prefix's model bytes.
-    code = "import runpy,sys; runpy.run_path(sys.argv[1])['_gate_probe']()"
+def _run_md5(name, debug):
+    code = "import runpy,sys; runpy.run_path(sys.argv[1])['_md5_probe'](sys.argv[2])"
     result = subprocess.run(
-        [sys.executable, "-c", code, __file__],
-        env=dict(os.environ, FALCATA_DEBUG="diag,vramfree=2"),
+        [sys.executable, "-c", code, __file__, name],
+        env=dict(os.environ, FALCATA_DEBUG=debug),
         capture_output=True,
         text=True,
         check=False,
     )
-    assert result.returncode == 0, result.stdout + "\nSTDERR:\n" + result.stderr
-    diag = result.stderr
-    assert re.search(r"device_tree: scratch estimate .* for max_depth 12, 1024 searched pairs.*over half of free", diag)
-    assert diag.count("device_tree: fallback (memory_gate) route=prefix\n") == 1
-    assert len(re.findall(r"device_tree: fallback \((?!plan_off\))", diag)) == 1
+    assert result.returncode == 0, result.stdout + "\nSTDERR:\n" + result.stderr[-6000:]
+    return json.loads(result.stdout.splitlines()[-1]), result.stderr
+
+
+@_REQUIRES_CUDA
+def test_device_tree_scratch_too_large_falls_back_to_host_loop_cuda():
+    # FALCATA_DEBUG=vramfree=2 at depth 13: the tree's fixed scratch alone (descriptors, slots, journal, the global
+    # select's scratch) exceeds the 2 MiB "free", so not even one searched pair per chunk fits. The host level loop
+    # grows the trees (no CUDA Fatal), with the complete device tree's model bytes.
+    capped, diag = _run_md5("deep13", "diag,vramfree=2")
+    assert re.search(
+        r"device_tree: scratch too large: max_depth 13 needs [\d.]+ MiB at one searched pair per chunk, "
+        r"[\d.]+ MiB free \(budget half\): host level loop",
+        diag,
+    ), diag[-3000:]
+    assert diag.count("device_tree: fallback (scratch_too_large) route=host_two_sync\n") == 1, diag[-3000:]
+    assert len(re.findall(r"device_tree: fallback \(", diag)) == 1, diag[-3000:]
     assert "device_tree: complete" not in diag
-    assert "host fallback" not in diag
-    # the device_levels prefix grew both arms' trees (min(log2(4096), 12 - 1, 10) levels)
-    assert "device_levels: 10 device-driven levels per tree" in diag
+    device, device_diag = _run_md5("deep13", "diag")
+    assert device_diag.count("device_tree: complete") == device["rounds"]
+    assert capped["md5"] == device["md5"]
+
+
+def _chunk_probe(name, graph):
+    X, y, params, rounds = _case(name)
+    models = []
+    for plan in ["auto,device_level_graph:" + graph, "auto,device_tree:off", "auto,device_levels:off"]:
+        p = {**params, "cuda_plan": plan}
+        booster = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=rounds)
+        models.append("\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line))
+    assert models[0] == models[1], "chunked complete tree and prefix model bytes differ"
+    assert models[0] == models[2], "chunked complete tree and host model bytes differ"
+    print(json.dumps({"rounds": rounds}))
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["off", "on"])
+@pytest.mark.parametrize("case", ["deep12", "deep13", "bynode", "fivebin_wide"])
+def test_device_tree_pair_chunks_cuda(case, graph):
+    # FALCATA_DEBUG=vramfree=2 (6 at depth 13) leaves a few MiB "free": the widest search's per-pair scratch (finder output, bit-change
+    # scratch, bynode rows) does not fit half of it, so each wide level's fix/subtract and find run over pair chunks.
+    # The complete tree still grows every tree, with the prefix's and the host flow's model bytes (the chunk boundary
+    # changes no float result).
+    code = "import runpy,sys; runpy.run_path(sys.argv[1])['_chunk_probe'](*sys.argv[2:])"
+    # (deep13's fixed scratch alone is over 2 MiB: 6 MiB leaves room for 8 chunks)
+    vramfree = 6 if case == "deep13" else 2
+    result = subprocess.run(
+        [sys.executable, "-c", code, __file__, case, graph],
+        env=dict(os.environ, FALCATA_DEBUG=f"diag,vramfree={vramfree}"),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + "\nSTDERR:\n" + result.stderr[-6000:]
+    rounds = json.loads(result.stdout.splitlines()[-1])["rounds"]
+    diag = result.stderr
+    plans = re.findall(r"device_tree: scratch estimate .* (\d+) searched pairs, (\d+) chunks of (\d+) pairs", diag)
+    assert len(plans) == 1, diag[-3000:]
+    pairs, chunks, chunk = (int(v) for v in plans[0])
+    assert chunks > 1, plans
+    assert chunk < pairs, plans
+    assert chunks == -(-pairs // chunk), plans
+    assert diag.count("device_tree: complete") == rounds
+    assert len(re.findall(r"device_tree: fallback \((?!plan_off\))", diag)) == 0, diag[-3000:]
+    if case == "bynode":
+        # the device masks in the chunk's row slots (1 + 2 * chunk pairs)
+        assert f"row_slots={1 + 2 * chunk}" in diag, diag[-3000:]
 
 
 @_REQUIRES_CUDA

@@ -2307,7 +2307,7 @@ are captured and replayed only in solo trees, on the calling thread). The tree g
 sample and tree counters either way: bit-identical models. The solo tree's device-tree scratch belongs to slot 0;
 under auto it is allocated by the first group (always one round) before any extra slot is made, so `EnsureSlots`'
 free-memory measurement includes it; a solo group after the slots (the last group of `forest_group:N`) is bounded by
-the device tree's scratch gate (at most half of the free memory, else the prefix flow) and by the reserve check after
+the device tree's pair-chunk plan (its search scratch within half of the free memory) and by the reserve check after
 every group. A solo tree with per-node masks (`feature_fraction_bynode` < 1) draws them on the device
 (`device_bynode_masks`) like a sequential tree; slots keep the host draws (same keys, same masks). `FALCATA_DEBUG=diag` ends each `[forest-diag] rounds` line with `mode single job (non-slot)` or `mode slots`.
 Measured (RTX 5090, strict gpuq, 6 alternating pairs, fresh process per run, default plan, master vs this change,
@@ -2926,19 +2926,29 @@ quantized training as ground truth in
 ## Complete bounded device trees by default (`device_tree`)
 
 `device_tree` (default ON, with `device_levels`) runs the complete quantized device controller for scalar,
-numerical single-GPU trees wherever its depth bound holds: positive `max_depth <= 12` and
+numerical single-GPU trees wherever its depth bound holds: positive `max_depth` (any depth) and
 `2^max_depth <= num_leaves + 1`, i.e. every level but the depth-capped last one may split every valid leaf.
 Per-node feature masks (`feature_fraction_bynode < 1` without interaction constraints) are eligible too: the device
 draws them (`device_bynode_masks`, below); forest slots (`boosting=rf` under `forest_batched`) are not, except a
 forest group's only tree (`forest_single_job_device`, section 10r).
-The controller presizes its per-level scratch for the deepest level it searches (2^(max_depth-2) pairs: split-finder
-output and the quantized bit-change histograms, which grow with the total bin count); where that estimate exceeds
-half of the free device memory at the first tree, the prefix flow grows the trees instead (`FALCATA_DEBUG=diag`
-prints the estimate and `device_tree: fallback (memory_gate) route=prefix`).
+The controller presizes its per-level scratch at the first tree. The widest search has 2^(max_depth-2) pairs; its
+per-pair scratch is the split-finder output, the quantized bit-change histograms (both grow with the total bin count)
+and, with per-node masks, the mask rows and task lists. Where that scratch with the tree's fixed buffers exceeds half
+of the free device memory, each wider level runs its fix/subtract and its split search in pair chunks: ceil(pairs / P)
+chunks of the most pairs P that fit, reusing one chunk of scratch (the level's construct and select still run once
+over all its pairs). A pair's fix/subtract and search read and write only its own histograms, scratch region and leaf
+entries, and the select runs after the last chunk, so the chunk boundary changes no float result: the model is the
+same with any chunk. `FALCATA_DEBUG=diag` prints the estimate and the plan (`... searched pairs, C chunks of P
+pairs`). Where not even one pair per chunk fits that budget (or, with per-node masks, the task-list offsets would leave int
+range at one pair), the host level loop grows the trees (reason `scratch_too_large`; diag names the bytes). Levels wider than 2048 splits (`max_depth > 12`: the final level has 2^(max_depth-1)) select
+over global scratch with the same bitonic network as the shared-memory select (its sub-tile stages in shared-memory
+tiles), so ties keep the host's gain-descending, lower-leaf order; the journal tags each split with its level, so any
+level count fits. Before 1.2 the controller stopped at `max_depth` 12 and fell back to the prefix flow over the
+memory budget (reasons `depth_gt_12` and `memory_gate`, both gone).
 Every level's select, apply and search plus the final apply run on the GPU, with one growth readback and no host
 growth tail. Against the `device_levels` prefix (section 10w) it removes, once per tree, the prefix readback, the
-host replay and the host-driven final level (its uploads, launches and readbacks). Elsewhere (unlimited or deeper
-trees, smaller leaf budgets) the prefix flows and the host flow run exactly as before; unsupported kernels,
+host replay and the host-driven final level (its uploads, launches and readbacks). Elsewhere (unlimited depth,
+smaller leaf budgets) the prefix flows and the host flow run exactly as before; unsupported kernels,
 constraints and data keep the host flow. `FALCATA_DEBUG=diag` reports why on the reason line (next section). Random-forest slots (10r) keep the host flow while other
 slots train beside them; a forest group of one tree takes the device tree like sequential training
 (`forest_single_job_device`). There is no automatic
@@ -3154,8 +3164,8 @@ Under `FALCATA_DEBUG=diag` every CUDA tree the complete device tree did not grow
 
     [hybrid-diag] device_tree: fallback (<reason>) route=<route>[ prefix=<reason>]
 
-once for the learner's first such tree and again whenever the line changes (a route change: a memory gate, a
-prefix that turns its graphs off, a forest group switching mode), not once per tree; trees the device tree grew keep
+once for the learner's first such tree and again whenever the line changes (a route change: a prefix that turns
+its graphs off, a forest group switching mode), not once per tree; trees the device tree grew keep
 their `device_tree: complete ...` line. `<reason>` is the first refusal that holds in a fixed order, `<route>` the
 controller that grew the tree, and `prefix=` (on the `host_two_sync` and `selective_two_sync` routes) why a
 `device_levels` prefix did not run where that flow would take one. Each token belongs to one row of the refusal
@@ -3188,8 +3198,7 @@ Reasons, in their order (several can hold; the first is reported):
 | `categorical` | a categorical feature | host two-sync |
 | `bynode_outside_bound`, `bynode_host_masks` | per-node masks outside the depth bound; inside it with device masks unusable | host two-sync / selective |
 | `selective_unbounded`, `selective_budget` | `max_depth <= 0`; `2^max_depth > num_leaves + 1` | selective prefix |
-| `depth_gt_12` | depth-limited, `max_depth > 12` | prefix |
-| `memory_gate` | the presized scratch exceeds half of the free memory | prefix |
+| `scratch_too_large` | the complete tree's scratch at one searched pair per chunk exceeds half of the free memory, or the per-node task offsets overflow at one pair | host two-sync / one-sync |
 | `setup_failed` | the device levels could not be set up | host two-sync |
 | `prefix_graph_churn` | (as `prefix=` only) sampled layouts kept missing the graph cache: the prefix turned itself off | host two-sync / selective two-sync |
 | `empty_task_list` | no searchable feature in a tree the device tree does not take for another reason | host two-sync |
@@ -3245,7 +3254,7 @@ Eligible quantized, numerical, scalar, single-GPU two-sync depth-limited trees e
 smaller-child rule; worst-case launches guard on device counts. One prefix-boundary readback replays the journal
 and resumes host growth. Root work, the remaining host levels/tail, score updates, metrics and final tree transfer
 remain. This is a prefix optimization; it does not build an arbitrary whole tree without host synchronization.
-Where the complete device tree's depth bound holds (positive `max_depth <= 12`, `2^max_depth <= num_leaves + 1`),
+Where the complete device tree's depth bound holds (positive `max_depth`, `2^max_depth <= num_leaves + 1`),
 the default runs `device_tree` instead of this prefix; the prefix is the default flow for the other eligible shapes,
 and `device_tree:off` makes it the flow for all of them.
 
