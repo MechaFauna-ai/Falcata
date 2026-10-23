@@ -246,15 +246,15 @@ void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_l
 
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
                              cudaStream_t stream, const int max_leaves) {
-  // the select holds 2 * MAX_SPLITS leaves: the register-batched block 2 * kDeviceLevelMaxPairs (nonbinding levels
-  // only), the shared block 2 * kDeviceTreeSharedSplits, the global one 2 * config.select_capacity
+  // the select holds MAX_SPLITS splits of 2 * MAX_SPLITS leaves: the register-batched block kDeviceLevelMaxPairs
+  // (nonbinding levels only), the shared block kDeviceTreeSharedSplits, the global one config.select_capacity
   const int leaves = max_leaves > 0 ? max_leaves : 2 * max_splits;
   // cuda_plan key pdl_level_chain: a programmatic dependent of the level sync launched just before on this stream
   if (leaves > 2 * kDeviceTreeSharedSplits) {
     // a level wider than the shared select: the same select over global scratch (DeviceLevelBitonicSortGlobal)
     LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceTreeSharedSplits, true>, dim3(1),
                            dim3(DeviceLevelThreads(max_splits)), 0, stream, config, level);
-  } else if (config.whole_tree || leaves > 2 * kDeviceLevelMaxPairs) {
+  } else if (config.whole_tree || leaves > 2 * kDeviceLevelMaxPairs || max_splits > kDeviceLevelMaxPairs) {
     LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceTreeSharedSplits>, dim3(1),
                            dim3(DeviceLevelThreads(max_splits)), 0, stream, config, level);
   } else {

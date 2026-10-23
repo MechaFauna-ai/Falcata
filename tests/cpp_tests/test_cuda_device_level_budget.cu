@@ -287,6 +287,9 @@ TEST(CUDADeviceLevelBudget, SelectiveLevelsApplyWhileR1HoldsAndStopAtTheFirstBin
   CheckSelection({2, 8, 4, 8, 1, 4, 8, 4}, five, 12, true, true);
   // no valid leaf never binds: the tree is complete
   CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, false), 8, true, true);
+  // 1024 leaves, every one valid: 1024 splits, more than the register-batched block's 512, so the shared block selects
+  // them (a level 10 of a tree of 4095 leaves; the register-batched block would stop with the error flag)
+  CheckSelection(std::vector<double>(1024, 3.0), std::vector<bool>(1024, true), 2048, true, true);
   // every select capacity: register-batched (<= 1024 leaves), shared (<= 4096), global scratch; at the threshold and
   // one leaf short of it
   for (const int leaves : {600, 1024, 2000, 4096, 6000}) {

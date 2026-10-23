@@ -3793,8 +3793,8 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
 
 // Selective trees. The unrolled levels (first_level 0, levels k < floor(log2 num_leaves), on which R1 cannot fail) are
 // the former static prefix: the reset, the root's select, then per level its apply, its children's search and the next
-// level's select (fused into the level's sync where the next level's leaves fit its register-batched block, else a
-// standalone launch). After the last one: nothing (the host tests R1 for the next level on the readback,
+// level's select (fused into the level's sync where the next level's leaves and splits fit its register-batched block,
+// else a standalone launch). After the last one: nothing (the host tests R1 for the next level on the readback,
 // TrainDeviceLevels), or, after a tree that went past the unrolled levels (selective_device_boundary_), the next
 // level's select and the flag. A relaunched body (first_level < 0) starts with the apply of the level selected before
 // it, reads its levels from the state, ends every level with the next level's select and the body with its flag
@@ -3859,8 +3859,9 @@ void CUDASingleGPUTreeLearner::EnqueueSelectiveDeviceLevels(const CUDADeviceLeve
     } else {
       cuda_histogram_constructor_->ConstructHistogramsForLevel(descs, max_splits, /*max_num_data_in_smaller_leaf=*/0,
                                                                /*any_pair_needs_bit_change_copy=*/true);
-      cuda_best_split_finder_->SetDeviceLevelSelect(last_select && next_leaves <= 2 * kDeviceLevelMaxPairs ?
-                                                    cfg_device : nullptr);
+      // (the fused copy is the register-batched block: kDeviceLevelMaxPairs splits of 2 * kDeviceLevelMaxPairs leaves)
+      const bool fuse = last_select && next_leaves <= 2 * kDeviceLevelMaxPairs && next_splits <= kDeviceLevelMaxPairs;
+      cuda_best_split_finder_->SetDeviceLevelSelect(fuse ? cfg_device : nullptr);
       cuda_best_split_finder_->FindBestSplitsForLevel(descs, max_splits, grad_scale, hess_scale);
       select_ran = cuda_best_split_finder_->LastSyncRanSelect();
       cuda_best_split_finder_->SetDeviceLevelSelect(nullptr);

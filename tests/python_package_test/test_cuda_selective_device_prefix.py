@@ -362,8 +362,9 @@ def test_selective_device_prefix_wide_same_model_cuda(graph):
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["on", "off"])
 def test_selective_device_prefix_beyond_register_select_cuda(graph):
-    # num_leaves 4095: levels past 10 hold more than 1024 leaves, so their select runs as the standalone shared-memory
-    # block (the register-batched one fused into the sync covers 1024 leaves); the same model
+    # num_leaves 4095: level 10 can split more than 512 leaves and the levels past it hold more than 1024 leaves, so
+    # their select runs as the standalone shared-memory block (the register-batched one fused into the sync covers 512
+    # splits of 1024 leaves); the same model
     X, y = _data("regression", rows=200000)
     plans = tuple(f"{p},device_level_graph:{graph}" for p in ("auto", "auto" + _OFF))
     lines = _same(_params("regression", 4095, -1, min_data_in_leaf=20), X, y, rounds=2, plans=plans)

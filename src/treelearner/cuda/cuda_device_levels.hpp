@@ -293,8 +293,8 @@ inline int DeviceLevelThreads(const int max_splits) {
 }
 
 /*! \brief DeviceLevelSelectKernel on \p stream for level \p level (defined in cuda_device_levels.cu); level < 0: the
- *  level the state reached (a relaunched body). max_leaves: the most leaves the level can start with (0: 2 *
- *  max_splits), which picks the select's capacity (register, shared or global) */
+ *  level the state reached (a relaunched body). max_splits and max_leaves (0: 2 * max_splits), the most splits and
+ *  leaves of the level, pick the select's capacity (register-batched, shared or global) */
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
                              cudaStream_t stream, const int max_leaves = 0);
 /*! \brief selective trees: the end of a launched segment on \p stream (a relaunched body, or the unrolled levels when
