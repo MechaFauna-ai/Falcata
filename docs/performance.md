@@ -3199,7 +3199,7 @@ Reasons, in their order (several can hold; the first is reported):
 | `categorical` | a categorical feature | host two-sync |
 | `bynode_outside_bound`, `bynode_host_masks` | per-node masks outside the depth bound; inside it with device masks unusable | host two-sync / selective |
 | `selective_unbounded`, `selective_budget` | `max_depth <= 0`; `2^max_depth > num_leaves + 1` | selective prefix |
-| `scratch_too_large` | the complete tree's scratch at one searched pair per chunk exceeds the free memory | host two-sync |
+| `scratch_too_large` | the complete tree's scratch at one searched pair per chunk exceeds half of the free memory, or the per-node task offsets overflow at one pair | host two-sync / one-sync |
 | `setup_failed` | the device levels could not be set up | host two-sync |
 | `prefix_graph_churn` | (as `prefix=` only) sampled layouts kept missing the graph cache: the prefix turned itself off | host two-sync / selective two-sync |
 | `empty_task_list` | no searchable feature in the tree | host two-sync |

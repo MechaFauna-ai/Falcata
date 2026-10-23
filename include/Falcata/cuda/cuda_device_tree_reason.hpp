@@ -59,7 +59,7 @@ namespace Falcata {
   X(kBynodeOutsideBound, "bynode_outside_bound", "7")     /* per-node masks outside the depth bound */ \
   X(kSelectiveUnbounded, "selective_unbounded", "3")      /* max_depth <= 0 */                         \
   X(kSelectiveBudget, "selective_budget", "3")            /* 2^max_depth > num_leaves + 1 */           \
-  X(kScratchTooLarge, "scratch_too_large", "2")         /* one pair per chunk exceeds free memory */ \
+  X(kScratchTooLarge, "scratch_too_large", "2")           /* 1 pair > half free; offsets overflow */   \
   X(kSetupFailed, "setup_failed", "-")                    /* SetupDeviceLevels refused */              \
   X(kPrefixGraphChurn, "prefix_graph_churn", "24")        /* prefix graphs off after cache misses */   \
   X(kEmptyTaskList, "empty_task_list", "23")              /* no searchable feature this tree */        \
