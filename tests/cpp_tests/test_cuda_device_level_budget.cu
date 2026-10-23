@@ -32,6 +32,8 @@ class DeviceBuffer {
 // not another CUDA implementation. The final pairs launch deliberately has no child-search descriptor storage.
 void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& valid, const int budget,
                     const bool final_depth = true) {
+  using Falcata::kDeviceLevelJournalRecord;
+  using Falcata::kDeviceTreeSharedSplits;
   using Falcata::CUDADeviceLevelConfig;
   using Falcata::CUDADeviceLevelState;
   using Falcata::CUDAHybridApplyDescriptor;
@@ -42,7 +44,6 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   using Falcata::CUDATreeBatchSplit;
   using Falcata::data_size_t;
   using Falcata::kDeviceLevelJournalHeader;
-  using Falcata::kDeviceLevelJournalLevels;
   using Falcata::LaunchDeviceLevelPairs;
   using Falcata::LaunchDeviceLevelSelect;
   const int leaves = static_cast<int>(gains.size());
@@ -59,7 +60,13 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   DeviceBuffer<CUDAHybridGraphFeatureMeta> device_meta(1);
   DeviceBuffer<CUDAHybridGraphFeatureSource> device_source(1);
   DeviceBuffer<double> thresholds(1);
-  DeviceBuffer<int> device_journal(kDeviceLevelJournalHeader + 4 * leaves);
+  DeviceBuffer<int> device_journal(kDeviceLevelJournalHeader + 2 * kDeviceLevelJournalRecord * leaves);
+  // a level wider than the shared select: the select's arrays in global scratch (DeviceLevelBitonicSortGlobal)
+  const bool global_select = leaves > kDeviceTreeSharedSplits;
+  DeviceBuffer<int> select_leaves(global_select ? leaves : 1);
+  DeviceBuffer<double> select_gains(global_select ? leaves : 1);
+  DeviceBuffer<unsigned int> select_bits(global_select ? 2 * leaves / 32 : 1);
+  DeviceBuffer<int2> select_gaps(global_select ? 2 * leaves : 1);
   std::vector<CUDASplitInfo> splits(leaves);
   std::vector<data_size_t> host_counts(leaves), host_starts(leaves);
   std::vector<int> expected;
@@ -92,7 +99,9 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   ASSERT_EQ(cudaMemcpy(best.data(), splits.data(), leaves * sizeof(CUDASplitInfo), cudaMemcpyHostToDevice), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(counts.data(), host_counts.data(), leaves * sizeof(data_size_t), cudaMemcpyHostToDevice), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(starts.data(), host_starts.data(), leaves * sizeof(data_size_t), cudaMemcpyHostToDevice), cudaSuccess);
+  DeviceBuffer<int> block_start(leaves + 1);  // the block map (the reset sets this pointer in production)
   CUDADeviceLevelState state{};
+  state.construct_block_start = block_start.data();
   state.num_leaves = leaves;
   state.split_info_base = cursor;
   state.levels_applied = level;
@@ -107,7 +116,7 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   ASSERT_EQ(cudaMemcpy(device_meta.data(), &meta, sizeof(meta), cudaMemcpyHostToDevice), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(device_source.data(), &source, sizeof(source), cudaMemcpyHostToDevice), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(thresholds.data(), &threshold, sizeof(threshold), cudaMemcpyHostToDevice), cudaSuccess);
-  std::vector<int> journal(kDeviceLevelJournalHeader + 4 * leaves, 0);
+  std::vector<int> journal(kDeviceLevelJournalHeader + 2 * kDeviceLevelJournalRecord * leaves, 0);
   journal[0] = level;
   journal[1] = cursor;
   ASSERT_EQ(cudaMemcpy(device_journal.data(), journal.data(), journal.size() * sizeof(int), cudaMemcpyHostToDevice), cudaSuccess);
@@ -123,10 +132,18 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   cfg.feature_source = device_source.data();
   cfg.real_thresholds = thresholds.data();
   cfg.journal = device_journal.data();
+  cfg.construct_block_start = block_start.data();
   cfg.max_depth = level + (final_depth ? 1 : 2);
   cfg.num_leaves_budget = budget;
   cfg.whole_tree = 1;
   cfg.gap_block_dim = 1024;
+  if (global_select) {
+    cfg.select_leaves = select_leaves.data();
+    cfg.select_gains = select_gains.data();
+    cfg.select_split_bits = select_bits.data();
+    cfg.select_gaps = select_gaps.data();
+    cfg.select_capacity = leaves;
+  }
   LaunchDeviceLevelSelect(cfg, level, leaves, nullptr);
   ASSERT_EQ(cudaGetLastError(), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(&state, device_state.data(), sizeof(state), cudaMemcpyDeviceToHost), cudaSuccess);
@@ -147,7 +164,7 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   EXPECT_EQ(state.split_info_base, cursor);
   EXPECT_EQ(journal[0], level + 1);
   EXPECT_EQ(journal[1], cursor + static_cast<int>(expected.size()));
-  EXPECT_EQ(journal[kDeviceLevelJournalLevels + level], static_cast<int>(expected.size()));
+
   std::vector<CUDATreeBatchSplit> actual_batch(expected.size());
   std::vector<CUDAHybridApplyDescriptor> actual_descs(leaves);
   ASSERT_EQ(cudaMemcpy(actual_batch.data(), batch.data(), actual_batch.size() * sizeof(CUDATreeBatchSplit), cudaMemcpyDeviceToHost), cudaSuccess);
@@ -163,8 +180,10 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
     EXPECT_EQ(actual_descs[k].left_leaf_index, leaf);
     EXPECT_EQ(actual_descs[k].right_leaf_index, leaves + static_cast<int>(k));
     EXPECT_EQ(actual_descs[k].leaf_data_start, host_starts[leaf]);
-    EXPECT_EQ(journal[kDeviceLevelJournalHeader + 2 * (cursor + k)], leaf);
-    EXPECT_EQ(journal[kDeviceLevelJournalHeader + 2 * (cursor + k) + 1], 0);
+    const int* record = journal.data() + kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * (cursor + k);
+    EXPECT_EQ(record[0], leaf);
+    EXPECT_EQ(record[1], 0);
+    EXPECT_EQ(record[2], level);  // the record's level tag
   }
   int gap = 0;
   for (int leaf = 0; leaf < leaves; ++leaf) {
@@ -188,10 +207,31 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
 
 TEST(CUDADeviceLevelBudget, EqualGainFinalCapsKeepLowerLeafTiesAndRightChildOrder) {
   // Original 255/depth8 and1023/depth10 final frontiers, including the full512-candidate block, and the
-  // 2047/depth11 and 4095/depth12 ones up to the whole tree's full 2048-candidate block (kDeviceTreeMaxSplits).
-  for (const int leaves : {128, 512, 1024, 2048}) {
+  // 2047/depth11 and 4095/depth12 ones up to the whole tree's full 2048-candidate block (kDeviceTreeSharedSplits);
+  // past it (depth 13 and 14: 4096 and 8192 candidates) the select sorts in global scratch, block-looped
+  for (const int leaves : {128, 512, 1024, 2048, 4096, 8192}) {
     SCOPED_TRACE(::testing::Message() << "leaves=" << leaves);
     CheckSelection(std::vector<double>(leaves, 7.0), std::vector<bool>(leaves, true), 2 * leaves - 1);
+  }
+}
+
+TEST(CUDADeviceLevelBudget, GlobalSelectMatchesStableSortWithTiesAndInvalidCandidates) {
+  // a few gain values (many exact ties across tiles), some invalid leaves, budgets that bind at different depths of
+  // the frontier: the global-scratch select (4096 / 8192 / 16384 candidates) and the shared one (2048) against the
+  // host's stable_sort
+  for (const int leaves : {2048, 4096, 8192, 16384}) {
+    std::vector<double> gains(leaves);
+    std::vector<bool> valid(leaves);
+    uint32_t x = 12345u + static_cast<uint32_t>(leaves);
+    for (int leaf = 0; leaf < leaves; ++leaf) {
+      x = 1664525u * x + 1013904223u;
+      gains[leaf] = static_cast<double>((x >> 8) % 17) * 0.25;
+      valid[leaf] = ((x >> 4) % 11) != 0;
+    }
+    for (const int extra : {1, leaves / 3, leaves - 1}) {
+      SCOPED_TRACE(::testing::Message() << "leaves=" << leaves << " extra=" << extra);
+      CheckSelection(gains, valid, leaves + extra);
+    }
   }
 }
 
@@ -211,4 +251,26 @@ TEST(CUDADeviceLevelBudget, EmptyExhaustedAndNonfinalBindingStopWithoutApply) {
   CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, false), 15);
   CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, true), 8);
   CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, true), 11, false);
+}
+
+TEST(CUDADeviceLevelBudget, BynodeChunkCapKeepsTaskOffsetsInIntRange) {
+  // the per-node (offset, count) table holds int offsets 2 * slots + row_slot * max_tasks
+  constexpr int64_t kIntMax = 2147483647;
+  // depth 12 with few tasks: the unchunked layout (one row slot per leaf slot) fits, no cap
+  EXPECT_EQ(Falcata::DeviceTreeBynodeChunkCap(4098, 400, 1024), 1024);
+  // depth 17 unchunked: 131074 slots x 20000 tasks overflows, while every chunk below the widest search fits
+  const int64_t slots = 131074;
+  const int pairs = 32768;
+  ASSERT_GT(2 * slots + slots * 20000, kIntMax);
+  EXPECT_EQ(Falcata::DeviceTreeBynodeChunkCap(slots, 20000, pairs), pairs - 1);
+  // 50000 tasks: the cap binds inside the range, at the largest chunk whose 1 + 2 P row slots fit
+  const int64_t tasks = 50000;
+  ASSERT_GT(2 * slots + slots * tasks, kIntMax);
+  const int cap = Falcata::DeviceTreeBynodeChunkCap(slots, tasks, pairs);
+  ASSERT_GE(cap, 1);
+  EXPECT_LT(cap, pairs);
+  EXPECT_LE(2 * slots + (1 + 2 * static_cast<int64_t>(cap)) * tasks, kIntMax);
+  EXPECT_GT(2 * slots + (1 + 2 * static_cast<int64_t>(cap + 1)) * tasks, kIntMax);
+  // not even one pair (3 row slots) fits: 0, the complete tree is refused (scratch_too_large)
+  EXPECT_EQ(Falcata::DeviceTreeBynodeChunkCap(slots, kIntMax / 2, pairs), 0);
 }

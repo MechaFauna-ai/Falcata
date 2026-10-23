@@ -83,27 +83,61 @@ struct CUDAHybridGraphFeatureSource {
 /*! \brief most pairs of one device level of the prefix (the select / pairs kernels' block covers 2 * this); also the
  *  select capacity of the copy fused into the prefix's level sync (SyncBestSplitForLevelUsedTasksKernel) */
 constexpr int kDeviceLevelMaxPairs = 512;
-/*! \brief cuda_plan key device_tree: deepest complete bounded device tree, and the most splits of one of its levels
- *  (the final level: 2^(max_depth - 1)), the capacity of the standalone select launch of a whole tree. The final
- *  level is applied without a child search, so a whole tree searches at most 2^(max_depth - 2) pairs. */
-constexpr int kDeviceTreeMaxDepth = 12;
-constexpr int kDeviceTreeMaxSplits = 1 << (kDeviceTreeMaxDepth - 1);
-constexpr int kDeviceTreeMaxPairs = kDeviceTreeMaxSplits / 2;
+/*! \brief cuda_plan key device_tree: splits of a complete tree's level that the standalone select holds in static
+ *  shared memory (its bitonic sort's capacity). Wider levels (max_depth > 12: the final level has 2^(max_depth - 1)
+ *  splits) keep the select's arrays in global scratch (CUDADeviceLevelConfig::select_*) and run the same sort network
+ *  block-looped over them. */
+constexpr int kDeviceTreeSharedSplits = 2048;
 /*! \brief the complete device tree's bound under non-quantized training: the shapes the non-quantized graph loop
  *  (removed in 1.2) served, where the device tree's fixed-point levels train its models; deeper or wider shapes keep
  *  the one-sync host flow, whose double-slot deterministic construct equals the fixed-point one only empirically */
 constexpr int kNonquantDeviceTreeMaxDepth = 11;
 constexpr int kNonquantDeviceTreeMaxLeaves = 2047;
-static_assert(kDeviceTreeMaxPairs >= kDeviceLevelMaxPairs, "the block map covers the prefix's widest search");
 /*! \brief launch columns of a device level's construct that claim block rows dynamically */
 constexpr int kDeviceLevelClaimColumns = 64;
-/*! \brief journal layout (ints): [0] applied levels, [1] total splits, [2] error flags, [3, 5) reserved,
- *  [kDeviceLevelJournalLevels + L] splits of level L, then per split in applied order {left leaf, inner feature} at
- *  kDeviceLevelJournalHeader */
-constexpr int kDeviceLevelMaxLevels = 16;
-constexpr int kDeviceLevelJournalLevels = 5;
-constexpr int kDeviceLevelJournalHeader = kDeviceLevelJournalLevels + kDeviceLevelMaxLevels;
-static_assert(kDeviceTreeMaxDepth <= kDeviceLevelMaxLevels, "the journal header counts every level of a whole tree");
+/*! \brief journal layout (ints): [0] applied levels, [1] total splits, [2] error flags, [3, 5) reserved, then per split
+ *  in applied order a record {left leaf, inner feature, level} of kDeviceLevelJournalRecord ints at
+ *  kDeviceLevelJournalHeader. The level tags make any level count fit; the records of a level are contiguous and the
+ *  tags ascend. */
+constexpr int kDeviceLevelJournalHeader = 5;
+constexpr int kDeviceLevelJournalRecord = 3;
+
+/*! \brief cuda_plan key device_bynode_masks: the most pairs per chunk whose per-node task-list offsets stay in int range.
+ *  The (offset, count) table holds int offsets 2 * slots + row_slot * max_tasks, row slots = slots unchunked (chunk ==
+ *  pairs) and 1 + 2 * chunk chunked; returns pairs when the unchunked layout fits, else the largest chunk < pairs that
+ *  fits, 0 when none does (the caller refuses the complete tree) */
+inline int DeviceTreeBynodeChunkCap(const int64_t slots, const int64_t max_tasks, const int pairs) {
+  constexpr int64_t kIntMax = 2147483647;
+  const int64_t tasks = max_tasks > 0 ? max_tasks : 1;
+  if (2 * slots + slots * tasks <= kIntMax) {
+    return pairs;
+  }
+  // 2 * slots + (1 + 2 chunk) * tasks <= kIntMax
+  const int64_t room = kIntMax - 2 * slots;
+  if (room < 3 * tasks) {
+    return 0;
+  }
+  const int64_t chunk = (room / tasks - 1) / 2;
+  return static_cast<int>(chunk < pairs - 1 ? chunk : pairs - 1);
+}
+
+/*! \brief the applied splits per level from a journal's level tags (host replay): counts[L] for L < num_levels */
+inline bool DeviceLevelJournalCounts(const int* journal, const int total_splits, const int num_levels,
+                                     int* counts) {
+  for (int level = 0; level < num_levels; ++level) {
+    counts[level] = 0;
+  }
+  int previous = 0;
+  for (int s = 0; s < total_splits; ++s) {
+    const int level = journal[kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * s + 2];
+    if (level < previous || level >= num_levels) {
+      return false;
+    }
+    previous = level;
+    ++counts[level];
+  }
+  return true;
+}
 
 /*! \brief device-side counts of the level in flight, written by the select and pairs kernels and read by the
  *  worst-case launches (nullptr everywhere on the host-launched path) */
@@ -143,8 +177,9 @@ struct CUDADeviceLevelState {
   data_size_t max_smaller;
   int padding_;
   /*! \brief block map: pair p's block rows start at construct_block_start[p] (p < live_pairs; [live_pairs] =
-   *  construct_total_blocks); live_pairs is at most kDeviceLevelMaxPairs (prefix) or kDeviceTreeMaxPairs (whole) */
-  int construct_block_start[kDeviceTreeMaxPairs + 1];
+   *  construct_total_blocks), in CUDADeviceLevelConfig::construct_block_start (the reset sets this pointer; a pair
+   *  chunk's state copies it) */
+  int* construct_block_start;
 };
 
 /*! \brief the tree-constant shape of a device level's construct (CUDAHistogramConstructor::DeviceLevelConstructShape):
@@ -223,6 +258,24 @@ struct CUDADeviceLevelConfig {
   /*! \brief host-side launch choice (the kernels do not read it): the selective prefix's partition launches take the
    *  whole tree's joint worker bound */
   int joint_grid_bound;
+  /*! \brief the block map (searched pairs + 1 ints; see CUDADeviceLevelState::construct_block_start) */
+  int* construct_block_start;
+  /*! \brief a complete tree wider than kDeviceTreeSharedSplits splits per level: the select's valid leaves, their gains
+   *  (select_capacity each) and the split-leaf bitset (2 * select_capacity bits) in global scratch; null otherwise */
+  int* select_leaves;
+  double* select_gains;
+  unsigned int* select_split_bits;
+  /*! \brief the level's terminal gaps (leaf, flat chunk start), 2 * select_capacity of them (the global select writes
+   *  their descriptors word-parallel from here) */
+  int2* select_gaps;
+  int select_capacity;
+  /*! \brief pair chunking (a complete tree whose per-pair search scratch for a whole level exceeds the memory budget):
+   *  a level's fix/subtract and find run over num_chunks chunks of chunk_pairs pairs. The pairs block writes chunk c's
+   *  state (a copy of the level's, live_pairs = the chunk's live pairs) to chunk_states[c]; num_chunks <= 1: none */
+  int num_chunks;
+  CUDADeviceLevelState* chunk_states;
+  int chunk_pairs;
+  int padding_;
 };
 
 /*! \brief block threads of the select / pairs kernels at a level of at most max_splits splits */
@@ -270,6 +323,11 @@ struct CUDADeviceBynodeConfig {
   /*! \brief node keys, two generations of num_slots: the children of level L read generation L & 1 (their parents')
    *  and write generation (L + 1) & 1 */
   uint64_t* keys;
+  /*! \brief pair chunking (CUDADeviceLevelConfig::num_chunks > 1): rows and lists live in 1 + 2 * chunk_pairs row
+   *  slots (slot 0 the root, then both children of each pair of the chunk in flight), and the mask kernels point the
+   *  leaf's row table entry (table, num_slots pointers) and list range at its slot. null: row slot = leaf (the static
+   *  table) */
+  int8_t** table;
 };
 
 /*! \brief dynamic shared bytes of the mask kernels (a bitmap over the candidates, at most num_features of them) */
@@ -279,10 +337,10 @@ inline size_t DeviceBynodeSharedBytes(const int num_features) {
 /*! \brief the root's mask and task list (leaf 0) under root_key, which also becomes generation 0's key of leaf 0 */
 void LaunchDeviceBynodeRootMask(const CUDADeviceBynodeConfig& config, const uint64_t root_key, cudaStream_t stream);
 /*! \brief the masks and task lists of both children of every split level \p level applied (state->live_pairs of them,
- *  after the apply wrote the descriptors), one block per child */
+ *  after the apply wrote the descriptors), one block per child: splits [chunk_base, chunk_base + max_splits) */
 void LaunchDeviceBynodeLevelMasks(const CUDADeviceBynodeConfig& config, const CUDADeviceLevelState* state,
                                   const CUDAHybridApplyDescriptor* apply_descs, const int level, const int max_splits,
-                                  cudaStream_t stream);
+                                  const int chunk_base, cudaStream_t stream);
 
 #ifdef __CUDACC__
 /*! \brief the apply kernels' guard: this split index lies past the level's live splits */

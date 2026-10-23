@@ -60,8 +60,10 @@ _COMPLETE = ("complete", "device_tree")
 _CLASSIC = "classic"
 
 ROUTES_EXPECTED = {
-    "route/r01-depth13": [("depth_gt_12", "prefix")],
-    "route/r02-memgate": [("memory_gate", "prefix")],
+    # any depth: a level wider than the shared select sorts in global scratch (P4)
+    "route/r01-depth13": [_COMPLETE],
+    # vramfree=1: the per-pair search scratch runs in pair chunks instead of the former memory gate (P4)
+    "route/r02-memgate": [_COMPLETE],
     "route/r03a-budget": [("selective_budget", "selective_prefix")],
     "route/r03b-unbounded": [("selective_unbounded", "selective_prefix")],
     # the non-quantized L1.5 graph's shapes take the complete device tree (P3; same md5)
@@ -72,7 +74,8 @@ ROUTES_EXPECTED = {
     "route/r06b-cat-mc": [("categorical", "host_two_sync")],
     "route/r06c-cat-unbounded": [("categorical", "selective_two_sync")],
     "route/r07a-bynode-sel": [("bynode_outside_bound", "selective_two_sync")],
-    "route/r07b-bynode-d13": [("bynode_outside_bound", "host_two_sync")],
+    # in the depth bound now that it has no depth limit (P4): the device draws the keyed masks
+    "route/r07b-bynode-d13": [_COMPLETE],
     "route/r08a-ic": [("interaction_constraints", _CLASSIC)],
     "route/r08b-ic-bynode": [("interaction_constraints", _CLASSIC)],
     # 25 rounds in groups of 4: the last group's only tree runs alone (forest_single_job_device)

@@ -2,8 +2,8 @@
 """CUDA training must train the same model with the default plan, device_tree:off and device_levels:off.
 
 The default plan runs the complete device tree (cuda_plan key device_tree) where its depth bound holds (positive
-max_depth <= 12 and 2^max_depth <= num_leaves + 1) and leaves every other shape to the device_levels prefix and the
-host flow; device_tree:off restores the prefix flow, device_levels:off the host flow. The sweep covers eligible shapes
+max_depth and 2^max_depth <= num_leaves + 1, any depth) and leaves every other shape to the device_levels prefix and
+the host flow; device_tree:off restores the prefix flow, device_levels:off the host flow. The sweep covers eligible shapes
 (a full and a one-short leaf budget, regression, binary and multiclass, bagging, feature_fraction, missing values) and
 shapes outside the bound, whose models must not change either.
 """
@@ -51,6 +51,7 @@ def _data(objective, rows=6000, cols=12, seed=5):
         (64, 6, {}),  # eligible: 2^6 <= 64
         (63, 6, {"bagging_fraction": 0.6, "bagging_freq": 1}),  # eligible: 2^6 <= 63 + 1
         (31, 5, {"feature_fraction": 0.5}),  # eligible, feature-sampled
+        (8191, 13, {"min_data_in_leaf": 1}),  # eligible past depth 12: levels wider than the shared select
         (40, 6, {}),  # outside the bound (a binding leaf budget): selective growth on the host
         (31, -1, {}),  # unlimited depth: the host flow
     ],
@@ -114,28 +115,39 @@ def test_device_tree_default_engages_cuda():
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize(("leaves", "depth"), [(8192, 13), (16384, 14)])
+def test_device_tree_default_engages_past_depth_12_cuda(leaves, depth):
+    # no depth bound: the final levels (4096 / 8192 splits) select over global scratch, every round a complete tree
+    diag = _diag("auto", leaves, depth)
+    assert diag.count(f"device_tree: complete depth={depth} ") == 3, diag[-3000:]
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
+    assert re.search(
+        rf"device_tree: scratch estimate .* for max_depth {depth}, {1 << (depth - 2)} searched pairs, 1 "
+        rf"chunks of {1 << (depth - 2)} pairs",
+        diag,
+    ), diag[-3000:]
+
+
+@_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    ("leaves", "depth", "flow", "reason"),
+    ("leaves", "depth", "reason"),
     [
-        (8192, 13, "prefix", "depth_gt_12"),  # deeper than 12: the device_levels prefix, then host levels
         # a binding leaf budget: selective growth, its first levels as the device prefix
-        (40, 6, "selective", "selective_budget"),
-        (255, -1, "selective", "selective_unbounded"),
+        (40, 6, "selective_budget"),
+        # one leaf short of depth 13's bound (2^13 > 8190 + 1): just outside the complete tree
+        (8190, 13, "selective_budget"),
+        (255, -1, "selective_unbounded"),
     ],
 )
-def test_device_tree_default_reports_fallback_cuda(leaves, depth, flow, reason):
+def test_device_tree_default_reports_fallback_cuda(leaves, depth, reason):
     # outside the depth bound the default reports the fallback under diag and keeps the flow master ran
     diag = _diag("auto", leaves, depth)
     assert "device_tree: complete" not in diag
     # once per route change (one binary learner on one route here), not once per tree
-    route = "prefix" if flow == "prefix" else "selective_prefix"
     assert diag.count("device_tree: fallback (") == 1, diag[-3000:]
-    assert diag.count(f"device_tree: fallback ({reason}) route={route}\n") == 1, diag[-3000:]
-    if flow == "prefix":
-        assert "device-driven levels per tree" in diag
-    else:
-        # cuda_plan key selective_device_prefix (default on); off, the host's selective loop runs every level
-        assert "selective_device_prefix: levels=" in diag
-        off = _diag("auto,selective_device_prefix:off", leaves, depth)
-        assert "device_levels: host fallback (plan_off)" in off
-        assert f"device_tree: fallback ({reason}) route=selective_two_sync" in off
+    assert diag.count(f"device_tree: fallback ({reason}) route=selective_prefix\n") == 1, diag[-3000:]
+    # cuda_plan key selective_device_prefix (default on); off, the host's selective loop runs every level
+    assert "selective_device_prefix: levels=" in diag
+    off = _diag("auto,selective_device_prefix:off", leaves, depth)
+    assert "device_levels: host fallback (plan_off)" in off
+    assert f"device_tree: fallback ({reason}) route=selective_two_sync" in off

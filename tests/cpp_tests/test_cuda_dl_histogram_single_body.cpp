@@ -101,8 +101,9 @@ void Probe(const char* module_file, const char* symbol, int n, bool overflow, bo
   state.live_pairs = 1;
   state.construct_grid_y = total;
   state.construct_total_blocks = total;
-  state.construct_block_start[0] = 0;
-  state.construct_block_start[1] = total;
+  const std::array<int, 2> block_start{{0, total}};
+  Buffer<int> device_block_start(2); device_block_start.Put(block_start.data(), 2);
+  state.construct_block_start = device_block_start.p;
   Buffer<CUDADeviceLevelState> device_state(1); device_state.Put(&state, 1);
   // Two5-bin numerical columns, one packed dense partition; 25 joint cells and ten marginal cells.
   const std::array<uint32_t, 8> metadata{{0, 5, 5, 5, 0, 0, 0, 0}};

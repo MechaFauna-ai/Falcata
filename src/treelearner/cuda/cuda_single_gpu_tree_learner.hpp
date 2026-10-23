@@ -351,8 +351,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void ReleaseDeviceLevelGraphs();
   // ---- cuda_plan key device_levels (cuda_device_levels.hpp) ----
   /*! \brief cuda_plan key device_tree (with device_levels): the complete device tree runs for this config, i.e. its
-   *  depth bound holds (positive max_depth <= kDeviceTreeMaxDepth = 12 and 2^max_depth <= num_leaves + 1) and its
-   *  presized scratch passed the free-memory gate (EvaluateDeviceTreeScratchGate) */
+   *  depth bound holds (positive max_depth and 2^max_depth <= num_leaves + 1) */
   bool DeviceTreeRequested() const;
   // How many of the classic quantized prefix's first levels run device-driven for this tree: the levels L with
   // 2^(L + 1) <= num_leaves (the budget cannot bind) and L + 1 < max_depth (the children are searched), when every
@@ -381,15 +380,25 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   /*! \brief the masks of the root (level < 0) or of level \p level's children on the side stream, forked off \p stream
    *  (after the apply); JoinDeviceBynode orders the next level find after them */
   void EnqueueDeviceBynodeMasks(cudaStream_t stream, const int level, const int max_splits);
+  /*! \brief pair chunking: the masks of the children of level \p level's splits [chunk_base, chunk_base + count) on
+   *  \p stream itself, ahead of that chunk's find (the chunk's row slots are reused by the next chunk) */
+  void EnqueueDeviceBynodeChunkMasks(cudaStream_t stream, const int level, const int chunk_base, const int count);
   void JoinDeviceBynode();
   // one-time buffers and static tables of the device levels; false disables them
   bool SetupDeviceLevels(const int num_levels);
   /*! \brief pairs of the widest child search of num_levels device levels (whole tree: 2^(num_levels - 2)) */
   int DeviceLevelSearchPairs(int num_levels) const;
   /*! \brief cuda_plan key device_tree: before the first tree's level flow (again after ReleaseDeviceLevelGraphs, e.g. a
-   *  ResetConfig), whether a whole tree's presized scratch fits half of free device memory; when it does not,
-   *  DeviceTreeRequested() is false (the prefix flow) */
-  void EvaluateDeviceTreeScratchGate();
+   *  ResetConfig), the pair chunk of a whole tree's level search: the most pairs (at most the widest search's) whose
+   *  per-pair search scratch (finder output, bit-change scratch, bynode rows), with the tree's fixed scratch, fits half
+   *  of free device memory (FALCATA_DEBUG=vramfree=N caps it). Fewer pairs than the widest search: each level's
+   *  fix/subtract and find run over ceil(pairs / chunk) chunks (device_tree_chunk_pairs_) */
+  void PlanDeviceTreeChunks();
+  /*! \brief chunks of a level of \p pairs worst-case pairs (1 without pair chunking) */
+  int DeviceTreeChunks(const int pairs) const {
+    return device_tree_chunk_pairs_ > 0 && pairs > device_tree_chunk_pairs_ ?
+      (pairs + device_tree_chunk_pairs_ - 1) / device_tree_chunk_pairs_ : 1;
+  }
   // after the root level's search is enqueued: num_levels device-driven levels (apply + children's search), one
   // readback, the host bookkeeping replayed; host_leaf_best_splits_ then hold the last search's result and *pairs
   // the last level's pairs, as after the host loop's own readback. Returns the splits applied.
@@ -800,10 +809,23 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool device_levels_fallback_logged_ = false;
   bool device_levels_ready_ = false;
   bool device_levels_disabled_ = false;
-  /*! \brief EvaluateDeviceTreeScratchGate's decision: -1 not yet made, 0 over the free-memory gate, 1 fits */
-  int device_tree_scratch_gate_ = -1;
-  /*! \brief pairs SetupDeviceLevels sized the per-pair search scratch for */
+  /*! \brief PlanDeviceTreeChunks' pair chunk: -1 not yet planned (or no complete tree), else the most pairs one chunk
+   *  of a level's search takes (the widest search's pairs: no chunking) */
+  int device_tree_chunk_pairs_ = -1;
+  /*! \brief PlanDeviceTreeChunks: one pair per chunk exceeds the free memory; the host level loop grows the trees */
+  bool device_tree_scratch_refused_ = false;
+  /*! \brief pairs SetupDeviceLevels sized the block map and descriptors for (the widest search), and the per-pair
+   *  search scratch for (one chunk) */
   int device_level_max_pairs_ = 0;
+  int device_level_scratch_pairs_ = 0;
+  /*! \brief the block map (CUDADeviceLevelConfig::construct_block_start), the select's global scratch (a level wider
+   *  than kDeviceTreeSharedSplits) and the pair chunks' states */
+  CUDAVector<int> cuda_device_level_block_start_;
+  CUDAVector<int> cuda_device_level_select_leaves_;
+  CUDAVector<double> cuda_device_level_select_gains_;
+  CUDAVector<unsigned int> cuda_device_level_select_bits_;
+  CUDAVector<int2> cuda_device_level_select_gaps_;
+  CUDAVector<CUDADeviceLevelState> cuda_device_level_chunk_states_;
   CUDAVector<CUDADeviceLevelState> cuda_device_level_state_;
   // the select / pairs kernels' inputs in device memory (the apply's pairs block reads them there), uploaded per tree
   CUDAVector<CUDADeviceLevelConfig> cuda_device_level_config_;
@@ -822,6 +844,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<CUDAHybridGraphFeatureSource> host_device_level_feature_source_;
   cudaEvent_t device_level_select_event_ = nullptr;
   std::vector<int> device_level_batch_info_;
+  // the last device levels' applied splits per level (from the journal's level tags)
+  std::vector<int> device_level_journal_counts_;
   std::vector<int> device_level_batch_slice_;
   std::vector<HybridAppliedSplit> device_level_applied_;
   std::vector<std::unique_ptr<DeviceLevelGraph>> device_level_graphs_;
@@ -839,6 +863,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // the row table (a pointer per leaf slot, padded to 256 bytes), then the rows
   CUDAVector<int8_t> cuda_bynode_rows_;
   size_t bynode_table_bytes_ = 0;
+  // the row slots the rows and lists were built for (pair chunking: 1 + 2 * chunk pairs; else one per leaf slot)
+  int bynode_row_slots_ = 0;
   CUDAVector<int> cuda_bynode_tasks_;
   CUDAVector<uint64_t> cuda_bynode_keys_;
   CUDAVector<int> cuda_bynode_sample_;
