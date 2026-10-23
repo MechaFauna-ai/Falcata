@@ -85,7 +85,7 @@ __global__ void DeviceLevelPairsKernel(const CUDADeviceLevelConfig cfg, const in
   DeviceLevelPairsBlock(cfg, level);
 }
 
-// The end of a relaunched selective body: whether the select after its last level applied splits (and the counts)
+// The end of a selective segment: whether the select after its last level applied splits (and the counts)
 __global__ void DeviceLevelSegmentEndKernel(const CUDADeviceLevelConfig cfg, int* flag) {
   if (threadIdx.x == 0) {
     flag[1] = cfg.journal[0];

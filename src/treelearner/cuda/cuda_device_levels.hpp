@@ -297,8 +297,8 @@ inline int DeviceLevelThreads(const int max_splits) {
  *  max_splits), which picks the select's capacity (register, shared or global) */
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
                              cudaStream_t stream, const int max_leaves = 0);
-/*! \brief selective trees: the end of a relaunched body on \p stream, its flag in mapped pinned host memory (\p flag,
- *  the device alias): [0] 1 while the tree continues (the select of the next level applied splits), 0 once a select
+/*! \brief selective trees: the end of a launched segment on \p stream (a relaunched body, or the unrolled levels when
+ *  the device selects the level after them), its flag in mapped pinned host memory (\p flag, the device alias): [0] 1 while the tree continues (the select of the next level applied splits), 0 once a select
  *  stopped; [1] levels applied, [2] splits, [3] journal[3] (the stop was the first binding level) */
 void LaunchDeviceLevelSegmentEnd(const CUDADeviceLevelConfig& config, int* flag, cudaStream_t stream);
 /*! \brief DeviceLevelPairsKernel on \p stream for the children of level \p level */

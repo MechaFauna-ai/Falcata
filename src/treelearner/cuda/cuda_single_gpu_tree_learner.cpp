@@ -3446,7 +3446,8 @@ bool CUDASingleGPUTreeLearner::SelectiveDeviceTree() const {
 }
 
 int CUDASingleGPUTreeLearner::SelectiveUnrolledLevels() const {
-  // floor(log2 num_leaves): the levels k with 2^(k+1) <= num_leaves, on which R1 always holds (A + S <= 2^(k+1) - 2),
+  // floor(log2 num_leaves): the levels k with 2^(k+1) <= num_leaves, on which R1 always holds (at most 2^k leaves, so
+  // A + S <= 2^(k+1) - 1 <= num_leaves - 1),
   // each at its own worst case of 2^k <= num_leaves / 2 splits; every later level holds at most num_leaves / 2
   // (SelectiveLevelMaxSplits) and runs in the relaunched body. A depth limit (2^max_depth > num_leaves + 1 here)
   // bounds the levels too: depth-max_depth leaves get no valid split, so the select after level max_depth - 1 finds
@@ -5080,8 +5081,8 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
     device_levels_disabled_ = true;
     return false;
   }
-  // the applied splits' records (device journal and its mapped readback) and the segment end's destinations, for
-  // every split the tree can apply (sized once per learner, before any level is enqueued or captured)
+  // the applied splits' records (device journal and pinned readback) for every split the tree can apply, and the
+  // bodies' flag (sized once per learner, before any level is enqueued or captured)
   const int max_splits = config_->num_leaves - 1;
   if (cuda_selective_prefix_split_infos_.Size() < static_cast<size_t>(max_splits)) {
     cuda_selective_prefix_split_infos_.Resize(static_cast<size_t>(max_splits));

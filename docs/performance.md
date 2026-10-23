@@ -3326,31 +3326,47 @@ unused bulk tree/readback bytes are reported, and an instrumented graph run did 
 Historical unknown-source model mismatches and illegal accesses are not proven to have the same cause or to be
 resolved by these fixes. The current results apply to the exact source/library above.
 
-### Selective growth's first levels on the prefix (`selective_device_prefix`)
+### Selective growth on the device levels up to the first binding level
 
 A binding leaf budget (`2^max_depth > num_leaves + 1`) or unlimited depth trains with selective grow-then-prune
 growth: per level the host reads every leaf's best split back, runs a greedy leaf-wise simulation over the applied
 splits and the new candidates, collapses displaced subtrees, applies the selected candidates and reads the split
-counts back, two blocking readbacks per level. `selective_device_prefix` (default ON) runs the first
-`K = min(floor(log2(num_leaves)), max_depth - 1, 10)` levels as this section's prefix instead (only when `K >= 2`,
-like the prefix itself). On level k the
-simulation holds at most `2^k - 1` applied splits and `2^k` candidates, all reachable from the root; while
-`2^(k+1) <= num_leaves` that is within the budget `num_leaves - 1`, so it selects every valid candidate and collapses
-nothing, which is the prefix's "split every valid leaf" (the same `is_valid` set; gain, data and hessian gates act
-only through it). The prefix's select also journals each applied split's best-split record (the gain in double, the
-child sums and outputs) and the host rebuilds its selective records (parents, windows, depths, gains) from that
-journal, then continues the selective loop at level K with the prefix's last search already read back. The prefix
-numbers a level's right children leaf-ascending where the host numbers them in greedy order; the simulation, its
-tie-break and the final renumbering read gains and classic leaf indices only, so the models are bit-identical.
-Same eligibility as the prefix (quantized, numerical, scalar, single GPU, no per-node masks); forced splits never
-reach selective growth. `FALCATA_DEBUG=diag` prints one `selective_device_prefix: levels=K applied_levels=...` line
-per tree.
+counts back, two blocking readbacks per level. With `device_tree` and `device_levels` on (the default), the device
+levels grow the tree instead while the simulation could only select everything: on a level with A applied splits and
+S valid leaves (the frontier: every leaf an earlier level did not split has no valid split), the simulation holds the
+A applied records and the S candidates, all reachable from the root, and pops while fewer than `num_leaves - 1` are
+selected, so if `A + S <= num_leaves - 1` it selects all of them and collapses nothing, which is the device level's
+"split every valid leaf" (the same `is_valid` set; gain, data and hessian gates act only through it). The select tests
+this inequality on every level (dynamic R1, FULL_DEVICE_PLAN P7); the first level where it fails, the first binding
+level, and everything after stay with the host's selective loop, which continues from the levels' journal: each
+applied split's best-split record (the gain in double, the child sums and outputs) rebuilds the host's selective
+records (parents, windows, depths, gains), with the last level's search already read back. The device numbers a
+level's right children leaf-ascending where the host numbers them in greedy order; the simulation, its tie-break and
+the final renumbering read gains and classic leaf indices only, so the models are bit-identical.
 
-Measured (RTX 5090, strict exclusive runs, 6 alternating pairs of fresh processes, 1000 rounds, train wall clock;
-master `fe163428` vs this change with the default plan, and the same binary with `selective_device_prefix:off`; every
-run of every arm md5-identical):
+- The levels below `floor(log2(num_leaves))`, on which the inequality cannot fail (`leaves + S <= 2^(k+1) <=
+  num_leaves`), are the former static prefix (the first version, #172, stopped there:
+  `K = min(floor(log2(num_leaves)), max_depth - 1, 10)`): captured unrolled at their own worst case, read back once.
+  The host tests the next level on that readback (the same test on the same leaf entries), so a tree that binds there
+  costs nothing beyond the former prefix; after a tree that went further, the device selects that level instead.
+- Every later level holds at most `num_leaves / 2` splits and `num_leaves` leaves. Those levels run as a two-level body
+  (two index-buffer swaps: the parity is fixed) captured once and relaunched while a flag in mapped host memory says
+  the next level's select applied splits; the levels come from the device state, and a level wider than the
+  register-batched select (1024 leaves) selects in the shared-memory (4096) or global-scratch block. Pair chunking and
+  the live-pair fix/subtract launches serve them as they serve the complete tree. Once a select stopped, the host
+  reads the growth back at its exact size.
+- Same eligibility as the prefix (quantized, numerical, scalar, single GPU, no per-node masks drawn on the host);
+  forced splits never reach selective growth. `FALCATA_DEBUG=diag` prints one line per tree,
+  `device_tree: selective hand-off at level k (binding|complete) splits=... leaves=... frontier=... unrolled=U
+  bodies=B ...` (complete: no leaf had a valid split, the host loop only finalizes), and once per learner the plan
+  (`U unrolled, then a two-level body of P pairs relaunched; C pair chunks`). `device_tree:off` runs the host's
+  selective loop on every level (the removed key `selective_device_prefix:off`'s flow).
 
-| cell | prefix levels | master s | default s | key off s | master/default | master/key off |
+The first version (#172, the static prefix), measured (RTX 5090, strict exclusive runs, 6 alternating pairs of fresh
+processes, 1000 rounds, train wall clock; master `fe163428` vs that change with the default plan, and the same binary
+with the prefix off; every run of every arm md5-identical):
+
+| cell | prefix levels | master s | default s | prefix off s | master/default | master/prefix off |
 |---|---:|---:|---:|---:|---:|---:|
 | binding-budget (151 leaves, depth 10, binary) | 7 | 0.8257 | 0.7586 | 0.8217 | 1.089x | 1.005x |
 | unbounded-fewbin (1024 leaves, unlimited, regression) | 10 | 2.2588 | 2.1231 | 2.2595 | 1.064x | 1.000x |
