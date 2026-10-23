@@ -55,7 +55,7 @@ def _case(name):
         y = X @ np.arange(1, 11, dtype=np.float32)
         params.update(feature_fraction=1.0, min_data_in_leaf=2, quant_mode="fixedpoint", quant_bins=64)
         rounds = 2
-    elif name == "fivebin_wide":
+    elif name in {"fivebin_wide", "fivebin_wide_l1"}:
         # five-bin features whose most frequent value (3, in 70% of the rows) is not the zero bin: the level
         # fix/subtract needs its most-frequent-bin fix (the masked kernel); every feature in every tree, so the fused
         # used-feature fix/subtract does not take it
@@ -64,6 +64,9 @@ def _case(name):
         X = X.astype(np.float32)
         y = X[:, :8].sum(axis=1) + rng_wide.standard_normal(len(X))
         params["feature_fraction"] = 1.0
+        if name == "fivebin_wide_l1":
+            # the level finder's L1 / smoothing instantiations (P6), per chunk when the search runs in pair chunks
+            params.update(lambda_l1=0.7, path_smooth=2.0)
         rounds = 3
     elif name in {"deep11", "deep12", "deep13", "deep14"}:
         # The same exact bit-linear target one to four levels deeper: every one of the 2^depth leaves (at least 16
@@ -448,7 +451,7 @@ def _chunk_probe(name, graph):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["off", "on"])
-@pytest.mark.parametrize("case", ["deep12", "deep13", "bynode", "fivebin_wide"])
+@pytest.mark.parametrize("case", ["deep12", "deep13", "bynode", "fivebin_wide", "fivebin_wide_l1"])
 def test_device_tree_pair_chunks_cuda(case, graph):
     # FALCATA_DEBUG=vramfree=2 (6 at depth 13) leaves a few MiB "free": the widest search's per-pair scratch (finder output, bit-change
     # scratch, bynode rows) does not fit half of it, so each wide level's fix/subtract and find run over pair chunks.
@@ -481,6 +484,23 @@ def test_device_tree_pair_chunks_cuda(case, graph):
 
 
 @_REQUIRES_CUDA
+def test_device_tree_pair_chunks_l1_matches_unchunked_cuda():
+    # P6: the L1 / smoothing level find over pair chunks (vramfree=2) gives the unchunked complete tree's model bytes
+    chunked, diag = _run_md5("fivebin_wide_l1", "diag,vramfree=2")
+    plans = re.findall(r"device_tree: scratch estimate .* (\d+) searched pairs, (\d+) chunks of (\d+) pairs", diag)
+    assert len(plans) == 1, diag[-3000:]
+    assert int(plans[0][1]) > 1, plans
+    assert diag.count("device_tree: complete") == chunked["rounds"]
+    whole, whole_diag = _run_md5("fivebin_wide_l1", "diag")
+    plans = re.findall(
+        r"device_tree: scratch estimate .* (\d+) searched pairs, (\d+) chunks of (\d+) pairs", whole_diag
+    )
+    assert all(int(plan[1]) == 1 for plan in plans), whole_diag[-3000:]
+    assert whole_diag.count("device_tree: complete") == whole["rounds"]
+    assert chunked["md5"] == whole["md5"]
+
+
+@_REQUIRES_CUDA
 @pytest.mark.parametrize("plan", ["auto,fused_root_hist:off", "auto,pdl_level_chain:off", "auto,skip_empty_tail:off"])
 def test_device_tree_dependencies_cuda(plan):
     data, diag = _run("fivebin", base_plan=plan)
@@ -508,7 +528,8 @@ def _empty_probe():
             booster = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=3)
             info = booster.dump_model()["tree_info"]
             assert [t["num_leaves"] for t in info] == [1], info
-            models.append("\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line))
+            # the trees only: the parameter block names each run's quant_mode and plan
+            models.append(booster.model_to_string().split("\nparameters:")[0])
     assert all(model == models[0] for model in models), "plans grow different trees without a feature"
     print(json.dumps({"models": len(models)}))
 
@@ -525,8 +546,9 @@ def test_device_tree_empty_task_list_cuda():
         env=dict(os.environ, FALCATA_DEBUG="diag"),
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-3000:]
     assert json.loads(result.stdout.splitlines()[-1]) == {"models": 6}
     assert not re.search(r"device_tree: (complete|fallback)", result.stderr), result.stderr[-3000:]
 
