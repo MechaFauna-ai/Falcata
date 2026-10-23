@@ -520,6 +520,10 @@ class CUDAHistogramConstructor {
     return ready;
   }
 
+  /*! \brief cuda_plan key device_tree (pair chunking): a device level's construct over all its pairs (no per-pair
+   *  scratch, no event, no fix/subtract); the caller runs SubtractHistogramsForLevel per pair chunk after it */
+  void ConstructHistogramsForLevelOnly(const CUDAHybridPairDescriptor* pair_descs, const int num_pairs);
+
   /*! \brief the deferred fix+subtract tail of ConstructHistogramsForLevel
    *  (defer_subtract=true). Multi-GPU inserts the level all-reduce of the
    *  smaller-leaf histograms between construct and this call: the mfb fix

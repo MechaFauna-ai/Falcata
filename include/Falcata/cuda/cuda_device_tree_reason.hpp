@@ -54,13 +54,12 @@ namespace Falcata {
   X(kPathSmooth, "path_smooth", "13")                                                                  \
   X(kLargeBinLayout, "large_bin_layout", "14")            /* partitions on global-memory histograms */ \
   X(kCompact16Bit, "compact_16bit", "14")                 /* compact column view of non-8-bit rows */  \
-  X(kCategorical, "categorical", "6")    /* non-quantized, or the presized record over the gate; prefix= */ \
+  X(kCategorical, "categorical", "6")    /* non-quantized; a cap past the inner stride; prefix= */        \
   X(kBynodeHostMasks, "bynode_host_masks", "7")           /* in the bound, device masks unusable */    \
   X(kBynodeOutsideBound, "bynode_outside_bound", "7")     /* per-node masks outside the depth bound */ \
   X(kSelectiveUnbounded, "selective_unbounded", "3")      /* max_depth <= 0 */                         \
   X(kSelectiveBudget, "selective_budget", "3")            /* 2^max_depth > num_leaves + 1 */           \
-  X(kDepthGt12, "depth_gt_12", "1")                       /* depth-limited, max_depth > 12 */          \
-  X(kMemoryGate, "memory_gate", "2")                      /* scratch over half of free memory */       \
+  X(kScratchTooLarge, "scratch_too_large", "2")           /* 1 pair > half free; offsets overflow */   \
   X(kSetupFailed, "setup_failed", "-")                    /* SetupDeviceLevels refused */              \
   X(kPrefixGraphChurn, "prefix_graph_churn", "24")        /* prefix graphs off after cache misses */   \
   X(kEmptyTaskList, "empty_task_list", "23")              /* no searchable feature this tree */        \

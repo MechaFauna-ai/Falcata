@@ -278,13 +278,65 @@ def test_cuda_categorical_record(shape, quant):
 @_REQUIRES_CUDA
 def test_cuda_categorical_record_memory_fallback():
     """The device tree presizes the tree's categorical record for its worst case (every split categorical at the
-    bitset stride: about 16 MB on the high-cardinality shape); under a device memory cap (FALCATA_DEBUG=vramfree=N
-    MiB) in which the device tree's scratch fits but the record does not, the tree takes the host level loop with
-    reason `categorical`, and the model is the device tree's."""
+    bitset stride: about 16 MB on the high-cardinality shape), as part of its fixed scratch. Under a device memory cap
+    (FALCATA_DEBUG=vramfree=N MiB) in which that does not fit beside one pair's search scratch in half of the free
+    memory, the tree takes the host level loop (reason scratch_too_large), and the model is the device tree's."""
     extra, data_kw, _ = SHAPES["high_cardinality"]
     params = {**BASE, "quant_mode": "stochastic", **extra}
     _, routes, md5 = _diag_run(params, data_kw, 3)
     assert routes == [("complete",)], routes
     _, capped_routes, capped_md5 = _diag_run(params, data_kw, 3, debug="diag,vramfree=16")
-    assert capped_routes == [("categorical", "host_two_sync")], capped_routes
+    assert capped_routes == [("scratch_too_large", "host_two_sync")], capped_routes
+    assert capped_md5 == md5
+
+
+_CHUNK_TRAIN = """
+import hashlib, sys
+import numpy as np
+import falcata as flc
+rng = np.random.default_rng(17)
+rows = 20000
+cats = [rng.integers(0, c, rows) for c in (12, 40, 200)]
+num = rng.standard_normal((rows, 200))
+effect = num[:, 0] - 0.5 * num[:, 1] + 0.3 * num[:, 2:20].sum(axis=1)
+for j, c in enumerate(cats):
+    effect += np.random.default_rng(10 + j).standard_normal(c.max() + 1)[c]
+x = np.column_stack([*[c.astype(np.float64) for c in cats], num])
+y = (effect + 0.5 * rng.standard_normal(rows) > 0).astype(np.float64)
+params = {"device_type": "cuda", "objective": "binary", "num_leaves": 1023, "max_depth": 10, "max_bin": 63,
+          "min_data_in_leaf": 5, "quant_mode": "stochastic", "seed": 7, "verbose": -1}
+ds = flc.Dataset(x, y, categorical_feature=[0, 1, 2], params=params)
+bst = flc.train(params, ds, num_boost_round=3)
+text = bst.model_to_string().split("parameters:")[0]
+assert sum(int(line[8:]) for line in text.splitlines() if line.startswith("num_cat=")) > 0
+print("MD5 " + hashlib.md5(text.encode()).hexdigest())
+"""
+
+
+def _chunk_run(debug):
+    out = subprocess.run(
+        [sys.executable, "-c", _CHUNK_TRAIN],
+        env=dict(os.environ, FALCATA_DEBUG=debug),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    chunks = [int(m) for m in re.findall(r"searched pairs, (\d+) chunks of", out.stderr)]
+    completes = len(re.findall(r"device_tree: complete ", out.stderr))
+    md5 = next(line[4:] for line in out.stdout.splitlines() if line.startswith("MD5 "))
+    return chunks, completes, md5
+
+
+@_REQUIRES_CUDA
+def test_cuda_categorical_record_pair_chunks():
+    """Under a device memory cap the device tree searches each wide level in pair chunks (PlanDeviceTreeChunks); the
+    categorical list, bitset slab and level record are per level and presized, so a chunked categorical tree records
+    the same model as the unchunked one."""
+    chunks, completes, md5 = _chunk_run("diag")
+    assert chunks == [1], chunks
+    assert completes == 3
+    capped_chunks, capped_completes, capped_md5 = _chunk_run("diag,vramfree=8")
+    assert len(capped_chunks) == 1, capped_chunks
+    assert capped_chunks[0] > 1, capped_chunks
+    assert capped_completes == 3
     assert capped_md5 == md5
