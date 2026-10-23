@@ -3161,6 +3161,34 @@ gen-bit / split-inner kernels (29.3 ms) to the fused row-batched apply (about 15
 (a master-vs-master A/A of epsilon fixedpoint read 0.997x); GPU kernel time of epsilon fixedpoint over 200 rounds
 1747.4 ms (master) vs 1745.3 ms.
 
+### Categorical device trees
+
+Since 1.2 (FULL_DEVICE_PLAN P5) quantized trees with categorical features take the complete device tree wherever its
+depth bound holds; before, any categorical feature sent them to the host two-sync level loop (two readbacks per level),
+which #174 had already reduced to one categorical record launch per level. On the device each level runs what the host
+loop's `ApplyLevelBatched` did for its categorical splits:
+
+- the select lists the level's categorical splits in apply order and writes the tree record's descriptors in
+  `CUDATree::SplitLevel`'s launch order (numerical splits first, then categorical);
+- one bitset kernel (the host loop's `BatchConstructCatBitsetsKernel` body, at the level's worst-case grid) builds
+  every listed split's real-value and inner-bin bitsets into a per-level slab and sets the apply descriptor's default
+  directions from the inner bitset (`HybridBuildCatBitsetArenaKernel`'s test); the apply reads the inner bitset there;
+- the tree record appends both bitsets of every categorical split with `SplitCategoricalLevelKernel` at offsets
+  summed on the device, reading its counts (numerical splits, earlier categorical splits, the level's) from the
+  device state, inside the tree's captured graph.
+
+The record buffers are presized before the tree for its worst case (every split categorical, at the bitset strides)
+and never grow inside it; with the slab they count as fixed scratch in the device tree's memory plan (pair chunks), so
+a record too large to leave room for one pair's search keeps the host level loop (`scratch_too_large`). The host
+replays the record's bookkeeping after the growth readback and reads it back at the tree end as before (one copy; four
+past 64Ki words). Categorical trees also take the lean tree end and its inline final-level leaf map: without it every
+tree ended with a full leaf-map pass (16 ms per tree on airline at 92M rows). Models are unchanged: the same
+records in the same order (lattice and route goldens; the categorical record tests compare every shape with
+`device_tree:off`, the host level loop). `quant_mode=none` with categorical features keeps the one-sync host flow
+(reason `categorical`).
+
+AB_TABLE_PLACEHOLDER
+
 ### Why a tree is not a complete device tree: the reason line
 
 Under `FALCATA_DEBUG=diag` every CUDA tree the complete device tree did not grow is reported as

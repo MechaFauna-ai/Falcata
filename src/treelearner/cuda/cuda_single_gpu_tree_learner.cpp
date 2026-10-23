@@ -4138,11 +4138,13 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // of L1 / quantile / MAPE reads the device leaf windows), with weights and under row bagging. Trees of two or more
   // levels only: a one-level tree (a stump shape, max_depth 1) measured slower on the lean end (fraud stumps, binary:
   // 0.090 -> 0.094 ms per tree, same binary, 1000 rounds); it keeps the full tree end (constant-hessian L2 as before).
+  // Categorical trees too (P5): their record is the device tree's own (ReplayDeviceCategoricalRecord, ToHost), and
+  // without the lean end they would also lose the final level's inline leaf map (a full map pass per tree instead).
   const bool lean_end = FalcataPlan::Get().device_tree_lean_end && num_levels >= 2;
   bool skip_host_cache = cfg.whole_tree && config_->boosting == "gbdt" &&
     (lean_end || (config_->objective == "regression" && share_state_->is_constant_hessian)) &&
     boosting_on_cuda_ && (lean_end || train_data_->metadata().weights() == nullptr) &&
-    config_->use_quantized_grad && vec_num_targets_ <= 1 && !has_categorical_feature_ &&
+    config_->use_quantized_grad && vec_num_targets_ <= 1 &&
     nccl_communicator_ == nullptr && fp_merge_state_ == nullptr && !forest_slot_ &&
     config_->data_sample_strategy == "bagging" && !config_->bagging_by_query &&
     // device_tree_lean_end: under row bagging too (the bag is partitioned on the device; the cache is not read)
