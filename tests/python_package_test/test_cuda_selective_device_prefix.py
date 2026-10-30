@@ -292,6 +292,26 @@ def test_selective_device_prefix_pair_chunks_cuda(graph):
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("objective", ["regression", "binary"])
+@pytest.mark.parametrize(
+    ("leaves", "depth", "extra"),
+    [
+        (63, -1, {"lambda_l1": 0.5}),
+        (151, 10, {"lambda_l1": 2.0, "min_data_in_leaf": 40}),
+        (63, -1, {"path_smooth": 1.0}),
+        (151, 10, {"path_smooth": 5.0, "lambda_l1": 0.5}),
+        (300, -1, {"lambda_l1": 0.5, "min_data_in_leaf": 60}),  # deep levels in relaunched bodies
+    ],
+)
+def test_selective_device_prefix_l1_smoothing_same_model_cuda(objective, leaves, depth, extra):
+    # quantized lambda_l1 / path_smooth take the level find's own instantiations (#182): the selective device levels
+    # run them up to the first binding level, with the host selective loop's model (device_tree:off, device_levels:off)
+    X, y = _data(objective, rows=20000)
+    lines = _same(_params(objective, leaves, depth, **extra), X, y, rounds=6)
+    assert all(h.level >= _floor_log2(leaves) or h.kind == "complete" for h in lines), lines
+
+
+@_REQUIRES_CUDA
 def test_selective_device_prefix_declines_forced_splits_cuda(tmp_path):
     # forced splits take the classic per-split loop (no selective growth): the device levels decline and the model is
     # unchanged
