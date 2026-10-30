@@ -163,14 +163,6 @@ struct CUDADeviceLevelState {
   data_size_t root_num_data;
   /*! \brief blocks of the level sync that wrote their leaf entry (the last one runs the next level's select) */
   unsigned int sync_blocks_done;
-  /*! \brief categorical datasets (CUDADeviceLevelCatConfig): the level's split record in launch order, numerical
-   *  splits first and then the categorical ones (CUDATree::SplitLevel's order); these three ints are read together as
-   *  the categorical record's device counts {numerical splits, categorical splits of the earlier levels, categorical
-   *  splits of the level} (CUDATree::LaunchSplitLevelKernelsDevice). Numerical datasets: live_num_splits ==
-   *  live_splits, the others stay 0. */
-  int live_num_splits;
-  int cat_split_base;
-  int live_cat_splits;
   // ---- written by DeviceLevelPairsKernel (the children's search) ----
   /*! \brief pairs of the search in flight (== the applied level's splits) */
   int live_pairs;
@@ -190,6 +182,17 @@ struct CUDADeviceLevelState {
    *  construct_total_blocks), in CUDADeviceLevelConfig::construct_block_start (the reset sets this pointer; a pair
    *  chunk's state copies it) */
   int* construct_block_start;
+  // ---- written by DeviceLevelSelectKernel, after every field above (their offsets are the construct's and the
+  // level kernels' hot reads: appended, not inserted) ----
+  /*! \brief categorical datasets (CUDADeviceLevelCatConfig): the level's split record in launch order, numerical
+   *  splits first and then the categorical ones (CUDATree::SplitLevel's order); these three ints are read together as
+   *  the categorical record's device counts {numerical splits, categorical splits of the earlier levels, categorical
+   *  splits of the level} (CUDATree::LaunchSplitLevelKernelsDevice). Numerical datasets: live_num_splits ==
+   *  live_splits, the others stay 0. */
+  int live_num_splits;
+  int cat_split_base;
+  int live_cat_splits;
+  int padding_cat_;
 };
 
 /*! \brief the tree-constant shape of a device level's construct (CUDAHistogramConstructor::DeviceLevelConstructShape):
