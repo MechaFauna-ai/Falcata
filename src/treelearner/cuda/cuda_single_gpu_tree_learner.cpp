@@ -4304,6 +4304,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   selective_bodies_ = 0;
   selective_binding_ = false;
   bool continues = false;
+  // the host boundary test reads the leaf entries through host_leaf_best_splits_ (the readback the host loop reads
+  // anyway): where the tree stops there, that copy is the final one
+  bool leaf_entries_read = false;
   const bool device_boundary = selective && selective_device_boundary_;
   if (device_boundary) {
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(find_stream));
@@ -4319,9 +4322,10 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
       const int splits = pinned_device_level_journal_[1];
       int valid = 0;
       if (pinned_device_level_journal_[0] == num_levels) {
-        const CUDASplitInfo* entries = cuda_best_split_finder_->PrefetchedLeafBestSplits();
+        cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(splits + 1, &host_leaf_best_splits_);
+        leaf_entries_read = true;
         for (int leaf = 0; leaf <= splits; ++leaf) {
-          valid += entries[leaf].is_valid ? 1 : 0;
+          valid += host_leaf_best_splits_[leaf].is_valid ? 1 : 0;
         }
       }
       selective_binding_ = valid > 0 && splits + 1 + valid > config_->num_leaves;
@@ -4566,7 +4570,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     }
   } else {
     // the last search's result, as the host loop's own readback leaves it
-    cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(total_splits + 1, &host_leaf_best_splits_);
+    if (!leaf_entries_read || continues) {
+      cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(total_splits + 1, &host_leaf_best_splits_);
+    }
   }
   global_timer.Stop("CUDASingleGPUTreeLearner::TrainDeviceLevels");
   return num_splits;
