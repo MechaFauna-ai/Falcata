@@ -3186,24 +3186,22 @@ Reasons, in their order (several can hold; the first is reported):
 | `vector_leaves` | `tree_mode=vector_leaf` | host two-sync / selective |
 | `forest_slots` | a forest group of two or more trees (slot threads) | forest_slots |
 | `no_shared_memory` | non-quantized fixed-point table larger than the device's shared memory | classic |
-| `nonquant_gt_256_bins` | non-quantized feature with more than 256 bins (global-memory finder) | classic |
+| `nonquant_gt_256_bins` | non-quantized feature with more than 256 bins (global-memory finder; a column too wide for a shared-memory histogram partition is such a feature) | classic |
 | `sparse_layout` | sparse row data | host two-sync, per-pair kernels |
 | `extra_trees`, `cat_random_search` | the level finder has no batched variant | host two-sync, per-pair search |
 | `interaction_constraints` | interaction constraints (shared-stream per-node draws) | classic |
 | `monotone`, `cegb`, `forced_splits` | per-split constraints (monotone constraints need `quant_mode=none` on CUDA) | classic |
 | `linear_budget` | linear trees with a binding budget | classic |
-| `num_leaves_le_2` | stumps | classic |
+| `num_leaves_le_2` | non-quantized stumps (the level flows' fixed-point histograms would change their models) | classic |
 | `nonquant_selective`, `nonquant_onesync` | `quant_mode=none`: budget-limited; depth-limited with `max_depth > 11` or `num_leaves > 2047` (outside the bound of the removed L1.5 graph, which the device tree serves since P3) | selective one-sync / one-sync |
-| `lambda_l1`, `path_smooth` | the level finder has no batched variant | host two-sync, per-pair search |
-| `large_bin_layout`, `compact_16bit` | partitions on global-memory histograms; compact view of non-8-bit rows | host two-sync, per-pair kernels |
+| `lambda_l1`, `path_smooth` | non-quantized (fixed-point level histograms), or with per-node feature sampling (the per-split loop's leaf numbering) | host two-sync, per-pair search / classic |
 | `categorical` | a categorical feature | host two-sync |
 | `bynode_outside_bound`, `bynode_host_masks` | per-node masks outside the depth bound; inside it with device masks unusable | host two-sync / selective |
 | `selective_unbounded`, `selective_budget` | `max_depth <= 0`; `2^max_depth > num_leaves + 1` | selective prefix |
 | `scratch_too_large` | the complete tree's scratch at one searched pair per chunk exceeds half of the free memory, or the per-node task offsets overflow at one pair | host two-sync / one-sync |
 | `setup_failed` | the device levels could not be set up | host two-sync |
 | `prefix_graph_churn` | (as `prefix=` only) sampled layouts kept missing the graph cache: the prefix turned itself off | host two-sync / selective two-sync |
-| `empty_task_list` | no searchable feature in the tree | host two-sync |
-| `root_tail_parity` | the device root search found no split and the classic one did | classic tail |
+| `empty_task_list` | no searchable feature in a tree the device tree does not take for another reason | host two-sync |
 | `unclassified` | none of the above (a bug; the route pins fail on it) | |
 
 Routes: `device_tree`, `prefix` (device_levels prefix, then the host two-sync loop), `host_two_sync`,
@@ -3212,6 +3210,17 @@ Routes: `device_tree`, `prefix` (device_levels prefix, then the host two-sync lo
 
 `device_levels: host fallback (<reason>)` keeps reporting, once per learner, why the prefix itself declined in flows
 outside the complete device tree (with the same tokens).
+
+Since P6 the complete device tree also grows quantized trees with `lambda_l1` and `path_smooth` (the level finder's
+L1 / smoothing instantiations, the per-pair search's inner search) and quantized two-leaf trees (`num_leaves` 2: the
+device tree at depth 1 whatever `max_depth` says); its root tail, a classic root search after a split-less level
+root, is gone. Non-quantized L1 / smoothing trees and stumps, and L1 / smoothing with per-node feature sampling, keep
+their routes: the level flows would change their models (64-bit fixed-point histograms where the per-pair construct
+sums in double; level-order leaf numbers where the per-split loop numbers leaves as it splits). The 16-bit compact
+view and large-bin partitions needed no port: the compact view exists for 8-bit rows only, and a large-bin column is a
+feature of more than 256 bins, which the global-memory finder (non-quantized) or the quantized Init refusal serves
+first. A tree without a searchable feature never reaches the learner: the booster grows the one-leaf tree of a
+Dataset without features itself, and every tree's feature sample keeps a feature with a split task.
 
 **Removed in 1.2** (opt-in or off values only; old plan strings naming these keys are accepted with a warning and now
 train the default model):

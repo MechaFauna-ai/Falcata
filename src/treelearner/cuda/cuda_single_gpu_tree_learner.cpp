@@ -165,8 +165,8 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // which keep the 4-bin speed.
   if (config_->use_quantized_grad && !fixedpoint_quant_ &&
       config_->quant_bins_from_auto) {
-    const int64_t depth_leaf_cap = (config_->max_depth > 0 && config_->max_depth < 31) ?
-        (1LL << config_->max_depth) : std::numeric_limits<int64_t>::max();
+    const int64_t depth_leaf_cap = (GrowthMaxDepth() > 0 && GrowthMaxDepth() < 31) ?
+        (1LL << GrowthMaxDepth()) : std::numeric_limits<int64_t>::max();
     const int64_t effective_leaves = std::min<int64_t>(config_->num_leaves, depth_leaf_cap);
     const data_size_t rows_per_leaf = static_cast<data_size_t>(
         num_data_ / std::max<int64_t>(1, effective_leaves));
@@ -842,7 +842,7 @@ bool CUDASingleGPUTreeLearner::BuildsOneByteSplitView() const {
   return !PackedSplitReadUsable() || !config_->forcedsplits_filename.empty();
 }
 
-// Quantized training outside the hybrid level flow (the classic loop: per-node sampling, forced splits, two leaves,
+// Quantized training outside the hybrid level flow (the classic loop: per-node sampling, forced splits,
 // monotone constraints, CEGB, ...) builds every histogram with the per-leaf construct, which reads the whole matrix
 // row-major and has no compact-view branch; colmajor_direct then takes the mask regime.
 bool CUDASingleGPUTreeLearner::TreesReadFullMatrix() const {
@@ -1147,8 +1147,8 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // grow-then-prune mode (UseSelectiveGrowth) provides exact leaf-wise
   // equivalence; where it does not apply, the classic one-split-at-a-time loop
   // runs.
-  const bool depth_limited = config_->max_depth > 0 && config_->max_depth < 31 &&
-      (1LL << config_->max_depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
+  const bool depth_limited = GrowthMaxDepth() > 0 && GrowthMaxDepth() < 31 &&
+      (1LL << GrowthMaxDepth()) <= static_cast<int64_t>(config_->num_leaves) + 1;
   // Categorical datasets are allowed on the (two-sync) hybrid prefix: the
   // batched apply routes categorical splits through the
   // per-level bitset arena, and tree recording interleaves the per-split
@@ -1185,7 +1185,7 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
          (!select_features_by_node_ || LevelFlowsTakeNodeMasks()) &&
          (cuda_best_split_finder_ == nullptr || !cuda_best_split_finder_->use_global_memory()) &&
          (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
-         config_->num_leaves > 2;
+         (config_->num_leaves > 2 || QuantizedStump());
   if (!base) {
     return false;
   }
@@ -1228,8 +1228,8 @@ bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
   if (fp_merge_state_ != nullptr) {
     return false;
   }
-  const bool depth_limited = config_->max_depth > 0 && config_->max_depth < 31 &&
-      (1LL << config_->max_depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
+  const bool depth_limited = GrowthMaxDepth() > 0 && GrowthMaxDepth() < 31 &&
+      (1LL << GrowthMaxDepth()) <= static_cast<int64_t>(config_->num_leaves) + 1;
   if (depth_limited) {
     // depth-limited configs keep the (bit-exact-locked) exact-fit prefix
     return false;
@@ -1303,7 +1303,7 @@ bool CUDASingleGPUTreeLearner::NonquantDeviceTreeShape() const {
     return false;
   }
   const FalcataPlan& plan = FalcataPlan::Get();
-  const int depth = config_->max_depth;
+  const int depth = GrowthMaxDepth();
   return plan.device_levels && plan.device_tree && depth >= 1 && depth <= kNonquantDeviceTreeMaxDepth &&
     (1LL << depth) <= static_cast<int64_t>(config_->num_leaves) + 1 &&
     config_->num_leaves <= kNonquantDeviceTreeMaxLeaves;
@@ -1460,9 +1460,9 @@ void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearch(const CUDATree* tree,
       cuda_gradient_discretizer_->hess_scale_ptr(),
       smaller_leaf_num_bits_bin,
       larger_leaf_num_bits_bin,
-      config_->max_depth <= 0 || GrowthLeafDepth(tree, smaller_leaf_index) < config_->max_depth,
-      larger_leaf_index < 0 || config_->max_depth <= 0 ||
-        GrowthLeafDepth(tree, larger_leaf_index) < config_->max_depth,
+      GrowthMaxDepth() <= 0 || GrowthLeafDepth(tree, smaller_leaf_index) < GrowthMaxDepth(),
+      larger_leaf_index < 0 || GrowthMaxDepth() <= 0 ||
+        GrowthLeafDepth(tree, larger_leaf_index) < GrowthMaxDepth(),
       smaller_leaf_constraint_min, smaller_leaf_constraint_max,
       larger_leaf_constraint_min, larger_leaf_constraint_max,
       synchronize);
@@ -1474,9 +1474,9 @@ void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearch(const CUDATree* tree,
       global_num_data_in_smaller_leaf, global_num_data_in_larger_leaf,
       sum_hessians_in_smaller_leaf, sum_hessians_in_larger_leaf,
       nullptr, nullptr, 0, 0,
-      config_->max_depth <= 0 || GrowthLeafDepth(tree, smaller_leaf_index) < config_->max_depth,
-      larger_leaf_index < 0 || config_->max_depth <= 0 ||
-        GrowthLeafDepth(tree, larger_leaf_index) < config_->max_depth,
+      GrowthMaxDepth() <= 0 || GrowthLeafDepth(tree, smaller_leaf_index) < GrowthMaxDepth(),
+      larger_leaf_index < 0 || GrowthMaxDepth() <= 0 ||
+        GrowthLeafDepth(tree, larger_leaf_index) < GrowthMaxDepth(),
       smaller_leaf_constraint_min, smaller_leaf_constraint_max,
       larger_leaf_constraint_min, larger_leaf_constraint_max,
       synchronize);
@@ -1662,9 +1662,9 @@ void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearchVector(const CUDATree* 
     smaller_leaf_index, larger_leaf_index,
     num_data_in_smaller_leaf, num_data_in_larger_leaf,
     sum_hessians_in_smaller_leaf, sum_hessians_in_larger_leaf,
-    config_->max_depth <= 0 || tree->leaf_depth(smaller_leaf_index) < config_->max_depth,
-    larger_leaf_index < 0 || config_->max_depth <= 0 ||
-      tree->leaf_depth(larger_leaf_index) < config_->max_depth,
+    GrowthMaxDepth() <= 0 || tree->leaf_depth(smaller_leaf_index) < GrowthMaxDepth(),
+    larger_leaf_index < 0 || GrowthMaxDepth() <= 0 ||
+      tree->leaf_depth(larger_leaf_index) < GrowthMaxDepth(),
     quant,
     /*synchronize=*/true);
   global_timer.Stop("CUDASingleGPUTreeLearner::FindBestSplitsForLeaf");
@@ -1857,9 +1857,9 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
         sum_hessians_in_larger_leaf <= config_->min_sum_hessian_in_leaf)) ? 0 : 1;
     // mirror of CUDABestSplitFinder::FindBestSplitsForLeaf's leaf validity checks
     const bool smaller_below_max_depth =
-      config_->max_depth <= 0 || GrowthLeafDepth(tree, pair.smaller) < config_->max_depth;
+      GrowthMaxDepth() <= 0 || GrowthLeafDepth(tree, pair.smaller) < GrowthMaxDepth();
     const bool larger_below_max_depth = pair.larger < 0 ||
-      config_->max_depth <= 0 || GrowthLeafDepth(tree, pair.larger) < config_->max_depth;
+      GrowthMaxDepth() <= 0 || GrowthLeafDepth(tree, pair.larger) < GrowthMaxDepth();
     desc.smaller_valid = (num_data_in_smaller_leaf > config_->min_data_in_leaf && !smaller_unsplittable &&
                           sum_hessians_in_smaller_leaf > config_->min_sum_hessian_in_leaf &&
                           smaller_below_max_depth) ? 1 : 0;
@@ -2037,8 +2037,8 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearchSpeculative(const CUDA
     desc.construct_valid = 1;
     // both children of a split are siblings at the same (host-known) depth; the
     // min_data/min_hessian gates are evaluated on-device
-    const uint8_t below_max_depth = (config_->max_depth <= 0 ||
-      GrowthLeafDepth(tree, a.left) < config_->max_depth) ? 1 : 0;
+    const uint8_t below_max_depth = (GrowthMaxDepth() <= 0 ||
+      GrowthLeafDepth(tree, a.left) < GrowthMaxDepth()) ? 1 : 0;
     desc.smaller_valid = below_max_depth;
     desc.larger_valid = below_max_depth;
     // single-sync flow is non-quantized only
@@ -2165,10 +2165,10 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
   // exact best-gain order.
   *final_partial_level = false;
   level_completes_tree_ = false;
-  bool all_children_depth_capped = config_->max_depth > 0 && !splittable->empty();
+  bool all_children_depth_capped = GrowthMaxDepth() > 0 && !splittable->empty();
   if (all_children_depth_capped) {
     for (const int leaf : *splittable) {
-      if (tree->leaf_depth(leaf) + 1 < config_->max_depth) {
+      if (tree->leaf_depth(leaf) + 1 < GrowthMaxDepth()) {
         all_children_depth_capped = false;
         break;
       }
@@ -2802,10 +2802,8 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     }
     num_splits = TrainDeviceLevels(tree, device_levels, &pairs);
     search_read_back = true;
-    // the root tail continues in Train's leaf-wise loop
-    growth_route_ = device_tree_completed_ ? GrowthRoute::kDeviceTree :
-      device_tree_root_tail_ ? GrowthRoute::kClassic : GrowthRoute::kPrefix;
-    if (device_tree_completed_ || device_tree_root_tail_) {
+    growth_route_ = device_tree_completed_ ? GrowthRoute::kDeviceTree : GrowthRoute::kPrefix;
+    if (device_tree_completed_) {
       return num_splits;
     }
   }
@@ -2936,7 +2934,7 @@ void CUDASingleGPUTreeLearner::EnqueueRootLevelSearchOneSync(const bool reuse_fu
   desc.num_data_in_larger_leaf = 0;
   desc.construct_valid = 1;  // min_data/min_hessian evaluated on-device
   // the root sits at depth 0
-  desc.smaller_valid = (config_->max_depth <= 0 || 0 < config_->max_depth) ? 1 : 0;
+  desc.smaller_valid = (GrowthMaxDepth() <= 0 || 0 < GrowthMaxDepth()) ? 1 : 0;
   desc.larger_valid = 0;
   if (config_->use_quantized_grad) {
     // mirror of EnqueueLevelBestSplitSearch's root (larger < 0) branch: the
@@ -3099,7 +3097,7 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   if (layout == R::kNoSharedMemory) {
     return R::kNoSharedMemory;
   }
-  if (finder == R::kNonquantGt256Bins) {
+  if (finder == R::kNonquantGt256Bins || layout == R::kNonquantGt256Bins) {
     return R::kNonquantGt256Bins;
   }
   if (layout == R::kSparseLayout || layout == R::kEmptyTaskList) {
@@ -3111,7 +3109,7 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   if (!config_->interaction_constraints_vector.empty()) {
     return R::kInteractionConstraints;
   }
-  const int depth = config_->max_depth;
+  const int depth = GrowthMaxDepth();
   const bool depth_limited = depth > 0 && depth < 31 && (1LL << depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
   if (!config_->monotone_constraints.empty()) {
     return R::kMonotone;
@@ -3125,8 +3123,8 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   if (config_->linear_tree && !depth_limited) {
     return R::kLinearBudget;
   }
-  if (config_->num_leaves <= 2) {
-    return R::kNumLeavesLe2;
+  if (config_->num_leaves <= 2 && !QuantizedStump()) {
+    return R::kNumLeavesLe2;  // non-quantized stumps (GrowthMaxDepth)
   }
   if (!config_->use_quantized_grad) {
     if (!depth_limited) {
@@ -3138,10 +3136,7 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
     }
   }
   if (finder != R::kNone) {
-    return finder;  // lambda_l1, path_smooth
-  }
-  if (layout != R::kNone) {
-    return layout;  // large_bin_layout, compact_16bit
+    return finder;  // lambda_l1, path_smooth (non-quantized or per-node masks), bynode_host_masks
   }
   if (has_categorical_feature_) {
     return R::kCategorical;
@@ -3175,9 +3170,6 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   }
   if (cuda_best_split_finder_->num_used_tasks() == 0) {
     return R::kEmptyTaskList;
-  }
-  if (device_tree_root_tail_) {
-    return R::kRootTailParity;
   }
   return R::kUnclassified;
 }
@@ -3215,9 +3207,9 @@ void CUDASingleGPUTreeLearner::BeginDeviceBynode() {
   CHECK(!device_bynode_active_);
   const int num_features = train_data_->num_features();
   // a complete tree's leaf indices stay below 2^max_depth (DeviceTreeRequested: max_depth >= 1)
-  CHECK_GE(config_->max_depth, 1);
-  CHECK_LE(config_->max_depth, 30);
-  const int slots = static_cast<int>(std::min<int64_t>(config_->num_leaves, int64_t{1} << config_->max_depth)) + 2;
+  CHECK_GE(GrowthMaxDepth(), 1);
+  CHECK_LE(GrowthMaxDepth(), 30);
+  const int slots = static_cast<int>(std::min<int64_t>(config_->num_leaves, int64_t{1} << GrowthMaxDepth())) + 2;
   const ColSampler::KeyedNodeSample shape = col_sampler_.GetByNodeKeyedShape(&bynode_candidates_scratch_);
   CHECK_LE(shape.num_candidates, num_features);
   std::vector<int>& sample = bynode_sample_scratch_;
@@ -3353,7 +3345,7 @@ bool CUDASingleGPUTreeLearner::DeviceTreeRequested() const {
   // selects over global scratch, and a search whose scratch does not fit the memory budget runs in pair chunks
   // (PlanDeviceTreeChunks).
   const FalcataPlan& plan = FalcataPlan::Get();
-  const int depth = config_->max_depth;
+  const int depth = GrowthMaxDepth();
   return plan.device_tree && plan.device_levels && depth >= 1 && depth < 31 &&
     (1LL << depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
 }
@@ -3412,15 +3404,15 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     return 0;
   }
   if (device_tree) {
-    return config_->max_depth;
+    return GrowthMaxDepth();
   }
   // levels L with 2^(L + 1) <= num_leaves and L + 1 < max_depth: every valid leaf splits and every child is searched
   int levels = 0;
   while ((2LL << levels) <= static_cast<int64_t>(config_->num_leaves)) {
     ++levels;
   }
-  if (config_->max_depth > 0) {
-    levels = std::min(levels, config_->max_depth - 1);
+  if (GrowthMaxDepth() > 0) {
+    levels = std::min(levels, GrowthMaxDepth() - 1);
   }
   // the select / pairs kernels' block covers a level of at most kDeviceLevelMaxPairs splits
   int max_levels = 0;
@@ -3453,7 +3445,7 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
   if (device_tree_chunk_pairs_ >= 0 || !DeviceTreeRequested()) {
     return;
   }
-  const int num_levels = config_->max_depth;
+  const int num_levels = GrowthMaxDepth();
   const int pairs = DeviceLevelSearchPairs(num_levels);
   const size_t leaves = static_cast<size_t>(1) << num_levels;
   const size_t final_splits = leaves / 2;
@@ -3990,7 +3982,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.feature_source = cuda_device_level_feature_source_.RawDataReadOnly();
   cfg.real_thresholds = cuda_device_level_real_thresholds_.RawDataReadOnly();
   cfg.journal = cuda_device_level_journal_.RawData();
-  cfg.max_depth = config_->max_depth;
+  cfg.max_depth = GrowthMaxDepth();
   cfg.num_leaves_budget = config_->num_leaves;
   cfg.whole_tree = DeviceTreeRequested() ? 1 : 0;
   cfg.construct_block_start = cuda_device_level_block_start_.RawData();
@@ -4306,25 +4298,15 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   if (cfg.whole_tree) {
     if (num_splits == 0) {
       // The root output survives only for a stump. Read its original root struct before tree-end consumers.
+      // A level root search without a valid split is final, as every other level's split-less leaves are: the
+      // batched root construct builds the columns of the tree's sampled features (ColumnsUsedByFeatures, the per-pair
+      // construct's), and each level find block runs the per-pair kernel's inner search on them, so the classic
+      // root search the host flows run before their leaf-wise tail finds no split either
+      // (test_cuda_device_tree_root_tail.py).
       EnsureRootSumsReadBack(tree);
-      // A level root search without a valid split is not final in the host level flows: their leaf-wise tail first
-      // searches the root again with the classic per-leaf search (e.g. on a sampled compact layout whose batched
-      // root histogram misses the sampled features). Run that same single search here. A valid split hands the tree
-      // to Train's tail with this search cached; otherwise the stump is the host flows' result as well. Its classic
-      // construct accumulates into an assumed-zero slot: clear the batched root histogram first, as Train's tail does.
-      cuda_histogram_constructor_->ZeroHistSlots({0});
-      EnqueuePairBestSplitSearch(tree, cuda_smaller_leaf_splits_->GetCUDAStruct(),
-                                 cuda_larger_leaf_splits_->GetCUDAStruct(), smaller_leaf_index_, larger_leaf_index_,
-                                 /*synchronize=*/true);
-      // FindBestFromAllSplitsKernel's root criterion; that kernel consumes the leaf it picks, so the tail runs it
-      SynchronizeCUDADevice(__FILE__, __LINE__);
-      CUDASplitInfo root_split;
-      CopyFromCUDADeviceToHost<CUDASplitInfo>(&root_split, cuda_best_split_finder_->leaf_best_split_info_ptr(0), 1,
-                                              __FILE__, __LINE__);
-      device_tree_root_tail_ = root_split.is_valid && root_split.gain > 0.0;
     }
-    device_tree_completed_ = !device_tree_root_tail_;
-    prefix_completes_tree_ = !device_tree_root_tail_;
+    device_tree_completed_ = true;
+    prefix_completes_tree_ = true;
     if (prefetch_tree_end && total_splits > 0) {
       CHECK_EQ(tree->num_leaves(), total_splits + 1);
       prefetched_tree_num_leaves_ = tree->num_leaves();
@@ -4357,7 +4339,8 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
               prefetched_tree_counts_ ? 1 : 0);
       fprintf(stderr, "[hybrid-diag] device_tree: complete depth=%d applied_levels=%d splits=%d "
               "growth_readbacks=1 host_tail=%d graph=%d hits=%d misses=%d\n", num_levels, levels_applied,
-              total_splits, device_tree_root_tail_ ? 1 : 0, launched ? 1 : 0, device_level_graph_hits_,
+              total_splits, 0 /* host_tail: no root tail since P6, kept for the line's parsers */,
+              launched ? 1 : 0, device_level_graph_hits_,
               device_level_graph_misses_);
       // cuda_plan key device_level_graph_update: in-place exec updates under key churn (separate line, see above)
       fprintf(stderr, "[hybrid-diag] device_level_graph_update: updates=%d refused=%d stopped=%d last_refusal=%d\n",
@@ -5231,7 +5214,6 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   prefix_completes_tree_ = false;
   prefix_final_leaves_before_ = -1;
-  device_tree_root_tail_ = false;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   device_tree_completed_ = false;
 #ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
@@ -5279,8 +5261,8 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
       level_root_hist_built = num_splits_done == 0;
       batched_apply_ran = num_splits_done > 0;
       // every current leaf already has a cached best-split candidate; the first
-      // tail iteration must not redo the pair search (nor the whole tree's classic root search)
-      pair_search_cached = num_splits_done > 0 || device_tree_root_tail_;
+      // tail iteration must not redo the pair search
+      pair_search_cached = num_splits_done > 0;
     }
   }
   // cuda_plan key skip_empty_tail: after a level prefix that ended on a complete final level the tail's search can
@@ -5800,9 +5782,9 @@ int CUDASingleGPUTreeLearner::ForceSplitsCUDA(CUDATree* tree, int* num_splits_do
       num_data_in_smaller_leaf, num_data_in_larger_leaf,
       sum_hessians_in_smaller_leaf, sum_hessians_in_larger_leaf,
       nullptr, nullptr, 0, 0,
-      config_->max_depth <= 0 || tree->leaf_depth(smaller_leaf_index_) < config_->max_depth,
-      larger_leaf_index_ < 0 || config_->max_depth <= 0 ||
-        tree->leaf_depth(larger_leaf_index_) < config_->max_depth,
+      GrowthMaxDepth() <= 0 || tree->leaf_depth(smaller_leaf_index_) < GrowthMaxDepth(),
+      larger_leaf_index_ < 0 || GrowthMaxDepth() <= 0 ||
+        tree->leaf_depth(larger_leaf_index_) < GrowthMaxDepth(),
       forced_smaller_constraint_min, forced_smaller_constraint_max,
       forced_larger_constraint_min, forced_larger_constraint_max);
     // sync host-side best-split arrays with the device cache for the searched pair, so
@@ -6037,9 +6019,9 @@ void CUDASingleGPUTreeLearner::PresizeLevelBuffers() {
   CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &total_bytes));
   const size_t kMaxPresizeBytes = std::max<size_t>(size_t{256} << 20, total_bytes / 8);
   int max_pairs = config_->num_leaves / 2 + 2;
-  if (config_->max_depth > 0 && config_->max_depth < 30) {
+  if (GrowthMaxDepth() > 0 && GrowthMaxDepth() < 30) {
     // a level of a depth-limited tree has at most 2^(max_depth - 1) pairs
-    max_pairs = std::min(max_pairs, (1 << (config_->max_depth - 1)) + 2);
+    max_pairs = std::min(max_pairs, (1 << (GrowthMaxDepth() - 1)) + 2);
   }
   cuda_data_partition_->PresizeLevelBuffers();
   cuda_best_split_finder_->PresizeLevelOutput(max_pairs, kMaxPresizeBytes);

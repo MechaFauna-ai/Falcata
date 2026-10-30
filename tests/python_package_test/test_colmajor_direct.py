@@ -430,11 +430,12 @@ NEED_LINE = re.compile(
 
 
 # per-node sampling keeps the per-split loop only with the shared-stream masks (cuda_plan key level_bynode_masks off;
-# on, the level flows take the per-node masks)
-BYNODE_OR_TWO_LEAVES = pytest.mark.parametrize(
+# on, the level flows take the per-node masks); CEGB always keeps it (two-leaf trees, the other example here before
+# 1.2, are complete device trees of depth 1 since P6)
+BYNODE_OR_CEGB = pytest.mark.parametrize(
     "config",
-    [{"feature_fraction_bynode": 0.8, "plan_extra": ",level_bynode_masks:off"}, {"num_leaves": 2, "max_depth": 1}],
-    ids=["bynode", "two-leaves"],
+    [{"feature_fraction_bynode": 0.8, "plan_extra": ",level_bynode_masks:off"}, {"cegb_penalty_split": 0.001}],
+    ids=["bynode", "cegb"],
 )
 
 
@@ -455,9 +456,9 @@ def test_memory_check_counts_the_one_byte_split_view_cuda():
 
 
 @_REQUIRES_CUDA
-@BYNODE_OR_TWO_LEAVES
+@BYNODE_OR_CEGB
 def test_nonquantized_keeps_the_compact_regime_cuda(config):
-    """Non-quantized training without the hybrid flow (per-node sampling, two leaves) counts the one-byte view too,
+    """Non-quantized training without the hybrid flow (per-node sampling, CEGB) counts the one-byte view too,
     but never trades the compact regime for mask on memory: the mask kernels would sum the floats in another order.
     The compact regime needs no more than colmajor_direct:off held."""
     params = {"feature_fraction": 0.2, "quant": "none", **config}
@@ -469,7 +470,7 @@ def test_nonquantized_keeps_the_compact_regime_cuda(config):
 
 
 @_REQUIRES_CUDA
-@BYNODE_OR_TWO_LEAVES
+@BYNODE_OR_CEGB
 def test_quantized_classic_loop_takes_the_mask_regime_cuda(config):
     """Quantized training outside the hybrid flow builds every histogram with the per-leaf construct, which reads the
     whole matrix: the mask regime is taken at any feature_fraction (it crashed reading a full view that the compact
