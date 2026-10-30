@@ -91,8 +91,9 @@ ROUTES_EXPECTED = {
     "route/r13d-catrand": [("cat_random_search", "host_two_sync")],
     # non-quantized sparse-mc keeps the CSR row data
     "route/r14a-sparse": [("sparse_layout", "host_two_sync")],
-    # max_bin 511 without quantization: the global-memory finder refuses (row 15; 16-bit rows have no compact view)
-    "route/r14b-compact16": [("nonquant_gt_256_bins", _CLASSIC)],
+    # max_bin 511 without quantization: the global-memory finder refuses (plan row 15; 16-bit rows have no compact
+    # view). Stays on nonquant_gt_256_bins / classic until P12 moves row 15 to the host level loop
+    "route/r14b-gt256-nonquant": [("nonquant_gt_256_bins", _CLASSIC)],
     "route/r15-widebin": [("nonquant_gt_256_bins", _CLASSIC)],
     "route/r17-monotone": [("monotone", _CLASSIC)],
     "route/r17b-monotone-sel": [("monotone", _CLASSIC)],

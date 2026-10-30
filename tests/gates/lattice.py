@@ -1376,8 +1376,8 @@ def build_cells():
         ("r14a-sparse", "sparse-mc", {"num_leaves": 31, "max_depth": 5, "quant_mode": "none"}, 25, {}),
         # r14b and r15: a feature of more than 256 bins takes the global-memory finder (row 15). r14b's 16-bit rows
         # have no compact view (ScanCompactLayout builds one for 8-bit rows only), so no shape reaches a 16-bit
-        # compact read or a large-bin partition without that finder (P6)
-        ("r14b-compact16", "dense", {"max_bin": 511, "feature_fraction": 0.5, "quant_mode": "none"}, 25, {}),
+        # compact read or a large-bin partition without that finder (P6; r14b was r14b-compact16 before, same md5)
+        ("r14b-gt256-nonquant", "dense", {"max_bin": 511, "feature_fraction": 0.5, "quant_mode": "none"}, 25, {}),
         ("r15-widebin", "missing-mfb0-wide", {"quant_mode": "none", "max_bin": 511}, 25, {}),
         ("r17-monotone", "dense", route_mono, 25, {}),
         ("r17b-monotone-sel", "dense", {**route_mono, "num_leaves": 31, "max_depth": -1}, 25, {}),

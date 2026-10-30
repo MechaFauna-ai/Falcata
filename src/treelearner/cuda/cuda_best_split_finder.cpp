@@ -175,8 +175,10 @@ void CUDABestSplitFinder::UpdateWarpFindEligibility() {
   // implements: reverse scans with or without NaN handling, and forward scans with NaN handling, each whether the
   // most-frequent bin is stored (mfb_offset 0) or not (mfb_offset 1; the forward scan then rebuilds bin 0 from the
   // leaf total, as the block kernel does). Zero-as-missing scans skip the default bin and stay on the block kernel,
-  // and one ineligible task keeps every task of the dataset there.
-  warp_find_eligible_ = FalcataPlan::Get().warp_find && !split_find_tasks_.empty() &&
+  // and one ineligible task keeps every task of the dataset there. The warp kernel's math has no L1 or path-smoothing
+  // terms: those configs take the block kernel (and BeforeTrain builds no warp launch order for them).
+  warp_find_eligible_ = FalcataPlan::Get().warp_find && !split_find_tasks_.empty() && lambda_l1_ <= 0.0f &&
+    !use_smoothing_ &&
     std::all_of(split_find_tasks_.begin(), split_find_tasks_.end(), [](const SplitFindTask& t) {
       if (t.is_categorical || t.skip_default_bin || t.num_bin > 256 || t.mfb_offset > 1) return false;
       return t.reverse || t.na_as_missing;

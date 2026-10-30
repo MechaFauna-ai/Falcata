@@ -1473,7 +1473,7 @@ GPU Parameters
 
    -  **Note**: if ``libnccl.so.2`` is not found, training logs a warning and continues on one GPU; it does not stop
 
-   -  **Note**: with quantized gradients (``quant_mode`` other than ``none``, e.g. via ``use_quantized_grad=true`` or ``deterministic=true``; the default ``quant_mode=auto`` resolves to ``none`` otherwise) multi-GPU needs at least a positive ``max_depth`` with ``2^max_depth <= num_leaves + 1`` and no forced splits, and is unavailable with CEGB; otherwise training stops with the Fatal "multi-GPU + quantized gradients requires the hybrid level flow". Example: ``num_leaves=127`` needs ``max_depth<=7``
+   -  **Note**: with quantized gradients (``quant_mode`` other than ``none``, e.g. via ``use_quantized_grad=true`` or ``deterministic=true``; the default ``quant_mode=auto`` resolves to ``none`` otherwise) multi-GPU needs a depth-limited configuration (a positive ``max_depth`` with ``2^max_depth <= num_leaves + 1``, or ``num_leaves=2`` with any ``max_depth``) and no forced splits, and is unavailable with CEGB; otherwise training stops with the Fatal "multi-GPU + quantized gradients requires the hybrid level flow". Example: ``num_leaves=127`` needs ``max_depth<=7``
 
    -  **Note**: ranks exchange histograms over host-staged NCCL transport (the trainer sets ``NCCL_P2P_DISABLE=1`` and logs a warning); multi-GPU is for data that does not fit one card, not for speed: on small data it is several times slower than one GPU
 
