@@ -1322,9 +1322,9 @@ def build_cells():
     # per-pair search, the classic per-split loop). The full-device-controller PRs port these routes onto the device controller and delete host
     # paths; each must keep every md5 below unless it is marked as a model change (CEGB: level-wise on the device, a
     # documented change; re-baseline with --update route/r18-cegb). Not here: multi-GPU (rows 10-11, the vast.ai
-    # 2-GPU check), low shared memory (row 16, not reproducible on this GPU), the empty task list (row 23, a unit
-    # test in P6), debug hooks and routing keys (rows 25-26, deleted). Bagging by query (r27c) needs a ranking
-    # profile; the lattice has none.
+    # 2-GPU check), low shared memory (row 16, not reproducible on this GPU), the empty task list (row 23: the learner
+    # never sees one; test_cuda_device_tree.py pins the booster's one-leaf tree), debug hooks and routing keys (rows
+    # 25-26, deleted). Bagging by query (r27c) needs a ranking profile; the lattice has none.
     route_ic = {"interaction_constraints": [[0, 1, 2, 3, 4], [5, 6, 7, 8, 9], list(range(10, 20))]}
     # monotone constraints are refused with quantized gradients on CUDA (Fatal): non-quantized, the classic loop
     route_mono = {"monotone_constraints": [1, -1, *([0] * 17), 1], "quant_mode": "none"}
@@ -1374,9 +1374,10 @@ def build_cells():
         # sparse row data: quantized sparse-mc trains on the dense row-wise bin (dense_rowdata) and takes the complete
         # device tree; non-quantized it keeps the sparse (CSR) row data, which the batched level construct refuses
         ("r14a-sparse", "sparse-mc", {"num_leaves": 31, "max_depth": 5, "quant_mode": "none"}, 25, {}),
-        # r14b and r15 pin the non-quantized route only: on 5bec2574 the non-quantized flows print no histogram or
-        # finder gate line, so diag confirms neither the 16-bit compact read nor the global-memory finder (job 7042)
-        ("r14b-compact16", "dense", {"max_bin": 511, "feature_fraction": 0.5, "quant_mode": "none"}, 25, {}),
+        # r14b and r15: a feature of more than 256 bins takes the global-memory finder (row 15). r14b's 16-bit rows
+        # have no compact view (ScanCompactLayout builds one for 8-bit rows only), so no shape reaches a 16-bit
+        # compact read or a large-bin partition without that finder (P6; r14b was r14b-compact16 before, same md5)
+        ("r14b-gt256-nonquant", "dense", {"max_bin": 511, "feature_fraction": 0.5, "quant_mode": "none"}, 25, {}),
         ("r15-widebin", "missing-mfb0-wide", {"quant_mode": "none", "max_bin": 511}, 25, {}),
         ("r17-monotone", "dense", route_mono, 25, {}),
         ("r17b-monotone-sel", "dense", {**route_mono, "num_leaves": 31, "max_depth": -1}, 25, {}),
@@ -1407,10 +1408,10 @@ def build_cells():
             {"fingerprint_strip": ["leaf_const=", "leaf_coeff=", "tree_sizes="]},
         ),
         ("r21-stump", "dense", {"num_leaves": 2, "max_depth": -1}, 25, {}),
-        # the device-tree root tail needs the batched level root to find no valid split while the classic root search
-        # finds a positive-gain one; no known shape reaches it on 5bec2574 (host_tail=0 on every tree at
+        # the device-tree root tail needed the batched level root to find no valid split while the classic root
+        # search found a positive-gain one; no known shape reached it on 5bec2574 (host_tail=0 on every tree at
         # feature_fraction 0.05 / 0.03 / 0.02 / 0.01 and seeds 42, 1, 2, 3, job 7007: the compact-view feature-mask fix
-        # made both root searches agree). The cell pins the plan's sampled-compact complete tree.
+        # made both root searches agree), and P6 removed it. The cell pins the plan's sampled-compact complete tree.
         ("r22-roottail", "sampledwide", {"feature_fraction": 0.05, "num_leaves": 63, "max_depth": 6}, 25, {}),
         # sampledwide-mixbins: each tree's column sample gives another joint-table size (part of the graph key), so the
         # selective prefix misses its graph cache every tree: diag "device_level_graph: 9 misses, 0 hits: graphs off",

@@ -472,7 +472,7 @@
    "metric": 0.130565,
    "metric_name": "mlogloss"
   },
-  "route/r14b-compact16": {
+  "route/r14b-gt256-nonquant": {
    "md5": "2267a847ee0ec8dfad3f166df9887d4e",
    "metric": 2.127975,
    "metric_name": "rmse"

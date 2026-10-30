@@ -1,14 +1,16 @@
 # coding: utf-8
 """A complete device tree whose level root search finds no split must grow exactly what the host flows grow.
 
-The host level flows search a split-less root again with the classic per-leaf search before their leaf-wise tail; the
-complete device tree has no host tail, so it runs that same single search (and continues on the host only if it finds a
-split). Before the per-tree feature sample was translated to bin-matrix columns, EFB data with feature_fraction built
-the batched root histogram for the wrong columns, and that search then found splits the level search could not (see
-test_cuda_compact_layout_feature_mask.py). Now both constructs build the same columns into a cleared slot and both
-finders search the same sampled features, so every split-less root is a genuine stump (host_tail=0): this fixture
-(EFB data, feature_fraction, min_gain_to_split) reaches such roots mid-training, after complete device trees and,
-with graphs, after cache hits, and the device must record the same stumps and the same model as the host.
+The host level flows search a split-less root again with the classic per-leaf search before their leaf-wise tail. The
+complete device tree ran that same search too (its root tail) until P6, and continued on the host whenever it found a
+split. The cause of such a disagreement: before the per-tree feature sample was translated to bin-matrix columns, EFB
+data with feature_fraction built the batched root histogram for the wrong columns, and the classic search then found
+splits the level search could not (see test_cuda_compact_layout_feature_mask.py). Both constructs now build the same
+columns into a cleared slot and both finders run the same inner search on the same sampled features, so a split-less
+level root is final and the device tree has no root tail (host_tail is always 0). This fixture (EFB data,
+feature_fraction, min_gain_to_split) reaches such roots mid-training, after complete device trees and, with graphs,
+after cache hits: the device must record the same stumps and the same model as the host flows, whose classic root
+search would find any split the level root search missed.
 """
 
 import json
@@ -39,7 +41,7 @@ def _data():
     return X, y
 
 
-def _probe(graph):
+def _probe(graph, variant):
     X, y = _data()
     params = {
         "objective": "multiclass",
@@ -57,6 +59,9 @@ def _probe(graph):
         "metric": "None",
         "verbose": -1,
     }
+    if variant == "l1_smooth":
+        # the level finder's L1 / smoothing instantiation (P6) on split-less roots
+        params.update(lambda_l1=0.5, path_smooth=1.0)
     models = []
     counts = []
     for suffix in ["device_levels:off", "device_tree:on,device_level_graph:" + graph]:
@@ -68,11 +73,12 @@ def _probe(graph):
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("variant", ["plain", "l1_smooth"])
 @pytest.mark.parametrize("graph", ["off", "on"])
-def test_device_tree_root_tail_matches_host_cuda(graph):
+def test_device_tree_root_tail_matches_host_cuda(graph, variant):
     code = "import runpy,sys; runpy.run_path(sys.argv[1])['_probe'](*sys.argv[2:])"
     result = subprocess.run(
-        [sys.executable, "-c", code, __file__, graph],
+        [sys.executable, "-c", code, __file__, graph, variant],
         env=dict(os.environ, FALCATA_DEBUG="diag"),
         capture_output=True,
         text=True,
@@ -86,18 +92,17 @@ def test_device_tree_root_tail_matches_host_cuda(graph):
     )
     # every device tree engaged (no plan fallback)
     assert len(events) == len(data["device"]), result.stderr
-    # (the host arm reports plan_off; a split-less device root continues on the classic tail: root_tail_parity)
-    assert not re.search(r"device_tree: fallback \((?!plan_off\)|root_tail_parity\))", result.stderr)
-    if any(event[3] == "1" for event in events):
-        assert "device_tree: fallback (root_tail_parity) route=classic\n" in result.stderr
+    # (the host arm reports plan_off)
+    assert not re.search(r"device_tree: fallback \((?!plan_off\))", result.stderr)
     # the device must not record an empty tree where the host grows one, and the models must be identical
     stumps = [i for i, (h, d) in enumerate(zip(data["host"], data["device"], strict=True)) if d == 1 and h > 1]
     assert not stumps, f"device stumps where the host grows trees: {stumps}"
     assert data["device"] == data["host"]
     assert data["same_model"], "host/device model bytes differ"
     # the fixture reaches split-less level roots mid-training (after earlier complete device trees and, with graphs,
-    # after cache hits); each is a genuine stump: the classic root search finds no split either (host_tail=0)
-    assert all(e[3] == "0" for e in events), "a classic root search found a split the level root search missed"
+    # after cache hits); each is a genuine stump: the host flows' classic root search finds no split either (the
+    # models above are equal)
+    assert all(e[3] == "0" for e in events)
     roots = [i for i, e in enumerate(events) if int(e[2]) == 0]
     assert roots, "fixture no longer reaches a level root without a valid split"
     assert roots[-1] > 0
