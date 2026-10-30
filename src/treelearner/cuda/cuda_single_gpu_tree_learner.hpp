@@ -237,6 +237,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // (config and plan only; the bound the removed non-quantized graph loop served). It also fixes the run's
   // histogram ownership: no host batched deterministic construct beside the device tree's fixed-point levels.
   bool NonquantDeviceTreeShape() const;
+  /*! \brief the depth bound growth runs with: max_depth, or 1 for a quantized tree of at most two leaves, which is one
+   *  split of the root under any max_depth (so a stump is the complete device tree at depth 1, FULL_DEVICE_PLAN row
+   *  21). Non-quantized stumps keep the per-split loop: the level flows construct in 64-bit fixed point where its
+   *  per-leaf construct sums in double, so their models would change. */
+  bool QuantizedStump() const { return config_->num_leaves <= 2 && config_->use_quantized_grad; }
+  int GrowthMaxDepth() const { return QuantizedStump() ? 1 : config_->max_depth; }
   // ... and whether it grows this tree: the one-sync flow would run, the complete tree's scratch gate and setup
   // passed and the tree has a searchable feature (otherwise the one-sync flow grows it)
   bool NonquantDeviceTreeUsable() const;
@@ -768,9 +774,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  budget does not bind and every child sits at max_depth; set by the level prefix when it ended on such a level */
   bool level_completes_tree_ = false;
   bool prefix_completes_tree_ = false;
-  /*! \brief cuda_plan key device_tree: the whole tree applied no split and its classic root search (the host level
-   *  flows' first leaf-wise tail search) found one; Train's tail continues from that cached search */
-  bool device_tree_root_tail_ = false;
   /*! \brief cuda_plan key dirty_final_slots: the tree's leaf count before the final level that completed the level
    *  prefix (prefix_completes_tree_), -1 otherwise */
   int prefix_final_leaves_before_ = -1;

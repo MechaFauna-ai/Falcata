@@ -222,10 +222,10 @@ class CUDABestSplitFinder {
     const bool synchronize = true);
 
   /*! \brief whether the batched per-level find+sync path supports the current
-   *  configuration (only the template combination the benchmarks exercise:
-   *  no extra_trees / L1 / path smoothing, shared-memory histograms, no
-   *  per-node feature selection; categorical tasks run the shared
-   *  categorical body per block). Wide shapes
+   *  configuration (no extra_trees, shared-memory histograms, per-node masks only
+   *  as level masks; L1 and path smoothing take their own instantiations under
+   *  quantized training without per-node feature selection; categorical tasks
+   *  run the shared categorical body per block). Wide shapes
    *  (num_tasks > one sync block) use the multi-block batched sync mirroring
    *  the per-pair two-stage reduction.
    *
@@ -244,10 +244,15 @@ class CUDABestSplitFinder {
     if (cat_random_search_ != 0) {
       return DeviceTreeReason::kCatRandomSearch;
     }
-    if (!(lambda_l1_ <= 0.0f)) {
+    // L1 and path smoothing take the level kernels' own instantiations under quantized training without per-node
+    // feature selection. Elsewhere moving them would change their models: non-quantized levels construct in 64-bit
+    // fixed point where the per-pair search's construct sums in double, and with per-node masks the per-split loop
+    // numbers the leaves (the level flows number them level by level); they keep the per-pair search.
+    const bool l1_smoothing_per_pair = !use_quantized_grad_ || select_features_by_node_;
+    if (!(lambda_l1_ <= 0.0f) && l1_smoothing_per_pair) {
       return DeviceTreeReason::kLambdaL1;
     }
-    if (use_smoothing_) {
+    if (use_smoothing_ && l1_smoothing_per_pair) {
       return DeviceTreeReason::kPathSmooth;
     }
     if (select_features_by_node_ && !level_node_masks_) {
@@ -726,6 +731,8 @@ class CUDABestSplitFinder {
   bool extra_trees_;
   int extra_seed_;
   bool use_smoothing_;
+  // training on quantized gradients (BatchedLevelRefusal: L1 / path smoothing take the level kernels only there)
+  bool use_quantized_grad_ = false;
   double path_smooth_;
   double max_delta_step_;
   std::vector<cudaStream_t> cuda_streams_;

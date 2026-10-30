@@ -340,3 +340,16 @@ def test_cuda_categorical_record_pair_chunks():
     assert capped_chunks[0] > 1, capped_chunks
     assert capped_completes == 3
     assert capped_md5 == md5
+
+
+@_REQUIRES_CUDA
+def test_cuda_categorical_record_stump():
+    """Quantized categorical stumps (num_leaves 2) grow as depth-1 complete device trees (the growth depth of a
+    quantized stump is 1) and record their categorical root split by level, with the host level loop's model."""
+    params = {**BASE, "quant_mode": "stochastic", "num_leaves": 2, "max_depth": -1}
+    lines, routes, md5 = _diag_run(params, {}, 6)
+    assert routes == [("complete",)], routes
+    assert any(splits > 0 for _, splits, _, _ in lines), lines
+    _, host_routes, host_md5 = _diag_run({**params, "cuda_plan": "auto,device_tree:off"}, {}, 6)
+    assert host_routes[0][0] == "plan_off", host_routes
+    assert host_md5 == md5

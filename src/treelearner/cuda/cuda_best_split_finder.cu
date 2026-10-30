@@ -1291,9 +1291,12 @@ DEFINE_LEAF_SPLIT_DISPATCH(LaunchFindBestSplitsDiscretizedForLeafKernel,
 // One find launch covers every (pair, leaf, task) of a level: blockIdx.x = task,
 // blockIdx.y = pair, blockIdx.z = 0 (smaller leaf) / 1 (larger leaf). Each pair
 // writes its own region of cuda_best_split_info (2 * num_tasks slots at offset
-// pair * 2 * num_tasks) so pairs never conflict. Only the template combination the
-// benchmarks exercise is instantiated (no rand / L1 / smoothing); other configs
-// fall back to the per-pair path (see SupportsBatchedLevel).
+// pair * 2 * num_tasks) so pairs never conflict. The quantized (discretized) level kernel's L1 / path-smoothing
+// combinations are instantiated as the per-pair search's are (DEFINE_LEAF_SPLIT_DISPATCH, DispatchLevelL1Smoothing
+// below): each block runs the per-pair kernel's own inner search on the same histogram, so a level's candidates are
+// the per-pair search's. The non-quantized level kernel launches the plain variant only: non-quantized L1 and path
+// smoothing keep the per-pair search (BatchedLevelRefusal). Not USE_RAND:
+// extra_trees keeps the per-pair path (SupportsBatchedLevel; the level's blocks would share the per-task draws).
 
 template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
 __global__ void FindBestSplitsForLevelKernel(
@@ -2280,6 +2283,25 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
   }
 }
 
+// The level find kernels' L1 / path-smoothing instantiation for this finder's config, chosen by the per-pair search's
+// predicates (DEFINE_LEAF_SPLIT_DISPATCH: lambda_l1 > 0, path_smooth > 0).
+template <typename LAUNCH>
+void DispatchLevelL1Smoothing(const bool use_l1, const bool use_smoothing, LAUNCH&& launch) {
+  if (!use_l1) {
+    if (!use_smoothing) {
+      launch(std::false_type{}, std::false_type{});
+    } else {
+      launch(std::false_type{}, std::true_type{});
+    }
+  } else {
+    if (!use_smoothing) {
+      launch(std::true_type{}, std::false_type{});
+    } else {
+      launch(std::true_type{}, std::true_type{});
+    }
+  }
+}
+
 void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
@@ -2318,6 +2340,8 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
       use_desc_counts, \
       \
       device_level_state_
+  // non-quantized L1 / path smoothing keep the per-pair search (BatchedLevelRefusal): only the plain variant exists
+  CHECK(lambda_l1_ <= 0.0f && !use_smoothing_);
   if (FalcataFP32GainEnabled()) {
     FindBestSplitsForLevelKernel<false, false, false, float>
       <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
@@ -2377,7 +2401,7 @@ __device__ __forceinline__ void WarpFindBest(
   constexpr bool STRIDED = G == 4;
   const uint32_t lane = threadIdx.x & static_cast<uint32_t>(G - 1);
   const unsigned int mask = G == 32 ? 0xffffffffu : (((1u << G) - 1u) << ((threadIdx.x & 31u) & ~(G - 1u)));
-  // the level kernel only runs without L1 and path smoothing (SupportsBatchedLevel)
+  // the warp level kernel only runs without L1 and path smoothing (UpdateWarpFindEligibility)
   const double lambda_l1 = 0.0;
   const double path_smooth = 0.0;
   const double sum_hessians = static_cast<double>(sum_gradients_hessians & 0x00000000ffffffff) * hess_scale;
@@ -3155,15 +3179,19 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       cuda_best_split_info_.RawData(), \
       \
       device_level_state_
-  if (FalcataFP32GainEnabled()) {
-    FindBestSplitsDiscretizedForLevelKernel<false, false, false, float>
-      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
-        FindBestSplitsDiscretizedForLevelKernel_ARGS);
-  } else {
-    FindBestSplitsDiscretizedForLevelKernel<false, false, false, double>
-      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
-        FindBestSplitsDiscretizedForLevelKernel_ARGS);
-  }
+  DispatchLevelL1Smoothing(!(lambda_l1_ <= 0.0f), use_smoothing_, [&](auto l1, auto smoothing) {
+    constexpr bool USE_L1 = decltype(l1)::value;
+    constexpr bool USE_SMOOTHING = decltype(smoothing)::value;
+    if (FalcataFP32GainEnabled()) {
+      FindBestSplitsDiscretizedForLevelKernel<false, USE_L1, USE_SMOOTHING, float>
+        <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
+          FindBestSplitsDiscretizedForLevelKernel_ARGS);
+    } else {
+      FindBestSplitsDiscretizedForLevelKernel<false, USE_L1, USE_SMOOTHING, double>
+        <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
+          FindBestSplitsDiscretizedForLevelKernel_ARGS);
+    }
+  });
   #undef FindBestSplitsDiscretizedForLevelKernel_ARGS
 }
 
