@@ -6661,8 +6661,6 @@ void CUDASingleGPUTreeLearner::CalculateLinearCUDA(
   std::vector<std::vector<int>> leaf_feat_inner(num_leaves);  // inner feature indices
   std::vector<int> host_num_feat(num_leaves, 0);
   std::vector<int> feat_offset(num_leaves + 1, 0);
-  std::vector<int> xthx_offset(num_leaves + 1, 0);
-  std::vector<int> xtg_offset(num_leaves + 1, 0);
   std::vector<int> feat_col_flat;
   for (int leaf = 0; leaf < num_leaves; ++leaf) {
     std::vector<int> raw_features = tree->branch_features(leaf);
@@ -6679,45 +6677,18 @@ void CUDASingleGPUTreeLearner::CalculateLinearCUDA(
       }
     }
     const int nf = static_cast<int>(leaf_feat_inner[leaf].size());
-    // the gram kernel holds one row of features in a fixed-size register array
+    // bounds the gram's entry count and the row staging of the reduction kernel
     CHECK_LE(nf, 256);
     host_num_feat[leaf] = nf;
     feat_offset[leaf + 1] = feat_offset[leaf] + nf;
-    xthx_offset[leaf + 1] = xthx_offset[leaf] + (nf + 1) * (nf + 2) / 2;
-    xtg_offset[leaf + 1] = xtg_offset[leaf] + (nf + 1);
   }
 
-  // ---- device buffers + accumulation kernel ----
-  CUDAVector<int> d_num_feat, d_feat_offset, d_feat_col, d_xthx_offset, d_xtg_offset;
-  d_num_feat.InitFromHostVector(host_num_feat);
-  d_feat_offset.InitFromHostVector(feat_offset);
-  d_xthx_offset.InitFromHostVector(xthx_offset);
-  d_xtg_offset.InitFromHostVector(xtg_offset);
-  if (feat_col_flat.empty()) {
-    d_feat_col.Resize(1);
-  } else {
-    d_feat_col.InitFromHostVector(feat_col_flat);
-  }
-  const int total_xthx = xthx_offset[num_leaves];
-  const int total_xtg = xtg_offset[num_leaves];
-  cuda_linear_xthx_.Resize(static_cast<size_t>(total_xthx));
-  cuda_linear_xtg_.Resize(static_cast<size_t>(total_xtg));
-  cuda_linear_nonzero_.Resize(static_cast<size_t>(num_leaves));
-  cuda_linear_xthx_.SetValue(0);
-  cuda_linear_xtg_.SetValue(0);
-  cuda_linear_nonzero_.SetValue(0);
-
-  LaunchCalcLinearGramKernel(
-    cuda_data_partition_->cuda_data_index_to_leaf_index(), gradients, hessians,
-    d_num_feat.RawData(), d_feat_offset.RawData(), d_feat_col.RawData(),
-    d_xthx_offset.RawData(), d_xtg_offset.RawData(), num_leaves,
-    cuda_linear_xthx_.RawData(), cuda_linear_xtg_.RawData(), cuda_linear_nonzero_.RawData());
-
-  std::vector<double> h_xthx(total_xthx), h_xtg(total_xtg);
-  std::vector<int> h_nonzero(num_leaves);
-  CopyFromCUDADeviceToHost<double>(h_xthx.data(), cuda_linear_xthx_.RawData(), total_xthx, __FILE__, __LINE__);
-  CopyFromCUDADeviceToHost<double>(h_xtg.data(), cuda_linear_xtg_.RawData(), total_xtg, __FILE__, __LINE__);
-  CopyFromCUDADeviceToHost<int>(h_nonzero.data(), cuda_linear_nonzero_.RawData(), num_leaves, __FILE__, __LINE__);
+  // ---- per-leaf normal equations on the device (fixed-order reduction over the leaf windows) ----
+  std::vector<double> h_gram;
+  std::vector<int> gram_offset;
+  std::vector<int> h_nonzero;
+  LaunchCalcLinearGramKernel(host_num_feat, feat_offset, feat_col_flat, gradients, hessians,
+                             &h_gram, &gram_offset, &h_nonzero);
 
   // ---- per-leaf solve (host Eigen, matching CPU exactly) + store into tree ----
   const double lambda = config_->linear_lambda;
@@ -6728,9 +6699,11 @@ void CUDASingleGPUTreeLearner::CalculateLinearCUDA(
       tree->SetLeafConst(leaf, tree->LeafOutput(leaf));
       continue;
     }
+    const double* xtg = h_gram.data() + gram_offset[leaf];
+    const double* xthx = xtg + num_feat + 1;
     // Device-agnostic solve + store, shared with the CPU LinearTreeLearner.
     LinearLeafSolver::SolveAndStore(
-        tree, leaf, num_feat, h_xthx.data() + xthx_offset[leaf], h_xtg.data() + xtg_offset[leaf],
+        tree, leaf, num_feat, xthx, xtg,
         leaf_feat_inner[leaf], train_data_, lambda,
         /*is_refit=*/false, /*decay_rate=*/0.0, /*shrinkage=*/0.0, /*old_coeff_idx=*/{});
   }
