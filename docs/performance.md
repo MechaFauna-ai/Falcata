@@ -3434,6 +3434,29 @@ Every run of every arm was md5-identical.
 The fused select still costs about 3.5 µs per level on small levels and about 18 µs at 512 splits. What remains
 there is the last block's fence, count and scans, and the copy of every split's record.
 
+#### To the first binding level (dynamic R1)
+
+The static prefix above stopped at `K` levels; the device levels now continue while the inequality holds (see the
+start of this section). Strict A/B against master `f40a1690` (before #182) (exclusive runs, 6 alternating pairs of fresh
+processes, 1000 rounds, train wall clock; every run of both arms md5-identical). Hand-off levels from a 70-round
+`FALCATA_DEBUG=diag` run of each arm: master's static prefix levels, and the level each tree handed over at.
+
+| cell | master s | P7 s | master/P7 | master's static levels | P7 hand-off level (trees of 70) |
+|---|---:|---:|---:|---|---|
+| binding budget (151 leaves, depth 10, binary, bagging 0.65) | 0.7347 | 0.7325 | 1.003x | 7 | 7 binding (70) |
+| unbounded-fewbin (1024 leaves, unlimited, regression, bagging 0.75) | 2.0590 | 2.0656 | 0.997x | 10 | 10 binding (70) |
+| fraud (255 leaves, unlimited, binary) | 0.8828 | 0.8342 | 1.058x | 7 | 12-36 (50 binding, 20 complete; 466 bodies) |
+| higgs (4095 leaves, unlimited, binary, bagging 0.8) | 7.7200 | 7.3477 | 1.051x | 10 | 13 (69), 14 (1) |
+| covtype small, `feature_fraction_bynode` 0.5, unlimited (host masks: unchanged route) | 8.8229 | 8.8141 | 1.001x | - | - |
+| covtype deep (complete device tree) | 3.8621 | 3.8583 | 1.001x | - | - |
+| epsilon fixedpoint (complete device tree) | 8.4882 | 8.5063 | 0.998x | - | - |
+
+Trees that hand over at the old `K` (binding budget, unbounded 1024 leaves: `K` is already the first binding level
+there) run the former prefix's launches and readback unchanged, plus a host count of the valid leaf entries; the gain
+is on shapes whose early levels leave leaves without a valid split (fraud: chain-like trees) and on budgets above
+1024 leaves (higgs 4095: the old 10-level cap).
+
+
 
 Whole-tree fused apply bounds only its physical workers by the joint split/gap row extent:
 `min(8192, max(1, ceil(N / 1024) + 2 * max_splits - 1))`, plus the controller CTA.
