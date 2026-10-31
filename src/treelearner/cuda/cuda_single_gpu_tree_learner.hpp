@@ -544,6 +544,18 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // selected frontier candidates (right-child indices from the free list).
   // Returns the number of frontier candidates to apply this level.
   int RunSelectiveLevel();
+  // R3 shadow (FALCATA_DEBUG=diag; P8a): RunSelectiveLevel with the device greedy simulation (cuda_selective_r3)
+  // launched beside it on the level's pre-simulation state, its selection, numbering, collapse and free list
+  // compared with the host's (a mismatch prints one line and counts; the host's result is the one used). handoff:
+  // the level's search came from the selective device levels' readback.
+  int RunSelectiveLevelShadowed(const std::vector<int>& child_leaves, const bool handoff);
+  void SelectiveR3ShadowLaunch(const std::vector<int>& child_leaves);
+  void SelectiveR3ShadowCheck();
+  // records a timing event on the legacy stream (diag only): 0 before the level's readback, 1 before its apply,
+  // 2 after the apply, 3 before the children's search
+  void SelectiveR3ShadowMark(const int which);
+  // one diag line per shadowed level of the tree, then the tree's and the cumulative mismatch counts
+  void SelectiveR3ShadowTreeEnd();
   // Batched partition-only apply of the selected frontier splits (the CUDA tree
   // object is not touched during selective growth; the final tree is rebuilt
   // host-side after pruning). Fills *applied for the readback bookkeeping.
@@ -955,6 +967,37 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int64_t sel_stat_levels_ = 0;
   int64_t sel_stat_trees_ = 0;
   int64_t sel_stat_sim_ns_ = 0;
+  // R3 shadow state (FALCATA_DEBUG=diag): device and pinned blobs of the same layout (SelectiveR3ShadowLaunch), the
+  // side stream, the per-level timing events and records of the current tree, the mismatch counters
+  struct SelectiveR3ShadowLevel {
+    int level;
+    int handoff;
+    int binding;
+    int applied;    // live applied records before the level (A)
+    int frontier;   // valid frontier candidates (S)
+    int pops;
+    int reuse;      // leading pops equal to the last level's (frontier picks renamed to their records)
+    int collapsed;
+    int created;
+    int mismatch;
+    double sim_us;
+    double shadow_host_us;
+    int ev;         // first of this level's 6 events: kernel start/stop, marks 0-3
+    int marks;      // bit i: mark i recorded
+  };
+  char* r3_device_blob_ = nullptr;
+  char* r3_pinned_blob_ = nullptr;
+  int r3_record_capacity_ = 0;
+  cudaStream_t r3_stream_ = nullptr;
+  std::vector<cudaEvent_t> r3_events_;
+  std::vector<SelectiveR3ShadowLevel> r3_levels_;
+  int r3_pre_records_ = 0;
+  std::vector<int> r3_prev_order_;
+  std::vector<int> r3_prev_classic_;
+  bool r3_pending_mark0_ = false;
+  int64_t r3_tree_levels_start_ = 0;
+  int64_t r3_stat_levels_ = 0;
+  int64_t r3_stat_mismatches_ = 0;
   // reusable device slab for CUDATree's per-tree arrays (see CUDATree ctor)
   CUDAVector<uint8_t> cuda_tree_pool_buffer_;
   // reusable growth buffers for the categorical split record of the tree being grown (see CUDATreeCatArena)
