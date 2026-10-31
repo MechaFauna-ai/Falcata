@@ -152,12 +152,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // coefficients and upload them, so the score kernel matches the tree exactly (as the CPU
   // LinearTreeLearner does by reading tree->LeafConst/LeafCoeffs at score time).
   void BuildAndUploadLinearScoreModel(const Tree* tree) const;
-  // Launch the per-leaf XtHX (upper-triangle) + Xtg accumulation kernel.
+  // Per-leaf XtHX (upper-triangle) + Xtg of the leaf windows, a fixed-order reduction (repeats bit for bit).
+  // gram holds, per leaf from gram_offset[leaf], its Xtg (nf + 1) then its XtHX upper triangle.
   void LaunchCalcLinearGramKernel(
-    const int* cuda_data_index_to_leaf_index, const score_t* gradients, const score_t* hessians,
-    const int* leaf_num_feat, const int* leaf_feat_offset, const int* leaf_feat_col,
-    const int* leaf_xthx_offset, const int* leaf_xtg_offset, int num_leaves,
-    double* cuda_xthx, double* cuda_xtg, int* cuda_leaf_nonzero);
+    const std::vector<int>& leaf_num_feat, const std::vector<int>& leaf_feat_offset,
+    const std::vector<int>& leaf_feat_col, const score_t* gradients, const score_t* hessians,
+    std::vector<double>* gram, std::vector<int>* gram_offset, std::vector<int>* leaf_nonzero);
   // Launch the linear score-update kernel (score += const + sum coeff*rawfeat, NaN -> leaf_output).
   void LaunchLinearAddScoreKernel(
     const int* cuda_data_index_to_leaf_index, const double* cuda_leaf_const,
@@ -1084,9 +1084,13 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int num_numeric_features_ = 0;
   // inner feature index -> numeric column in cuda_raw_data_ (-1 if categorical)
   std::vector<int> inner_feature_to_numeric_col_;
-  // device scratch for the per-leaf gram accumulation
-  CUDAVector<double> cuda_linear_xthx_;
-  CUDAVector<double> cuda_linear_xtg_;
+  // device scratch for the per-leaf gram reduction (grow-only, kept across trees)
+  CUDAVector<int> cuda_linear_meta_;
+  CUDAVector<int> cuda_linear_feat_col_;
+  CUDAVector<int> cuda_linear_chunks_;
+  CUDAVector<double> cuda_linear_partial_;
+  CUDAVector<int> cuda_linear_chunk_count_;
+  CUDAVector<double> cuda_linear_gram_;
   CUDAVector<int> cuda_linear_nonzero_;
   // device copies of the fitted per-leaf linear model, used by the score kernel.
   // Rebuilt from the (post-shrinkage) tree at score time, so mutable/const-built.
