@@ -3500,6 +3500,43 @@ there) run the former prefix's launches and readback unchanged, plus a host coun
 is on shapes whose early levels leave leaves without a valid split (fraud: chain-like trees) and on budgets above
 1024 leaves (higgs 4095: the old 10-level cap).
 
+#### The device greedy selection in shadow mode (`FALCATA_DEBUG=r3shadow`)
+
+From the first binding level on, the host's selective loop decides which candidates a level splits by simulating the
+greedy leaf-wise order (`RunSelectiveLevel`). Its device port, R3 (`cuda_selective_r3`), runs only as a shadow so far.
+It does not route or change any model. Under `FALCATA_DEBUG=r3shadow`, every level of the host loop also runs R3 on a
+side stream, from the same state and the device's own best-split cache, and compares the result field by field: the
+frontier (leaves, gains), the pop order and classic leaf numbers, the collapsed splits, the freed leaves and the free
+list, the created records, every record's links, dead flag and gain (bit for bit), and every leaf's parent record. It
+does not compare the collapse windows' row ranges, leaf depths, live flags or the created records' split payloads,
+which the host keeps. Lines (stderr, `[hybrid-diag]` prefix):
+
+- `r3_shadow: tree=T level=k handoff=0|1 binding=0|1 applied=A frontier=S pops=P reuse=R collapsed=C created=N
+  r3_us= sim_us= ties= gap_readback_us= gap_apply_us= shadow_host_us=`: one per level, printed at the tree end.
+  - `reuse` is the number of leading pops equal to the previous level's.
+  - `r3_us` is the kernel time from cudaEvents.
+  - `sim_us` is the host simulation time, and `ties` counts its equal-gain resolutions.
+  - The two gaps are the device idle time the host loop spends between the level's search and its apply (the shadow's
+    host time taken out) and between the apply and the children's search; -1 where the level has no such span.
+- `r3_shadow: tree=T levels=L mismatches=M cumulative levels= mismatches=`: once per tree. The learner's destructor
+  prints `r3_shadow: end of training levels= mismatches=`.
+- `r3_shadow: MISMATCH tree= level= field= pos= host= device=`: the first difference of a level.
+
+The test hook `r3fault` corrupts the device result's first pop, so every level must report a mismatch.
+
+Measured with the shadow on (RTX 5090, 200 rounds; medians over the host loop's binding levels):
+
+| cell | pops | R3 kernel | host simulation | host device-idle time | R3 / idle |
+|---|---:|---:|---:|---:|---:|
+| binding budget 151/10 | 150 | 159 µs | 11.9 µs | 25.1 µs | 6.3x |
+| unbounded-fewbin 1024/-1 | 1023 | 1340 µs | 55.0 µs | 75.3 µs | 17.8x |
+| fraud 255/-1 | 254 | 204 µs | 11.8 µs | 25.8 µs | 7.9x |
+| higgs 4095/-1 | 4094 | 5133 µs | 234 µs | 287 µs | 17.9x |
+
+There were no mismatches on 5,552 levels. The kernel's one-thread heap costs about 1.1 µs per pop, against about
+55 ns on the host. A device route through it would be slower on every cell, so the route waits for a parallel
+selection.
+
 
 
 Whole-tree fused apply bounds only its physical workers by the joint split/gap row extent:
