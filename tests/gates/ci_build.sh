@@ -26,8 +26,10 @@ pip install --quiet --upgrade pip
 # hosted CI cannot do (no GPU runners). pytest-forked is not optional there --
 # a CUDA context error is sticky, so without one process per test a single
 # failure cascades into dozens and eventually aborts the run.
+# pytest is pinned below 9.2: pytest 9.2.0 breaks pytest-forked (every forked
+# test "EXITED with status 3"), seen 2026-10-30.
 pip install --quiet numpy scipy scikit-learn pyarrow xgboost catboost \
-  cloudpickle matplotlib pandas psutil pytest pytest-forked pytest-timeout
+  cloudpickle matplotlib pandas psutil "pytest<9.2" pytest-forked pytest-timeout
 
 CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DUSE_NCCL=ON -DBUILD_WITH_SHARED_NCCL=ON"
 if command -v ccache >/dev/null 2>&1; then
