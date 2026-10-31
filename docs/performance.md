@@ -3187,7 +3187,17 @@ records in the same order (lattice and route goldens; the categorical record tes
 `device_tree:off`, the host level loop). `quant_mode=none` with categorical features keeps the one-sync host flow
 (reason `categorical`).
 
-AB_TABLE_PLACEHOLDER
+Master (7882e953) vs this change, default plan, RTX 5090, 6 interleaved pairs of 1000 rounds each, model md5 equal per
+arm:
+
+| cell | master ms/tree | device tree ms/tree | ratio |
+|---|---|---|---|
+| categorical-control (3 classes, 32 leaves / depth 5) | 0.607 | 0.533 | 1.138x |
+| same at 255 leaves / depth 8 | 1.066 | 0.926 | 1.152x |
+| airline-cat deep (92M rows, 3 categorical columns, 1023 / 10; 88% kernel-bound) | 41.95 | 42.06 | 0.998x |
+| categorical unbounded (63 leaves, `max_depth=-1`: selective, host loop in both arms) | 1.534 | 1.534 | 1.000x |
+| covtype deep (no categorical features, control) | 0.559 | 0.559 | 0.999x |
+| epsilon fixedpoint (no categorical features, control) | 8.532 | 8.539 | 0.999x |
 
 ### Why a tree is not a complete device tree: the reason line
 
