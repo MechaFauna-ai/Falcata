@@ -28,11 +28,12 @@ lattice by design. Re-baseline explicitly -- `lattice.py --update <cell-id> ...`
 (or `--baseline` for everything) -- and commit the `md5_lattice.json` diff; the
 diff review shows exactly which cells moved and is itself the review artifact.
 
-**Route goldens (`route/*`).** 34 fingerprinted cells (the budget-limited
-linear tree's md5 leaves out its run-to-run varying leaf coefficients via the
-cell field `fingerprint_strip`), one per configuration
-the complete CUDA device tree refuses today (the inventory rows of the
-full-device-controller program, recorded on master 5bec2574): deep and
+**Route goldens (`route/*`).** 41 fingerprinted cells: 34 one per configuration
+the complete CUDA device tree refused (the inventory rows of the
+full-device-controller program, recorded on master 5bec2574), and seven more
+linear-tree cells (device tree, categorical, bagging, GOSS, L1, path
+smoothing, stump; linear leaf coefficients repeat bit for bit since the fixed-order gram
+reduction). The inventory rows: deep and
 memory-gated trees, binding leaf budgets, non-quantized, categorical, per-node
 masks, interaction and monotone constraints, forests, vector leaves, the
 unbatched finders and layouts, CEGB, forced splits, budget-limited linear
@@ -45,11 +46,10 @@ names its PR number in the commit:
     .gates-venv/bin/python tests/gates/lattice.py --update route/r18-cegb --only route/r18-cegb
     .gates-venv/bin/python tests/gates/lattice.py --check --only 'route/*'   # every route golden
 
-Cell ids for `--update` and `--only` are fnmatch patterns. Three cell fields
+Cell ids for `--update` and `--only` are fnmatch patterns. Two cell fields
 serve these cells: `debug` (extra `FALCATA_DEBUG` tokens such as
-`vramfree=1`; the cell runs alone in a worker), `forced_splits` (a JSON
-object written to a temporary `forcedsplits_filename`) and
-`fingerprint_strip` (model-text line prefixes left out of the md5).
+`vramfree=1`; the cell runs alone in a worker) and `forced_splits` (a JSON
+object written to a temporary `forcedsplits_filename`).
 
 ## Nightly (`nightly_local.sh`, cron)
 

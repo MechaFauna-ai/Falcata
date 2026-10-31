@@ -2619,9 +2619,10 @@ compact views and levels wider than the batched double-slot slab. Batch, one-syn
 decline it. A warning fires once per process (across datasets and resets). The per-leaf and host batched
 deterministic constructs otherwise run where they ran (their models are unchanged). `cuda_precision=fp32` keeps its fp32 gain math on `hist_t` histograms; its fp32 histogram
 layout runs only with the key off. `nonquant_deterministic:off` restores the float atomics. Not covered, models can
-still vary from run to run: linear trees (their per-leaf least-squares sums use
-double atomics), ranking objectives' gradients (shared float atomics), multi-plane vector-leaf trees (unchanged
-routing), multi-GPU.
+still vary from run to run: ranking objectives' gradients (shared float atomics), multi-plane vector-leaf trees (unchanged
+routing), multi-GPU. Linear trees are covered since 1.2: their per-leaf least-squares sums are a fixed-order reduction
+over each leaf's rows, so their coefficients repeat bit for bit on CUDA (they still differ from the CPU learner's in
+the last bits, which sums in another order).
 
 The scale is stored as an integer exponent and applied with `scalbnf`, so finite normal and subnormal float32
 inputs are covered without requiring `2^S` to fit in a float. For each gradient/hessian channel, with

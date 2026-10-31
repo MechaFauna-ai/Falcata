@@ -68,8 +68,6 @@ METRIC_TOLERANCE = 0.02  # relative; only applied to non-fingerprinted (nondeter
 #            read once per process, so such a cell runs alone in a worker
 #   forced_splits  a forced-split JSON object: the worker writes it to a temp
 #            file and passes it as forcedsplits_filename
-#   fingerprint_strip  model-text line prefixes left out of the md5 (e.g. the
-#            linear leaf fit's leaf_const= / leaf_coeff= and tree_sizes=)
 # --------------------------------------------------------------------------- #
 
 
@@ -89,7 +87,6 @@ def build_cells():
         diag_set=None,
         debug=None,
         forced_splits=None,
-        fingerprint_strip=None,
     ):
         cells.append(
             {
@@ -105,7 +102,6 @@ def build_cells():
                 "diag_set": diag_set,
                 "debug": debug,
                 "forced_splits": forced_splits,
-                "fingerprint_strip": fingerprint_strip,
             }
         )
 
@@ -1397,16 +1393,24 @@ def build_cells():
             25,
             {"forced_splits": {"feature": 0, "threshold": 0.0, "left": {"feature": 1, "threshold": 0.0}}},
         ),
-        # the linear leaf fit is not run-to-run deterministic on 5bec2574 (job 7021: leaf_const / leaf_coeff of every
-        # tree differ between runs, at num_threads 8 and 1; structure and leaf values repeat): the md5 pins the tree
-        # text without those lines (and tree_sizes, which follows their lengths)
+        # linear trees: the leaf fit's normal equations are a fixed-order reduction (CalcLinearGramChunkKernel), so the
+        # md5 pins leaf_const / leaf_coeff too (before, per-row double atomics made them differ run to run, job 7021,
+        # and the cell left them out); r20 the selective one-sync flow, r20b the complete device tree, r20c
+        # categorical splits, r20d bagging, r20e-g L1, path smoothing and stumps (complete device trees since P6), r20h GOSS
+        ("r20-linear-sel", "dense", {"linear_tree": True, "num_leaves": 31, "max_depth": -1}, 25, {}),
+        ("r20b-linear-dt", "dense", {"linear_tree": True}, 25, {}),
+        ("r20c-linear-cat", "categorical", {"linear_tree": True, "num_leaves": 31, "max_depth": -1}, 25, {}),
         (
-            "r20-linear-sel",
+            "r20d-linear-bag",
             "dense",
-            {"linear_tree": True, "num_leaves": 31, "max_depth": -1},
+            {"linear_tree": True, "bagging_fraction": 0.7, "bagging_freq": 1},
             25,
-            {"fingerprint_strip": ["leaf_const=", "leaf_coeff=", "tree_sizes="]},
+            {},
         ),
+        ("r20e-linear-l1", "dense", {"linear_tree": True, "lambda_l1": 1.0}, 25, {}),
+        ("r20f-linear-smooth", "dense", {"linear_tree": True, "path_smooth": 5.0}, 25, {}),
+        ("r20g-linear-stump", "dense", {"linear_tree": True, "num_leaves": 2, "max_depth": -1}, 25, {}),
+        ("r20h-linear-goss", "dense", {"linear_tree": True, "data_sample_strategy": "goss"}, 25, {}),
         ("r21-stump", "dense", {"num_leaves": 2, "max_depth": -1}, 25, {}),
         # the device-tree root tail needed the batched level root to find no valid split while the classic root
         # search found a positive-gain one; no known shape reached it on 5bec2574 (host_tail=0 on every tree at
@@ -1777,9 +1781,6 @@ def run_cell(cell):
     # a config param is added/renamed (it did in the 2026-07 planner refactor
     # with zero behavior change) -- tree bytes are the actual behavior signature
     trees_str = model_str.split("\nparameters:")[0]
-    if cell.get("fingerprint_strip"):
-        strip = tuple(cell["fingerprint_strip"])
-        trees_str = "\n".join(line for line in trees_str.splitlines() if not line.startswith(strip))
     md5 = hashlib.md5(trees_str.encode()).hexdigest()
     # validity: round-trip + finite predictions + tree count
     is_vector_leaf = str(params.get("tree_mode", "scalar")).strip().lower() == "vector_leaf"
