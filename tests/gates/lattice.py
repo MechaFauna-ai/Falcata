@@ -1396,7 +1396,7 @@ def build_cells():
         # linear trees: the leaf fit's normal equations are a fixed-order reduction (CalcLinearGramChunkKernel), so the
         # md5 pins leaf_const / leaf_coeff too (before, per-row double atomics made them differ run to run, job 7021,
         # and the cell left them out); r20 the selective one-sync flow, r20b the complete device tree, r20c
-        # categorical splits, r20d bagging, r20e-g L1, path smoothing and stumps (complete device trees since P6)
+        # categorical splits, r20d bagging, r20e-g L1, path smoothing and stumps (complete device trees since P6), r20h GOSS
         ("r20-linear-sel", "dense", {"linear_tree": True, "num_leaves": 31, "max_depth": -1}, 25, {}),
         ("r20b-linear-dt", "dense", {"linear_tree": True}, 25, {}),
         ("r20c-linear-cat", "categorical", {"linear_tree": True, "num_leaves": 31, "max_depth": -1}, 25, {}),
@@ -1410,6 +1410,7 @@ def build_cells():
         ("r20e-linear-l1", "dense", {"linear_tree": True, "lambda_l1": 1.0}, 25, {}),
         ("r20f-linear-smooth", "dense", {"linear_tree": True, "path_smooth": 5.0}, 25, {}),
         ("r20g-linear-stump", "dense", {"linear_tree": True, "num_leaves": 2, "max_depth": -1}, 25, {}),
+        ("r20h-linear-goss", "dense", {"linear_tree": True, "data_sample_strategy": "goss"}, 25, {}),
         ("r21-stump", "dense", {"num_leaves": 2, "max_depth": -1}, 25, {}),
         # the device-tree root tail needed the batched level root to find no valid split while the classic root
         # search found a positive-gain one; no known shape reached it on 5bec2574 (host_tail=0 on every tree at

@@ -751,7 +751,9 @@ void CUDASingleGPUTreeLearner::LaunchCalcLinearGramKernel(
   const int num_leaves = static_cast<int>(leaf_num_feat.size());
   gram_offset->assign(num_leaves + 1, 0);
   leaf_nonzero->assign(num_leaves, 0);
-  // the leaf windows of the partition's index list: the index partition of a map-only final level is completed first
+  // the leaf windows of the partition's index list. Both map-only final-level gates exclude linear trees (the host
+  // level loop's map_only and the device tree's prefetch_tree_end), so nothing is pending here today; the call
+  // only keeps the windows valid should a later change lift that exclusion (a no-op otherwise)
   cuda_data_partition_->EnsureLevelPartitioned();
   std::vector<data_size_t> leaf_start(num_leaves), leaf_num(num_leaves);
   CopyFromCUDADeviceToHost<data_size_t>(leaf_start.data(), cuda_data_partition_->cuda_leaf_data_start(),

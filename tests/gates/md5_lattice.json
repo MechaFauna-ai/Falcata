@@ -537,6 +537,11 @@
    "metric": 2.916746,
    "metric_name": "rmse"
   },
+  "route/r20h-linear-goss": {
+   "md5": "1f4386eb7843d2b37fc9c0370a1d149c",
+   "metric": 1.73334,
+   "metric_name": "rmse"
+  },
   "route/r21-stump": {
    "md5": "6437b015d1cbfa558b618a6c09d6fa6b",
    "metric": 3.204811,

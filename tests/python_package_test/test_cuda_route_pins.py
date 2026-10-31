@@ -106,6 +106,7 @@ ROUTES_EXPECTED = {
     "route/r20e-linear-l1": [_COMPLETE],
     "route/r20f-linear-smooth": [_COMPLETE],
     "route/r20g-linear-stump": [_COMPLETE],
+    "route/r20h-linear-goss": [_COMPLETE],
     # a two-leaf tree is the complete device tree at depth 1 (P6; same md5)
     "route/r21-stump": [_COMPLETE],
     # r22 pins complete device trees (the device tree has no root tail since P6, see the lattice comment); split-less

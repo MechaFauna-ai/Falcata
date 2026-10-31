@@ -6,8 +6,8 @@ index list (CalcLinearGramChunkKernel / CalcLinearGramFinalKernel): chunk sums i
 sums in chunk order. The former kernel added every row's terms with double atomicAdd, so leaf_const / leaf_coeff
 moved at the 1e-12 level from run to run (runs/device_default/LINEAR_TREE_DETERMINISM.md). Two trainings of the same
 shape must give the same model text, coefficients included, on every flow that grows linear trees: the selective
-one-sync flow (budget-limited), the complete device tree (depth-limited), bagging, categorical splits, L1, path
-smoothing, stumps, non-quantized training and leaves wide enough for the multi-pass entry loop. CPU parity stays inexact (another summation order).
+one-sync flow (budget-limited), the complete device tree (depth-limited), bagging, GOSS, categorical splits, L1,
+path smoothing, stumps, non-quantized training and leaves wide enough for the multi-pass entry loop. CPU parity stays inexact (another summation order).
 """
 
 import hashlib
@@ -65,6 +65,7 @@ _SHAPES = {
     "nonquant-63-6": ("dense", {"num_leaves": 63, "max_depth": 6, "quant_mode": "none"}, 12),
     "categorical-31": ("categorical", {"num_leaves": 31, "max_depth": -1}, 12),
     "categorical-63-6": ("categorical", {"num_leaves": 63, "max_depth": 6}, 12),
+    "goss-63-6": ("dense", {"num_leaves": 63, "max_depth": 6, "data_sample_strategy": "goss"}, 12),
     "l1-63-6": ("dense", {"num_leaves": 63, "max_depth": 6, "lambda_l1": 1.0}, 12),
     "smooth-63-6": ("dense", {"num_leaves": 63, "max_depth": 6, "path_smooth": 5.0}, 12),
     "stump": ("dense", {"num_leaves": 2, "max_depth": -1}, 12),
@@ -99,7 +100,7 @@ def test_linear_tree_repeats_cuda(name):
         diff = [(a, b) for a, b in zip(text_a.splitlines(), text_b.splitlines(), strict=False) if a != b]
         pytest.fail(f"{len(diff)} model lines differ, first: {diff[0][0][:120]} vs {diff[0][1][:120]}")
     assert hashlib.md5(text_a.encode()).hexdigest() == hashlib.md5(text_b.encode()).hexdigest()
-    # the device scores the training saw are the model's own predictions
+    # the fitted linear leaves give finite predictions
     pred = booster.predict(X)
     assert np.all(np.isfinite(pred))
 
