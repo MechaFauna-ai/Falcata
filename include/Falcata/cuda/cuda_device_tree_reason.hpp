@@ -20,7 +20,10 @@ namespace Falcata {
  * prefix did not run), so a run logs its route changes, not one line per tree. The comparison is with the learner's
  * last fallback line: complete trees in between do not make the same line print again. Every learner prints its own
  * lines (one per rank under num_gpu > 1, one per forest slot). Trees the complete device tree grew
- * keep their `device_tree: complete ...` line. <reason> is the first refusal in the order of this list that holds for
+ * keep their `device_tree: complete ...` line; a selective tree the device levels grew up to its first binding level
+ * (dynamic R1) reports `device_tree: selective hand-off at level <k> (binding|complete)` instead, once per tree, where
+ * k is the level the host's selective loop took over (complete: no leaf had a valid split, the loop only finalizes).
+ * <reason> is the first refusal in the order of this list that holds for
  * the tree (several can hold at once; the order puts the long-lived fallbacks first, so a later port changes the
  * fewest pins). `prefix=` names why a device_levels prefix did not run in a flow that would otherwise have taken one
  * (only printed for the host_two_sync and selective_two_sync routes).
@@ -83,7 +86,7 @@ inline const char* DeviceTreeReasonToken(const DeviceTreeReason reason) {
   X(kDeviceTree, "device_tree")                 /* the complete device tree */                          \
   X(kPrefix, "prefix")                          /* device_levels prefix, then the host two-sync loop */ \
   X(kHostTwoSync, "host_two_sync")              /* the host two-sync level loop */                      \
-  X(kSelectivePrefix, "selective_prefix")       /* device prefix, then the host selective loop */       \
+  X(kSelectiveDevice, "selective_device")       /* device levels to the first binding level, then F */  \
   X(kSelectiveTwoSync, "selective_two_sync")    /* the host selective two-sync loop */                  \
   X(kSelectiveOneSync, "selective_one_sync")    /* the host selective one-sync loop (non-quantized) */  \
   X(kOneSync, "one_sync")                       /* the non-quantized one-sync level loop */             \

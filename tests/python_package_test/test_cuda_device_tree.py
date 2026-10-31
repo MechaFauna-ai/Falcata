@@ -376,8 +376,9 @@ def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
 @pytest.mark.parametrize(
     ("case", "plan", "line"),
     [
-        ("binding", "auto", "(selective_budget) route=selective_prefix"),
-        ("unbounded", "auto", "(selective_unbounded) route=selective_prefix"),
+        # selective trees: the device levels up to the first binding level, then the host's selective loop
+        ("binding", "auto", "selective hand-off"),
+        ("unbounded", "auto", "selective hand-off"),
         # per-node masks drawn on the host: the host flow
         ("bynode", "auto,device_bynode_masks:off", "(plan_off) route=host_two_sync prefix=bynode_host_masks"),
         # L1 / path smoothing and stumps keep their routes where the level flows would change the model (P6):
@@ -389,9 +390,14 @@ def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
 )
 def test_device_tree_unsupported_cuda(case, plan, line):
     _, diag = _run(case, base_plan=plan)
-    # outside the depth bound the prefix grows the tree; unsupported configurations use the host flow; the reason line
-    # names why and which controller grew the trees, once (no route changes here; the comparison arms' plan_off lines
-    # aside)
+    # outside the depth bound the selective device levels grow the tree up to its first binding level (one hand-off
+    # line per tree); unsupported configurations use the host flow; the reason line names why and which controller
+    # grew the trees, once (no route changes here; the comparison arms' plan_off lines aside)
+    if line == "selective hand-off":
+        assert re.search(r"device_tree: selective hand-off at level \d+ \((binding|complete)\)", diag), diag[-3000:]
+        assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag), diag[-3000:]
+        assert "device_tree: complete" not in diag
+        return
     expected = 0 if line.startswith("(plan_off)") else 1
     assert len(re.findall(r"device_tree: fallback \((?!plan_off\))", diag)) == expected, diag[-3000:]
     assert f"device_tree: fallback {line}\n" in diag, diag[-3000:]

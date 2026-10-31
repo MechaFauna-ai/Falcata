@@ -30,8 +30,11 @@ class DeviceBuffer {
 
 // Exercise the library's actual selector, descriptors and journal. The oracle is the host's stable_sort contract,
 // not another CUDA implementation. The final pairs launch deliberately has no child-search descriptor storage.
+// selective: a selective tree's level (no whole tree, dynamic R1, no tree record, the split-info journal, the level
+// from the state): it applies every valid leaf in ascending order while leaves + valid <= budget, else stops at its
+// first binding level (journal[3]) without applying it
 void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& valid, const int budget,
-                    const bool final_depth = true) {
+                    const bool final_depth = true, const bool selective = false) {
   using Falcata::kDeviceLevelJournalRecord;
   using Falcata::kDeviceTreeSharedSplits;
   using Falcata::CUDADeviceLevelConfig;
@@ -67,6 +70,7 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   DeviceBuffer<double> select_gains(global_select ? leaves : 1);
   DeviceBuffer<unsigned int> select_bits(global_select ? 2 * leaves / 32 : 1);
   DeviceBuffer<int2> select_gaps(global_select ? 2 * leaves : 1);
+  DeviceBuffer<CUDASplitInfo> split_info_journal(2 * leaves);
   std::vector<CUDASplitInfo> splits(leaves);
   std::vector<data_size_t> host_counts(leaves), host_starts(leaves);
   std::vector<int> expected;
@@ -91,8 +95,10 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
     if (valid[leaf]) expected.push_back(leaf);
   }
   const bool binding = static_cast<int>(expected.size()) > budget - leaves;
-  const bool rejected = binding && !final_depth;
-  if (binding) {
+  const bool rejected = binding && !final_depth && !selective;
+  if (binding && selective) {
+    expected.clear();  // the first binding level: the host's selective loop takes it
+  } else if (binding) {
     std::stable_sort(expected.begin(), expected.end(), [&](int a, int b) { return gains[a] > gains[b]; });
     expected.resize(rejected ? 0 : static_cast<size_t>(budget - leaves));
   }
@@ -135,7 +141,10 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   cfg.construct_block_start = block_start.data();
   cfg.max_depth = level + (final_depth ? 1 : 2);
   cfg.num_leaves_budget = budget;
-  cfg.whole_tree = 1;
+  cfg.whole_tree = selective ? 0 : 1;
+  cfg.r1_binding = selective ? 1 : 0;
+  cfg.skip_tree_record = selective ? 1 : 0;
+  cfg.split_info_journal = selective ? split_info_journal.data() : nullptr;
   cfg.gap_block_dim = 1024;
   if (global_select) {
     cfg.select_leaves = select_leaves.data();
@@ -144,11 +153,18 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
     cfg.select_gaps = select_gaps.data();
     cfg.select_capacity = leaves;
   }
-  LaunchDeviceLevelSelect(cfg, level, leaves, nullptr);
+  if (selective) {
+    // the learner's launch: the level's most splits (R1: at most budget / 2) and leaves pick the select's capacity
+    // (register-batched up to 1024 leaves, shared up to 4096, global beyond); the level from the state
+    LaunchDeviceLevelSelect(cfg, -1, std::max(1, std::min(leaves, budget / 2)), nullptr, leaves);
+  } else {
+    LaunchDeviceLevelSelect(cfg, level, leaves, nullptr);
+  }
   ASSERT_EQ(cudaGetLastError(), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(&state, device_state.data(), sizeof(state), cudaMemcpyDeviceToHost), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(journal.data(), device_journal.data(), journal.size() * sizeof(int), cudaMemcpyDeviceToHost), cudaSuccess);
   ASSERT_EQ(journal[2], rejected ? 1 : 0);
+  ASSERT_EQ(journal[3], binding && selective ? 1 : 0);
   ASSERT_EQ(state.live_splits, static_cast<int>(expected.size()));
   if (expected.empty()) {
     EXPECT_EQ(state.done, 1);
@@ -170,13 +186,24 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
   ASSERT_EQ(cudaMemcpy(actual_batch.data(), batch.data(), actual_batch.size() * sizeof(CUDATreeBatchSplit), cudaMemcpyDeviceToHost), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(actual_descs.data(), descs.data(), actual_descs.size() * sizeof(CUDAHybridApplyDescriptor), cudaMemcpyDeviceToHost), cudaSuccess);
   std::vector<bool> selected(leaves, false);
+  std::vector<CUDASplitInfo> journaled(selective ? expected.size() : 0);
+  if (selective) {
+    ASSERT_EQ(cudaMemcpy(journaled.data(), split_info_journal.data() + cursor, journaled.size() * sizeof(CUDASplitInfo),
+                         cudaMemcpyDeviceToHost), cudaSuccess);
+  }
   for (size_t k = 0; k < expected.size(); ++k) {
     SCOPED_TRACE(::testing::Message() << "k=" << k);
     const int leaf = expected[k];
     selected[leaf] = true;
-    EXPECT_EQ(actual_batch[k].leaf_index, leaf);
-    EXPECT_EQ(actual_batch[k].num_leaves_at_split, leaves + static_cast<int>(k));
-    EXPECT_EQ(actual_batch[k].split_info, best.data() + leaf);
+    if (selective) {
+      // no tree record; the split's best-split record journaled at its split index
+      EXPECT_EQ(journaled[k].leaf_index, leaf);
+      EXPECT_EQ(journaled[k].gain, gains[leaf]);
+    } else {
+      EXPECT_EQ(actual_batch[k].leaf_index, leaf);
+      EXPECT_EQ(actual_batch[k].num_leaves_at_split, leaves + static_cast<int>(k));
+      EXPECT_EQ(actual_batch[k].split_info, best.data() + leaf);
+    }
     EXPECT_EQ(actual_descs[k].left_leaf_index, leaf);
     EXPECT_EQ(actual_descs[k].right_leaf_index, leaves + static_cast<int>(k));
     EXPECT_EQ(actual_descs[k].leaf_data_start, host_starts[leaf]);
@@ -194,7 +221,7 @@ void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& v
     EXPECT_EQ(d.num_data_in_leaf, host_counts[leaf]);
   }
   EXPECT_EQ(state.num_gaps, gap);
-  if (!final_depth) return;
+  if (!final_depth || selective) return;
   // No child search at the final depth, while live_splits remains available to the tree record.
   LaunchDeviceLevelPairs(cfg, level, leaves, nullptr);
   ASSERT_EQ(cudaGetLastError(), cudaSuccess);
@@ -251,6 +278,36 @@ TEST(CUDADeviceLevelBudget, EmptyExhaustedAndNonfinalBindingStopWithoutApply) {
   CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, false), 15);
   CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, true), 8);
   CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, true), 11, false);
+}
+
+TEST(CUDADeviceLevelBudget, SelectiveLevelsApplyWhileR1HoldsAndStopAtTheFirstBindingLevel) {
+  // 8 leaves, 5 valid: 8 + 5 = 13 leaves fit a budget of 13 (A + S = 7 + 5 = 12 = B), not 12
+  const std::vector<bool> five = {true, false, true, true, false, true, false, true};
+  CheckSelection({2, 8, 4, 8, 1, 4, 8, 4}, five, 13, true, true);
+  CheckSelection({2, 8, 4, 8, 1, 4, 8, 4}, five, 12, true, true);
+  // no valid leaf never binds: the tree is complete
+  CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, false), 8, true, true);
+  // 1024 leaves, every one valid: 1024 splits, more than the register-batched block's 512, so the shared block selects
+  // them (a level 10 of a tree of 4095 leaves; the register-batched block would stop with the error flag)
+  CheckSelection(std::vector<double>(1024, 3.0), std::vector<bool>(1024, true), 2048, true, true);
+  // every select capacity: register-batched (<= 1024 leaves), shared (<= 4096), global scratch; at the threshold and
+  // one leaf short of it
+  for (const int leaves : {600, 1024, 2000, 4096, 6000}) {
+    std::vector<double> gains(leaves);
+    std::vector<bool> valid(leaves);
+    int num_valid = 0;
+    uint32_t x = 777u + static_cast<uint32_t>(leaves);
+    for (int leaf = 0; leaf < leaves; ++leaf) {
+      x = 1664525u * x + 1013904223u;
+      gains[leaf] = static_cast<double>((x >> 8) % 13);
+      valid[leaf] = ((x >> 4) % 3) == 0;
+      num_valid += valid[leaf] ? 1 : 0;
+    }
+    for (const int budget : {leaves + num_valid, leaves + num_valid - 1}) {
+      SCOPED_TRACE(::testing::Message() << "leaves=" << leaves << " budget=" << budget);
+      CheckSelection(gains, valid, budget, true, true);
+    }
+  }
 }
 
 TEST(CUDADeviceLevelBudget, BynodeChunkCapKeepsTaskOffsetsInIntRange) {

@@ -130,24 +130,25 @@ def test_device_tree_default_engages_past_depth_12_cuda(leaves, depth):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    ("leaves", "depth", "reason"),
+    ("leaves", "depth"),
     [
-        # a binding leaf budget: selective growth, its first levels as the device prefix
-        (40, 6, "selective_budget"),
+        # a binding leaf budget: selective growth, its levels on the device up to the first binding level
+        (40, 6),
         # one leaf short of depth 13's bound (2^13 > 8190 + 1): just outside the complete tree
-        (8190, 13, "selective_budget"),
-        (255, -1, "selective_unbounded"),
+        (8190, 13),
+        (255, -1),
     ],
 )
-def test_device_tree_default_reports_fallback_cuda(leaves, depth, reason):
-    # outside the depth bound the default reports the fallback under diag and keeps the flow master ran
+def test_device_tree_default_reports_fallback_cuda(leaves, depth):
+    # outside the depth bound the default runs the selective device levels and reports, under diag, the level each
+    # tree handed over at (dynamic R1), not a fallback line
     diag = _diag("auto", leaves, depth)
     assert "device_tree: complete" not in diag
-    # once per route change (one binary learner on one route here), not once per tree
-    assert diag.count("device_tree: fallback (") == 1, diag[-3000:]
-    assert diag.count(f"device_tree: fallback ({reason}) route=selective_prefix\n") == 1, diag[-3000:]
-    # cuda_plan key selective_device_prefix (default on); off, the host's selective loop runs every level
-    assert "selective_device_prefix: levels=" in diag
-    off = _diag("auto,selective_device_prefix:off", leaves, depth)
+    assert "device_tree: fallback (" not in diag, diag[-3000:]
+    # (8190 leaves at depth 13: the trees reach the depth limit on the device, no valid leaf left: complete)
+    assert re.search(r"device_tree: selective hand-off at level \d+ \((binding|complete)\)", diag), diag[-3000:]
+    # device_tree:off: the host's selective loop runs every level
+    off = _diag("auto,device_tree:off", leaves, depth)
     assert "device_levels: host fallback (plan_off)" in off
-    assert f"device_tree: fallback ({reason}) route=selective_two_sync" in off
+    assert "device_tree: fallback (plan_off) route=selective_two_sync" in off
+    assert "selective hand-off" not in off

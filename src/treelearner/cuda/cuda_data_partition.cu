@@ -2340,7 +2340,8 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
                                                        const bool map_only,
                                                        const CUDADeviceLevelState* dls,
                                                        const CUDADeviceLevelConfig* dl_cfg,
-                                                       const bool dl_map_only, const bool whole_joint_grid_bound) {
+                                                       const bool dl_map_only, const bool whole_joint_grid_bound,
+                                                       const int joint_leaves) {
   CHECK(!dl_map_only || (dls != nullptr && write_leaf_map && !map_only));
   // cuda_plan key device_levels (dls != nullptr): the counts above are the level's worst case (grid sizing only);
   // the kernels read the live ones from dls
@@ -2469,7 +2470,10 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
     if (whole_joint_grid_bound && dls != nullptr && dl_cfg != nullptr &&
         SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION == 1024 && (block_dim / rows) * rows == 1024) {
       const int64_t root_chunks = (static_cast<int64_t>(num_data_) + 1023) / 1024;
-      const int64_t joint_workers = std::max<int64_t>(1, root_chunks + 2 * static_cast<int64_t>(num_splits) - 1);
+      // (joint_leaves: the level's most leaves where it exceeds its most splits, selective levels: S + G <= that)
+      const int64_t level_leaves = joint_leaves > 0 ? joint_leaves : num_splits;
+      const int64_t joint_workers =
+        std::max<int64_t>(1, root_chunks + static_cast<int64_t>(num_splits) + level_leaves - 1);
       fused_grid = static_cast<unsigned int>(std::min<int64_t>(8192, joint_workers)) + 1u;
     }
     const bool nccl = nccl_communicator_ != nullptr;
@@ -2540,7 +2544,8 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
 
 void CUDADataPartition::LaunchDeviceLevelApply(const int max_splits, const CUDADeviceLevelState* dls,
                                                const CUDADeviceLevelConfig* dl_cfg, const bool write_leaf_map,
-                                               const bool dl_map_only, const bool whole_joint_grid_bound) {
+                                               const bool dl_map_only, const bool whole_joint_grid_bound,
+                                               const int joint_leaves) {
   EnsureLevelPartitioned();  // cuda_plan key final_map_only (nothing is pending before a non-final level)
   // the level's worst case: its splits partition at most the whole root window, so their chunks number at most
   // ceil(rows / 1024) + max_splits, a split's blocks at most ceil(rows / 1024), and the gaps (at most one per split
@@ -2551,7 +2556,8 @@ void CUDADataPartition::LaunchDeviceLevelApply(const int max_splits, const CUDAD
   const int max_num_blocks = static_cast<int>(root_chunks);
   const int flat_bound = static_cast<int>(root_chunks) + max_splits;
   LaunchSplitLevelBatchedKernels(max_splits, max_num_blocks, max_splits + 1, max_num_blocks, flat_bound,
-                                 flat_bound + 1, write_leaf_map, /*map_only=*/false, dls, dl_cfg, dl_map_only, whole_joint_grid_bound);
+                                 flat_bound + 1, write_leaf_map, /*map_only=*/false, dls, dl_cfg, dl_map_only, whole_joint_grid_bound,
+                                 joint_leaves);
   // Preserve K enqueue swaps, including no-op levels. FinishDeviceLevels corrects K to applied R; only a
   // validated positive static-final map-only completion then undoes ONE more swap before publishing repair.
   cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);

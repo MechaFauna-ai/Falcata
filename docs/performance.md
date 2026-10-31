@@ -2301,8 +2301,8 @@ the doubling's second slot rarely gains 15%), the last group of a `forest_group:
 regression forest under fixedpoint error feedback (one round per group), a group shrunk by device memory. The slot exclusions above exist because other slot threads launch while a slot captures; with one job no
 other thread runs (the trainer grows it on the calling thread, the previous group's threads were joined), so the
 trainer marks that tree solo and it takes what the sequential learner takes: the complete device tree where its depth
-bound holds, the `device_levels` prefix, the selective device prefix (`selective_device_prefix`: unbounded depth or a
-binding leaf budget) and the quantized graph prefix elsewhere (the non-quantized graph loop stays
+bound holds, the `device_levels` prefix, the selective device levels (unbounded depth or a binding leaf budget, up
+to the first binding level) and the quantized graph prefix elsewhere (the non-quantized graph loop stays
 off: it is not run-to-run deterministic, so a forest would change with its group sizes). Groups of two or more trees
 (every multiclass round) keep slot mode, and a learner switches between the modes from group to group (graph caches
 are captured and replayed only in solo trees, on the calling thread). The tree gets the same bag, gradients, feature
@@ -3208,7 +3208,9 @@ Under `FALCATA_DEBUG=diag` every CUDA tree the complete device tree did not grow
 
 once for the learner's first such tree and again whenever the line changes (a route change: a prefix that turns
 its graphs off, a forest group switching mode), not once per tree; trees the device tree grew keep
-their `device_tree: complete ...` line. `<reason>` is the first refusal that holds in a fixed order, `<route>` the
+their `device_tree: complete ...` line, and a selective tree the device levels grew up to its first binding level
+reports `device_tree: selective hand-off at level <k> (binding|complete) ...` instead, once per tree (section 10w,
+"Selective growth on the device levels"). `<reason>` is the first refusal that holds in a fixed order, `<route>` the
 controller that grew the tree, and `prefix=` (on the `host_two_sync` and `selective_two_sync` routes) why a
 `device_levels` prefix did not run where that flow would take one. Each token belongs to one row of the refusal
 inventory of the full device controller program; the vocabulary is `FALCATA_DEVICE_TREE_REASONS` and
@@ -3239,7 +3241,7 @@ Reasons, in their order (several can hold; the first is reported):
 | `lambda_l1`, `path_smooth` | non-quantized (fixed-point level histograms), or with per-node feature sampling (the per-split loop's leaf numbering) | host two-sync, per-pair search / classic |
 | `categorical` | a categorical feature with `quant_mode=none` (quantized categorical trees take the device tree, their presized record counting as fixed scratch; a record past the memory budget or int word offsets is `scratch_too_large`); quantized, a categorical feature whose bin-range cap passes the inner bitset stride (a feature sharing a column, `num_bin` a multiple of 32, most frequent bin 0); as `prefix=`, the `device_levels` and selective prefixes, which take no categorical feature | one-sync / host two-sync |
 | `bynode_outside_bound`, `bynode_host_masks` | per-node masks outside the depth bound; inside it with device masks unusable | host two-sync / selective |
-| `selective_unbounded`, `selective_budget` | `max_depth <= 0`; `2^max_depth > num_leaves + 1` | selective prefix |
+| `selective_unbounded`, `selective_budget` | `max_depth <= 0`; `2^max_depth > num_leaves + 1` | selective two-sync (only where the selective device levels did not run, e.g. `prefix=prefix_graph_churn`; where they ran, the tree reports its hand-off line instead) |
 | `scratch_too_large` | the complete tree's scratch at one searched pair per chunk exceeds half of the free memory, or the per-node task offsets overflow at one pair | host two-sync / one-sync |
 | `setup_failed` | the device levels could not be set up | host two-sync |
 | `prefix_graph_churn` | (as `prefix=` only) sampled layouts kept missing the graph cache: the prefix turned itself off | host two-sync / selective two-sync |
@@ -3247,7 +3249,8 @@ Reasons, in their order (several can hold; the first is reported):
 | `unclassified` | none of the above (a bug; the route pins fail on it) | |
 
 Routes: `device_tree`, `prefix` (device_levels prefix, then the host two-sync loop), `host_two_sync`,
-`selective_prefix`, `selective_two_sync`, `selective_one_sync`, `one_sync`, `classic` (the per-split loop),
+`selective_device` (never printed: those trees report their hand-off line), `selective_two_sync`,
+`selective_one_sync`, `one_sync`, `classic` (the per-split loop),
 `forest_slots` (`l15_graph`, the non-quantized graph loop, went in P3: its shapes report `device_tree: complete`).
 
 `device_levels: host fallback (<reason>)` keeps reporting, once per learner, why the prefix itself declined in flows
@@ -3283,12 +3286,15 @@ train the default model):
   device controller: its shapes take the complete device tree, which trains `graph_loop:on`'s models. `graph_loop:off`
   selected the one-sync host flow with the double-slot deterministic construct, now `device_tree:off`; `graph_det:on`
   captured that construct inside the graph. Both models equal the default only empirically (on every lattice and
-  article shape measured), so an old string naming either key may train a slightly different model.
+  article shape measured), so an old string naming either key may train a slightly different model;
+- `cuda_plan` key `selective_device_prefix` (FULL_DEVICE_PLAN P7): selective trees run on the device levels up to
+  their first binding level whenever `device_tree` and `device_levels` are on (the same model); `device_tree:off` is
+  their host reference (the host's selective loop for every level), `selective_device_prefix:off`'s flow.
 
 Kept, because each still selects a live behaviour: `hybrid` (`hybrid:off`, the classic per-split loop everywhere: the
 gates' reference arm), `level_bynode_masks` (`:off` restores the 1.0 per-node samples and models), `device_tree`,
-`device_levels`, `device_bynode_masks`, `selective_device_prefix` (their off values select the prefix and host flows
-that still serve every fallback above; the tests' reference arms) and `one_sync`.
+`device_levels`, `device_bynode_masks` (their off values select the prefix and host flows that still serve every
+fallback above; the tests' reference arms) and `one_sync`.
 
 ## 10w. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
 
@@ -3307,7 +3313,7 @@ packing codec and GOSS's changing ridge. Repeated cache misses switch subsequent
 modes exclude forest slots (except a forest group's only tree, `forest_single_job_device`, section 10r) and
 legacy single-stream diagnostics. Unsupported kernels, nonquantized training,
 node masks, categorical/vector leaves, constraints and forced splits keep their host flows; selective growth runs
-its first levels on this prefix (`selective_device_prefix`, below).
+on the device levels up to its first binding level (below).
 Configuration/data resets invalidate captures and static tables; quantizer row and leaf-budget storage is also
 refreshed, retaining its stochastic tree counter. Empty histogram work returns before claiming rows, and stopped
 levels initialize their claim counters.
@@ -3373,31 +3379,47 @@ unused bulk tree/readback bytes are reported, and an instrumented graph run did 
 Historical unknown-source model mismatches and illegal accesses are not proven to have the same cause or to be
 resolved by these fixes. The current results apply to the exact source/library above.
 
-### Selective growth's first levels on the prefix (`selective_device_prefix`)
+### Selective growth on the device levels up to the first binding level
 
 A binding leaf budget (`2^max_depth > num_leaves + 1`) or unlimited depth trains with selective grow-then-prune
 growth: per level the host reads every leaf's best split back, runs a greedy leaf-wise simulation over the applied
 splits and the new candidates, collapses displaced subtrees, applies the selected candidates and reads the split
-counts back, two blocking readbacks per level. `selective_device_prefix` (default ON) runs the first
-`K = min(floor(log2(num_leaves)), max_depth - 1, 10)` levels as this section's prefix instead (only when `K >= 2`,
-like the prefix itself). On level k the
-simulation holds at most `2^k - 1` applied splits and `2^k` candidates, all reachable from the root; while
-`2^(k+1) <= num_leaves` that is within the budget `num_leaves - 1`, so it selects every valid candidate and collapses
-nothing, which is the prefix's "split every valid leaf" (the same `is_valid` set; gain, data and hessian gates act
-only through it). The prefix's select also journals each applied split's best-split record (the gain in double, the
-child sums and outputs) and the host rebuilds its selective records (parents, windows, depths, gains) from that
-journal, then continues the selective loop at level K with the prefix's last search already read back. The prefix
-numbers a level's right children leaf-ascending where the host numbers them in greedy order; the simulation, its
-tie-break and the final renumbering read gains and classic leaf indices only, so the models are bit-identical.
-Same eligibility as the prefix (quantized, numerical, scalar, single GPU, no per-node masks); forced splits never
-reach selective growth. `FALCATA_DEBUG=diag` prints one `selective_device_prefix: levels=K applied_levels=...` line
-per tree.
+counts back, two blocking readbacks per level. With `device_tree` and `device_levels` on (the default), the device
+levels grow the tree instead while the simulation could only select everything: on a level with A applied splits and
+S valid leaves (the frontier: every leaf an earlier level did not split has no valid split), the simulation holds the
+A applied records and the S candidates, all reachable from the root, and pops while fewer than `num_leaves - 1` are
+selected, so if `A + S <= num_leaves - 1` it selects all of them and collapses nothing, which is the device level's
+"split every valid leaf" (the same `is_valid` set; gain, data and hessian gates act only through it). The select tests
+this inequality on every level (dynamic R1, FULL_DEVICE_PLAN P7); the first level where it fails, the first binding
+level, and everything after stay with the host's selective loop, which continues from the levels' journal: each
+applied split's best-split record (the gain in double, the child sums and outputs) rebuilds the host's selective
+records (parents, windows, depths, gains), with the last level's search already read back. The device numbers a
+level's right children leaf-ascending where the host numbers them in greedy order; the simulation, its tie-break and
+the final renumbering read gains and classic leaf indices only, so the models are bit-identical.
 
-Measured (RTX 5090, strict exclusive runs, 6 alternating pairs of fresh processes, 1000 rounds, train wall clock;
-master `fe163428` vs this change with the default plan, and the same binary with `selective_device_prefix:off`; every
-run of every arm md5-identical):
+- The levels below `floor(log2(num_leaves))`, on which the inequality cannot fail (`leaves + S <= 2^(k+1) <=
+  num_leaves`), are the former static prefix (the first version, #172, stopped there:
+  `K = min(floor(log2(num_leaves)), max_depth - 1, 10)`): captured unrolled at their own worst case, read back once.
+  The host tests the next level on that readback (the same test on the same leaf entries), so a tree that binds there
+  costs nothing beyond the former prefix; after a tree that went further, the device selects that level instead.
+- Every later level holds at most `num_leaves / 2` splits and `num_leaves` leaves. Those levels run as a two-level body
+  (two index-buffer swaps: the parity is fixed) captured once and relaunched while a flag in mapped host memory says
+  the next level's select applied splits; the levels come from the device state, and a level wider than the
+  register-batched select (1024 leaves) selects in the shared-memory (4096) or global-scratch block. Pair chunking and
+  the live-pair fix/subtract launches serve them as they serve the complete tree. Once a select stopped, the host
+  reads the growth back at its exact size.
+- Same eligibility as the prefix (quantized, numerical, scalar, single GPU, no per-node masks drawn on the host);
+  forced splits never reach selective growth. `FALCATA_DEBUG=diag` prints one line per tree,
+  `device_tree: selective hand-off at level k (binding|complete) splits=... leaves=... frontier=... unrolled=U
+  bodies=B ...` (complete: no leaf had a valid split, the host loop only finalizes), and once per learner the plan
+  (`U unrolled, then a two-level body of P pairs relaunched; C pair chunks`). `device_tree:off` runs the host's
+  selective loop on every level (the removed key `selective_device_prefix:off`'s flow).
 
-| cell | prefix levels | master s | default s | key off s | master/default | master/key off |
+The first version (#172, the static prefix), measured (RTX 5090, strict exclusive runs, 6 alternating pairs of fresh
+processes, 1000 rounds, train wall clock; master `fe163428` vs that change with the default plan, and the same binary
+with the prefix off; every run of every arm md5-identical):
+
+| cell | prefix levels | master s | default s | prefix off s | master/default | master/prefix off |
 |---|---:|---:|---:|---:|---:|---:|
 | binding-budget (151 leaves, depth 10, binary) | 7 | 0.8257 | 0.7586 | 0.8217 | 1.089x | 1.005x |
 | unbounded-fewbin (1024 leaves, unlimited, regression) | 10 | 2.2588 | 2.1231 | 2.2595 | 1.064x | 1.000x |
@@ -3455,6 +3477,29 @@ Every run of every arm was md5-identical.
 
 The fused select still costs about 3.5 µs per level on small levels and about 18 µs at 512 splits. What remains
 there is the last block's fence, count and scans, and the copy of every split's record.
+
+#### To the first binding level (dynamic R1)
+
+The static prefix above stopped at `K` levels; the device levels now continue while the inequality holds (see the
+start of this section). Strict A/B against master `f40a1690` (before #182) (exclusive runs, 6 alternating pairs of fresh
+processes, 1000 rounds, train wall clock; every run of both arms md5-identical). Hand-off levels from a 70-round
+`FALCATA_DEBUG=diag` run of each arm: master's static prefix levels, and the level each tree handed over at.
+
+| cell | master s | P7 s | master/P7 | master's static levels | P7 hand-off level (trees of 70) |
+|---|---:|---:|---:|---|---|
+| binding budget (151 leaves, depth 10, binary, bagging 0.65) | 0.7347 | 0.7325 | 1.003x | 7 | 7 binding (70) |
+| unbounded-fewbin (1024 leaves, unlimited, regression, bagging 0.75) | 2.0590 | 2.0656 | 0.997x | 10 | 10 binding (70) |
+| fraud (255 leaves, unlimited, binary) | 0.8828 | 0.8342 | 1.058x | 7 | 12-36 (50 binding, 20 complete; 466 bodies) |
+| higgs (4095 leaves, unlimited, binary, bagging 0.8) | 7.7200 | 7.3477 | 1.051x | 10 | 13 (69), 14 (1) |
+| covtype small, `feature_fraction_bynode` 0.5, unlimited (host masks: unchanged route) | 8.8229 | 8.8141 | 1.001x | - | - |
+| covtype deep (complete device tree) | 3.8621 | 3.8583 | 1.001x | - | - |
+| epsilon fixedpoint (complete device tree) | 8.4882 | 8.5063 | 0.998x | - | - |
+
+Trees that hand over at the old `K` (binding budget, unbounded 1024 leaves: `K` is already the first binding level
+there) run the former prefix's launches and readback unchanged, plus a host count of the valid leaf entries; the gain
+is on shapes whose early levels leave leaves without a valid split (fraud: chain-like trees) and on budgets above
+1024 leaves (higgs 4095: the old 10-level cap).
+
 
 
 Whole-tree fused apply bounds only its physical workers by the joint split/gap row extent:

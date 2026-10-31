@@ -97,10 +97,10 @@ constexpr int kNonquantDeviceTreeMaxDepth = 11;
 constexpr int kNonquantDeviceTreeMaxLeaves = 2047;
 /*! \brief launch columns of a device level's construct that claim block rows dynamically */
 constexpr int kDeviceLevelClaimColumns = 64;
-/*! \brief journal layout (ints): [0] applied levels, [1] total splits, [2] error flags, [3, 5) reserved, then per split
- *  in applied order a record {left leaf, inner feature, level} of kDeviceLevelJournalRecord ints at
- *  kDeviceLevelJournalHeader. The level tags make any level count fit; the records of a level are contiguous and the
- *  tags ascend. */
+/*! \brief journal layout (ints): [0] applied levels, [1] total splits, [2] error flags, [3] 1 when a selective tree
+ *  stopped at its first binding level (CUDADeviceLevelConfig::r1_binding), [4] reserved, then per split in applied
+ *  order a record {left leaf, inner feature, level} of kDeviceLevelJournalRecord ints at kDeviceLevelJournalHeader.
+ *  The level tags make any level count fit; the records of a level are contiguous and the tags ascend. */
 constexpr int kDeviceLevelJournalHeader = 5;
 constexpr int kDeviceLevelJournalRecord = 3;
 
@@ -290,16 +290,13 @@ struct CUDADeviceLevelConfig {
   /*! \brief cuda_plan keys dense_level_row_blocks / level_row_blocks: the rows floor of a multi-pair level */
   int level_row_blocks;
   CUDADeviceLevelConstructShape shape;
-  /*! \brief cuda_plan key selective_device_prefix: per applied split (in applied order, at the journal's split
-   *  index) a raw copy of the split's best-split record as the select reads it; nullptr: not recorded */
+  /*! \brief selective trees: per applied split (in applied order, at the journal's split index) a raw copy of the
+   *  split's best-split record as the select reads it; nullptr: not recorded */
   CUDASplitInfo* split_info_journal;
-  /*! \brief the selective prefix (set together with split_info_journal): the select writes no tree-record descriptors
+  /*! \brief selective trees (set together with split_info_journal): the select writes no tree-record descriptors
    *  (tree_batch_splits) and the enqueue launches no tree record (the selective flow rebuilds the tree from its own
    *  records) */
   int skip_tree_record;
-  /*! \brief host-side launch choice (the kernels do not read it): the selective prefix's partition launches take the
-   *  whole tree's joint worker bound */
-  int joint_grid_bound;
   /*! \brief the block map (searched pairs + 1 ints; see CUDADeviceLevelState::construct_block_start) */
   int* construct_block_start;
   /*! \brief a complete tree wider than kDeviceTreeSharedSplits splits per level: the select's valid leaves, their gains
@@ -317,11 +314,19 @@ struct CUDADeviceLevelConfig {
   int num_chunks;
   CUDADeviceLevelState* chunk_states;
   int chunk_pairs;
-  int padding_;
+  /*! \brief selective trees (dynamic R1): with A applied splits and S valid leaves at a level (A + 1 leaves; every
+   *  leaf an earlier level did not split has no valid split), the host's greedy simulation selects every candidate iff
+   *  A + S <= num_leaves_budget - 1, i.e. leaves + S <= num_leaves_budget. The select splits such a level like any
+   *  nonbinding level; the first level where it fails is the first binding level: the select stops there without
+   *  applying it (journal[3] = 1) and the host's selective loop takes the tree from that level. 0: not tested */
+  int r1_binding;
   /*! \brief categorical datasets (complete device tree only) */
   CUDADeviceLevelCatConfig cat;
 };
 
+/*! \brief most threads of the standalone register-batched select (DeviceLevelSelectBlockFast: 2 * kDeviceLevelMaxPairs
+ *  leaves at 4 per thread), the block size of the copy fused into the level sync */
+constexpr int kDeviceLevelFastSelectThreads = 256;
 /*! \brief block threads of the select / pairs kernels at a level of at most max_splits splits */
 inline int DeviceLevelThreads(const int max_splits) {
   int t = 64;
@@ -331,9 +336,15 @@ inline int DeviceLevelThreads(const int max_splits) {
   return t;
 }
 
-/*! \brief DeviceLevelSelectKernel on \p stream for level \p level (defined in cuda_device_levels.cu) */
+/*! \brief DeviceLevelSelectKernel on \p stream for level \p level (defined in cuda_device_levels.cu); level < 0: the
+ *  level the state reached (a relaunched body). max_splits and max_leaves (0: 2 * max_splits), the most splits and
+ *  leaves of the level, pick the select's capacity (register-batched, shared or global) */
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
-                             cudaStream_t stream);
+                             cudaStream_t stream, const int max_leaves = 0);
+/*! \brief selective trees: the end of a launched segment on \p stream (a relaunched body, or the unrolled levels when
+ *  the device selects the level after them), its flag in mapped pinned host memory (\p flag, the device alias): [0] 1 while the tree continues (the select of the next level applied splits), 0 once a select
+ *  stopped; [1] levels applied, [2] splits, [3] journal[3] (the stop was the first binding level) */
+void LaunchDeviceLevelSegmentEnd(const CUDADeviceLevelConfig& config, int* flag, cudaStream_t stream);
 /*! \brief DeviceLevelPairsKernel on \p stream for the children of level \p level */
 void LaunchDeviceLevelPairs(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
                             cudaStream_t stream);

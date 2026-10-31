@@ -184,7 +184,8 @@ class CUDADataPartition: public NCCLInfo {
    *  kernel wrote (DeviceLevelSelectKernel); the index buffers swap as after every host level */
   void LaunchDeviceLevelApply(const int max_splits, const CUDADeviceLevelState* dls,
                               const CUDADeviceLevelConfig* dl_cfg = nullptr, const bool write_leaf_map = false,
-                              const bool dl_map_only = false, const bool whole_joint_grid_bound = false);
+                              const bool dl_map_only = false, const bool whole_joint_grid_bound = false,
+                              const int joint_leaves = 0);
 
   /*! \brief cuda_plan key device_levels: after the device levels' readback: levels_applied of levels_enqueued
    *  enqueued levels applied total_splits splits (the host swapped the index buffers once per enqueued level) */
@@ -489,7 +490,8 @@ class CUDADataPartition: public NCCLInfo {
                                       const bool map_only,
                                       const CUDADeviceLevelState* dls = nullptr,
                                       const CUDADeviceLevelConfig* dl_cfg = nullptr,
-                                      const bool dl_map_only = false, const bool whole_joint_grid_bound = false);
+                                      const bool dl_map_only = false, const bool whole_joint_grid_bound = false,
+                                      const int joint_leaves = 0);
   /*! \brief the batched level's split-inner (index partition into the out buffer) and gap copy launches */
   void LaunchLevelSplitInnerKernel(const int num_splits, const int total_flat_blocks, const bool write_leaf_map,
                                    const bool map_only);

@@ -9,7 +9,9 @@ FALCATA_GROWTH_ROUTES in include/Falcata/cuda/cuda_device_tree_reason.hpp; this 
 The cells are the lattice's `route/*` golden cells (tests/gates/lattice.py build_cells, md5s in md5_lattice.json),
 trained through the lattice's own worker, so the pin and the golden describe the same training. ROUTES_EXPECTED holds,
 per cell, the sequence of distinct (reason, route[, prefix]) tuples the run must report, in first-seen order;
-`("complete", "device_tree")` is a complete device tree. A change that moves a cell to another controller (a port to
+`("complete", "device_tree")` is a complete device tree, `("selective_handoff", "binding" | "complete")` a selective
+tree the device levels grew up to its first binding level (`device_tree: selective hand-off at level k (binding)`) or
+to the end (no valid leaf left). A change that moves a cell to another controller (a port to
 the device, a deleted fallback) updates its row here, in the same change.
 
 sparse_layout is reached only non-quantized (r14a; quantized sparse data trains on the dense row bin); the 16-bit
@@ -59,6 +61,8 @@ LATTICE = _lattice()
 CELLS = {c["id"]: c for c in LATTICE.build_cells() if c["id"].startswith("route/")}
 
 _COMPLETE = ("complete", "device_tree")
+_HANDOFF = "selective_handoff"
+_BINDING = (_HANDOFF, "binding")
 _CLASSIC = "classic"
 
 ROUTES_EXPECTED = {
@@ -66,8 +70,10 @@ ROUTES_EXPECTED = {
     "route/r01-depth13": [_COMPLETE],
     # vramfree=1: the per-pair search scratch runs in pair chunks instead of the former memory gate (P4)
     "route/r02-memgate": [_COMPLETE],
-    "route/r03a-budget": [("selective_budget", "selective_prefix")],
-    "route/r03b-unbounded": [("selective_unbounded", "selective_prefix")],
+    # selective trees on the device levels up to their first binding level (dynamic R1, P7); depth 10 lets some trees
+    # finish on the device (no valid leaf left: complete)
+    "route/r03a-budget": [_BINDING, (_HANDOFF, "complete")],
+    "route/r03b-unbounded": [_BINDING],
     # the non-quantized L1.5 graph's shapes take the complete device tree (P3; same md5)
     "route/r04a-nq-l15": [_COMPLETE],
     "route/r04b-nq-onesync": [("nonquant_onesync", "one_sync")],
@@ -114,16 +120,19 @@ ROUTES_EXPECTED = {
     # r22 pins complete device trees (the device tree has no root tail since P6, see the lattice comment); split-less
     # device roots are compared with the host flows in test_cuda_device_tree_root_tail.py
     "route/r22-roottail": [_COMPLETE],
-    # the selective device prefix turns its graphs off after 9 misses; the host's selective loop grows the rest
+    # the selective device levels turn their graphs off after 9 misses; the host's selective loop grows the rest
     "route/r24-churn": [
-        ("selective_unbounded", "selective_prefix"),
+        _BINDING,
         ("selective_unbounded", "selective_two_sync", "prefix_graph_churn"),
     ],
     "route/r27a-goss": [_COMPLETE],
     "route/r27b-renew": [_COMPLETE],
 }
 
-_LINE = re.compile(r"\[hybrid-diag\] device_tree: (?:complete |fallback \((\w+)\) route=(\w+)(?: prefix=(\w+))?)")
+_LINE = re.compile(
+    r"\[hybrid-diag\] device_tree: (?:complete |fallback \((\w+)\) route=(\w+)(?: prefix=(\w+))?|"
+    r"selective hand-off at level \d+ \((\w+)\))"
+)
 
 
 def test_route_pins_cover_the_lattice_route_cells():
@@ -137,6 +146,10 @@ def test_route_vocabulary_is_unique_and_pins_use_it():
     assert "device_tree" in ROUTES
     for cid, expected in ROUTES_EXPECTED.items():
         for reason, route, *prefix in expected:
+            if reason == _HANDOFF:
+                assert route in ("binding", "complete"), (cid, route)
+                assert not prefix, (cid, prefix)
+                continue
             assert reason == "complete" or reason in REASONS, (cid, reason)
             assert route in ROUTES, (cid, route)
             assert all(token in REASONS for token in prefix), (cid, prefix)
@@ -156,8 +169,11 @@ def _reported(cell, tmp_path):
     assert records, proc.stdout[-2000:] + proc.stderr[-2000:]
     assert records[0]["ok"], proc.stdout[-2000:] + proc.stderr[-2000:]
     seen = []
-    for reason, route, prefix in _LINE.findall(proc.stderr):
-        pair = ((reason, route, prefix) if prefix else (reason, route)) if reason else _COMPLETE
+    for reason, route, prefix, handoff in _LINE.findall(proc.stderr):
+        if handoff:
+            pair = (_HANDOFF, handoff)
+        else:
+            pair = ((reason, route, prefix) if prefix else (reason, route)) if reason else _COMPLETE
         if pair not in seen:
             seen.append(pair)
     return seen, records[0]["md5"], proc.stderr

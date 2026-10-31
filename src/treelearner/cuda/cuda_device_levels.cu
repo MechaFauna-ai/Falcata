@@ -88,6 +88,16 @@ __global__ void DeviceLevelPairsKernel(const CUDADeviceLevelConfig cfg, const in
   DeviceLevelPairsBlock(cfg, level);
 }
 
+// The end of a selective segment: whether the select after its last level applied splits (and the counts)
+__global__ void DeviceLevelSegmentEndKernel(const CUDADeviceLevelConfig cfg, int* flag) {
+  if (threadIdx.x == 0) {
+    flag[1] = cfg.journal[0];
+    flag[2] = cfg.journal[1];
+    flag[3] = cfg.journal[3];
+    flag[0] = cfg.state->done != 0 ? 0 : 1;
+  }
+}
+
 // ---- cuda_plan key device_bynode_masks ----
 
 constexpr int kDeviceBynodeThreads = 128;
@@ -238,19 +248,30 @@ void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_l
 }
 
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
-                             cudaStream_t stream) {
+                             cudaStream_t stream, const int max_leaves) {
+  // the select holds MAX_SPLITS splits of 2 * MAX_SPLITS leaves: the register-batched block kDeviceLevelMaxPairs
+  // (nonbinding levels only), the shared block kDeviceTreeSharedSplits, the global one config.select_capacity
+  const int leaves = max_leaves > 0 ? max_leaves : 2 * max_splits;
   // cuda_plan key pdl_level_chain: a programmatic dependent of the level sync launched just before on this stream
-  if (config.whole_tree && max_splits > kDeviceTreeSharedSplits) {
+  if (leaves > 2 * kDeviceTreeSharedSplits) {
     // a level wider than the shared select: the same select over global scratch (DeviceLevelBitonicSortGlobal)
     LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceTreeSharedSplits, true>, dim3(1),
                            dim3(DeviceLevelThreads(max_splits)), 0, stream, config, level);
-  } else if (config.whole_tree) {
+  } else if (config.whole_tree || leaves > 2 * kDeviceLevelMaxPairs || max_splits > kDeviceLevelMaxPairs) {
     LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceTreeSharedSplits>, dim3(1),
                            dim3(DeviceLevelThreads(max_splits)), 0, stream, config, level);
   } else {
+    // the register-batched block (~150 registers per thread) launches at most 256 threads, as the copy fused into the
+    // sync kernel does: CHUNK = 4 leaves and splits per thread cover 1024 leaves (more threads exceed the register file)
     LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceLevelMaxPairs>, dim3(1),
-                           dim3(DeviceLevelThreads(max_splits)), 0, stream, config, level);
+                           dim3(std::min(DeviceLevelThreads(max_splits), kDeviceLevelFastSelectThreads)), 0, stream,
+                           config, level);
   }
+}
+
+void LaunchDeviceLevelSegmentEnd(const CUDADeviceLevelConfig& config, int* flag, cudaStream_t stream) {
+  // a plain launch: it starts after every kernel before it on the stream completed (the select's state is final)
+  DeviceLevelSegmentEndKernel<<<1, 32, 0, stream>>>(config, flag);
 }
 
 void LaunchDeviceLevelPairs(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
