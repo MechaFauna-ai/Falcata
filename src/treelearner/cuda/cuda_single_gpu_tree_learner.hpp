@@ -544,14 +544,14 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // selected frontier candidates (right-child indices from the free list).
   // Returns the number of frontier candidates to apply this level.
   int RunSelectiveLevel();
-  // R3 shadow (FALCATA_DEBUG=diag; P8a): RunSelectiveLevel with the device greedy simulation (cuda_selective_r3)
+  // R3 shadow (FALCATA_DEBUG=r3shadow; P8a): RunSelectiveLevel with the device greedy simulation (cuda_selective_r3)
   // launched beside it on the level's pre-simulation state, its selection, numbering, collapse and free list
   // compared with the host's (a mismatch prints one line and counts; the host's result is the one used). handoff:
   // the level's search came from the selective device levels' readback.
   int RunSelectiveLevelShadowed(const std::vector<int>& child_leaves, const bool handoff);
   void SelectiveR3ShadowLaunch(const std::vector<int>& child_leaves);
   void SelectiveR3ShadowCheck();
-  // records a timing event on the legacy stream (diag only): 0 before the level's readback, 1 before its apply,
+  // records a timing event on the legacy stream (r3shadow only): 0 before the level's readback, 1 before its apply,
   // 2 after the apply, 3 before the children's search
   void SelectiveR3ShadowMark(const int which);
   // one diag line per shadowed level of the tree, then the tree's and the cumulative mismatch counts
@@ -967,7 +967,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int64_t sel_stat_levels_ = 0;
   int64_t sel_stat_trees_ = 0;
   int64_t sel_stat_sim_ns_ = 0;
-  // R3 shadow state (FALCATA_DEBUG=diag): device and pinned blobs of the same layout (SelectiveR3ShadowLaunch), the
+  int64_t sel_stat_ties_ = 0;  // equal-gain resolutions in RunSelectiveLevel (SelectiveTieBreak calls)
+  // R3 shadow state (FALCATA_DEBUG=r3shadow): device and pinned blobs of the same layout (SelectiveR3ShadowLaunch), the
   // side stream, the per-level timing events and records of the current tree, the mismatch counters
   struct SelectiveR3ShadowLevel {
     int level;
@@ -981,6 +982,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     int created;
     int mismatch;
     double sim_us;
+    int ties;       // SelectiveTieBreak calls of the host simulation
     double shadow_host_us;
     int ev;         // first of this level's 6 events: kernel start/stop, marks 0-3
     int marks;      // bit i: mark i recorded

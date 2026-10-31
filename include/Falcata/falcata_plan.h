@@ -1362,6 +1362,12 @@ inline bool FalcataVerifyEnabled() {
  *    including selective splits pruned later; keeps those trees off the
  *    device-drawn masks of device_bynode_masks, whose draws it would not
  *    see); does not change any result
+ *  - ``r3shadow``   the CUDA selective loop also runs every level's greedy
+ *    selection on the device (cuda_selective_r3) beside the host's and
+ *    compares the two: one ``r3_shadow:`` timing line per level and a mismatch
+ *    summary per tree (docs/performance.md); does not change any result
+ *  - ``r3fault``    test hook for r3shadow: corrupts the device result's first
+ *    pop before the comparison, so a MISMATCH line must appear
  * debug and dump also keep trees off the device-driven flows (the device
  * controller does not replicate these hooks). The 1.1 tokens syncpairs,
  * aggressive and maxsplits=N, and the FALCATA_SINGLE_STREAM switch, were removed
@@ -1372,6 +1378,8 @@ struct FalcataDebugOptions {
   bool debug = false;
   bool dump = false;
   bool bynode = false;
+  bool r3shadow = false;
+  bool r3fault = false;
   int64_t vramfree_mib = -1;  // -1 = the real free memory
 };
 
@@ -1390,6 +1398,10 @@ inline const FalcataDebugOptions& FalcataDebug() {
         o.dump = true;
       } else if (token == std::string("bynode")) {
         o.bynode = true;
+      } else if (token == std::string("r3shadow")) {
+        o.r3shadow = true;
+      } else if (token == std::string("r3fault")) {
+        o.r3fault = true;
       } else if (token.rfind("vramfree=", 0) == 0) {
         o.vramfree_mib = std::min<int64_t>(std::max<int64_t>(0, std::atoll(token.c_str() + 9)), int64_t{1} << 40);
       } else if (!token.empty()) {

@@ -44,8 +44,10 @@ class DeviceBuffer {
   T* data_ = nullptr;
 };
 
-// ---- the host reference: CUDASingleGPUTreeLearner::SelectiveTieBreak and RunSelectiveLevel's three steps, as written
-// in the learner (the 256-lane emulation, std::priority_queue with the tied-set resolution) ----
+// ---- the host reference: CUDASingleGPUTreeLearner::SelectiveTieBreak and RunSelectiveLevel's three steps (the 256-lane
+// emulation, std::priority_queue with the tied-set resolution). One difference in form: step 3 reads a created record's
+// parent from the post-collapse leaf_parent where the learner uses the parent noted at discovery; they agree, since a
+// selected candidate's parent is selected and so never collapsed. ----
 int HostTieBreak(const std::vector<int>& tied_classic_leaves) {
   constexpr int kThreads = 256;
   std::array<int, kThreads> thread_winner;

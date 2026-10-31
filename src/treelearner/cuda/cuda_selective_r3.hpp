@@ -15,7 +15,7 @@
  *  SelectiveTieBreak is a fixed total order on classic leaves (SelectiveR3TieKey: the shuffle-down reduction keeps the
  *  receiving lane on a tie, so the occupied lane, and then warp, with the smallest bit-reversed index wins, and the
  *  smallest leaf within a lane), so the simulation is a heap on (gain desc, key asc) for any number of tied leaves.
- *  P8a runs it in shadow mode only (FALCATA_DEBUG=diag): the host simulation decides, the learner compares.
+ *  P8a runs it in shadow mode only (FALCATA_DEBUG=r3shadow): the host simulation decides, the learner compares.
  */
 #ifndef FALCATA_TREELEARNER_CUDA_CUDA_SELECTIVE_R3_HPP_
 #define FALCATA_TREELEARNER_CUDA_CUDA_SELECTIVE_R3_HPP_

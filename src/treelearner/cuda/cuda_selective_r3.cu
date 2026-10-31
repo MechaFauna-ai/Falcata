@@ -12,6 +12,8 @@
 #include <Falcata/cuda/cuda_utils.hu>
 
 #include <climits>
+#include <mutex>
+#include <unordered_map>
 
 namespace Falcata {
 
@@ -300,20 +302,31 @@ __global__ void __launch_bounds__(kR3Threads) SelectiveR3Kernel(const CUDASelect
 }  // namespace
 
 void LaunchSelectiveR3(const CUDASelectiveR3Config& config, cudaStream_t stream, const bool shared_heap) {
-  static const int max_shared_bytes = []() {
-    int device = 0;
-    int bytes = 0;
-    CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
-    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&bytes, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
-    return bytes;
-  }();
-  // the heap holds one entry per classic leaf: at most num_leaves (budget + 1); 1 KB for the static shared memory
-  const size_t heap_bytes = static_cast<size_t>(config.num_leaves) * kSelectiveR3HeapEntryBytes;
-  if (shared_heap && heap_bytes + 1024 <= static_cast<size_t>(max_shared_bytes)) {
-    if (heap_bytes > 48 * 1024) {
-      CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(SelectiveR3Kernel<true>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                                static_cast<int>(heap_bytes)));
+  // the device's opt-in shared-memory limit, and the kernel's dynamic shared-memory attribute raised to it, once
+  // per device (the attribute is per device)
+  static std::mutex mutex;
+  static std::unordered_map<int, int> max_shared_by_device;
+  int device = 0;
+  CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+  int max_shared_bytes = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = max_shared_by_device.find(device);
+    if (it == max_shared_by_device.end()) {
+      int bytes = 0;
+      CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&bytes, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
+      bytes -= 1024;  // the kernel's static shared memory and head room
+      if (bytes > 48 * 1024) {
+        CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(SelectiveR3Kernel<true>,
+                                                  cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
+      }
+      it = max_shared_by_device.emplace(device, bytes > 48 * 1024 ? bytes : 47 * 1024).first;
     }
+    max_shared_bytes = it->second;
+  }
+  // the heap holds one entry per classic leaf: at most num_leaves (budget + 1)
+  const size_t heap_bytes = static_cast<size_t>(config.num_leaves) * kSelectiveR3HeapEntryBytes;
+  if (shared_heap && heap_bytes <= static_cast<size_t>(max_shared_bytes)) {
     SelectiveR3Kernel<true><<<1, kR3Threads, heap_bytes, stream>>>(config);
   } else {
     CHECK(config.heap_global != nullptr);

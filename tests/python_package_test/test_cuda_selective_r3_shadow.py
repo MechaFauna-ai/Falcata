@@ -1,13 +1,15 @@
 # coding: utf-8
 """The device greedy simulation R3 (cuda_selective_r3) must reproduce the host's selective levels in shadow mode.
 
-Under FALCATA_DEBUG=diag every level of the host's selective loop (the first binding level the selective device
+Under FALCATA_DEBUG=r3shadow every level of the host's selective loop (the first binding level the selective device
 levels hand over, and every level after it) also runs R3 on the device from the same state, and the learner compares
 the selection (pop order), the classic leaf numbers, the collapse order, the freed leaves, the free list and the new
-records with the host's. A mismatch prints a `r3_shadow: MISMATCH` line; each tree prints one `r3_shadow:` line per
+records (links, dead flags, gains as bit patterns) and the frontier (leaves, gains) with the host's. A mismatch prints a `r3_shadow: MISMATCH` line; each tree prints one `r3_shadow:` line per
 level and a summary with the cumulative mismatch count. The model must not change (the host decides; R3 only runs
 beside it). The shapes follow the P8a measurement cells (binding-budget 151/10, unbounded-fewbin 1024/-1, fraud
-255/-1, 4095/-1) on synthetic data, plus a shape whose leaves tie exactly (duplicated rows).
+255/-1, 4095/-1) on synthetic data, plus a shape whose leaves tie exactly (duplicated rows), where the host's
+simulation must resolve ties (the per-level ties= count). The test hook r3fault corrupts the device result, so a
+broken comparison cannot pass silently; plain diag does not run the shadow.
 """
 
 import json
@@ -34,11 +36,14 @@ _TRAIN = (
     "print(json.dumps({'md5': hashlib.md5('\\n'.join(lines).encode()).hexdigest(), 'trees': b.num_trees()}))\n"
 )
 
-_LEVEL = re.compile(
-    r"r3_shadow: tree=(\d+) level=(\d+) handoff=(\d) binding=(\d) applied=(\d+) frontier=(\d+) pops=(\d+) "
-    r"reuse=(\d+) collapsed=(\d+) created=(\d+) r3_us="
-)
+_LEVEL = re.compile(r"r3_shadow: tree=\d+ level=\d+ .*")
+_FIELD = re.compile(r"(\w+)=(-?[\d.]+)")
 _TREE = re.compile(r"r3_shadow: tree=(\d+) levels=(\d+) mismatches=(\d+) cumulative levels=(\d+) mismatches=(\d+)")
+
+
+def _levels(err):
+    # the per-level lines as dicts (the tree summary lines have no level= field)
+    return [{k: float(v) for k, v in _FIELD.findall(m.group(0))} for m in _LEVEL.finditer(err)]
 
 
 def _train(params, X, y, rounds, debug):
@@ -153,12 +158,8 @@ _CELLS = {
 }
 
 
-@_REQUIRES_CUDA
-@pytest.mark.parametrize("cell", sorted(_CELLS))
-def test_r3_shadow_matches_the_host_simulation_cuda(cell):
-    kind, extra, rows, cols, rounds = _CELLS[cell]
-    X, y = _data(kind, rows, cols)
-    params = {
+def _params(extra):
+    return {
         "device_type": "cuda",
         "use_quantized_grad": True,
         "quant_mode": "stochastic",
@@ -166,13 +167,21 @@ def test_r3_shadow_matches_the_host_simulation_cuda(cell):
         "seed": 5,
         **extra,
     }
-    shadow, err = _train(params, X, y, rounds, "diag")
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("cell", sorted(_CELLS))
+def test_r3_shadow_matches_the_host_simulation_cuda(cell):
+    kind, extra, rows, cols, rounds = _CELLS[cell]
+    X, y = _data(kind, rows, cols)
+    params = _params(extra)
+    shadow, err = _train(params, X, y, rounds, "r3shadow")
     plain, plain_err = _train(params, X, y, rounds, "")
-    # the shadow never changes the model and runs only under diag
+    # the shadow never changes the model and runs only under r3shadow
     assert shadow["md5"] == plain["md5"]
     assert "r3_shadow" not in plain_err
     assert "MISMATCH" not in err, [x for x in err.splitlines() if "MISMATCH" in x][:5]
-    levels = [tuple(int(g) for g in m.groups()) for m in _LEVEL.finditer(err)]
+    levels = _levels(err)
     trees = [tuple(int(g) for g in m.groups()) for m in _TREE.finditer(err)]
     assert levels, err[-2000:]
     assert len(trees) == shadow["trees"]
@@ -180,12 +189,33 @@ def test_r3_shadow_matches_the_host_simulation_cuda(cell):
     assert trees[-1][3] == len(levels)
     assert trees[-1][4] == 0
     # every tree hands over at a binding level (or completes) and is then shadowed to its final simulation
-    binding = [lv for lv in levels if lv[3] == 1]
+    binding = [lv for lv in levels if lv["binding"] == 1]
     assert binding
-    if cell == "tied":
-        return
-    # the binding levels select within the budget and the deep cells collapse displaced splits
     budget = extra["num_leaves"] - 1
-    assert all(lv[7] <= lv[6] <= budget for lv in levels)
+    assert all(lv["reuse"] <= lv["pops"] <= budget for lv in levels)
+    if cell == "tied":
+        # equal-gain leaves met in a binding simulation: the tie-break decided pops the device reproduced
+        assert any(lv["ties"] > 0 for lv in binding), [lv["ties"] for lv in levels]
     if cell in ("fraud", "fewbin", "wide"):
-        assert any(lv[8] > 0 for lv in levels)
+        # displaced splits collapsed
+        assert any(lv["collapsed"] > 0 for lv in levels)
+
+
+@_REQUIRES_CUDA
+def test_r3_shadow_reports_a_corrupted_device_result_cuda():
+    kind, extra, rows, cols, rounds = _CELLS["fraud"]
+    X, y = _data(kind, rows, cols)
+    params = _params(extra)
+    faulty, err = _train(params, X, y, 2, "r3shadow,r3fault")
+    mismatches = [x for x in err.splitlines() if "r3_shadow: MISMATCH" in x]
+    levels = _levels(err)
+    assert levels
+    # every compared level reports its first difference: the corrupted first pop
+    assert len(mismatches) == len(levels)
+    assert all("field=order pos=0" in x for x in mismatches)
+    last = [tuple(int(g) for g in m.groups()) for m in _TREE.finditer(err)][-1]
+    assert last[4] == len(levels)
+    # the host still decided: the model is the plain one; plain diag runs no shadow
+    plain, diag_err = _train(params, X, y, 2, "diag")
+    assert faulty["md5"] == plain["md5"]
+    assert "r3_shadow" not in diag_err

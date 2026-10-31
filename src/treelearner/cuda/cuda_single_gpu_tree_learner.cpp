@@ -4891,6 +4891,7 @@ int CUDASingleGPUTreeLearner::RunSelectiveLevel() {
         tied_leaves.push_back(c.classic_leaf);
       }
       const int winner_leaf = SelectiveTieBreak(tied_leaves);
+      ++sel_stat_ties_;
       for (const HeapEntry& c : tied) {
         if (c.classic_leaf == winner_leaf) {
           e = c;
@@ -5094,21 +5095,23 @@ constexpr int kR3EventsPerLevel = 6;  // kernel start, kernel stop, marks 0-3
 }  // namespace
 
 int CUDASingleGPUTreeLearner::RunSelectiveLevelShadowed(const std::vector<int>& child_leaves, const bool handoff) {
-  if (!FalcataDebug().diag) {
+  if (!FalcataDebug().r3shadow) {
     return RunSelectiveLevel();
   }
   SelectiveR3ShadowLaunch(child_leaves);
   r3_levels_.back().handoff = handoff ? 1 : 0;
   const int64_t sim_ns = sel_stat_sim_ns_;
+  const int64_t ties = sel_stat_ties_;
   const int selected = RunSelectiveLevel();
   r3_levels_.back().sim_us = static_cast<double>(sel_stat_sim_ns_ - sim_ns) * 1e-3;
+  r3_levels_.back().ties = static_cast<int>(sel_stat_ties_ - ties);
   SelectiveR3ShadowCheck();
   return selected;
 }
 
 void CUDASingleGPUTreeLearner::SelectiveR3ShadowMark(const int which) {
   // mark 0 opens the next level (its record is created by the launch), marks 1-3 close the last one
-  if (!FalcataDebug().diag || (which != 0 && r3_levels_.empty())) {
+  if (!FalcataDebug().r3shadow || (which != 0 && r3_levels_.empty())) {
     return;
   }
   const size_t level = which == 0 ? r3_levels_.size() : r3_levels_.size() - 1;
@@ -5188,6 +5191,8 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowLaunch(const std::vector<int>& c
   CUDASUCCESS_OR_FATAL(cudaEventRecord(r3_events_[ev + 1], r3_stream_));
   copy(cfg.state, sizeof(CUDASelectiveR3State), cudaMemcpyDeviceToHost);
   copy(cfg.records, (num_records + num_leaves) * sizeof(CUDASelectiveR3Record), cudaMemcpyDeviceToHost);
+  copy(cfg.frontier_leaf, sel_leaf_parent_.size() * sizeof(int), cudaMemcpyDeviceToHost);
+  copy(cfg.frontier_gain, sel_leaf_parent_.size() * sizeof(double), cudaMemcpyDeviceToHost);
   // leaf_parent through apply_right
   copy(cfg.leaf_parent, reinterpret_cast<const char*>(cfg.child_leaves) - reinterpret_cast<const char*>(cfg.leaf_parent),
        cudaMemcpyDeviceToHost);
@@ -5211,6 +5216,9 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowCheck() {
   const CUDASelectiveR3Config d = SelectiveR3BlobConfig(r3_pinned_blob_, config_->num_leaves, r3_record_capacity_,
                                                         &bytes);
   const CUDASelectiveR3State& ds = *d.state;
+  if (FalcataDebug().r3fault && ds.num_order > 0) {
+    d.order_id[0] = ~d.order_id[0];  // test hook: the comparison must report this
+  }
   // the first difference, in the order the host produces its results; a sequence's count, then its entries
   const char* field = nullptr;
   int pos = -1;
@@ -5243,7 +5251,17 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowCheck() {
     host_created.push_back(sel_applied_[id].right_leaf);
   }
   diff("error", 0, 0, ds.error);
+  // gains compared as bit patterns (the device reads them from its own best-split cache)
+  const auto bits = [](const double v) {
+    int64_t b = 0;
+    std::memcpy(&b, &v, sizeof(b));
+    return b;
+  };
   diff("frontier", -1, static_cast<int64_t>(sel_frontier_.size()), ds.num_frontier);
+  for (int k = 0; k < std::min(static_cast<int>(sel_frontier_.size()), ds.num_frontier) && field == nullptr; ++k) {
+    diff("frontier_leaf", k, sel_frontier_[k].leaf, d.frontier_leaf[k]);
+    diff("frontier_gain", k, bits(sel_frontier_[k].gain), bits(d.frontier_gain[k]));
+  }
   seq("order", sel_order_, d.order_id, ds.num_order);
   seq("classic", sel_order_classic_leaf_, d.order_classic, ds.num_order);
   seq("collapse", host_collapsed, device_collapsed.data(), ds.num_collapsed);
@@ -5261,6 +5279,7 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowCheck() {
     diff("record_kid_left", i, a.kid_left, r.kid_left);
     diff("record_kid_right", i, a.kid_right, r.kid_right);
     diff("record_dead", i, a.dead ? 1 : 0, r.dead);
+    diff("record_gain", i, bits(a.gain), bits(r.gain));
   }
   for (int leaf = 0; leaf < sel_num_allocated_ && field == nullptr; ++leaf) {
     diff("leaf_parent", leaf, sel_leaf_parent_[leaf], d.leaf_parent[leaf]);
@@ -5294,7 +5313,7 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowCheck() {
 }
 
 void CUDASingleGPUTreeLearner::SelectiveR3ShadowTreeEnd() {
-  if (FalcataDebug().diag && !r3_levels_.empty()) {
+  if (FalcataDebug().r3shadow && !r3_levels_.empty()) {
     CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
     const auto elapsed_us = [this](const int a, const int b) {
       float ms = 0.0f;
@@ -5312,10 +5331,10 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowTreeEnd() {
       const double gap_apply = (lvl.marks & 12) == 12 ? elapsed_us(lvl.ev + 4, lvl.ev + 5) : -1.0;
       mismatches += lvl.mismatch;
       fprintf(stderr, "[hybrid-diag] r3_shadow: tree=%" PRId64 " level=%d handoff=%d binding=%d applied=%d "
-              "frontier=%d pops=%d reuse=%d collapsed=%d created=%d r3_us=%.2f sim_us=%.2f gap_readback_us=%.2f "
+              "frontier=%d pops=%d reuse=%d collapsed=%d created=%d r3_us=%.2f sim_us=%.2f ties=%d gap_readback_us=%.2f "
               "gap_apply_us=%.2f shadow_host_us=%.2f\n", sel_stat_trees_, lvl.level, lvl.handoff, lvl.binding,
               lvl.applied, lvl.frontier, lvl.pops, lvl.reuse, lvl.collapsed, lvl.created,
-              elapsed_us(lvl.ev, lvl.ev + 1), lvl.sim_us, gap_readback, gap_apply, lvl.shadow_host_us);
+              elapsed_us(lvl.ev, lvl.ev + 1), lvl.sim_us, lvl.ties, gap_readback, gap_apply, lvl.shadow_host_us);
     }
     fprintf(stderr, "[hybrid-diag] r3_shadow: tree=%" PRId64 " levels=%d mismatches=%d cumulative levels=%" PRId64
             " mismatches=%" PRId64 "\n", sel_stat_trees_, static_cast<int>(r3_levels_.size()), mismatches,
