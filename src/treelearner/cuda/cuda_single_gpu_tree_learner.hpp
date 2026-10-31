@@ -399,7 +399,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  per-pair search scratch (finder output, bit-change scratch, bynode rows), with the tree's fixed scratch, fits half
    *  of free device memory (FALCATA_DEBUG=vramfree=N caps it). Fewer pairs than the widest search: each level's
    *  fix/subtract and find run over ceil(pairs / chunk) chunks (device_tree_chunk_pairs_) */
-  void PlanDeviceTreeChunks();
+  void PlanDeviceTreeChunks(const CUDATree* tree);
   /*! \brief chunks of a level of \p pairs worst-case pairs (1 without pair chunking) */
   int DeviceTreeChunks(const int pairs) const {
     return device_tree_chunk_pairs_ > 0 && pairs > device_tree_chunk_pairs_ ?
@@ -821,9 +821,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int device_tree_chunk_pairs_ = -1;
   /*! \brief PlanDeviceTreeChunks: one pair per chunk exceeds the free memory; the host level loop grows the trees */
   bool device_tree_scratch_refused_ = false;
-  /*! \brief categorical datasets: whether the device tree's presized categorical record and slab fit beside its
-   *  fixed scratch and one pair chunk (PlanDeviceTreeChunks; -1 not yet made, 0 no: the host level loop with reason
-   *  categorical) */
+  /*! \brief categorical datasets: whether every categorical feature's bin-range cap fits the inner bitset stride
+   *  (PlanDeviceTreeChunks; -1 not yet made, 0 no: the host level loop with reason categorical). The presized record's
+   *  memory is part of the plan's fixed scratch (over the budget: scratch_too_large) */
   int device_tree_cat_gate_ = -1;
   /*! \brief pairs SetupDeviceLevels sized the block map and descriptors for (the widest search), and the per-pair
    *  search scratch for (one chunk) */

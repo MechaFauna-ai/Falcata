@@ -240,6 +240,11 @@ class CUDATree : public Tree {
   void ReplayDeviceCategoricalRecord(const int levels_with_cat, const int num_cat_splits, const size_t bitset_stride,
                                      const size_t bitset_inner_stride);
 
+  /*! \brief words the categorical record's real-value (inner: inner-bin) bitset holds without growing */
+  size_t CategoricalRecordCapacity(const bool inner) const {
+    return inner ? cuda_bitset_inner_.Capacity() : cuda_bitset_.Capacity();
+  }
+
   /*! \brief the categorical record buffers a captured device tree's record kernel bakes in (graph key) */
   void CategoricalRecordKey(std::vector<const void*>* key) const {
     key->push_back(cuda_bitset_.RawDataReadOnly());

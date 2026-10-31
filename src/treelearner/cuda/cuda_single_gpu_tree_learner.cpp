@@ -2643,7 +2643,7 @@ void CUDASingleGPUTreeLearner::FeatureParallelMergeLevel(const int num_leaves) {
 int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   // before SetupDeviceLevels sizes a complete tree's search scratch: its pair chunk
-  PlanDeviceTreeChunks();
+  PlanDeviceTreeChunks(tree);
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   // two struct slots per split of a level, reused across levels; one device
   // slab, sized once (the kernels initialize every slot they use before any
@@ -3095,8 +3095,9 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   if (finder != R::kNone) {
     return finder;  // lambda_l1, path_smooth (non-quantized or per-node masks), bynode_host_masks
   }
-  // categorical datasets: quantized training takes the device tree (its record presized per tree); non-quantized
-  // training keeps the host level loop (NonquantDeviceTreeShape), as does a presized record over the memory gate
+  // categorical datasets: quantized training takes the device tree (its record presized per tree, as fixed scratch of
+  // PlanDeviceTreeChunks: over the budget, scratch_too_large); non-quantized training keeps the host level loop
+  // (NonquantDeviceTreeShape), as does a feature whose bin-range cap passes the inner bitset stride
   if (has_categorical_feature_ && (!config_->use_quantized_grad || device_tree_cat_gate_ == 0)) {
     return R::kCategorical;
   }
@@ -3401,7 +3402,7 @@ int CUDASingleGPUTreeLearner::DeviceLevelSearchPairs(const int num_levels) const
 // chunk states. The widest search's pairs when that fits half of the free memory; otherwise the most pairs that do
 // (at least one). Chunking changes no float result: a pair's fix/subtract and find read and write only its own
 // histograms, scratch region and leaf entries, and the select reads the level's leaf entries after every chunk.
-void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
+void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks(const CUDATree* tree) {
   if (device_tree_chunk_pairs_ >= 0 || !DeviceTreeRequested()) {
     return;
   }
@@ -3443,6 +3444,7 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
   size_t cat_bytes = 0;
   size_t cat_growth_bytes = 0;
   bool cat_caps_fit = true;
+  bool cat_record_fits_int = true;
   if (has_categorical_feature_ && config_->use_quantized_grad) {
     // the device select's categorical descriptor reads the split's inner bitset in the slab over the feature's
     // bin-range cap (SplitLevelBatched's region length): the slab's stride has to cover every cap
@@ -3462,9 +3464,20 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
       cat_bytes += need * unit;
       cat_growth_bytes += need > have ? need * unit : 0;
     };
-    count(record_splits * batch_cat_bitset_stride_, cuda_tree_cat_arena_.bitset.Capacity(), sizeof(uint32_t));
-    count(record_splits * batch_cat_bitset_inner_stride_, cuda_tree_cat_arena_.bitset_inner.Capacity(),
-          sizeof(uint32_t));
+    // the record buffers are the learner's arena's, held by the tree being grown from its constructor to its ToHost
+    // (the plan runs from TrainLevelWisePrefix, after the constructor): their capacity is wherever they are now, so
+    // a re-plan (ResetConfig) does not count an allocated record again
+    size_t record_words = cuda_tree_cat_arena_.bitset.Capacity();
+    size_t record_words_inner = cuda_tree_cat_arena_.bitset_inner.Capacity();
+    if (tree != nullptr) {
+      record_words = std::max(record_words, tree->CategoricalRecordCapacity(false));
+      record_words_inner = std::max(record_words_inner, tree->CategoricalRecordCapacity(true));
+    }
+    count(record_splits * batch_cat_bitset_stride_, record_words, sizeof(uint32_t));
+    count(record_splits * batch_cat_bitset_inner_stride_, record_words_inner, sizeof(uint32_t));
+    // the record's word offsets are int (the boundary arrays, SplitCategoricalLevelKernel)
+    cat_record_fits_int = DeviceTreeCatRecordFitsInt(record_splits, batch_cat_bitset_stride_,
+                                                     batch_cat_bitset_inner_stride_);
     count(level_splits * batch_cat_bitset_stride_, cuda_batch_cat_bitset_.Size(), sizeof(uint32_t));
     count(level_splits * batch_cat_bitset_inner_stride_, cuda_batch_cat_bitset_inner_.Size(), sizeof(uint32_t));
     count(2 * level_splits, cuda_batch_cat_lens_.Size(), sizeof(uint64_t));
@@ -3510,12 +3523,17 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
   }
   device_tree_chunk_pairs_ = chunk;
   // even one pair per chunk exceeds the budget (half of the free memory; vramfree caps it), or the bynode task offsets
-  // overflow at one pair: the host level loop grows this learner's trees (reason scratch_too_large), no CUDA Fatal
-  device_tree_scratch_refused_ = growth_bytes(chunk) > budget || bynode_cap < 1;
+  // overflow at one pair, or the categorical record's word offsets would pass int: the host level loop grows this
+  // learner's trees (reason scratch_too_large), no CUDA Fatal
+  device_tree_scratch_refused_ = growth_bytes(chunk) > budget || bynode_cap < 1 || !cat_record_fits_int;
   if (device_tree_scratch_refused_ && FalcataDebug().diag) {
     fprintf(stderr, "[hybrid-diag] device_tree: scratch too large: max_depth %d needs %.1f MiB at one searched pair "
             "per chunk, %.1f MiB free (budget half): host level loop\n", num_levels,
             growth_bytes(chunk) / (1024.0 * 1024.0), free_bytes / (1024.0 * 1024.0));
+    if (!cat_record_fits_int) {
+      fprintf(stderr, "[hybrid-diag] device_tree: categorical record past int word offsets (stride %zu words)\n",
+              batch_cat_bitset_stride_);
+    }
   }
   // categorical datasets: the device select reads each categorical feature's bin-range cap within the slab's stride
   // (else the host level loop with reason categorical; the record's bytes are part of the fixed scratch above)

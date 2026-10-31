@@ -245,6 +245,14 @@ struct CUDADeviceLevelCatConfig {
   const int* bin_offsets;
 };
 
+/*! \brief whether a complete tree's categorical record of record_splits splits at these bitset strides keeps its word
+ *  offsets in int range (CUDATree's boundary arrays and SplitCategoricalLevelKernel's offsets are int); a record past
+ *  it keeps the host level loop (PlanDeviceTreeChunks: scratch_too_large) */
+inline bool DeviceTreeCatRecordFitsInt(const size_t record_splits, const size_t stride, const size_t inner_stride) {
+  constexpr size_t kMaxWords = 2147483647;  // INT_MAX
+  return record_splits == 0 || (stride <= kMaxWords / record_splits && inner_stride <= kMaxWords / record_splits);
+}
+
 /*! \brief static inputs of the select and pairs kernels (by value) */
 struct CUDADeviceLevelConfig {
   CUDADeviceLevelState* state;

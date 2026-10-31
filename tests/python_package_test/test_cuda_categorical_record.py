@@ -28,9 +28,10 @@ feature whose largest value is a multiple of 32 (its bitset needs max_cat_value 
 bitset sized one word short failed training with an invalid-argument CUDA copy). FALCATA_DEBUG=diag reports per tree
 what the level record did; the test checks that the device tree grew the tree and the fast path ran: one tree-end
 copy, no growth inside a tree, and on the high-cardinality shape the four-copy readback of a record bound past the
-one-copy limit (and, on the host level loop, the exact-count readback on a capacity overflow). When the presized
-record does not fit beside the device tree's scratch in half of free device memory, the tree takes the host level
-loop with reason `categorical` and the same model.
+one-copy limit (and, on the host level loop, the exact-count readback on a capacity overflow). The presized record
+is fixed scratch of the device tree's memory plan: when it does not fit beside one pair's search in half of free
+device memory, the tree takes the host level loop with reason `scratch_too_large` and the same model; a re-plan (a
+parameter reset) counts an allocated record once.
 """
 
 import hashlib
@@ -353,3 +354,43 @@ def test_cuda_categorical_record_stump():
     _, host_routes, host_md5 = _diag_run({**params, "cuda_plan": "auto,device_tree:off"}, {}, 6)
     assert host_routes[0][0] == "plan_off", host_routes
     assert host_md5 == md5
+
+
+_REPLAN_TRAIN = """
+import json, sys
+import numpy as np
+import falcata as flc
+d = np.load(sys.argv[1])
+params = json.loads(sys.argv[2])
+ds = flc.Dataset(d["x"], d["y"], categorical_feature=[int(c) for c in d["cats"]], params=params)
+# a parameter reset every round: ResetConfig releases the device levels and the next tree plans its scratch again
+flc.train(params, ds, num_boost_round=4, callbacks=[flc.reset_parameter(learning_rate=[0.1, 0.09, 0.08, 0.07])])
+"""
+
+
+@_REQUIRES_CUDA
+def test_cuda_categorical_record_replan_counts_record_once():
+    """PlanDeviceTreeChunks counts the categorical record's growth where the record buffers are at plan time (the
+    tree being grown holds the learner's arena then): the first plan counts the whole high-cardinality record, a
+    re-plan after a parameter reset counts nothing for it (counted twice, an allocated record could refuse a plan the
+    first one accepted)."""
+    extra, data_kw, _ = SHAPES["high_cardinality"]
+    params = {**BASE, "quant_mode": "stochastic", **extra}
+    x, y, cats = _data(20000, 3, **data_kw)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "data.npz")
+        np.savez(path, x=x, y=y, cats=np.array(cats))
+        out = subprocess.run(
+            [sys.executable, "-c", _REPLAN_TRAIN, path, json.dumps(params)],
+            env=dict(os.environ, FALCATA_DEBUG="diag"),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    to_allocate = [
+        float(m) for m in re.findall(r"categorical record estimate [\d.]+ MiB \(to allocate ([\d.]+),", out.stderr)
+    ]
+    assert len(to_allocate) >= 2, out.stderr[-2000:]
+    assert to_allocate[0] > 10.0, to_allocate
+    assert all(mib < 0.5 for mib in to_allocate[1:]), to_allocate
+    assert "scratch too large" not in out.stderr
