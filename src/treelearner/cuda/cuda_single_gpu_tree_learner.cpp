@@ -3577,8 +3577,10 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks(const CUDATree* tree) {
   // learner's trees (reason scratch_too_large), no CUDA Fatal
   device_tree_scratch_refused_ = growth_bytes(chunk) > budget || bynode_cap < 1 || !cat_record_fits_int;
   if (device_tree_scratch_refused_ && FalcataDebug().diag) {
-    fprintf(stderr, "[hybrid-diag] device_tree: scratch too large: max_depth %d needs %.1f MiB at one searched pair "
-            "per chunk, %.1f MiB free (budget half): host level loop\n", num_levels,
+    // (selective trees: the capacity levels, ceil(log2 num_leaves), not a depth)
+    fprintf(stderr, "[hybrid-diag] device_tree: scratch too large: %s %d needs %.1f MiB at one searched pair "
+            "per chunk, %.1f MiB free (budget half): host level loop\n", whole ? "max_depth" : "capacity levels",
+            num_levels,
             growth_bytes(chunk) / (1024.0 * 1024.0), free_bytes / (1024.0 * 1024.0));
     if (!cat_record_fits_int) {
       fprintf(stderr, "[hybrid-diag] device_tree: categorical record past int word offsets (stride %zu words)\n",
@@ -3587,7 +3589,10 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks(const CUDATree* tree) {
   }
   // categorical datasets: the device select reads each categorical feature's bin-range cap within the slab's stride
   // (else the host level loop with reason categorical; the record's bytes are part of the fixed scratch above)
-  device_tree_cat_gate_ = cat_caps_fit ? 1 : 0;
+  // (complete trees only: selective categorical trees are refused by DeviceLevelsToRun after this plan)
+  if (whole) {
+    device_tree_cat_gate_ = cat_caps_fit ? 1 : 0;
+  }
   if (FalcataDebug().diag) {
     constexpr double kMiB = 1024.0 * 1024.0;
     const size_t finder_bytes = 2 * static_cast<size_t>(cuda_best_split_finder_->num_tasks()) *
@@ -3595,10 +3600,11 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks(const CUDATree* tree) {
     const size_t bit_change_bytes = config_->use_quantized_grad ?
       cuda_histogram_constructor_->BitChangeScratchEntries(chunk) * sizeof(hist_t) : 0;
     fprintf(stderr, "[hybrid-diag] device_tree: scratch estimate %.1f MiB (finder %.1f, bit-change %.1f, other %.1f, "
-            "bynode %.1f; to allocate %.1f) for max_depth %d, %d searched pairs, %d chunks of %d pairs, %d tasks, %d "
+            "bynode %.1f; to allocate %.1f) for %s %d, %d searched pairs, %d chunks of %d pairs, %d tasks, %d "
             "total bins; free %.1f of %.1f MiB\n", (finder_bytes + bit_change_bytes + other_bytes +
             bynode_bytes(chunk)) / kMiB, finder_bytes / kMiB, bit_change_bytes / kMiB, other_bytes / kMiB,
-            bynode_bytes(chunk) / kMiB, growth_bytes(chunk) / kMiB, num_levels, pairs, DeviceTreeChunks(pairs),
+            bynode_bytes(chunk) / kMiB, growth_bytes(chunk) / kMiB, whole ? "max_depth" : "capacity levels", num_levels,
+            pairs, DeviceTreeChunks(pairs),
             chunk, cuda_best_split_finder_->num_tasks(), num_total_bin_, free_bytes / kMiB, device_bytes / kMiB);
     if (whole && has_categorical_feature_ && config_->use_quantized_grad) {
       fprintf(stderr, "[hybrid-diag] device_tree: categorical record estimate %.1f MiB (to allocate %.1f, strides "

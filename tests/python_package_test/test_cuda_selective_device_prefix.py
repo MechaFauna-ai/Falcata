@@ -312,6 +312,26 @@ def test_selective_device_prefix_l1_smoothing_same_model_cuda(objective, leaves,
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("value", ["on", "off"])
+def test_selective_device_prefix_removed_key_cuda(value):
+    # the removed key selective_device_prefix is accepted with the 1.2 removal warning and ignored: the default plan's
+    # selective device levels and model
+    X, y = _data("regression")
+    params = _params("regression", 63, -1)
+    md5, trees, lines = _train_diag({**params, "cuda_plan": f"auto,selective_device_prefix:{value}"}, X, y, 4)
+    assert len(lines) == trees
+    assert md5 == _train_diag({**params, "cuda_plan": "auto"}, X, y, 4)[0]
+    env = dict(os.environ)
+    code = (
+        "import falcata as flc, numpy as np; X = np.random.default_rng(0).standard_normal((500, 4)); "
+        f"flc.train({{'device_type': 'cuda', 'verbose': 0, 'num_leaves': 63, 'max_depth': -1, "
+        f"'cuda_plan': 'auto,selective_device_prefix:{value}'}}, flc.Dataset(X, label=X[:, 0]), num_boost_round=1)"
+    )
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True)
+    assert "cuda_plan key selective_device_prefix was removed in 1.2: ignored" in out.stdout + out.stderr
+
+
+@_REQUIRES_CUDA
 def test_selective_device_prefix_declines_forced_splits_cuda(tmp_path):
     # forced splits take the classic per-split loop (no selective growth): the device levels decline and the model is
     # unchanged

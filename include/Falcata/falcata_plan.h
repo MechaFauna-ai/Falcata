@@ -950,7 +950,7 @@ struct FalcataPlan {
   // where applied splits + valid leaves <= num_leaves - 1 (there the host's greedy simulation provably selects every
   // candidate, so "split every valid leaf" is its decision), tested on the device per level; the first level where
   // it fails (the first binding level) and everything after stays with the host's selective loop, which continues
-  // from the levels' journal (the selective records rebuilt from it). Levels below ceil(log2 num_leaves) are captured
+  // from the levels' journal (the selective records rebuilt from it). Levels below floor(log2 num_leaves) are captured
   // unrolled; later ones share one shape (num_leaves / 2 pairs) and run as a captured two-level body, relaunched while
   // a mapped device flag says the tree continues. Leaf indices are assigned leaf-ascending instead of in greedy order,
   // which no search, simulation or renumbering reads: bit-identical. device_tree:off: the host's selective loop for
