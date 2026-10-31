@@ -195,8 +195,8 @@ def test_nonquant_device_tree_engages_cuda(extra):
     assert len(re.findall(r"device_tree: complete depth=", diag)) == rounds, diag[-3000:]
     assert not re.search(r"device_tree: fallback", diag), diag[-3000:]
     if params.get("linear_tree"):
-        # linear trees' per-leaf least-squares sums use double atomics: not run-to-run deterministic on any flow, so
-        # no md5 pins them; the one-sync flow's predictions must agree closely
+        # the linear leaf fit is a fixed-order reduction over each leaf's rows in partition order, and both flows
+        # leave every leaf's rows in the same order: the one-sync flow's model is the same, coefficients included
         off_diag, off_pred = _train_diag({**params, "cuda_plan": "auto,device_tree:off"}, rounds, X, y)
         assert "device_tree: complete" not in off_diag
-        np.testing.assert_allclose(pred, off_pred, rtol=1e-4, atol=1e-4 * float(np.std(off_pred)))
+        np.testing.assert_array_equal(pred, off_pred)

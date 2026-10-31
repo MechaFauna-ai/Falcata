@@ -503,8 +503,38 @@
    "metric_name": "rmse"
   },
   "route/r20-linear-sel": {
-   "md5": "f07578bcdf7471947963501ecac681e2",
+   "md5": "d67c0b9f7388a2a854b2cdfba8cded10",
    "metric": 1.627,
+   "metric_name": "rmse"
+  },
+  "route/r20b-linear-dt": {
+   "md5": "4ad1a3d6474198d2734ba68604690cab",
+   "metric": 1.554141,
+   "metric_name": "rmse"
+  },
+  "route/r20c-linear-cat": {
+   "md5": "72ed2b932c74c207af983c7ea65da46b",
+   "metric": 2.904387,
+   "metric_name": "rmse"
+  },
+  "route/r20d-linear-bag": {
+   "md5": "6f8f59ca2b33b6c0b1b0ad9cac1aaa0c",
+   "metric": 1.557823,
+   "metric_name": "rmse"
+  },
+  "route/r20e-linear-l1": {
+   "md5": "3e8dc26d59b3c9a6089bfbd36b824744",
+   "metric": 1.538137,
+   "metric_name": "rmse"
+  },
+  "route/r20f-linear-smooth": {
+   "md5": "e372186d3596841899f5eeeb15898809",
+   "metric": 1.557252,
+   "metric_name": "rmse"
+  },
+  "route/r20g-linear-stump": {
+   "md5": "26a9f6cffd40130a7d3f07456c0f5a5c",
+   "metric": 2.916746,
    "metric_name": "rmse"
   },
   "route/r21-stump": {

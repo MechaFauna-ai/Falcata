@@ -28,11 +28,12 @@ lattice by design. Re-baseline explicitly -- `lattice.py --update <cell-id> ...`
 (or `--baseline` for everything) -- and commit the `md5_lattice.json` diff; the
 diff review shows exactly which cells moved and is itself the review artifact.
 
-**Route goldens (`route/*`).** 34 fingerprinted cells (the budget-limited
-linear tree's md5 leaves out its run-to-run varying leaf coefficients via the
-cell field `fingerprint_strip`), one per configuration
-the complete CUDA device tree refuses today (the inventory rows of the
-full-device-controller program, recorded on master 5bec2574): deep and
+**Route goldens (`route/*`).** 40 fingerprinted cells: 34 one per configuration
+the complete CUDA device tree refused (the inventory rows of the
+full-device-controller program, recorded on master 5bec2574), and six more
+linear-tree cells (device tree, categorical, bagging, L1, path smoothing,
+stump; linear leaf coefficients repeat bit for bit since the fixed-order gram
+reduction). The inventory rows: deep and
 memory-gated trees, binding leaf budgets, non-quantized, categorical, per-node
 masks, interaction and monotone constraints, forests, vector leaves, the
 unbatched finders and layouts, CEGB, forced splits, budget-limited linear

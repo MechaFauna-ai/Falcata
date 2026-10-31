@@ -100,6 +100,12 @@ ROUTES_EXPECTED = {
     "route/r18-cegb": [("cegb", _CLASSIC)],
     "route/r19-forced": [("forced_splits", _CLASSIC)],
     "route/r20-linear-sel": [("linear_budget", _CLASSIC)],
+    "route/r20b-linear-dt": [_COMPLETE],
+    "route/r20c-linear-cat": [("linear_budget", _CLASSIC)],
+    "route/r20d-linear-bag": [_COMPLETE],
+    "route/r20e-linear-l1": [_COMPLETE],
+    "route/r20f-linear-smooth": [_COMPLETE],
+    "route/r20g-linear-stump": [_COMPLETE],
     # a two-leaf tree is the complete device tree at depth 1 (P6; same md5)
     "route/r21-stump": [_COMPLETE],
     # r22 pins complete device trees (the device tree has no root tail since P6, see the lattice comment); split-less
