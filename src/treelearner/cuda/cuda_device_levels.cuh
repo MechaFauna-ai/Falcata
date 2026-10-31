@@ -220,6 +220,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   // the previous level's values are still in the state: this level's leaves and split-info slab base follow them
   const int cur_leaves = st->num_leaves + st->live_splits;
   const int split_cursor = st->split_info_base + st->live_splits;
+  const int cat_cursor = st->cat_split_base + st->live_cat_splits;
   const auto stop = [&](const bool flag) {
     if (tid == 0) {
       if (flag) {
@@ -227,6 +228,9 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
       }
       st->done = 1;
       st->live_splits = 0;
+      st->live_num_splits = 0;
+      st->live_cat_splits = 0;
+      st->cat_split_base = cat_cursor;
       st->total_flat_blocks = 0;
       st->num_gaps = 0;
       st->gap_flat_blocks = 0;
@@ -319,6 +323,25 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   const int split_chunk = (n + nt - 1) / nt;
   const int k_begin = min(tid * split_chunk, n);
   const int k_end = min(k_begin + split_chunk, n);
+  // categorical datasets: the level's categorical splits in apply order (ApplyLevelBatched's list for its bitset
+  // kernel). The tree record takes CUDATree::SplitLevel's launch order: the numerical splits first (each keeping its
+  // rank among them), then the categorical ones in apply order; the splits act on disjoint leaves, so the order of
+  // the record's entries does not change what they write. A categorical split is one with categorical thresholds (the
+  // host record's test); the partition's test is the feature's type (SplitLevelBatched): they agree, a disagreement
+  // stops the tree with error flag 2.
+  const bool cat_enabled = cfg.cat.infos != nullptr;
+  int cat_seen = 0;
+  int num_cat = 0;
+  if (cat_enabled) {
+    int my_cat = 0;
+    for (int k = k_begin; k < k_end; ++k) {
+      if (cfg.leaf_best_split_info[s_leaves[k]].num_cat_threshold > 0) {
+        ++my_cat;
+      }
+    }
+    cat_seen = DeviceLevelBlockScan(my_cat, s_warp, &s_total);
+    num_cat = s_total;
+  }
   int my_slots = 0;
   int my_flat = 0;
   for (int k = k_begin; k < k_end; ++k) {
@@ -329,12 +352,18 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
     const uint32_t threshold = info->threshold;
     const CUDAHybridGraphFeatureMeta m = cfg.feature_meta[inner_feature];
     const CUDAHybridGraphFeatureSource src = cfg.feature_source[inner_feature];
+    const bool is_cat = cat_enabled && info->num_cat_threshold > 0;
+    if (cat_enabled && is_cat != (m.is_categorical != 0)) {
+      atomicOr(cfg.journal + 2, 2);
+    }
+    const int record_index = !cat_enabled ? k : (is_cat ? n - num_cat + cat_seen : k - cat_seen);
     if (cfg.skip_tree_record == 0) {
-      CUDATreeBatchSplit& ts = cfg.tree_batch_splits[k];
+      CUDATreeBatchSplit& ts = cfg.tree_batch_splits[record_index];
       ts.leaf_index = leaf;
       ts.num_leaves_at_split = right;
       ts.real_feature_index = m.real_feature_index;
-      ts.real_threshold = cfg.real_thresholds[m.real_threshold_offset + threshold];
+      // (a categorical split's threshold is not a bin of the threshold table; its record does not read this field)
+      ts.real_threshold = is_cat ? 0.0 : cfg.real_thresholds[m.real_threshold_offset + threshold];
       ts.missing_type = m.missing_type;
       ts.split_info = info;
     }
@@ -388,9 +417,19 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
     d.mfb_is_na = m.mfb_is_na;
     d.max_bin_to_left = (m.max_bin <= th) ? 1 : 0;
     d.use_min_bin = m.use_min_bin;
-    d.cat_bitset_len = 0;
-    d.cat_bitset = nullptr;
-    d.cat_mfb_offset = 0;
+    if (is_cat) {
+      // SplitLevelBatched's categorical descriptor: the inner bitset (in the level's slab, where the bitset kernel
+      // builds it) read over the feature's bin-range cap; the default directions follow from the bitset (the bitset
+      // kernel patches them, as HybridBuildCatBitsetArenaKernel does)
+      const uint32_t mfb_offset = m.most_freq_bin == 0 ? 1u : 0u;
+      d.cat_bitset_len = static_cast<int>((m.max_bin - m.min_bin + mfb_offset) / 32 + 1);
+      d.cat_bitset = cfg.cat.bitset_inner_slab + static_cast<size_t>(cat_seen) * cfg.cat.bitset_inner_stride;
+      d.cat_mfb_offset = static_cast<int8_t>(mfb_offset);
+      cfg.cat.infos[cat_seen] = info;
+      cfg.cat.inner_features[cat_seen] = inner_feature;
+      cfg.cat.split_index[cat_seen] = k;
+      ++cat_seen;
+    }
     cfg.apply_descs[k] = d;
     my_slots += d.num_blocks + 1;
     my_flat += d.num_blocks;
@@ -485,6 +524,9 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
   }
   if (tid == 0) {
     st->live_splits = n;
+    st->live_num_splits = n - num_cat;
+    st->live_cat_splits = num_cat;
+    st->cat_split_base = cat_cursor;
     st->total_flat_blocks = total_flat_blocks;
     st->num_gaps = num_gaps;
     st->gap_flat_blocks = gap_flat_blocks;
@@ -531,6 +573,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevel
       }
       st->done = 1;
       st->live_splits = 0;
+      st->live_num_splits = 0;
       st->total_flat_blocks = 0;
       st->num_gaps = 0;
       st->gap_flat_blocks = 0;
@@ -786,6 +829,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlockFast(const CUDADeviceLevel
   }
   if (tid == 0) {
     st->live_splits = n;
+    st->live_num_splits = n;  // (no categorical feature reaches the prefix)
     st->total_flat_blocks = total_flat_blocks;
     st->num_gaps = num_gaps;
     st->gap_flat_blocks = gap_flat_blocks;

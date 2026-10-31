@@ -55,7 +55,7 @@ namespace Falcata {
   X(kNonquantOnesync, "nonquant_onesync", "4")   /* quant_mode=none, depth > 11 or num_leaves > 2047 */ \
   X(kLambdaL1, "lambda_l1", "13")                         /* non-quantized, or per-node masks */       \
   X(kPathSmooth, "path_smooth", "13")                     /* non-quantized, or per-node masks */       \
-  X(kCategorical, "categorical", "6")                                                                  \
+  X(kCategorical, "categorical", "6")    /* non-quantized; a cap past the inner stride; prefix= */        \
   X(kBynodeHostMasks, "bynode_host_masks", "7")           /* in the bound, device masks unusable */    \
   X(kBynodeOutsideBound, "bynode_outside_bound", "7")     /* per-node masks outside the depth bound */ \
   X(kSelectiveUnbounded, "selective_unbounded", "3")      /* max_depth <= 0 */                         \

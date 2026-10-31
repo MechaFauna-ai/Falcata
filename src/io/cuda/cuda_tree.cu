@@ -340,6 +340,16 @@ void CUDATree::LaunchSplitBatchKernelDevice(const int max_splits, const int* liv
     live_split_count);
 }
 
+void CUDATree::LaunchSplitLevelKernelsDevice(const int max_splits, const int* device_counts,
+                                             const CUDATreeCatLevel* cat) {
+  // cuda_plan key device_levels: the level's numerical splits (device_counts[0] of them, at the front of the batch
+  // descriptors), then its categorical ones (SplitLevel's launch order), each at the level's worst-case grid
+  LaunchSplitBatchKernelDevice(max_splits, device_counts);
+  if (cat != nullptr) {
+    LaunchSplitCategoricalLevelKernel(0, max_splits, *cat, device_counts);
+  }
+}
+
 void CUDATree::LaunchSplitBatchKernel(const int num_splits) {
   SplitBatchKernel<<<num_splits, 32, 0, cuda_stream_>>>(
     cuda_batch_splits_.RawDataReadOnly(),
@@ -492,15 +502,20 @@ void CUDATree::LaunchSplitCategoricalKernel(const int leaf_index,
     cuda_cat_boundaries_inner_.RawData());
 }
 
-// cuda_plan key cat_level_record: one level's categorical splits, one block per split (blockIdx.x = c, the level's
+// CUDATree::SplitLevel: one level's categorical splits, one block per split (blockIdx.x = c, the level's
 // c-th categorical split; its descriptor is batch_splits[c]). Each block records its node exactly as
 // SplitCategoricalKernel does (threadIdx.x plays that kernel's thread index; num_cat = num_cat_base + c) and appends
 // its two bitsets at the record's current end plus the lengths of the level's earlier categorical splits, which is
 // where the per-split loop's PushBack would put them. The record's current end is boundaries[num_cat_base] (0 for the
 // first categorical split of the tree), written by an earlier launch on this stream.
+// The complete device tree launches it at the level's worst-case grid with device_counts = {numerical splits,
+// categorical splits of the earlier levels, categorical splits of the level} (the device select's state): the
+// categorical descriptors follow the numerical ones in batch_splits, num_cat_base is the second count and blocks past
+// the third exit. The host level loop passes nullptr and the exact grid.
 __global__ void SplitCategoricalLevelKernel(
   const CUDATreeBatchSplit* batch_splits,
-  const int num_cat_base,
+  int num_cat_base,
+  const int* device_counts,
   const uint32_t* bitset_slab, const size_t bitset_stride,
   const uint32_t* bitset_inner_slab, const size_t bitset_inner_stride,
   const uint64_t* lens,
@@ -526,6 +541,13 @@ __global__ void SplitCategoricalLevelKernel(
   uint32_t* threshold_in_bin,
   double* threshold) {
   const int c = static_cast<int>(blockIdx.x);
+  if (device_counts != nullptr) {
+    if (c >= device_counts[2]) {
+      return;
+    }
+    batch_splits += device_counts[0];
+    num_cat_base = device_counts[1];
+  }
   const int thread_index = static_cast<int>(threadIdx.x);
   // offsets: the lengths of the level's earlier categorical splits, summed by the block. Every block sums its own
   // prefix, O(n^2 / blockDim) loads per level for n categorical splits (n <= num_leaves / 2; trivial at the levels
@@ -645,10 +667,11 @@ __global__ void SplitCategoricalLevelKernel(
 }
 
 void CUDATree::LaunchSplitCategoricalLevelKernel(const int first_split, const int num_cat_splits,
-                                                 const CUDATreeCatLevel& cat) {
+                                                 const CUDATreeCatLevel& cat, const int* device_counts) {
   SplitCategoricalLevelKernel<<<num_cat_splits, 128, 0, cuda_stream_>>>(
     cuda_batch_splits_.RawDataReadOnly() + first_split,
     num_cat_,
+    device_counts,
     cat.bitset_slab, cat.bitset_stride,
     cat.bitset_inner_slab, cat.bitset_inner_stride,
     cat.lens,
@@ -674,7 +697,7 @@ void CUDATree::LaunchSplitCategoricalLevelKernel(const int first_split, const in
     cuda_threshold_.RawData());
 }
 
-// cuda_plan key cat_level_record: ToHost's one-copy readback of the categorical record: [boundaries (num_cat + 1)]
+// the categorical level record: ToHost's one-copy readback of the categorical record: [boundaries (num_cat + 1)]
 // [inner boundaries (num_cat + 1)] [bitset words, words_bound slots] [inner bitset words, words_inner_bound slots];
 // only the recorded words (boundaries[num_cat] and inner boundaries[num_cat] of them) are written
 __global__ void PackCategoricalRecordKernel(const int num_cat, const int* boundaries, const int* boundaries_inner,
