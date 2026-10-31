@@ -1149,11 +1149,11 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // runs.
   const bool depth_limited = GrowthMaxDepth() > 0 && GrowthMaxDepth() < 31 &&
       (1LL << GrowthMaxDepth()) <= static_cast<int64_t>(config_->num_leaves) + 1;
-  // Categorical datasets are allowed on the (two-sync) hybrid prefix: the
-  // batched apply routes categorical splits through the
-  // per-level bitset arena, and tree recording interleaves the per-split
-  // categorical path with numerical SplitBatch chunks. The selective and
-  // one-sync/speculative flows keep their categorical exclusions for now.
+  // Categorical datasets ride the level flows: the batched apply routes
+  // categorical splits through the per-level bitset arena and the tree
+  // records each level with CUDATree::SplitLevel (one kernel for its
+  // categorical splits); quantized depth-limited trees take the complete
+  // device tree, whose select lists the level's categorical splits.
   // The global-memory finder stages per-feature scratch in buffers shared by
   // every in-flight launch; the classic loop serializes those launches with a
   // device sync per split, but the hybrid per-pair fallback overlaps pairs and
@@ -2160,9 +2160,12 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
     std::vector<int>* splittable, bool* final_partial_level) {
   // batch the level whenever it fits in the leaf budget. If the finished tree
   // never exhausts num_leaves the result is exactly the leaf-wise tree (split
-  // decisions are node-local); only when the budget binds does the final level
-  // defer to the leaf-wise tail, which selects among the cached candidates in
-  // exact best-gain order.
+  // decisions are node-local). When the budget binds, the level is applied as
+  // a final partial level if every child it creates sits at max_depth (below);
+  // otherwise it defers to the leaf-wise tail. Depth-limited configs (the only
+  // ones this loop grows without selective growth, HybridGrowthUsable) bind
+  // only on such a level, so no leaf-wise tail split follows a level's
+  // categorical record (CUDATree::SplitCategorical checks it).
   *final_partial_level = false;
   level_completes_tree_ = false;
   bool all_children_depth_capped = GrowthMaxDepth() > 0 && !splittable->empty();
@@ -2257,12 +2260,10 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
     // runs while CEGB is active. Kept as a defensive guard in case that gating is
     // ever relaxed. No-op unless CEGB is configured.
     cuda_best_split_finder_->MarkFeatureUsedInSplit(inner_feature_index);
-    // Categorical splits: the entry's real_threshold is never read (the
-    // per-split loop below routes them through SplitCategorical; under
-    // cuda_plan key cat_level_record SplitLevel reads the rest of the entry
-    // but not the threshold), and RealThreshold() would OOB-index the
-    // bin-upper-bound array with the categorical threshold payload -- do not
-    // call it.
+    // Categorical splits: the entry's real_threshold is never read (SplitLevel
+    // reads the rest of the entry but not the threshold), and RealThreshold()
+    // would OOB-index the bin-upper-bound array with the categorical threshold
+    // payload -- do not call it.
     const bool is_cat_split = host_leaf_best_splits_[leaf].num_cat_threshold > 0;
     if (!apply_first) {
       host_tree_batch_splits_.push_back({
@@ -2294,11 +2295,12 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
   // ZeroHistForLeaf is a no-op (BeforeTrain zeroes the full histogram
   // buffer), so the batched path skips the per-split calls entirely.
   //
-  // Tree recording: numerical runs go through SplitBatch chunks; the level's
-  // categorical splits (rare) interleave through the per-split categorical
-  // path IN LEVEL ORDER, preserving the consecutive right-child numbering.
-  // The data partition still applies EVERYTHING through the batched arena
-  // path below.
+  // Tree recording: one SplitBatch launch for a level of numerical splits;
+  // a level with categorical splits records them with SplitLevel (the
+  // numerical ones by SplitBatchKernel, the categorical ones by one kernel at
+  // device-summed bitset offsets), right children numbered consecutively in
+  // level order either way. The data partition applies EVERYTHING through the
+  // batched arena path below.
   if (apply_first) {
     cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_, final_level, map_only);
     // the tree record's entries, in level order with the values the loop above would have given them (no split of
@@ -2315,9 +2317,10 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
   }
   {
     // Level-batched categorical bitset construction: build every categorical
-    // split's bitsets + lengths with ONE kernel and ONE readback, then record
-    // splits in level order (the per-split construction did ~6 launches and 2
-    // blocking readbacks per categorical split -- hundreds per deep tree).
+    // split's bitsets + lengths with ONE kernel, then record the level with
+    // SplitLevel, which reads the lengths on the device (the per-split
+    // construction did ~6 launches and 2 blocking readbacks per categorical
+    // split -- hundreds per deep tree).
     host_batch_cat_infos_.clear();
     host_batch_cat_feats_.clear();
     for (size_t k = 0; k < host_apply_split_inputs_.size(); ++k) {
@@ -2328,9 +2331,6 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       }
     }
     const int num_cat_splits = static_cast<int>(host_batch_cat_infos_.size());
-    // cuda_plan key cat_level_record: the level's categorical splits are recorded by one kernel at device-summed
-    // offsets (CUDATree::SplitLevel), so their lengths are never read back (vector leaves keep the per-split loop)
-    const bool cat_level_record = num_cat_splits > 0 && FalcataPlan::Get().cat_level_record && vec_num_targets_ <= 1;
     if (num_cat_splits > 0) {
       const size_t needed_real = static_cast<size_t>(num_cat_splits) * batch_cat_bitset_stride_;
       const size_t needed_inner = static_cast<size_t>(num_cat_splits) * batch_cat_bitset_inner_stride_;
@@ -2402,12 +2402,6 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
         SynchronizeCUDADevice(__FILE__, __LINE__);
         Log::Warning("[applycheck] bitset kernel of this level completed clean");
       }
-      if (!cat_level_record) {
-        host_batch_cat_lens_.resize(2 * static_cast<size_t>(num_cat_splits));
-        CopyFromCUDADeviceToHost<uint64_t>(host_batch_cat_lens_.data(),
-          cuda_batch_cat_lens_.RawData(), 2 * static_cast<size_t>(num_cat_splits),
-          __FILE__, __LINE__);
-      }
       if (cat_consumed_default_event_ == nullptr) {
         CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&cat_consumed_default_event_, cudaEventDisableTiming));
         CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&cat_consumed_tree_event_, cudaEventDisableTiming));
@@ -2416,10 +2410,7 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       // per-leaf thresholds once this event completes
       CUDASUCCESS_OR_FATAL(cudaEventRecord(cat_consumed_default_event_, nullptr));
     }
-    std::vector<CUDATreeBatchSplit> chunk;
-    chunk.reserve(host_tree_batch_splits_.size());
-    int cat_index = 0;
-    if (cat_level_record) {
+    if (num_cat_splits > 0) {
       // the bitset kernel above (legacy stream) is ordered before SplitLevel's launches (blocking tree stream), and
       // the next level's bitset kernel after them, so the slab and the lengths are read before they are rewritten
       host_level_is_cat_.resize(host_tree_batch_splits_.size());
@@ -2433,52 +2424,17 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       cat_level.bitset_inner_stride = batch_cat_bitset_inner_stride_;
       cat_level.lens = cuda_batch_cat_lens_.RawDataReadOnly();
       tree->SplitLevel(host_tree_batch_splits_, host_level_is_cat_, cat_level);
-      cat_index = num_cat_splits;
+    } else {
+      tree->SplitBatch(host_tree_batch_splits_);
     }
-    for (size_t k = 0; k < host_tree_batch_splits_.size() && !cat_level_record; ++k) {
-      const CUDAHybridApplySplitInput& in = host_apply_split_inputs_[k];
-      if (in.num_cat_threshold > 0) {
-        if (!chunk.empty()) {
-          tree->SplitBatch(chunk);
-          if (vec_num_targets_ > 1) {
-            tree->SetVectorLeafValuesFromSplitBatch(static_cast<int>(chunk.size()));
-          }
-          chunk.clear();
-        }
-        const int inner_feature = in.split_feature;
-        CHECK_GE(inner_feature, 0);
-        CHECK_LT(inner_feature, train_data_->num_features());
-        const int right = tree->SplitCategorical(
-            in.left_leaf_index,
-            train_data_->RealFeatureIndex(inner_feature),
-            train_data_->FeatureBinMapper(inner_feature)->missing_type(),
-            in.best_split_info,
-            cuda_batch_cat_bitset_.RawData() +
-              static_cast<size_t>(cat_index) * batch_cat_bitset_stride_,
-            static_cast<size_t>(host_batch_cat_lens_[2 * cat_index]),
-            cuda_batch_cat_bitset_inner_.RawData() +
-              static_cast<size_t>(cat_index) * batch_cat_bitset_inner_stride_,
-            static_cast<size_t>(host_batch_cat_lens_[2 * cat_index + 1]));
-        CHECK_EQ(right, in.right_leaf_index);
-        if (vec_num_targets_ > 1) {
-          tree->SetVectorLeafValuesFromSplit(in.left_leaf_index, right, in.best_split_info);
-        }
-        ++cat_index;
-      } else {
-        chunk.push_back(host_tree_batch_splits_[k]);
-      }
+    if (vec_num_targets_ > 1) {
+      // the split kernels wrote the target-0 (mirror) outputs; record every target's child outputs from the winning
+      // splits' vector payloads (the batch descriptors in their launch order: one entry per split of the level)
+      tree->SetVectorLeafValuesFromSplitBatch(static_cast<int>(host_tree_batch_splits_.size()));
     }
-    if (!chunk.empty()) {
-      tree->SplitBatch(chunk);
-      if (vec_num_targets_ > 1) {
-        // the split kernel wrote the target-0 (mirror) outputs; record every
-        // target's child outputs from the winning splits' vector payloads
-        tree->SetVectorLeafValuesFromSplitBatch(static_cast<int>(chunk.size()));
-      }
-    }
-    if (cat_index > 0 && cat_consumed_tree_event_ != nullptr) {
-      // SplitCategorical kernels (tree stream) also read the per-leaf
-      // threshold slabs (cat_threshold_real for the tree's real-value bitset)
+    if (num_cat_splits > 0 && cat_consumed_tree_event_ != nullptr) {
+      // the categorical record (tree stream) also reads the split leaves'
+      // best-split entries
       CUDASUCCESS_OR_FATAL(cudaEventRecord(cat_consumed_tree_event_, tree->tree_stream()));
     }
       if (FalcataDebug().dump) {
@@ -2687,7 +2643,7 @@ void CUDASingleGPUTreeLearner::FeatureParallelMergeLevel(const int num_leaves) {
 int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   // before SetupDeviceLevels sizes a complete tree's search scratch: its pair chunk
-  PlanDeviceTreeChunks();
+  PlanDeviceTreeChunks(tree);
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   // two struct slots per split of a level, reused across levels; one device
   // slab, sized once (the kernels initialize every slot they use before any
@@ -3044,6 +3000,7 @@ void CUDASingleGPUTreeLearner::ReleaseDeviceLevelGraphs() {
   device_levels_ready_ = false;
   device_levels_disabled_ = false;
   selective_prefix_logged_ = false;  // a new config reports its levels again
+  device_tree_cat_gate_ = -1;
   device_tree_chunk_pairs_ = -1;
   device_tree_scratch_refused_ = false;
   device_level_graph_disabled_ = false;
@@ -3138,7 +3095,10 @@ DeviceTreeReason CUDASingleGPUTreeLearner::DeviceTreeRefusal() const {
   if (finder != R::kNone) {
     return finder;  // lambda_l1, path_smooth (non-quantized or per-node masks), bynode_host_masks
   }
-  if (has_categorical_feature_) {
+  // categorical datasets: quantized training takes the device tree (its record presized per tree, as fixed scratch of
+  // PlanDeviceTreeChunks: over the budget, scratch_too_large); non-quantized training keeps the host level loop
+  // (NonquantDeviceTreeShape), as does a feature whose bin-range cap passes the inner bitset stride
+  if (has_categorical_feature_ && (!config_->use_quantized_grad || device_tree_cat_gate_ == 0)) {
     return R::kCategorical;
   }
   if (!config_->use_quantized_grad) {
@@ -3368,9 +3328,10 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     return 0;
   }
   // the flow this replaces: the classic quantized prefix with both batched phases, single GPU, scalar leaves, no
-  // per-node masks (drawn on the host per level), no categorical splits (their bitsets are built through host
-  // readbacks), no debug hooks (they steer the host loop's decisions); the device counts reach only the fused
-  // tree-structure + gap apply ids and the dense construct's block map
+  // per-node masks (drawn on the host per level), no debug hooks (they steer the host loop's decisions); the device
+  // counts reach only the fused tree-structure + gap apply ids and the dense construct's block map. Categorical
+  // splits only on the complete device tree (its select lists them for the level's bitset kernel and the tree
+  // records them by level, CUDADeviceLevelCatConfig); a prefix hands its tree to the host loop with no record of them
   // (cuda_plan key device_bynode_masks: the complete tree draws keyed per-node masks on the device)
   const bool node_masks_on_host = select_features_by_node_ && !(device_tree && DeviceBynodeMasksUsable());
   DeviceTreeReason refusal = DeviceTreeReason::kNone;
@@ -3387,7 +3348,7 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
   } else if (!batched_level_kernels || !batched_level_apply ||
              !cuda_histogram_constructor_->DeviceLevelConstructSupported()) {
     refusal = DeviceTreeRefusal();  // which layout or finder option keeps the batched level kernels off
-  } else if (has_categorical_feature_) {
+  } else if (has_categorical_feature_ && !(device_tree && device_tree_cat_gate_ == 1)) {
     refusal = DeviceTreeReason::kCategorical;
   } else if (node_masks_on_host) {
     refusal = device_tree ? DeviceTreeReason::kBynodeHostMasks : DeviceTreeReason::kBynodeOutsideBound;
@@ -3441,7 +3402,7 @@ int CUDASingleGPUTreeLearner::DeviceLevelSearchPairs(const int num_levels) const
 // chunk states. The widest search's pairs when that fits half of the free memory; otherwise the most pairs that do
 // (at least one). Chunking changes no float result: a pair's fix/subtract and find read and write only its own
 // histograms, scratch region and leaf entries, and the select reads the level's leaf entries after every chunk.
-void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
+void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks(const CUDATree* tree) {
   if (device_tree_chunk_pairs_ >= 0 || !DeviceTreeRequested()) {
     return;
   }
@@ -3477,6 +3438,53 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
     bynode_per_slot = num_features + static_cast<size_t>(std::max(1, max_tasks)) * sizeof(int);
     bynode_cap = DeviceTreeBynodeChunkCap(static_cast<int64_t>(slots), max_tasks, pairs);
   }
+  // categorical datasets (quantized): the tree's record buffers at their worst case (CUDATree::ReserveCategoricalRecord
+  // on the learner's arena) and the per-level slab, list and lengths at the widest level (SetupDeviceLevels), part of
+  // the tree's fixed scratch; each buffer counts in full where it still has to grow
+  size_t cat_bytes = 0;
+  size_t cat_growth_bytes = 0;
+  bool cat_caps_fit = true;
+  bool cat_record_fits_int = true;
+  if (has_categorical_feature_ && config_->use_quantized_grad) {
+    // the device select's categorical descriptor reads the split's inner bitset in the slab over the feature's
+    // bin-range cap (SplitLevelBatched's region length): the slab's stride has to cover every cap
+    std::vector<CUDAHybridGraphFeatureMeta> meta;
+    cuda_data_partition_->BuildDeviceLevelFeatureMeta(&meta);
+    for (const CUDAHybridGraphFeatureMeta& m : meta) {
+      if (m.is_categorical &&
+          static_cast<size_t>((m.max_bin - m.min_bin + (m.most_freq_bin == 0 ? 1u : 0u)) / 32 + 1) >
+            batch_cat_bitset_inner_stride_) {
+        cat_caps_fit = false;
+      }
+    }
+    size_t record_splits = 0;
+    size_t level_splits = 0;
+    DeviceTreeCatWorstCase(&record_splits, &level_splits);
+    const auto count = [&](const size_t need, const size_t have, const size_t unit) {
+      cat_bytes += need * unit;
+      cat_growth_bytes += need > have ? need * unit : 0;
+    };
+    // the record buffers are the learner's arena's, held by the tree being grown from its constructor to its ToHost
+    // (the plan runs from TrainLevelWisePrefix, after the constructor): their capacity is wherever they are now, so
+    // a re-plan (ResetConfig) does not count an allocated record again
+    size_t record_words = cuda_tree_cat_arena_.bitset.Capacity();
+    size_t record_words_inner = cuda_tree_cat_arena_.bitset_inner.Capacity();
+    if (tree != nullptr) {
+      record_words = std::max(record_words, tree->CategoricalRecordCapacity(false));
+      record_words_inner = std::max(record_words_inner, tree->CategoricalRecordCapacity(true));
+    }
+    count(record_splits * batch_cat_bitset_stride_, record_words, sizeof(uint32_t));
+    count(record_splits * batch_cat_bitset_inner_stride_, record_words_inner, sizeof(uint32_t));
+    // the record's word offsets are int (the boundary arrays, SplitCategoricalLevelKernel)
+    cat_record_fits_int = DeviceTreeCatRecordFitsInt(record_splits, batch_cat_bitset_stride_,
+                                                     batch_cat_bitset_inner_stride_);
+    count(level_splits * batch_cat_bitset_stride_, cuda_batch_cat_bitset_.Size(), sizeof(uint32_t));
+    count(level_splits * batch_cat_bitset_inner_stride_, cuda_batch_cat_bitset_inner_.Size(), sizeof(uint32_t));
+    count(2 * level_splits, cuda_batch_cat_lens_.Size(), sizeof(uint64_t));
+    count(level_splits, cuda_batch_cat_infos_.Size(), sizeof(const CUDASplitInfo*));
+    count(level_splits, cuda_batch_cat_feats_.Size(), sizeof(int));
+    count(level_splits, cuda_device_tree_cat_split_index_.Size(), sizeof(int));
+  }
   const auto bynode_bytes = [&](const int chunk) {
     return bynode ? bynode_fixed + (chunk < pairs ? 1 + 2 * static_cast<size_t>(chunk) : slots) * bynode_per_slot : 0;
   };
@@ -3484,7 +3492,7 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
     const size_t chunks = static_cast<size_t>((pairs + chunk - 1) / chunk);
     return cuda_best_split_finder_->HybridLevelGrowthBytes(chunk) +
       cuda_histogram_constructor_->BitChangeScratchGrowthBytes(chunk) + other_bytes + bynode_bytes(chunk) +
-      (chunks > 1 ? chunks * sizeof(CUDADeviceLevelState) : 0);
+      (chunks > 1 ? chunks * sizeof(CUDADeviceLevelState) : 0) + cat_growth_bytes;
   };
   size_t free_bytes = 0;
   size_t device_bytes = 0;
@@ -3515,13 +3523,21 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
   }
   device_tree_chunk_pairs_ = chunk;
   // even one pair per chunk exceeds the budget (half of the free memory; vramfree caps it), or the bynode task offsets
-  // overflow at one pair: the host level loop grows this learner's trees (reason scratch_too_large), no CUDA Fatal
-  device_tree_scratch_refused_ = growth_bytes(chunk) > budget || bynode_cap < 1;
+  // overflow at one pair, or the categorical record's word offsets would pass int: the host level loop grows this
+  // learner's trees (reason scratch_too_large), no CUDA Fatal
+  device_tree_scratch_refused_ = growth_bytes(chunk) > budget || bynode_cap < 1 || !cat_record_fits_int;
   if (device_tree_scratch_refused_ && FalcataDebug().diag) {
     fprintf(stderr, "[hybrid-diag] device_tree: scratch too large: max_depth %d needs %.1f MiB at one searched pair "
             "per chunk, %.1f MiB free (budget half): host level loop\n", num_levels,
             growth_bytes(chunk) / (1024.0 * 1024.0), free_bytes / (1024.0 * 1024.0));
+    if (!cat_record_fits_int) {
+      fprintf(stderr, "[hybrid-diag] device_tree: categorical record past int word offsets (stride %zu words)\n",
+              batch_cat_bitset_stride_);
+    }
   }
+  // categorical datasets: the device select reads each categorical feature's bin-range cap within the slab's stride
+  // (else the host level loop with reason categorical; the record's bytes are part of the fixed scratch above)
+  device_tree_cat_gate_ = cat_caps_fit ? 1 : 0;
   if (FalcataDebug().diag) {
     constexpr double kMiB = 1024.0 * 1024.0;
     const size_t finder_bytes = 2 * static_cast<size_t>(cuda_best_split_finder_->num_tasks()) *
@@ -3534,7 +3550,20 @@ void CUDASingleGPUTreeLearner::PlanDeviceTreeChunks() {
             bynode_bytes(chunk)) / kMiB, finder_bytes / kMiB, bit_change_bytes / kMiB, other_bytes / kMiB,
             bynode_bytes(chunk) / kMiB, growth_bytes(chunk) / kMiB, num_levels, pairs, DeviceTreeChunks(pairs),
             chunk, cuda_best_split_finder_->num_tasks(), num_total_bin_, free_bytes / kMiB, device_bytes / kMiB);
+    if (has_categorical_feature_ && config_->use_quantized_grad) {
+      fprintf(stderr, "[hybrid-diag] device_tree: categorical record estimate %.1f MiB (to allocate %.1f, strides "
+              "%zu / %zu words)%s\n", cat_bytes / kMiB, cat_growth_bytes / kMiB, batch_cat_bitset_stride_,
+              batch_cat_bitset_inner_stride_, cat_caps_fit ? "" : ": a feature's cap is over the inner stride");
+    }
   }
+}
+
+void CUDASingleGPUTreeLearner::DeviceTreeCatWorstCase(size_t* record_splits, size_t* level_splits) const {
+  // a complete tree of max_depth levels applies at most min(num_leaves, 2^max_depth) - 1 splits, at most
+  // 2^(max_depth - 1) of them in one level
+  const size_t full = static_cast<size_t>(1) << GrowthMaxDepth();
+  *record_splits = std::min(static_cast<size_t>(config_->num_leaves), full) - 1;
+  *level_splits = std::min(full / 2, *record_splits);
 }
 
 bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
@@ -3613,6 +3642,29 @@ bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
   cuda_data_partition_->EnsureDeviceLevelCapacity(max_prefix_leaves);
   cuda_best_split_finder_->EnsureDeviceLevelCapacity(scratch_pairs);
   cuda_histogram_constructor_->EnsureDeviceLevelCapacity(scratch_pairs);
+  if (has_categorical_feature_ && DeviceTreeRequested()) {
+    // the categorical list, slab and lengths of the widest level (PlanDeviceTreeChunks counted them); the
+    // host level loop grows the same buffers only past these sizes
+    size_t record_splits = 0;
+    size_t level_splits = 0;
+    DeviceTreeCatWorstCase(&record_splits, &level_splits);
+    if (cuda_batch_cat_bitset_.Size() < level_splits * batch_cat_bitset_stride_) {
+      cuda_batch_cat_bitset_.Resize(level_splits * batch_cat_bitset_stride_);
+    }
+    if (cuda_batch_cat_bitset_inner_.Size() < level_splits * batch_cat_bitset_inner_stride_) {
+      cuda_batch_cat_bitset_inner_.Resize(level_splits * batch_cat_bitset_inner_stride_);
+    }
+    if (cuda_batch_cat_infos_.Size() < level_splits) {
+      cuda_batch_cat_infos_.Resize(level_splits);
+      cuda_batch_cat_feats_.Resize(level_splits);
+    }
+    if (cuda_batch_cat_lens_.Size() < 2 * level_splits) {
+      cuda_batch_cat_lens_.Resize(2 * level_splits);
+    }
+    if (cuda_device_tree_cat_split_index_.Size() < level_splits) {
+      cuda_device_tree_cat_split_index_.Resize(level_splits);
+    }
+  }
   device_levels_ready_ = true;
   return true;
 }
@@ -3659,11 +3711,29 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   // the selective flow rebuilds the tree from its own records), so the tree stream never joins the levels
   const bool record_tree = cfg.skip_tree_record == 0;
   CHECK(record_tree || (!cfg.whole_tree && cfg.split_info_journal != nullptr));
+  // categorical datasets (complete device tree): ApplyLevelBatched's per-level categorical work on the device. The
+  // select lists the level's categorical splits; one kernel builds their bitsets into the slab and patches their
+  // apply descriptors' default directions; the apply reads the inner bitsets there; the tree record appends both
+  // bitsets by level (CUDATree::SplitLevel's kernel) at offsets summed on the device. The next level's bitset kernel
+  // rewrites the slab after this level's record: it runs behind the next level's find, which waits for the record.
+  const bool cat_levels = cfg.cat.infos != nullptr;
+  CHECK(!cat_levels || (cfg.whole_tree && record_tree));
+  CUDATreeCatLevel cat_level = {};
+  if (cat_levels) {
+    cat_level.bitset_slab = cfg.cat.bitset_slab;
+    cat_level.bitset_stride = static_cast<size_t>(cfg.cat.bitset_stride);
+    cat_level.bitset_inner_slab = cfg.cat.bitset_inner_slab;
+    cat_level.bitset_inner_stride = static_cast<size_t>(cfg.cat.bitset_inner_stride);
+    cat_level.lens = cfg.cat.lens;
+  }
   for (int level = 0; level < num_levels; ++level) {
     const int max_splits = 1 << level;
     // the level's host decisions (after its search on this stream), then the apply and the tree record behind them
     if (!select_ran) {
       LaunchDeviceLevelSelect(cfg, level, max_splits, find_stream);
+    }
+    if (cat_levels) {
+      LaunchDeviceLevelCatBitsets(cfg, max_splits, find_stream);
     }
     if (record_tree) {
       CUDASUCCESS_OR_FATAL(cudaEventRecord(device_level_select_event_, find_stream));
@@ -3676,7 +3746,7 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
       inline_all_map && cfg.whole_tree && level + 1 == num_levels,
       final_map_only && level + 1 == num_levels, cfg.whole_tree != 0 || cfg.joint_grid_bound != 0);
     if (record_tree) {
-      tree->LaunchSplitBatchKernelDevice(max_splits, &dls->live_splits);
+      tree->LaunchSplitLevelKernelsDevice(max_splits, &dls->live_num_splits, cat_levels ? &cat_level : nullptr);
       CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree_stream));
     }
     if (cfg.whole_tree && level + 1 == num_levels) {
@@ -3784,6 +3854,21 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       // non-quantized training: the construct's instantiation (fixed point or float atomics, interleaved pairs)
       key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(
         cuda_histogram_constructor_->NonquantDeviceLevelKey())));
+    }
+    if (cfg.cat.infos != nullptr) {
+      // categorical datasets: the list, slab and lengths the select and the bitset kernel capture, and the tree's
+      // record buffers (the learner's arena: stable once presized)
+      key.push_back(static_cast<const void*>(cfg.cat.infos));
+      key.push_back(static_cast<const void*>(cfg.cat.inner_features));
+      key.push_back(static_cast<const void*>(cfg.cat.split_index));
+      key.push_back(static_cast<const void*>(cfg.cat.bitset_slab));
+      key.push_back(static_cast<const void*>(cfg.cat.bitset_inner_slab));
+      key.push_back(static_cast<const void*>(cfg.cat.lens));
+      key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cfg.cat.bitset_stride)));
+      key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cfg.cat.bitset_inner_stride)));
+      key.push_back(static_cast<const void*>(cfg.cat.bin_to_value));
+      key.push_back(static_cast<const void*>(cfg.cat.bin_offsets));
+      tree->CategoricalRecordKey(&key);
     }
     if (device_bynode_active_) {
       key.push_back(static_cast<const void*>(device_bynode_cfg_.sample));
@@ -4002,6 +4087,33 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     cfg.chunk_states = cuda_device_level_chunk_states_.RawData();
     cfg.chunk_pairs = device_tree_chunk_pairs_;
   }
+  // categorical datasets: only the complete device tree (DeviceLevelsToRun); its record presized for the whole tree
+  // before any level is enqueued or captured, the slab and list by SetupDeviceLevels (CUDADeviceLevelCatConfig)
+  const bool cat_tree = has_categorical_feature_;
+  if (cat_tree) {
+    CHECK(cfg.whole_tree);
+    CHECK_EQ(device_tree_cat_gate_, 1);
+    size_t record_splits = 0;
+    size_t level_splits = 0;
+    DeviceTreeCatWorstCase(&record_splits, &level_splits);
+    CHECK_GE(cuda_batch_cat_infos_.Size(), level_splits);
+    CHECK_GE(cuda_batch_cat_lens_.Size(), 2 * level_splits);
+    CHECK_GE(cuda_device_tree_cat_split_index_.Size(), level_splits);
+    CHECK_GE(cuda_batch_cat_bitset_.Size(), level_splits * batch_cat_bitset_stride_);
+    CHECK_GE(cuda_batch_cat_bitset_inner_.Size(), level_splits * batch_cat_bitset_inner_stride_);
+    tree->ReserveCategoricalRecord(record_splits * batch_cat_bitset_stride_,
+                                   record_splits * batch_cat_bitset_inner_stride_);
+    cfg.cat.infos = cuda_batch_cat_infos_.RawData();
+    cfg.cat.inner_features = cuda_batch_cat_feats_.RawData();
+    cfg.cat.split_index = cuda_device_tree_cat_split_index_.RawData();
+    cfg.cat.bitset_slab = cuda_batch_cat_bitset_.RawData();
+    cfg.cat.bitset_inner_slab = cuda_batch_cat_bitset_inner_.RawData();
+    cfg.cat.lens = cuda_batch_cat_lens_.RawData();
+    cfg.cat.bitset_stride = static_cast<int>(batch_cat_bitset_stride_);
+    cfg.cat.bitset_inner_stride = static_cast<int>(batch_cat_bitset_inner_stride_);
+    cfg.cat.bin_to_value = cuda_categorical_bin_to_value_;
+    cfg.cat.bin_offsets = cuda_categorical_bin_offsets_;
+  }
   // cuda_plan key selective_device_prefix: the applied splits' best-split records, for the selective records. Sized
   // here, outside SetupDeviceLevels, because only selective trees ask for them (the device tree and the plain prefix
   // never allocate them); the growth happens before any level is enqueued or captured, and K is config-constant, so
@@ -4036,11 +4148,13 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // of L1 / quantile / MAPE reads the device leaf windows), with weights and under row bagging. Trees of two or more
   // levels only: a one-level tree (a stump shape, max_depth 1) measured slower on the lean end (fraud stumps, binary:
   // 0.090 -> 0.094 ms per tree, same binary, 1000 rounds); it keeps the full tree end (constant-hessian L2 as before).
+  // Categorical trees too (P5): their record is the device tree's own (ReplayDeviceCategoricalRecord, ToHost), and
+  // without the lean end they would also lose the final level's inline leaf map (a full map pass per tree instead).
   const bool lean_end = FalcataPlan::Get().device_tree_lean_end && num_levels >= 2;
   bool skip_host_cache = cfg.whole_tree && config_->boosting == "gbdt" &&
     (lean_end || (config_->objective == "regression" && share_state_->is_constant_hessian)) &&
     boosting_on_cuda_ && (lean_end || train_data_->metadata().weights() == nullptr) &&
-    config_->use_quantized_grad && vec_num_targets_ <= 1 && !has_categorical_feature_ &&
+    config_->use_quantized_grad && vec_num_targets_ <= 1 &&
     nccl_communicator_ == nullptr && fp_merge_state_ == nullptr && !forest_slot_ &&
     config_->data_sample_strategy == "bagging" && !config_->bagging_by_query &&
     // device_tree_lean_end: under row bagging too (the bag is partitioned on the device; the cache is not read)
@@ -4153,6 +4267,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(find_stream));
   const int* journal = pinned_device_level_journal_;
   if (journal[2] != 0) {
+    // 1: a level outside the gated regime; 2: a categorical split whose thresholds and feature type disagree
     Log::Fatal("device_levels: a device level left the gated regime (flags 0x%x)", journal[2]);
   }
   const int levels_applied = journal[0];
@@ -4182,10 +4297,15 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   const bool replay_mirrors = cfg.skip_tree_record == 0;
   // the selective prefix: the level bookkeeping reads the split-batch readback in place
   const bool lean_batch = record_split_infos;
+  // categorical datasets: the device recorded the tree's categorical splits by level (the select's test: the split
+  // has categorical thresholds, equal to its feature's type, error flag 2 otherwise)
+  int cat_splits = 0;
+  int cat_levels_recorded = 0;
   for (int level = 0; level < levels_applied; ++level) {
     const int level_splits = level_counts[level];
     CHECK_GE(level_splits, 1);
     CHECK_LE(cursor + level_splits, total_splits);
+    int level_cat_splits = 0;
     if (cfg.whole_tree && level + 1 == num_levels) {
       prefix_final_leaves_before_ = tree->num_leaves();
     }
@@ -4198,6 +4318,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
       const int inner_feature = record[1];
       // the device numbers the level's right children after the leaves before it, in split order
       const int right_leaf = cursor + k + 1;
+      if (cat_tree && train_data_->FeatureBinMapper(inner_feature)->bin_type() == BinType::CategoricalBin) {
+        ++level_cat_splits;
+      }
       if (replay_mirrors) {
         CHECK_EQ(tree->num_leaves(), right_leaf);
         tree->ReplaySplitHostMirrors(left_leaf, train_data_->RealFeatureIndex(inner_feature));
@@ -4220,10 +4343,16 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
         FinishLevelBookkeeping(device_level_applied_, device_level_batch_slice_, pairs, &num_splits);
       }
     }
+    cat_splits += level_cat_splits;
+    cat_levels_recorded += level_cat_splits > 0 ? 1 : 0;
     cursor += level_splits;
   }
   CHECK_EQ(cursor, total_splits);
   CHECK_EQ(tree->num_leaves(), replay_mirrors ? total_splits + 1 : 1);
+  if (cat_tree) {
+    tree->ReplayDeviceCategoricalRecord(cat_levels_recorded, cat_splits, batch_cat_bitset_stride_,
+                                        batch_cat_bitset_inner_stride_);
+  }
   const bool all_map_complete = inline_all_map && levels_applied == num_levels && level_counts[num_levels - 1] > 0;
   const bool deferred_final = final_map_only && all_map_complete;
   int deferred_splits = 0;
@@ -5596,7 +5725,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     cuda_histogram_constructor_->SetNumDirtyLeaves(num_dirty);
   }
   if (FalcataDebug().diag && tree->cat_level_launches() > 0) {
-    // cuda_plan key cat_level_record: what the level-batched record saved on this tree against the per-split loop
+    // the categorical level record: what it saved on this tree against the per-split loop
     // (one SplitCategoricalKernel launch and two blocking 4-byte D2D copies per categorical split, one blocking
     // length readback per categorical level, four record copies in ToHost)
     const int levels = tree->cat_level_launches();

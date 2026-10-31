@@ -140,14 +140,14 @@ struct CUDATreeCatArena {
   CUDAVector<uint32_t> bitset_inner;
   CUDAVector<int> boundaries;
   CUDAVector<int> boundaries_inner;
-  /*! \brief cuda_plan key cat_level_record: device staging of ToHost's one-copy readback of the record (both boundary
+  /*! \brief categorical level record: device staging of ToHost's one-copy readback of the record (both boundary
    *  arrays, then both bitsets); grows like the bitsets and stays with the learner */
   CUDAVector<uint32_t> readback;
   /*! \brief its host counterpart (the one copy's destination) */
   std::vector<uint32_t> readback_host;
 };
 
-/*! \brief cuda_plan key cat_level_record: the device inputs of one level's categorical splits for CUDATree::SplitLevel,
+/*! \brief categorical level record: the device inputs of one level's categorical splits for CUDATree::SplitLevel,
  *  as the learner's BatchConstructCatBitsetsKernel wrote them. The level's c-th categorical split (in level order) has
  *  its real-value bitset at bitset_slab + c * bitset_stride and its inner-bin bitset at bitset_inner_slab +
  *  c * bitset_inner_stride; lens[2c] and lens[2c + 1] hold their lengths in words (at most the strides). */
@@ -220,6 +220,39 @@ class CUDATree : public Tree {
    *  (max_splits blocks) on the tree stream; blocks past *live_split_count exit */
   void LaunchSplitBatchKernelDevice(const int max_splits, const int* live_split_count);
 
+  /*! \brief cuda_plan key device_levels, categorical datasets on the complete device tree: one level's record, as
+   *  SplitLevel records it, at the level's worst-case grid (max_splits blocks) on the tree stream. device_counts
+   *  points at three device ints {numerical splits, categorical splits of the earlier levels, categorical splits of
+   *  the level} (the device select's state); the select wrote the batch descriptors in SplitLevel's launch order.
+   *  cat == nullptr: numerical datasets (the batch-split kernel alone, device_counts[0] splits). The record buffers
+   *  must hold the tree's worst case (ReserveCategoricalRecord) and the host replays the bookkeeping afterwards
+   *  (ReplayDeviceCategoricalRecord). */
+  void LaunchSplitLevelKernelsDevice(const int max_splits, const int* device_counts, const CUDATreeCatLevel* cat);
+
+  /*! \brief complete device tree, categorical datasets: before the tree's first level, make the record buffers hold
+   *  words / words_inner bitset words (the tree's worst case: every split categorical at its stride), so no record
+   *  grows inside the levels; the first tree of a learner allocates, later trees keep the learner arena's capacity */
+  void ReserveCategoricalRecord(const size_t words, const size_t words_inner);
+
+  /*! \brief complete device tree, categorical datasets: the host half of the device levels' categorical record
+   *  (after the growth readback): num_cat_ and the word bounds ToHost reads the record back with, as SplitLevel would
+   *  have left them for num_cat_splits categorical splits over levels_with_cat levels at these strides */
+  void ReplayDeviceCategoricalRecord(const int levels_with_cat, const int num_cat_splits, const size_t bitset_stride,
+                                     const size_t bitset_inner_stride);
+
+  /*! \brief words the categorical record's real-value (inner: inner-bin) bitset holds without growing */
+  size_t CategoricalRecordCapacity(const bool inner) const {
+    return inner ? cuda_bitset_inner_.Capacity() : cuda_bitset_.Capacity();
+  }
+
+  /*! \brief the categorical record buffers a captured device tree's record kernel bakes in (graph key) */
+  void CategoricalRecordKey(std::vector<const void*>* key) const {
+    key->push_back(cuda_bitset_.RawDataReadOnly());
+    key->push_back(cuda_bitset_inner_.RawDataReadOnly());
+    key->push_back(cuda_cat_boundaries_.RawDataReadOnly());
+    key->push_back(cuda_cat_boundaries_inner_.RawDataReadOnly());
+  }
+
   /*! \brief pooled device buffer of the batched split descriptors (written by
    *  the device levels' select kernel; stable across pooled trees) */
   CUDATreeBatchSplit* hybrid_graph_batch_splits() { return cuda_batch_splits_.RawData(); }
@@ -266,7 +299,7 @@ class CUDATree : public Tree {
    *  outputs. */
   void RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits);
 
-  /*! \brief cuda_plan key cat_level_record: apply one whole level, numerical and categorical splits, in level order
+  /*! \brief categorical level record: apply one whole level, numerical and categorical splits, in level order
    *  (splits[k].num_leaves_at_split must equal the tree's num_leaves before split k, as in SplitBatch; the entries
    *  with is_categorical[k] != 0 are categorical, their real_threshold is ignored). One SplitBatch launch applies
    *  the numerical splits and ONE kernel the categorical ones: it records each categorical split's node exactly as
@@ -280,7 +313,7 @@ class CUDATree : public Tree {
   void SplitLevel(const std::vector<CUDATreeBatchSplit>& splits, const std::vector<uint8_t>& is_categorical,
                   const CUDATreeCatLevel& cat);
 
-  /*! \brief cuda_plan key cat_level_record: counters of this tree (FALCATA_DEBUG=diag): SplitLevel categorical
+  /*! \brief categorical level record: counters of this tree (FALCATA_DEBUG=diag): SplitLevel categorical
    *  launches, the categorical splits they recorded, exact-count readbacks on a capacity overflow, and whether ToHost
    *  read the record back with one copy */
   int cat_level_launches() const { return cat_level_launches_; }
@@ -408,16 +441,17 @@ class CUDATree : public Tree {
    *  learner's arena; no device memory is freed */
   void ReturnCategoricalArena();
 
-  /*! \brief cuda_plan key cat_level_record: make Size() of both bitsets exact again after SplitLevel appended on the
+  /*! \brief categorical level record: make Size() of both bitsets exact again after SplitLevel appended on the
    *  device (reads the two word counts back from the boundary arrays); no-op when nothing is pending */
   void SettleCategoricalRecordSizes();
 
-  /*! \brief cuda_plan key cat_level_record: ToHost's readback of the categorical record of a tree SplitLevel
+  /*! \brief categorical level record: ToHost's readback of the categorical record of a tree SplitLevel
    *  recorded: one pack kernel and one copy into the host record; false (nothing done) for a tree without SplitLevel
    *  records or when the record's word bound is too large for the one-copy path */
   bool ReadCategoricalRecordOneCopy();
 
-  void LaunchSplitCategoricalLevelKernel(const int first_split, const int num_cat_splits, const CUDATreeCatLevel& cat);
+  void LaunchSplitCategoricalLevelKernel(const int first_split, const int num_cat_splits, const CUDATreeCatLevel& cat,
+                                         const int* device_counts = nullptr);
 
   void LaunchPackCategoricalRecordKernel(uint32_t* out, size_t words_bound, size_t words_inner_bound);
 
@@ -486,7 +520,7 @@ class CUDATree : public Tree {
   CUDAVector<int> cuda_cat_boundaries_inner_;
   /*! \brief the learner's arena the four buffers above came from, until ReturnCategoricalArena() */
   CUDATreeCatArena* cat_arena_ = nullptr;
-  /*! \brief cuda_plan key cat_level_record: SplitLevel appended bitset words on the device since the bitsets' Size()
+  /*! \brief categorical level record: SplitLevel appended bitset words on the device since the bitsets' Size()
    *  was last exact; cat_words_bound_ / cat_words_inner_bound_ bound the words actually recorded (Size() plus every
    *  pending split at its stride) */
   bool cat_record_on_device_ = false;

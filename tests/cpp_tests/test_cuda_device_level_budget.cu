@@ -274,3 +274,20 @@ TEST(CUDADeviceLevelBudget, BynodeChunkCapKeepsTaskOffsetsInIntRange) {
   // not even one pair (3 row slots) fits: 0, the complete tree is refused (scratch_too_large)
   EXPECT_EQ(Falcata::DeviceTreeBynodeChunkCap(slots, kIntMax / 2, pairs), 0);
 }
+
+// The complete device tree's categorical record keeps its word offsets in int (CUDATree's boundary arrays and
+// SplitCategoricalLevelKernel): PlanDeviceTreeChunks refuses (scratch_too_large) a worst case past INT_MAX words.
+TEST(CUDADeviceLevelBudget, CategoricalRecordFitsInt) {
+  using Falcata::DeviceTreeCatRecordFitsInt;
+  EXPECT_TRUE(DeviceTreeCatRecordFitsInt(0, size_t{1} << 40, 1));
+  EXPECT_TRUE(DeviceTreeCatRecordFitsInt(254, 62501, 8));
+  // 31 splits at a category value near INT32_MAX (stride 67108864 words): 2080374784 words, inside
+  EXPECT_TRUE(DeviceTreeCatRecordFitsInt(31, 67108864, 8));
+  // 32 splits: 2147483648 words, one past INT_MAX
+  EXPECT_FALSE(DeviceTreeCatRecordFitsInt(32, 67108864, 8));
+  EXPECT_TRUE(DeviceTreeCatRecordFitsInt(1, 2147483647, 1));
+  EXPECT_FALSE(DeviceTreeCatRecordFitsInt(1, 2147483648ull, 1));
+  // the inner bitset counts too: 4095 x 524416 = 2147483520 words fits, 4095 x 524417 does not
+  EXPECT_TRUE(DeviceTreeCatRecordFitsInt(4095, 8, 524416));
+  EXPECT_FALSE(DeviceTreeCatRecordFitsInt(4095, 8, 524417));
+}
