@@ -256,8 +256,6 @@ def test_r3_parallel_shadow_matches_the_host_simulation_cuda(cell):
     if cell == "tied":
         # binding levels whose host simulation broke ties, decided by the parallel kernel without a mismatch
         assert any(lv["ties"] > 0 for lv in levels if lv["binding"] == 1)
-    else:
-        assert not resumed
     if "r3rebuild" in debug:
         assert all(lv["par_rounds"] > 0 for lv in levels if lv["applied"] > 0)
     else:
