@@ -76,15 +76,17 @@ def _data(kind, rows, cols, seed=3):
     if kind == "binary":
         return X, (z + rng.normal(scale=0.5, size=rows) > 0).astype(np.float32)
     if kind == "tied":
-        # every row twice, a first feature that splits the copies apart: the two halves grow identical subtrees,
-        # so leaves of equal gain meet in the same simulation (the tie-break decides their order)
+        # two mirrored halves: column 0 separates them (the root split), the other columns are the same rows, and the
+        # labels are negated (mean +-5, so the boosted average is 0). The gradients of one half are the other's
+        # negated, so every split gain below the root equals its mirror's (gains depend on squared gradient sums;
+        # round-to-nearest fixedpoint quantization keeps the symmetry), and mirror leaves meet in the simulation
         half = rows // 2
         Xh = rng.integers(0, 8, size=(half, cols)).astype(np.float32)
-        yh = (Xh[:, 1] + Xh[:, 2] * (Xh[:, 3] > 3) + rng.normal(scale=0.5, size=half)).astype(np.float32)
+        yh = (5.0 + Xh[:, 1] + Xh[:, 2] * (Xh[:, 3] > 3) + rng.normal(scale=0.5, size=half)).astype(np.float32)
         Xh[:, 0] = 0.0
         X2 = Xh.copy()
         X2[:, 0] = 1.0
-        return np.vstack([Xh, X2]), np.concatenate([yh, yh])
+        return np.vstack([Xh, X2]), np.concatenate([yh, -yh])
     return X, (z + rng.normal(scale=0.3, size=rows)).astype(np.float32)
 
 
@@ -150,7 +152,14 @@ _CELLS = {
     # exact ties across leaves
     "tied": (
         "tied",
-        {"objective": "regression", "num_leaves": 63, "max_depth": -1, "max_bin": 15, "min_data_in_leaf": 5},
+        {
+            "objective": "regression",
+            "num_leaves": 63,
+            "max_depth": -1,
+            "max_bin": 15,
+            "min_data_in_leaf": 5,
+            "quant_mode": "fixedpoint",
+        },
         8000,
         6,
         6,
