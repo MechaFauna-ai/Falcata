@@ -551,6 +551,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int RunSelectiveLevelShadowed(const std::vector<int>& child_leaves, const bool handoff);
   void SelectiveR3ShadowLaunch(const std::vector<int>& child_leaves);
   void SelectiveR3ShadowCheck();
+  // path 0: the sequential kernel (P8a), 1: the parallel one (P8c, FALCATA_DEBUG=r3shadow=par|both); returns whether
+  // the path's result differed from the host's
+  bool SelectiveR3ShadowCompare(const int path);
   // records a timing event on the legacy stream (r3shadow only): 0 before the level's readback, 1 before its apply,
   // 2 after the apply, 3 before the children's search
   void SelectiveR3ShadowMark(const int which);
@@ -968,6 +971,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int64_t sel_stat_trees_ = 0;
   int64_t sel_stat_sim_ns_ = 0;
   int64_t sel_stat_ties_ = 0;  // equal-gain resolutions in RunSelectiveLevel (SelectiveTieBreak calls)
+  int sel_first_tie_ = -1;     // the level's first tie-break pop index (-1: none)
   // R3 shadow state (FALCATA_DEBUG=r3shadow): device and pinned blobs of the same layout (SelectiveR3ShadowLaunch), the
   // side stream, the per-level timing events and records of the current tree, the mismatch counters
   struct SelectiveR3ShadowLevel {
@@ -983,13 +987,20 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     int mismatch;
     double sim_us;
     int ties;       // SelectiveTieBreak calls of the host simulation
+    int tie_at;     // the pop index of the first one (-1 none)
+    int eqgain;     // equal-gain pairs among the live candidates (applied records and frontier), sorted neighbours
+    int par_resumes;    // the parallel kernel's exact best-first resumes from a tie (-1 not run)
+    int par_resume_at;  // the level's resume pop (-1 none)
+    int par_rounds;  // its merges that rebuilt the order from the records
     double shadow_host_us;
-    int ev;         // first of this level's 6 events: kernel start/stop, marks 0-3
+    int ev;         // first of this level's 8 events: sequential kernel start/stop, marks 0-3, parallel start/stop
     int marks;      // bit i: mark i recorded
   };
-  char* r3_device_blob_ = nullptr;
-  char* r3_pinned_blob_ = nullptr;
+  char* r3_device_blob_[2] = {nullptr, nullptr};  // per path (sequential, parallel)
+  char* r3_pinned_blob_[2] = {nullptr, nullptr};
+  char* r3_par_state_ = nullptr;  // the parallel kernel's kept order (CUDASelectiveR3Persist, order_buf)
   int r3_record_capacity_ = 0;
+  int r3_blob_num_leaves_ = 0;  // the num_leaves the blobs and the kept order were sized for
   cudaStream_t r3_stream_ = nullptr;
   std::vector<cudaEvent_t> r3_events_;
   std::vector<SelectiveR3ShadowLevel> r3_levels_;

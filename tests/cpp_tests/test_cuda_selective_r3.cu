@@ -221,10 +221,31 @@ LevelResult HostLevel(HostState* s, const std::vector<int>& children, const std:
   return out;
 }
 
-// one level on the device from the pre-level state; compared field by field with the host reference's result
+// the parallel R3's device state kept across the levels of one grown tree (P8c)
+struct ParallelRun {
+  explicit ParallelRun(const int num_leaves)
+      : persist(1), order_buf(6 * (num_leaves + 2)), area(Falcata::R3ParallelAreaBytes(num_leaves)) {
+    EXPECT_EQ(cudaMemset(persist.data(), 0, sizeof(Falcata::CUDASelectiveR3Persist)), cudaSuccess);
+  }
+  DeviceBuffer<Falcata::CUDASelectiveR3Persist> persist;
+  DeviceBuffer<int> order_buf;
+  DeviceBuffer<char> area;
+  bool shared_area = true;
+  int rebuild_every = 0;  // > 0: also rebuild the order from the records every k-th level
+  int levels = 0;
+  int merged = 0;        // levels with no resume at all (rebuild rounds included)
+  int resumed = 0;       // levels with a resume (rebuild rounds included)
+  int level_resumed = 0;    // levels whose own merge resumed (resume_at >= 0)
+  int resumed_binding = 0;  // ... on a binding level (live records + frontier > budget)
+  int resumed_last = 0;     // ... at the budget's last pop (resume_at == budget - 1)
+  int rebuilt_rounds = 0;
+};
+
+// one level on the device from the pre-level state; compared field by field with the host reference's result. par:
+// the parallel kernel with its kept order (else the sequential one)
 void CheckLevel(const HostState& pre, const HostState& post, const LevelResult& want,
                 const std::vector<int>& children, const std::vector<char>& valid, const std::vector<double>& gain,
-                const int num_leaves, const bool force_global_heap = false) {
+                const int num_leaves, const bool force_global_heap = false, ParallelRun* par = nullptr) {
   const int budget = num_leaves - 1;
   const int leaf_cap = num_leaves + 2;
   const int n_rec = static_cast<int>(pre.rec.size());
@@ -257,6 +278,8 @@ void CheckLevel(const HostState& pre, const HostState& post, const LevelResult& 
   DeviceBuffer<char> d_child_table(rec_cap * Falcata::kSelectiveR3ChildEntryBytes);
   DeviceBuffer<char> d_heap(num_leaves * Falcata::kSelectiveR3HeapEntryBytes);
   DeviceBuffer<int> d_order(budget), d_classic(budget), d_collapsed(rec_cap), d_freed(rec_cap), d_apply(budget);
+  DeviceBuffer<int> d_rec_pos(rec_cap), d_rec_round(rec_cap), d_cand(14 * leaf_cap);
+  DeviceBuffer<double> d_cand_gain(3 * leaf_cap);
   d_state.Up({hs});
   d_rec.Up(recs);
   d_leaf_parent.Up(pre.leaf_parent);
@@ -285,10 +308,36 @@ void CheckLevel(const HostState& pre, const HostState& post, const LevelResult& 
   cfg.num_leaves = num_leaves;
   cfg.leaf_capacity = leaf_cap;
   cfg.record_capacity = rec_cap;
-  Falcata::LaunchSelectiveR3(cfg, nullptr, /*shared_heap=*/!force_global_heap);
+  if (par != nullptr) {
+    cfg.persist = par->persist.data();
+    cfg.order_buf = par->order_buf.data();
+    cfg.rec_pos = d_rec_pos.data();
+    cfg.rec_round = d_rec_round.data();
+    cfg.cand = d_cand.data();
+    cfg.cand_gain = d_cand_gain.data();
+    cfg.par_global = par->area.data();
+    cfg.rebuild = par->levels == 0 || (par->rebuild_every > 0 && par->levels % par->rebuild_every == 0);
+    ASSERT_TRUE(Falcata::LaunchSelectiveR3Parallel(cfg, nullptr, par->shared_area));
+  } else {
+    Falcata::LaunchSelectiveR3(cfg, nullptr, /*shared_heap=*/!force_global_heap);
+  }
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   const CUDASelectiveR3State ds = d_state.Down(1)[0];
   ASSERT_EQ(ds.error, 0);
+  if (par != nullptr) {
+    ++par->levels;
+    par->merged += ds.resumes == 0;
+    par->resumed += ds.resumes > 0;
+    int live = 0;
+    for (const HostRecord& r : pre.rec) {
+      live += r.dead ? 0 : 1;
+    }
+    EXPECT_LT(ds.resume_at, budget);
+    par->level_resumed += ds.resume_at >= 0;
+    par->resumed_binding += ds.resume_at >= 0 && live + ds.num_frontier > budget;
+    par->resumed_last += ds.resume_at == budget - 1;
+    par->rebuilt_rounds += ds.rounds;
+  }
   ASSERT_EQ(ds.num_frontier, want.frontier);
   ASSERT_EQ(ds.num_order, static_cast<int>(want.order.size()));
   EXPECT_EQ(d_order.Down(ds.num_order), want.order);
@@ -319,7 +368,8 @@ void CheckLevel(const HostState& pre, const HostState& post, const LevelResult& 
 // grows whole trees level by level through the host reference, checking the device on every level. gain_of(leaf,
 // level) returns the candidate's gain, or a negative value for an invalid one.
 template <typename GainOf>
-int GrowAndCheck(const int num_leaves, const int max_levels, GainOf gain_of, const bool force_global_heap = false) {
+int GrowAndCheck(const int num_leaves, const int max_levels, GainOf gain_of, const bool force_global_heap = false,
+                 ParallelRun* par = nullptr) {
   const int leaf_cap = num_leaves + 2;
   HostState s;
   s.leaf_parent.assign(leaf_cap, -1);
@@ -336,6 +386,9 @@ int GrowAndCheck(const int num_leaves, const int max_levels, GainOf gain_of, con
     const HostState pre = s;
     const LevelResult want = HostLevel(&s, children, valid, gain, num_leaves);
     CheckLevel(pre, s, want, children, valid, gain, num_leaves, force_global_heap);
+    if (par != nullptr) {
+      CheckLevel(pre, s, want, children, valid, gain, num_leaves, false, par);
+    }
     ++levels;
     if (testing::Test::HasFatalFailure() || testing::Test::HasNonfatalFailure()) {
       ADD_FAILURE() << "level " << level;
@@ -413,7 +466,9 @@ TEST(CUDASelectiveR3, AllInvalidLevelIsFinal) {
 
 TEST(CUDASelectiveR3, BudgetExactlyMetAndExceededByOne) {
   // num_leaves 4 (budget 3): level 1 holds A = 1 applied + S = 2 valid = budget, every candidate selected, no collapse
+  // (each level also through the parallel kernel, its order kept between the levels of one tree)
   {
+    ParallelRun par_4(4);
     HostState s;
     s.leaf_parent.assign(6, -1);
     std::vector<char> valid(6, 0);
@@ -423,6 +478,7 @@ TEST(CUDASelectiveR3, BudgetExactlyMetAndExceededByOne) {
     HostState pre = s;
     LevelResult r0 = HostLevel(&s, {0}, valid, gain, 4);
     CheckLevel(pre, s, r0, {0}, valid, gain, 4);
+    CheckLevel(pre, s, r0, {0}, valid, gain, 4, false, &par_4);
     valid.assign(6, 1);
     gain = {3.0, 4.0, 0.0, 0.0, 0.0, 0.0};
     pre = s;
@@ -430,9 +486,12 @@ TEST(CUDASelectiveR3, BudgetExactlyMetAndExceededByOne) {
     EXPECT_EQ(r1.order.size(), 3u);
     EXPECT_TRUE(r1.collapsed.empty());
     CheckLevel(pre, s, r1, {0, 1}, valid, gain, 4);
+    CheckLevel(pre, s, r1, {0, 1}, valid, gain, 4, false, &par_4);
   }
   // num_leaves 3 (budget 2): A = 1 + S = 2 = budget + 1; the better child wins, the other is dormant
   {
+    ParallelRun par_3(3);
+    ParallelRun par_tie(3);
     HostState s;
     s.leaf_parent.assign(5, -1);
     std::vector<char> valid(5, 1);
@@ -440,11 +499,13 @@ TEST(CUDASelectiveR3, BudgetExactlyMetAndExceededByOne) {
     HostState pre = s;
     LevelResult r0 = HostLevel(&s, {0}, valid, gain, 3);
     CheckLevel(pre, s, r0, {0}, valid, gain, 3);
+    CheckLevel(pre, s, r0, {0}, valid, gain, 3, false, &par_3);
     gain = {1.0, 2.0, 0.0, 0.0, 0.0};
     pre = s;
     const LevelResult r1 = HostLevel(&s, {0, 1}, valid, gain, 3);
     EXPECT_EQ(r1.order.size(), 2u);
     CheckLevel(pre, s, r1, {0, 1}, valid, gain, 3);
+    CheckLevel(pre, s, r1, {0, 1}, valid, gain, 3, false, &par_3);
     // a tie at the budget's edge: both children equal, the tie-break picks classic leaf 0 over 1
     HostState s2;
     s2.leaf_parent.assign(5, -1);
@@ -452,10 +513,13 @@ TEST(CUDASelectiveR3, BudgetExactlyMetAndExceededByOne) {
     pre = s2;
     r0 = HostLevel(&s2, {0}, valid, gain2, 3);
     CheckLevel(pre, s2, r0, {0}, valid, gain2, 3);
+    CheckLevel(pre, s2, r0, {0}, valid, gain2, 3, false, &par_tie);
     gain2 = {2.0, 2.0, 0.0, 0.0, 0.0};
     pre = s2;
     const LevelResult r2 = HostLevel(&s2, {0, 1}, valid, gain2, 3);
     CheckLevel(pre, s2, r2, {0, 1}, valid, gain2, 3);
+    CheckLevel(pre, s2, r2, {0, 1}, valid, gain2, 3, false, &par_tie);
+    EXPECT_EQ(par_tie.resumed, 0);  // the equal pair at the budget's edge: the merge's order is the tie key's
   }
   // a displaced subtree: a deep record outranked by a new sibling candidate collapses (free list LIFO)
   {
@@ -472,4 +536,111 @@ TEST(CUDASelectiveR3, WiderThanOneBlockAndGlobalHeap) {
     GrowAndCheck(num_leaves, 30, [&rng](int, int) { return rng() % 50 == 0 ? -1.0 : static_cast<double>(rng() % 3); });
   }
   GrowAndCheck(1500, 30, [&rng](int, int) { return static_cast<double>(rng() % 5); }, /*force_global_heap=*/true);
+}
+
+// ---- the parallel R3 (P8c): the same levels through the merge, its order kept on the device between them ----
+
+TEST(CUDASelectiveR3Parallel, DistinctGainsEverySlotKind) {
+  // continuous gains: no equal pair, so every level is merged; children often beat their parents (insertions right
+  // after the parent, in the middle, at the end; displacement and collapse every level), budgets met and exceeded
+  for (const int num_leaves : {2, 3, 4, 7, 15, 64, 127, 255, 1024}) {
+    for (int seed = 0; seed < 3; ++seed) {
+      std::mt19937 rng(100 * num_leaves + seed);
+      std::uniform_real_distribution<double> u(0.0, 1.0);
+      ParallelRun par(num_leaves);
+      par.rebuild_every = seed == 2 ? 3 : 0;
+      GrowAndCheck(num_leaves, 60, [&](int, int level) {
+        return u(rng) < 0.1 ? -1.0 : u(rng) * (1.0 + (seed == 1 ? -0.01 : 0.05) * level);
+      }, false, &par);
+      EXPECT_EQ(par.resumed, 0) << num_leaves;
+      if (seed == 2 && par.levels > 3) {
+        EXPECT_GT(par.rebuilt_rounds, 0) << num_leaves;
+      }
+    }
+  }
+}
+
+TEST(CUDASelectiveR3Parallel, CandidatesAllDisplacedOrAllFirst) {
+  // gains falling with depth: once the budget binds no candidate is selected (all land past the budget); rising
+  // with depth: every candidate pops right after its parent and the deepest records are displaced
+  for (const double slope : {-1.0, 1.0}) {
+    for (const int num_leaves : {31, 300}) {
+      std::mt19937 rng(num_leaves);
+      std::uniform_real_distribution<double> u(0.0, 1.0);
+      ParallelRun par(num_leaves);
+      GrowAndCheck(num_leaves, 40, [&](int, int level) { return 100.0 + slope * level + 0.5 * u(rng); }, false, &par);
+      EXPECT_EQ(par.merged, par.levels);
+    }
+  }
+}
+
+TEST(CUDASelectiveR3Parallel, WideLevelsGlobalAreaAndManyLeaves) {
+  // more candidates than the block's 512 threads; 5000 and 8000 leaves (the merge area in global memory), and the
+  // global area forced at 2047; a rebuild from the records every other level at 3000
+  std::mt19937 rng(23);
+  std::uniform_real_distribution<double> u(0.0, 1.0);
+  for (const int num_leaves : {2047, 3000, 5000, 8000}) {
+    ParallelRun par(num_leaves);
+    par.shared_area = num_leaves != 2047;
+    par.rebuild_every = num_leaves == 3000 ? 2 : 0;
+    GrowAndCheck(num_leaves, 30, [&](int, int level) { return u(rng) < 0.02 ? -1.0 : u(rng) + 0.01 * level; }, false,
+                 &par);
+    EXPECT_EQ(par.merged, par.levels) << num_leaves;
+  }
+}
+
+TEST(CUDASelectiveR3Parallel, EqualGainsResolvedByTheTieKey) {
+  // few distinct gains: the merge's fixed tie order holds up to the first tie the tie key decides otherwise, then the
+  // kernel runs best-first from there; all-equal gains over > 256 leaves (ties everywhere, also in rebuilds)
+  for (const int num_leaves : {7, 63, 600, 2047}) {
+    int resumed = 0;
+    for (int seed = 0; seed < 3; ++seed) {
+      std::mt19937 rng(7 * num_leaves + seed);
+      ParallelRun par(num_leaves);
+      par.rebuild_every = seed == 2 ? 2 : 0;
+      GrowAndCheck(num_leaves, 50, [&rng](int, int level) {
+        const unsigned v = rng() % 10;
+        return v < 2 && level > 0 ? -1.0 : static_cast<double>(1 + rng() % 4);
+      }, false, &par);
+      resumed += par.resumed;
+    }
+    EXPECT_GT(resumed, 0) << num_leaves;
+  }
+  ParallelRun all_equal(1500);
+  GrowAndCheck(1500, 40, [](int, int) { return 1.0; }, false, &all_equal);
+  EXPECT_GT(all_equal.resumed, 0);
+  // one equal pair late in a tree of distinct gains
+  {
+    std::mt19937 rng(77);
+    std::uniform_real_distribution<double> u(0.0, 1.0);
+    int calls = 0;
+    ParallelRun par(63);
+    GrowAndCheck(63, 30, [&](int, int level) { return level == 4 && calls++ < 2 ? 0.75 : u(rng); }, false, &par);
+    EXPECT_GT(par.merged, 0);
+  }
+}
+
+TEST(CUDASelectiveR3Parallel, TwoValuedGainsTinyBudgets) {
+  // two gains only, 2-33 leaves: ties at the budget's edge, between candidates and kept entries and among many; the
+  // level's own resume must occur on binding levels and at the budget's last pop (review of #188)
+  ParallelRun total(2);
+  for (const int num_leaves : {2, 3, 4, 5, 6, 8, 9, 16, 17, 33}) {
+    for (int seed = 0; seed < 40; ++seed) {
+      std::mt19937 rng(1000 * num_leaves + seed);
+      ParallelRun par(num_leaves);
+      par.rebuild_every = seed % 4 == 3 ? 2 : 0;
+      GrowAndCheck(num_leaves, 40, [&](int, int level) {
+        if (rng() % 16 == 0 && level > 0) {
+          return -1.0;
+        }
+        return (seed % 2) ? static_cast<double>(1 + rng() % 2) : static_cast<double>(1 + (rng() % 3 == 0));
+      }, false, &par);
+      ASSERT_FALSE(testing::Test::HasFailure()) << "num_leaves " << num_leaves << " seed " << seed;
+      total.level_resumed += par.level_resumed;
+      total.resumed_binding += par.resumed_binding;
+      total.resumed_last += par.resumed_last;
+    }
+  }
+  EXPECT_GT(total.resumed_binding, 0);
+  EXPECT_GT(total.resumed_last, 0);
 }

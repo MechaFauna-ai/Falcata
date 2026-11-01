@@ -10,6 +10,10 @@ beside it). The shapes follow the P8a measurement cells (binding-budget 151/10, 
 255/-1, 4095/-1) on synthetic data, plus a shape whose leaves tie exactly (duplicated rows), where the host's
 simulation must resolve ties (the per-level ties= count). The test hook r3fault corrupts the device result, so a
 broken comparison cannot pass silently; plain diag does not run the shadow.
+
+FALCATA_DEBUG=r3shadow=both also runs the parallel R3 (P8c: the last level's order kept on the device, the frontier
+merged into it, ties resolved by the tie key from the first one the merge's fixed order gets wrong) and compares it the
+same way. r3rebuild rebuilds the kept order from the records on every level.
 """
 
 import json
@@ -228,3 +232,91 @@ def test_r3_shadow_reports_a_corrupted_device_result_cuda():
     plain, diag_err = _train(params, X, y, 2, "diag")
     assert faulty["md5"] == plain["md5"]
     assert "r3_shadow" not in diag_err
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("cell", sorted(_CELLS))
+def test_r3_parallel_shadow_matches_the_host_simulation_cuda(cell):
+    kind, extra, rows, cols, rounds = _CELLS[cell]
+    X, y = _data(kind, rows, cols)
+    params = _params(extra)
+    debug = "r3shadow=both" + (",r3rebuild" if cell in ("budget", "tied") else "")
+    shadow, err = _train(params, X, y, rounds, debug)
+    plain, _ = _train(params, X, y, rounds, "")
+    assert shadow["md5"] == plain["md5"]
+    assert "MISMATCH" not in err, [x for x in err.splitlines() if "MISMATCH" in x][:5]
+    levels = _levels(err)
+    assert levels
+    assert all(lv["r3_us"] >= 0 and lv["par_us"] >= 0 for lv in levels)
+    # ties: the merge keeps its fixed tie order up to the first tie the tie key decides otherwise, and runs best-first
+    # from there; that pop is a host tie-break, at or after the host's first one
+    assert all(lv["par_resumes"] >= 0 for lv in levels)
+    resumed = [lv for lv in levels if lv["par_resume_at"] >= 0]
+    assert all(0 <= lv["tie_at"] <= lv["par_resume_at"] for lv in resumed)
+    if cell == "tied":
+        # binding levels whose host simulation broke ties, decided by the parallel kernel without a mismatch, some by
+        # an exact resume from the first tie the merge's fixed order got wrong
+        assert any(lv["ties"] > 0 for lv in levels if lv["binding"] == 1)
+        # A level resume (par_resume_at >= 0) is not guaranteed on this synthetic cell: it showed none, i.e. the merge's
+        # fixed tie order (old position, then frontier index) matched the tie key on every tied level. The gtest
+        # TwoValuedGainsTinyBudgets asserts level resumes on binding levels and at the budget's last pop.
+    if "r3rebuild" in debug:
+        assert all(lv["par_rounds"] > 0 for lv in levels if lv["applied"] > 0)
+    else:
+        # the order is kept from the last level after a tree's first one
+        assert any(lv["par_rounds"] == 0 and lv["applied"] > 0 for lv in levels)
+
+
+@_REQUIRES_CUDA
+def test_r3_parallel_shadow_alone_and_corrupted_cuda():
+    kind, extra, rows, cols, rounds = _CELLS["fraud"]
+    X, y = _data(kind, rows, cols)
+    params = _params(extra)
+    _, err = _train(params, X, y, 3, "r3shadow=par")
+    levels = _levels(err)
+    assert levels
+    assert "MISMATCH" not in err
+    assert all(lv["r3_us"] < 0 <= lv["par_us"] for lv in levels)
+    _, err = _train(params, X, y, 2, "r3shadow=par,r3fault")
+    mismatches = [x for x in err.splitlines() if "r3_shadow: MISMATCH" in x]
+    assert len(mismatches) == len(_levels(err)) > 0
+    assert all("field=order pos=0" in x and x.endswith("path=par") for x in mismatches)
+
+
+_RESET = (
+    "import sys, json, numpy as np, falcata as flc\n"
+    "d = np.load(sys.argv[1])\n"
+    "p = json.loads(sys.argv[2])\n"
+    "ds = flc.Dataset(d['X'], label=d['y'], params=p)\n"
+    "b = flc.train(p, ds, num_boost_round=3, keep_training_booster=True)\n"
+    "b.reset_parameter({'num_leaves': 300})\n"
+    "for _ in range(3):\n"
+    "    b.update()\n"
+    "q = dict(p, num_leaves=511)\n"
+    "flc.train(q, flc.Dataset(d['X'], label=d['y'], params=q), num_boost_round=2)\n"
+)
+
+
+@_REQUIRES_CUDA
+def test_r3_shadow_survives_a_larger_num_leaves_cuda():
+    # the shadow's blobs and the parallel kernel's kept order are sized by num_leaves: raising it (reset_parameter on
+    # the booster, then a second booster in the process) reallocates them instead of writing past their end
+    kind, extra, rows, cols, _ = _CELLS["fraud"]
+    X, y = _data(kind, rows, cols)
+    params = _params(extra)
+    with tempfile.TemporaryDirectory() as tmp:
+        data = os.path.join(tmp, "data.npz")
+        np.savez(data, X=X, y=y)
+        env = {k: v for k, v in os.environ.items() if k != "FALCATA_DEBUG"}
+        env["FALCATA_DEBUG"] = "r3shadow=both"
+        out = subprocess.run(
+            [sys.executable, "-c", _RESET, data, json.dumps(params)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    levels = _levels(out.stderr)
+    assert levels
+    assert "MISMATCH" not in out.stderr, [x for x in out.stderr.splitlines() if "MISMATCH" in x][:5]
+    assert max(lv["pops"] for lv in levels) > 254  # trees grown past the first booster's budget

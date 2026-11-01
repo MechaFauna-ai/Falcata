@@ -1366,8 +1366,12 @@ inline bool FalcataVerifyEnabled() {
  *    selection on the device (cuda_selective_r3) beside the host's and
  *    compares the two: one ``r3_shadow:`` timing line per level and a mismatch
  *    summary per tree (docs/performance.md); does not change any result
+ *    (the sequential kernel); ``r3shadow=par`` runs the parallel kernel
+ *    (P8c) instead, ``r3shadow=both`` both, each compared with the host
  *  - ``r3fault``    test hook for r3shadow: corrupts the device result's first
  *    pop before the comparison, so a MISMATCH line must appear
+ *  - ``r3rebuild``  test hook for the parallel shadow: rebuilds its kept order
+ *    from the records on every level
  * debug and dump also keep trees off the device-driven flows (the device
  * controller does not replicate these hooks). The 1.1 tokens syncpairs,
  * aggressive and maxsplits=N, and the FALCATA_SINGLE_STREAM switch, were removed
@@ -1379,7 +1383,10 @@ struct FalcataDebugOptions {
   bool dump = false;
   bool bynode = false;
   bool r3shadow = false;
+  bool r3seq = false;  // r3shadow: the sequential kernel (P8a)
+  bool r3par = false;  // r3shadow: the parallel kernel (P8c)
   bool r3fault = false;
+  bool r3rebuild = false;
   int64_t vramfree_mib = -1;  // -1 = the real free memory
 };
 
@@ -1398,10 +1405,15 @@ inline const FalcataDebugOptions& FalcataDebug() {
         o.dump = true;
       } else if (token == std::string("bynode")) {
         o.bynode = true;
-      } else if (token == std::string("r3shadow")) {
-        o.r3shadow = true;
+      } else if (token == std::string("r3shadow") || token == std::string("r3shadow=both")) {
+        o.r3shadow = o.r3seq = true;
+        o.r3par = token != std::string("r3shadow");
+      } else if (token == std::string("r3shadow=par")) {
+        o.r3shadow = o.r3par = true;
       } else if (token == std::string("r3fault")) {
         o.r3fault = true;
+      } else if (token == std::string("r3rebuild")) {
+        o.r3rebuild = true;
       } else if (token.rfind("vramfree=", 0) == 0) {
         o.vramfree_mib = std::min<int64_t>(std::max<int64_t>(0, std::atoll(token.c_str() + 9)), int64_t{1} << 40);
       } else if (!token.empty()) {
