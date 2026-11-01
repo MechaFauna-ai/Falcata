@@ -769,6 +769,7 @@ set(
       src/treelearner/cuda/cuda_histogram_constructor_bin16.cu
       src/treelearner/cuda/cuda_histogram_constructor_bin32.cu
       src/treelearner/cuda/cuda_device_levels.cu
+      src/treelearner/cuda/cuda_selective_r3.cu
       src/treelearner/cuda/cuda_leaf_splits.cu
       src/treelearner/cuda/cuda_single_gpu_tree_learner.cu
       src/io/cuda/cuda_column_data.cu
@@ -1070,6 +1071,7 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_algorithms.cu
         tests/cpp_tests/test_cuda_metadata.cu
         tests/cpp_tests/test_cuda_device_level_budget.cu
+        tests/cpp_tests/test_cuda_selective_r3.cu
         tests/cpp_tests/test_cuda_nonquant_fixed.cu
         tests/cpp_tests/test_cuda_vector_capacity.cu
     )
