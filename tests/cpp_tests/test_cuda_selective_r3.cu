@@ -233,8 +233,8 @@ struct ParallelRun {
   bool shared_area = true;
   int rebuild_every = 0;  // > 0: also rebuild the order from the records every k-th level
   int levels = 0;
-  int merged = 0;        // levels the merge decided (path 0)
-  int sequential = 0;    // levels with equal live gains (path 1)
+  int merged = 0;        // levels the merge decided alone
+  int resumed = 0;       // levels that ran best-first from a tie the merge's order resolved differently
   int rebuilt_rounds = 0;
 };
 
@@ -275,8 +275,8 @@ void CheckLevel(const HostState& pre, const HostState& post, const LevelResult& 
   DeviceBuffer<char> d_child_table(rec_cap * Falcata::kSelectiveR3ChildEntryBytes);
   DeviceBuffer<char> d_heap(num_leaves * Falcata::kSelectiveR3HeapEntryBytes);
   DeviceBuffer<int> d_order(budget), d_classic(budget), d_collapsed(rec_cap), d_freed(rec_cap), d_apply(budget);
-  DeviceBuffer<int> d_rec_pos(rec_cap), d_rec_round(rec_cap), d_cand(4 * leaf_cap);
-  DeviceBuffer<double> d_cand_gain(2 * leaf_cap);
+  DeviceBuffer<int> d_rec_pos(rec_cap), d_rec_round(rec_cap), d_cand(14 * leaf_cap);
+  DeviceBuffer<double> d_cand_gain(3 * leaf_cap);
   d_state.Up({hs});
   d_rec.Up(recs);
   d_leaf_parent.Up(pre.leaf_parent);
@@ -323,8 +323,8 @@ void CheckLevel(const HostState& pre, const HostState& post, const LevelResult& 
   ASSERT_EQ(ds.error, 0);
   if (par != nullptr) {
     ++par->levels;
-    par->merged += ds.path == 0;
-    par->sequential += ds.path == 1;
+    par->merged += ds.resumes == 0;
+    par->resumed += ds.resumes > 0;
     par->rebuilt_rounds += ds.rounds;
   }
   ASSERT_EQ(ds.num_frontier, want.frontier);
@@ -508,7 +508,7 @@ TEST(CUDASelectiveR3, BudgetExactlyMetAndExceededByOne) {
     const LevelResult r2 = HostLevel(&s2, {0, 1}, valid, gain2, 3);
     CheckLevel(pre, s2, r2, {0, 1}, valid, gain2, 3);
     CheckLevel(pre, s2, r2, {0, 1}, valid, gain2, 3, false, &par_tie);
-    EXPECT_EQ(par_tie.sequential, 1);  // the equal pair at the budget's edge
+    EXPECT_EQ(par_tie.resumed, 0);  // the equal pair at the budget's edge: the merge's order is the tie key's
   }
   // a displaced subtree: a deep record outranked by a new sibling candidate collapses (free list LIFO)
   {
@@ -541,8 +541,7 @@ TEST(CUDASelectiveR3Parallel, DistinctGainsEverySlotKind) {
       GrowAndCheck(num_leaves, 60, [&](int, int level) {
         return u(rng) < 0.1 ? -1.0 : u(rng) * (1.0 + (seed == 1 ? -0.01 : 0.05) * level);
       }, false, &par);
-      EXPECT_EQ(par.sequential, 0) << num_leaves;
-      EXPECT_EQ(par.merged, par.levels) << num_leaves;
+      EXPECT_EQ(par.resumed, 0) << num_leaves;
       if (seed == 2 && par.levels > 3) {
         EXPECT_GT(par.rebuilt_rounds, 0) << num_leaves;
       }
@@ -579,11 +578,11 @@ TEST(CUDASelectiveR3Parallel, WideLevelsGlobalAreaAndManyLeaves) {
   }
 }
 
-TEST(CUDASelectiveR3Parallel, EqualGainsTakeTheSequentialPath) {
-  // few distinct gains: levels with an equal live pair run the sequential simulation inside the kernel, and the
-  // order it leaves is kept (and rechecked) for the next level; all-equal gains over > 256 leaves
+TEST(CUDASelectiveR3Parallel, EqualGainsResolvedByTheTieKey) {
+  // few distinct gains: the merge's fixed tie order holds up to the first tie the tie key decides otherwise, then the
+  // kernel runs best-first from there; all-equal gains over > 256 leaves (ties everywhere, also in rebuilds)
   for (const int num_leaves : {7, 63, 600, 2047}) {
-    int sequential = 0;
+    int resumed = 0;
     for (int seed = 0; seed < 3; ++seed) {
       std::mt19937 rng(7 * num_leaves + seed);
       ParallelRun par(num_leaves);
@@ -592,21 +591,20 @@ TEST(CUDASelectiveR3Parallel, EqualGainsTakeTheSequentialPath) {
         const unsigned v = rng() % 10;
         return v < 2 && level > 0 ? -1.0 : static_cast<double>(1 + rng() % 4);
       }, false, &par);
-      sequential += par.sequential;
+      resumed += par.resumed;
     }
-    EXPECT_GT(sequential, 0) << num_leaves;
+    EXPECT_GT(resumed, 0) << num_leaves;
   }
   ParallelRun all_equal(1500);
   GrowAndCheck(1500, 40, [](int, int) { return 1.0; }, false, &all_equal);
-  EXPECT_EQ(all_equal.sequential + 1, all_equal.levels);  // the root level alone has no pair
-  // one equal pair late in a tree of distinct gains: the sequential level, then the merge again once the pair dies
+  EXPECT_GT(all_equal.resumed, 0);
+  // one equal pair late in a tree of distinct gains
   {
     std::mt19937 rng(77);
     std::uniform_real_distribution<double> u(0.0, 1.0);
     int calls = 0;
     ParallelRun par(63);
     GrowAndCheck(63, 30, [&](int, int level) { return level == 4 && calls++ < 2 ? 0.75 : u(rng); }, false, &par);
-    EXPECT_GT(par.sequential, 0);
     EXPECT_GT(par.merged, 0);
   }
 }

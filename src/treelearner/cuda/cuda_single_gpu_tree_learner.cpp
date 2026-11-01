@@ -5088,8 +5088,8 @@ CUDASelectiveR3Config SelectiveR3BlobConfig(char* base, const int num_leaves, co
   if (parallel) {
     c.rec_pos = reinterpret_cast<int*>(take(records, sizeof(int)));
     c.rec_round = reinterpret_cast<int*>(take(records, sizeof(int)));
-    c.cand = reinterpret_cast<int*>(take(4 * leaves, sizeof(int)));
-    c.cand_gain = reinterpret_cast<double*>(take(2 * leaves, sizeof(double)));
+    c.cand = reinterpret_cast<int*>(take(14 * leaves, sizeof(int)));
+    c.cand_gain = reinterpret_cast<double*>(take(3 * leaves, sizeof(double)));
     c.par_global = take(R3ParallelAreaBytes(num_leaves), 1);
   }
   c.budget = num_leaves - 1;
@@ -5247,7 +5247,7 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowLaunch(const std::vector<int>& c
   for (size_t i = 1; i < live_gains.size(); ++i) {
     lvl.eqgain += live_gains[i] == live_gains[i - 1] ? 1 : 0;
   }
-  lvl.par_path = -1;
+  lvl.par_resumes = -1;
   lvl.ev = static_cast<int>(ev);
   lvl.marks = r3_pending_mark0_ ? 1 : 0;
   r3_pending_mark0_ = false;
@@ -5358,7 +5358,8 @@ bool CUDASingleGPUTreeLearner::SelectiveR3ShadowCompare(const int path) {
   }
   SelectiveR3ShadowLevel& lvl = r3_levels_.back();
   if (path == 1) {
-    lvl.par_path = ds.path;
+    lvl.par_resumes = ds.resumes;
+    lvl.par_resume_at = ds.resume_at;
     lvl.par_rounds = ds.rounds;
   }
   if (path == 0 || !FalcataDebug().r3seq) {
@@ -5394,11 +5395,11 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowTreeEnd() {
       mismatches += lvl.mismatch;
       fprintf(stderr, "[hybrid-diag] r3_shadow: tree=%" PRId64 " level=%d handoff=%d binding=%d applied=%d "
               "frontier=%d pops=%d reuse=%d collapsed=%d created=%d r3_us=%.2f sim_us=%.2f ties=%d gap_readback_us=%.2f "
-              "gap_apply_us=%.2f shadow_host_us=%.2f par_us=%.2f par_path=%d par_rounds=%d eqgain=%d tie_at=%d\n",
+              "gap_apply_us=%.2f shadow_host_us=%.2f par_us=%.2f par_resumes=%d par_resume_at=%d par_rounds=%d eqgain=%d tie_at=%d\n",
               sel_stat_trees_, lvl.level, lvl.handoff, lvl.binding, lvl.applied, lvl.frontier, lvl.pops, lvl.reuse,
               lvl.collapsed, lvl.created, FalcataDebug().r3seq ? elapsed_us(lvl.ev, lvl.ev + 1) : -1.0, lvl.sim_us,
               lvl.ties, gap_readback, gap_apply, lvl.shadow_host_us,
-              FalcataDebug().r3par ? elapsed_us(lvl.ev + 6, lvl.ev + 7) : -1.0, lvl.par_path, lvl.par_rounds,
+              FalcataDebug().r3par ? elapsed_us(lvl.ev + 6, lvl.ev + 7) : -1.0, lvl.par_resumes, lvl.par_resume_at, lvl.par_rounds,
               lvl.eqgain, lvl.tie_at);
     }
     fprintf(stderr, "[hybrid-diag] r3_shadow: tree=%" PRId64 " levels=%d mismatches=%d cumulative levels=%" PRId64

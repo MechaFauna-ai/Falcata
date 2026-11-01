@@ -989,7 +989,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     int ties;       // SelectiveTieBreak calls of the host simulation
     int tie_at;     // the pop index of the first one (-1 none)
     int eqgain;     // equal-gain pairs among the live candidates (applied records and frontier), sorted neighbours
-    int par_path;   // the parallel kernel's path (0 merge, 1 sequential: equal gains), -1 not run
+    int par_resumes;    // the parallel kernel's exact best-first resumes from a tie (-1 not run)
+    int par_resume_at;  // the level's resume pop (-1 none)
     int par_rounds;  // its merges that rebuilt the order from the records
     double shadow_host_us;
     int ev;         // first of this level's 8 events: sequential kernel start/stop, marks 0-3, parallel start/stop

@@ -12,9 +12,8 @@ simulation must resolve ties (the per-level ties= count). The test hook r3fault 
 broken comparison cannot pass silently; plain diag does not run the shadow.
 
 FALCATA_DEBUG=r3shadow=both also runs the parallel R3 (P8c: the last level's order kept on the device, the frontier
-merged into it) and compares it the same way; a level with equal live gains (eqgain= on the host side) must take its
-sequential path (par_path=1), every other level the merge (par_path=0). r3rebuild rebuilds the kept order from the
-records on every level.
+merged into it, ties resolved by the tie key from the first one the merge's fixed order gets wrong) and compares it the
+same way. r3rebuild rebuilds the kept order from the records on every level.
 """
 
 import json
@@ -249,20 +248,21 @@ def test_r3_parallel_shadow_matches_the_host_simulation_cuda(cell):
     levels = _levels(err)
     assert levels
     assert all(lv["r3_us"] >= 0 and lv["par_us"] >= 0 for lv in levels)
-    # the sequential path exactly where the device met equal live gains, which the host sees too
-    assert all(lv["par_path"] in (0, 1) for lv in levels)
-    assert all(lv["eqgain"] > 0 for lv in levels if lv["par_path"] == 1)
-    merged = [lv for lv in levels if lv["par_path"] == 0]
+    # ties: the merge keeps its fixed tie order up to the first tie the tie key decides otherwise, and runs best-first
+    # from there; that pop is a host tie-break, at or after the host's first one
+    assert all(lv["par_resumes"] >= 0 for lv in levels)
+    resumed = [lv for lv in levels if lv["par_resume_at"] >= 0]
+    assert all(0 <= lv["tie_at"] <= lv["par_resume_at"] for lv in resumed)
     if cell == "tied":
-        assert any(lv["par_path"] == 1 for lv in levels if lv["binding"] == 1)
+        # binding levels whose host simulation broke ties, decided by the parallel kernel without a mismatch
+        assert any(lv["ties"] > 0 for lv in levels if lv["binding"] == 1)
     else:
-        assert merged
-        assert any(lv["binding"] == 1 for lv in merged)
+        assert not resumed
     if "r3rebuild" in debug:
         assert all(lv["par_rounds"] > 0 for lv in levels if lv["applied"] > 0)
     else:
-        # the order is rebuilt on the first level of a tree only (or after a sequential level)
-        assert any(lv["par_rounds"] == 0 and lv["applied"] > 0 for lv in merged)
+        # the order is kept from the last level after a tree's first one
+        assert any(lv["par_rounds"] == 0 and lv["applied"] > 0 for lv in levels)
 
 
 @_REQUIRES_CUDA

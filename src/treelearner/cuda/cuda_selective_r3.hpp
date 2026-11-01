@@ -19,11 +19,12 @@
  *
  *  The parallel R3 (P8c, LaunchSelectiveR3Parallel) produces the same results without a simulation. It keeps the last
  *  level's pop order on the device (frontier picks renamed to the records they became: the best-first run over the
- *  live records) and inserts the level's frontier candidates into it: with pairwise distinct gains a candidate pops
+ *  live records) and inserts the level's frontier candidates into it: under a fixed total order a candidate pops
  *  right before the first entry after its parent whose gain is lower than its own (or at the end), candidates in one
  *  slot in gain order, and the level's selection is the first num_leaves - 1 entries (runs/device_default/
- *  P8C_PARALLEL_R3.md has the proof). A level whose live gains are not pairwise distinct runs the sequential
- *  simulation instead (in the same kernel), since the tie-break key moves with the classic numbers.
+ *  P8C_PARALLEL_R3.md has the proof). Equal gains: the merge uses a fixed tie order, which is the host's run up to the
+ *  first step where an available entry of the popped entry's gain has the smaller tie key; from there (found in
+ *  parallel) the kernel runs best-first exactly, as the sequential kernel does.
  */
 #ifndef FALCATA_TREELEARNER_CUDA_CUDA_SELECTIVE_R3_HPP_
 #define FALCATA_TREELEARNER_CUDA_CUDA_SELECTIVE_R3_HPP_
@@ -66,7 +67,8 @@ struct CUDASelectiveR3State {
   int num_apply;      // records created for selected frontier candidates
   int error;          // 1: a right child past num_leaves - 1, 2: record capacity
   // parallel R3 only
-  int path;           // 0: merge, 1: sequential simulation (equal gains among the live candidates)
+  int resumes;        // merges that ran best-first from a tie the merge's fixed order resolved differently
+  int resume_at;      // the level's first such pop (-1: the merge was exact)
   int rounds;         // merges that rebuilt the order from the records (0: the order was kept from the last level)
 };
 
@@ -74,7 +76,6 @@ struct CUDASelectiveR3State {
 struct CUDASelectiveR3Persist {
   int n;         // entries in the order
   int parity;    // the half of order_buf that holds it
-  int distinct;  // 1: its records' gains are pairwise distinct (checked when it was built)
   int valid;     // 0: rebuild it from the records
 };
 
@@ -104,8 +105,8 @@ struct CUDASelectiveR3Config {
   int* order_buf;         // 2 x 3 x leaf_capacity: record id, classic leaf, parent (2 * position + right, -1 none)
   int* rec_pos;           // [record_capacity]: a record's position in the order
   int* rec_round;         // [record_capacity]: a record's depth while the order is rebuilt
-  int* cand;              // 4 x leaf_capacity: slot, rank, parent (as in order_buf; -2: not available), record id
-  double* cand_gain;      // 2 x leaf_capacity: gains, then the gains sorted
+  int* cand;              // 14 x leaf_capacity: per candidate and per merged entry (R3Arrays)
+  double* cand_gain;      // 3 x leaf_capacity: the candidates' gains, then the merged entries' gains
   void* par_global;       // [R3ParallelAreaBytes] when the merge area does not fit shared memory
   int rebuild;            // 1: rebuild the order from the records (the first level of a tree)
   int budget;             // num_leaves - 1
