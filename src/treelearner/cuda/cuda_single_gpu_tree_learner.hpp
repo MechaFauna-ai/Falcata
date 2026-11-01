@@ -971,6 +971,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int64_t sel_stat_trees_ = 0;
   int64_t sel_stat_sim_ns_ = 0;
   int64_t sel_stat_ties_ = 0;  // equal-gain resolutions in RunSelectiveLevel (SelectiveTieBreak calls)
+  int sel_first_tie_ = -1;     // the level's first tie-break pop index (-1: none)
   // R3 shadow state (FALCATA_DEBUG=r3shadow): device and pinned blobs of the same layout (SelectiveR3ShadowLaunch), the
   // side stream, the per-level timing events and records of the current tree, the mismatch counters
   struct SelectiveR3ShadowLevel {
@@ -986,6 +987,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     int mismatch;
     double sim_us;
     int ties;       // SelectiveTieBreak calls of the host simulation
+    int tie_at;     // the pop index of the first one (-1 none)
     int eqgain;     // equal-gain pairs among the live candidates (applied records and frontier), sorted neighbours
     int par_path;   // the parallel kernel's path (0 merge, 1 sequential: equal gains), -1 not run
     int par_rounds;  // its merges that rebuilt the order from the records

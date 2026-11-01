@@ -4842,6 +4842,7 @@ int CUDASingleGPUTreeLearner::RunSelectiveLevel() {
   }
   sel_order_.clear();
   sel_order_classic_leaf_.clear();
+  sel_first_tie_ = -1;
   struct HeapEntry {
     double gain;
     int classic_leaf;
@@ -4891,6 +4892,7 @@ int CUDASingleGPUTreeLearner::RunSelectiveLevel() {
       }
       const int winner_leaf = SelectiveTieBreak(tied_leaves);
       ++sel_stat_ties_;
+      sel_first_tie_ = sel_first_tie_ < 0 ? static_cast<int>(sel_order_.size()) : sel_first_tie_;
       for (const HeapEntry& c : tied) {
         if (c.classic_leaf == winner_leaf) {
           e = c;
@@ -5112,6 +5114,7 @@ int CUDASingleGPUTreeLearner::RunSelectiveLevelShadowed(const std::vector<int>& 
   const int selected = RunSelectiveLevel();
   r3_levels_.back().sim_us = static_cast<double>(sel_stat_sim_ns_ - sim_ns) * 1e-3;
   r3_levels_.back().ties = static_cast<int>(sel_stat_ties_ - ties);
+  r3_levels_.back().tie_at = sel_first_tie_;
   SelectiveR3ShadowCheck();
   return selected;
 }
@@ -5391,12 +5394,12 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowTreeEnd() {
       mismatches += lvl.mismatch;
       fprintf(stderr, "[hybrid-diag] r3_shadow: tree=%" PRId64 " level=%d handoff=%d binding=%d applied=%d "
               "frontier=%d pops=%d reuse=%d collapsed=%d created=%d r3_us=%.2f sim_us=%.2f ties=%d gap_readback_us=%.2f "
-              "gap_apply_us=%.2f shadow_host_us=%.2f par_us=%.2f par_path=%d par_rounds=%d eqgain=%d\n",
+              "gap_apply_us=%.2f shadow_host_us=%.2f par_us=%.2f par_path=%d par_rounds=%d eqgain=%d tie_at=%d\n",
               sel_stat_trees_, lvl.level, lvl.handoff, lvl.binding, lvl.applied, lvl.frontier, lvl.pops, lvl.reuse,
               lvl.collapsed, lvl.created, FalcataDebug().r3seq ? elapsed_us(lvl.ev, lvl.ev + 1) : -1.0, lvl.sim_us,
               lvl.ties, gap_readback, gap_apply, lvl.shadow_host_us,
               FalcataDebug().r3par ? elapsed_us(lvl.ev + 6, lvl.ev + 7) : -1.0, lvl.par_path, lvl.par_rounds,
-              lvl.eqgain);
+              lvl.eqgain, lvl.tie_at);
     }
     fprintf(stderr, "[hybrid-diag] r3_shadow: tree=%" PRId64 " levels=%d mismatches=%d cumulative levels=%" PRId64
             " mismatches=%" PRId64 "\n", sel_stat_trees_, static_cast<int>(r3_levels_.size()), mismatches,
