@@ -3537,6 +3537,34 @@ There were no mismatches on 5,552 levels. The kernel's one-thread heap costs abo
 55 ns on the host. A device route through it would be slower on every cell, so the route waits for a parallel
 selection.
 
+**The parallel selection (`FALCATA_DEBUG=r3shadow=par`, or `r3shadow=both` for both kernels).** A second kernel produces
+the same results without simulating. It keeps the last level's pop order on the device and inserts the level's
+frontier into it: a candidate pops just before the first entry after its parent with a lower gain. It finds that
+entry with a segment tree, ranks the candidates in each slot and truncates the order at the budget. The classic leaf
+numbers, the collapse order and the free list follow in closed form. Equal gains are first merged in a fixed order.
+The kernel then finds, in parallel, the first pop where an equal-gain entry with a smaller tie key was waiting, and
+from that pop on it runs the greedy selection exactly. The order is rebuilt from the records on a tree's first shadowed
+level. The per-level line adds `par_us= par_resumes= par_resume_at= par_rounds= eqgain= tie_at=`:
+- `par_us` is the parallel kernel's time (`r3_us` and `par_us` are -1 for a kernel that did not run).
+- `par_resumes` and `par_resume_at` give the exact restarts from a tie and the level's restart pop.
+- `par_rounds` counts the rebuild merges.
+- `eqgain` counts equal gains among the live candidates.
+- `tie_at` is the host's first tie-break pop.
+
+Mismatch lines end with `path=seq|par`. The test hook `r3rebuild` rebuilds the order on every level.
+
+| cell | binding levels with host ties | parallel kernel | host device-idle time | parallel / idle |
+|---|---:|---:|---:|---:|
+| binding budget 151/10 | 0% | 17.5 µs | 25.5 µs | 0.69x |
+| unbounded-fewbin 1024/-1 | 0% | 27.7 µs | 78.5 µs | 0.35x |
+| fraud 255/-1 | 68% (382 of 562) | 15.6 µs | 27.5 µs | 0.57x |
+| higgs 4095/-1 | 0% | 66.6 µs | 294 µs | 0.23x |
+
+There were no mismatches on 5,552 levels, including fraud's 549 levels with host tie-breaks. Only 42 of those levels
+needed an exact restart (median 38 pops); the fixed merge order already broke the other ties the host's way. The rebuild
+on a tree's first shadowed level (the hand-off from the device levels) costs 57, 215, 137 and 614 µs on these cells.
+That is one merge per depth level of the prefix, more than the round trip it would replace there.
+
 
 
 Whole-tree fused apply bounds only its physical workers by the joint split/gap row extent:
