@@ -96,10 +96,16 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
     cudaEventDestroy(e);
   }
   for (int path = 0; path < 2; ++path) {
-    cudaFree(r3_device_blob_[path]);
-    cudaFreeHost(r3_pinned_blob_[path]);
+    if (r3_device_blob_[path] != nullptr) {
+      cudaFree(r3_device_blob_[path]);
+    }
+    if (r3_pinned_blob_[path] != nullptr) {
+      cudaFreeHost(r3_pinned_blob_[path]);
+    }
   }
-  cudaFree(r3_par_state_);
+  if (r3_par_state_ != nullptr) {
+    cudaFree(r3_par_state_);
+  }
   if (r3_stream_ != nullptr) {
     cudaStreamDestroy(r3_stream_);
   }
@@ -5149,7 +5155,9 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowLaunch(const std::vector<int>& c
   }
   const bool run[2] = {FalcataDebug().r3seq, FalcataDebug().r3par};
   size_t bytes = 0;
-  if (r3_device_blob_[0] == nullptr || num_records + num_leaves > r3_record_capacity_) {
+  // the blobs' leaf arrays and the kept order are sized by num_leaves (ResetConfig can change it between trees)
+  const bool resized = num_leaves != r3_blob_num_leaves_;
+  if (r3_device_blob_[0] == nullptr || resized || num_records + num_leaves > r3_record_capacity_) {
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(r3_stream_));
     r3_record_capacity_ = std::max(4 * num_leaves, 2 * (num_records + num_leaves));
     for (int path = 0; path < 2; ++path) {
@@ -5161,7 +5169,9 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowLaunch(const std::vector<int>& c
     }
   }
   const size_t order_bytes = 6 * (static_cast<size_t>(num_leaves) + 2) * sizeof(int);
-  if (r3_par_state_ == nullptr) {
+  if (r3_par_state_ == nullptr || resized) {
+    CUDASUCCESS_OR_FATAL(cudaFree(r3_par_state_));
+    r3_blob_num_leaves_ = num_leaves;
     CUDASUCCESS_OR_FATAL(cudaMalloc(&r3_par_state_, 256 + order_bytes));
     CUDASUCCESS_OR_FATAL(cudaMemset(r3_par_state_, 0, 256 + order_bytes));  // valid = 0
   }

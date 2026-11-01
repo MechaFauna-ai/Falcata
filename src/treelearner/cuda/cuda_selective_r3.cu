@@ -747,7 +747,7 @@ __device__ int R3Frontier(const CUDASelectiveR3Config& cfg, int* warp_counts) {
 
 // the live records at depth d as merge candidates (their parents' positions from rec_pos); returns the count
 template <int kThreads>
-__device__ int R3DepthCandidates(const CUDASelectiveR3Config& cfg, const int d, int* warp_counts) {
+__device__ int R3DepthCandidates(const CUDASelectiveR3Config& cfg, const int d, int* warp_counts, int* nan_flag) {
   const CUDASelectiveR3Record* records = cfg.records;
   const int cap = cfg.leaf_capacity;
   return R3BlockCompact<kThreads>(cfg.state->num_records, warp_counts,
@@ -759,6 +759,9 @@ __device__ int R3DepthCandidates(const CUDASelectiveR3Config& cfg, const int d, 
       const CUDASelectiveR3Record& rec = records[r];
       cfg.rec_round[r] = d;
       reinterpret_cast<uint64_t*>(cfg.cand_gain)[k] = R3Key(rec.gain);
+      if (isnan(rec.gain)) {
+        *nan_flag = 1;
+      }
       cfg.cand[3 * cap + k] = r;
       cfg.cand[2 * cap + k] = rec.parent < 0 ? -1 : 2 * cfg.rec_pos[rec.parent] +
                                                    (records[rec.parent].left_leaf == rec.left_leaf ? 0 : 1);
@@ -772,9 +775,13 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
   __shared__ int warp_counts[kThreads / 32 + 1];
   __shared__ int scratch[kThreads / 32 + 1];
   __shared__ int s_flag[4];
+  __shared__ int s_nan;
   const int tid = threadIdx.x;
   const int cap = cfg.leaf_capacity;
   const R3Arrays a(cfg);
+  if (tid == 0) {
+    s_nan = 0;
+  }
   uint64_t* area = kSharedArea ? reinterpret_cast<uint64_t*>(r3_smem) : static_cast<uint64_t*>(cfg.par_global);
   int* np = reinterpret_cast<int*>(r3_smem + (kSharedArea ? R3ParallelAreaBytes(cfg.num_leaves) : 0));
   CUDASelectiveR3State* st = cfg.state;
@@ -798,7 +805,7 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
     for (int d = 0;; ++d) {
       const int* cur = cfg.order_buf + parity * 3 * cap;
       int* nxt = cfg.order_buf + (parity ^ 1) * 3 * cap;
-      const int m = R3DepthCandidates<kThreads>(cfg, d, warp_counts);
+      const int m = R3DepthCandidates<kThreads>(cfg, d, warp_counts, &s_nan);
       if (m == 0) {
         break;
       }
@@ -841,6 +848,9 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
     // no records: the root candidate (frontier 0) only
     a.c_parent[k] = num_records == 0 ? (k == 0 ? -1 : kR3NotAvailable) : (holder >= 0 ? holder : kR3NotAvailable);
     a.c_gain[k] = R3Key(cfg.frontier_gain[k]);
+    if (isnan(cfg.frontier_gain[k])) {
+      s_nan = 1;  // R3Key would rank a NaN above +inf, the host's compares would not: reported, not decided
+    }
   }
   __syncthreads();
   const int total = n + R3Merge<kThreads>(cfg, a, cur, n, num_frontier, area, np, scratch);
@@ -985,6 +995,7 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
     cfg.apply_right[ci] = right;
   }
   error = __syncthreads_or(error == 1) ? 1 : error;
+  error = s_nan != 0 ? 4 : error;
   if (tid == 0) {
     st->num_frontier = num_frontier;
     st->num_order = num_order;

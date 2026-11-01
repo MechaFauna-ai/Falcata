@@ -65,7 +65,8 @@ struct CUDASelectiveR3State {
   int num_collapsed;  // top-level collapsed records
   int num_freed;      // leaves pushed onto the free list, in push order
   int num_apply;      // records created for selected frontier candidates
-  int error;          // 1: a right child past num_leaves - 1, 2: record capacity
+  int error;          // 1: a right child past num_leaves - 1, 2: record capacity, 3: more live records than the
+                      // budget (rebuild), 4: a NaN gain (parallel kernel: its integer keys would not order it as the host)
   // parallel R3 only
   int resumes;        // merges that ran best-first from a tie the merge's fixed order resolved differently
   int resume_at;      // the level's first such pop (-1: the merge was exact)

@@ -254,8 +254,10 @@ def test_r3_parallel_shadow_matches_the_host_simulation_cuda(cell):
     resumed = [lv for lv in levels if lv["par_resume_at"] >= 0]
     assert all(0 <= lv["tie_at"] <= lv["par_resume_at"] for lv in resumed)
     if cell == "tied":
-        # binding levels whose host simulation broke ties, decided by the parallel kernel without a mismatch
+        # binding levels whose host simulation broke ties, decided by the parallel kernel without a mismatch, some by
+        # an exact resume from the first tie the merge's fixed order got wrong
         assert any(lv["ties"] > 0 for lv in levels if lv["binding"] == 1)
+        assert any(lv["par_resume_at"] >= 0 for lv in levels)
     if "r3rebuild" in debug:
         assert all(lv["par_rounds"] > 0 for lv in levels if lv["applied"] > 0)
     else:
@@ -277,3 +279,42 @@ def test_r3_parallel_shadow_alone_and_corrupted_cuda():
     mismatches = [x for x in err.splitlines() if "r3_shadow: MISMATCH" in x]
     assert len(mismatches) == len(_levels(err)) > 0
     assert all("field=order pos=0" in x and x.endswith("path=par") for x in mismatches)
+
+
+_RESET = (
+    "import sys, json, numpy as np, falcata as flc\n"
+    "d = np.load(sys.argv[1])\n"
+    "p = json.loads(sys.argv[2])\n"
+    "ds = flc.Dataset(d['X'], label=d['y'], params=p)\n"
+    "b = flc.train(p, ds, num_boost_round=3)\n"
+    "b.reset_parameter({'num_leaves': 300})\n"
+    "for _ in range(3):\n"
+    "    b.update()\n"
+    "q = dict(p, num_leaves=511)\n"
+    "flc.train(q, flc.Dataset(d['X'], label=d['y'], params=q), num_boost_round=2)\n"
+)
+
+
+@_REQUIRES_CUDA
+def test_r3_shadow_survives_a_larger_num_leaves_cuda():
+    # the shadow's blobs and the parallel kernel's kept order are sized by num_leaves: raising it (reset_parameter on
+    # the booster, then a second booster in the process) reallocates them instead of writing past their end
+    kind, extra, rows, cols, _ = _CELLS["fraud"]
+    X, y = _data(kind, rows, cols)
+    params = _params(extra)
+    with tempfile.TemporaryDirectory() as tmp:
+        data = os.path.join(tmp, "data.npz")
+        np.savez(data, X=X, y=y)
+        env = {k: v for k, v in os.environ.items() if k != "FALCATA_DEBUG"}
+        env["FALCATA_DEBUG"] = "r3shadow=both"
+        out = subprocess.run(
+            [sys.executable, "-c", _RESET, data, json.dumps(params)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    levels = _levels(out.stderr)
+    assert levels
+    assert "MISMATCH" not in out.stderr, [x for x in out.stderr.splitlines() if "MISMATCH" in x][:5]
+    assert max(lv["pops"] for lv in levels) > 254  # trees grown past the first booster's budget

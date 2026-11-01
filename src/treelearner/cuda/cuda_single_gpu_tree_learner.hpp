@@ -1000,6 +1000,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   char* r3_pinned_blob_[2] = {nullptr, nullptr};
   char* r3_par_state_ = nullptr;  // the parallel kernel's kept order (CUDASelectiveR3Persist, order_buf)
   int r3_record_capacity_ = 0;
+  int r3_blob_num_leaves_ = 0;  // the num_leaves the blobs and the kept order were sized for
   cudaStream_t r3_stream_ = nullptr;
   std::vector<cudaEvent_t> r3_events_;
   std::vector<SelectiveR3ShadowLevel> r3_levels_;

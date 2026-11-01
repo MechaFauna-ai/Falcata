@@ -3553,12 +3553,18 @@ level. The per-level line adds `par_us= par_resumes= par_resume_at= par_rounds= 
 
 Mismatch lines end with `path=seq|par`. The test hook `r3rebuild` rebuilds the order on every level.
 
-| cell | binding levels with host ties | parallel kernel | host device-idle time | parallel / idle |
+| cell | binding levels with host ties | parallel kernel, median (p90) | host device-idle time, median | median / idle |
 |---|---:|---:|---:|---:|
-| binding budget 151/10 | 0% | 17.5 µs | 25.5 µs | 0.69x |
-| unbounded-fewbin 1024/-1 | 0% | 27.7 µs | 78.5 µs | 0.35x |
-| fraud 255/-1 | 68% (382 of 562) | 15.6 µs | 27.5 µs | 0.57x |
-| higgs 4095/-1 | 0% | 66.6 µs | 294 µs | 0.23x |
+| binding budget 151/10 | 0% | 17.5 µs (19.6) | 25.5 µs | 0.69x |
+| unbounded-fewbin 1024/-1 | 0% | 27.7 µs (88.0) | 78.5 µs | 0.35x |
+| fraud 255/-1 | 68% (382 of 562) | 15.6 µs (18.1) | 27.5 µs | 0.57x |
+| higgs 4095/-1 | 0% | 66.6 µs (156.5) | 294 µs | 0.23x |
+
+The kernel times are median kernel times per binding level from cudaEvents around the launch. They do not include
+the launch latency or the device-side apply work (collapse windows, slot zeroing, record payloads) that a device route
+must add. The margins are thin where the round trip is short. Budget's p90 is 19.6 µs against 25.5 µs, and fewbin's p90
+(88 µs, levels with large frontiers) is above its 78.5 µs. A strict A/B of the device route on budget and fewbin is
+therefore the deciding test, not these medians.
 
 There were no mismatches on 5,552 levels, including fraud's 549 levels with host tie-breaks. Only 42 of those levels
 needed an exact restart (median 38 pops); the fixed merge order already broke the other ties the host's way. The rebuild

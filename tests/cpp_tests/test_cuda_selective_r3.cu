@@ -233,8 +233,11 @@ struct ParallelRun {
   bool shared_area = true;
   int rebuild_every = 0;  // > 0: also rebuild the order from the records every k-th level
   int levels = 0;
-  int merged = 0;        // levels the merge decided alone
-  int resumed = 0;       // levels that ran best-first from a tie the merge's order resolved differently
+  int merged = 0;        // levels with no resume at all (rebuild rounds included)
+  int resumed = 0;       // levels with a resume (rebuild rounds included)
+  int level_resumed = 0;    // levels whose own merge resumed (resume_at >= 0)
+  int resumed_binding = 0;  // ... on a binding level (live records + frontier > budget)
+  int resumed_last = 0;     // ... at the budget's last pop (resume_at == budget - 1)
   int rebuilt_rounds = 0;
 };
 
@@ -325,6 +328,14 @@ void CheckLevel(const HostState& pre, const HostState& post, const LevelResult& 
     ++par->levels;
     par->merged += ds.resumes == 0;
     par->resumed += ds.resumes > 0;
+    int live = 0;
+    for (const HostRecord& r : pre.rec) {
+      live += r.dead ? 0 : 1;
+    }
+    EXPECT_LT(ds.resume_at, budget);
+    par->level_resumed += ds.resume_at >= 0;
+    par->resumed_binding += ds.resume_at >= 0 && live + ds.num_frontier > budget;
+    par->resumed_last += ds.resume_at == budget - 1;
     par->rebuilt_rounds += ds.rounds;
   }
   ASSERT_EQ(ds.num_frontier, want.frontier);
@@ -607,4 +618,29 @@ TEST(CUDASelectiveR3Parallel, EqualGainsResolvedByTheTieKey) {
     GrowAndCheck(63, 30, [&](int, int level) { return level == 4 && calls++ < 2 ? 0.75 : u(rng); }, false, &par);
     EXPECT_GT(par.merged, 0);
   }
+}
+
+TEST(CUDASelectiveR3Parallel, TwoValuedGainsTinyBudgets) {
+  // two gains only, 2-33 leaves: ties at the budget's edge, between candidates and kept entries and among many; the
+  // level's own resume must occur on binding levels and at the budget's last pop (review of #188)
+  ParallelRun total(2);
+  for (const int num_leaves : {2, 3, 4, 5, 6, 8, 9, 16, 17, 33}) {
+    for (int seed = 0; seed < 40; ++seed) {
+      std::mt19937 rng(1000 * num_leaves + seed);
+      ParallelRun par(num_leaves);
+      par.rebuild_every = seed % 4 == 3 ? 2 : 0;
+      GrowAndCheck(num_leaves, 40, [&](int, int level) {
+        if (rng() % 16 == 0 && level > 0) {
+          return -1.0;
+        }
+        return (seed % 2) ? static_cast<double>(1 + rng() % 2) : static_cast<double>(1 + (rng() % 3 == 0));
+      }, false, &par);
+      ASSERT_FALSE(testing::Test::HasFailure()) << "num_leaves " << num_leaves << " seed " << seed;
+      total.level_resumed += par.level_resumed;
+      total.resumed_binding += par.resumed_binding;
+      total.resumed_last += par.resumed_last;
+    }
+  }
+  EXPECT_GT(total.resumed_binding, 0);
+  EXPECT_GT(total.resumed_last, 0);
 }
