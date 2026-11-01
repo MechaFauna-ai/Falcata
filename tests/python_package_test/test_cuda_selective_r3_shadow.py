@@ -1,19 +1,25 @@
 # coding: utf-8
-"""The device greedy simulation R3 (cuda_selective_r3) must reproduce the host's selective levels in shadow mode.
+"""The R3 route (cuda_selective_r3, P8b) grows a CUDA selective tree's levels after its first binding level on the
+device, and its shadow mode checks it against the host's selective simulation level by level.
 
-Under FALCATA_DEBUG=r3shadow every level of the host's selective loop (the first binding level the selective device
-levels hand over, and every level after it) also runs R3 on the device from the same state, and the learner compares
-the selection (pop order), the classic leaf numbers, the collapse order, the freed leaves, the free list and the new
-records (links, dead flags, gains as bit patterns) and the frontier (leaves, gains) with the host's. A mismatch prints a `r3_shadow: MISMATCH` line; each tree prints one `r3_shadow:` line per
-level and a summary with the cumulative mismatch count. The model must not change (the host decides; R3 only runs
-beside it). The shapes follow the P8a measurement cells (binding-budget 151/10, unbounded-fewbin 1024/-1, fraud
-255/-1, 4095/-1) on synthetic data, plus a shape whose leaves tie exactly (duplicated rows), where the host's
-simulation must resolve ties (the per-level ties= count). The test hook r3fault corrupts the device result, so a
-broken comparison cannot pass silently; plain diag does not run the shadow.
+The route: the device levels grow a selective tree up to its first binding level (P7), the host simulates that level
+once (RunSelectiveLevel) and seeds the device with its state, and every later level runs on the device: the parallel
+greedy selection (P8c: the last level's order kept on the device, the frontier merged into it, ties resolved by the tie
+key from the first one the merge's fixed order gets wrong), the collapse, the free list, the records and their
+payload, and the batched apply, two levels per relaunched body until a level creates no record. The model must be
+byte-identical to the host loop's (device_tree:off).
 
-FALCATA_DEBUG=r3shadow=both also runs the parallel R3 (P8c: the last level's order kept on the device, the frontier
-merged into it, ties resolved by the tie key from the first one the merge's fixed order gets wrong) and compares it the
-same way. r3rebuild rebuilds the kept order from the records on every level.
+Under FALCATA_DEBUG=r3shadow the route runs one level at a time and the host's simulation of each level runs beside it
+from the same inputs (the leaf entries and windows the device produced) as the oracle; the learner compares the
+frontier, the selection (pop order), the classic leaf numbers, the collapsed records, the freed leaves, the created
+records' leaves, the free list, every record (links, dead flags, gains, windows and best-split fields as bit patterns),
+the leaf parents and the windows the level reset. A mismatch prints a `r3_shadow: MISMATCH` line; each routed tree
+prints one `r3_shadow:` line per level and a summary with the cumulative mismatch count. The shapes follow the P8a
+measurement cells (binding-budget 151/10, unbounded-fewbin 1024/-1, fraud 255/-1, 4095/-1) on synthetic data, plus a
+shape whose leaves tie exactly (mirrored halves), where the host's simulation must resolve ties. The test hook r3fault
+corrupts the device result, so a broken comparison cannot pass silently; r3rebuild rebuilds the kept order from the
+records on every level; r3cap leaves the route a record table just big enough for the hand-off, so its first level
+stops and hands the tree back to the host loop (`device_tree: fallback (r3_capacity) route=selective_device`).
 """
 
 import json
@@ -182,36 +188,47 @@ def _params(extra):
     }
 
 
+_OFF = "auto,device_tree:off"
+
+
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("cell", sorted(_CELLS))
-def test_r3_shadow_matches_the_host_simulation_cuda(cell):
+def test_r3_route_matches_the_host_simulation_cuda(cell):
     kind, extra, rows, cols, rounds = _CELLS[cell]
     X, y = _data(kind, rows, cols)
     params = _params(extra)
     shadow, err = _train(params, X, y, rounds, "r3shadow")
-    plain, plain_err = _train(params, X, y, rounds, "")
-    # the shadow never changes the model and runs only under r3shadow
+    plain, plain_err = _train(params, X, y, rounds, "diag")
+    host, _ = _train({**params, "cuda_plan": _OFF}, X, y, rounds, "")
+    # the route grows the host loop's model; the shadow runs only under r3shadow and changes nothing
+    assert plain["md5"] == host["md5"]
     assert shadow["md5"] == plain["md5"]
     assert "r3_shadow" not in plain_err
+    assert re.search(r"selective hand-off at level \d+ \(routed\)", plain_err), plain_err[-2000:]
+    assert "device_tree: fallback (" not in plain_err
     assert "MISMATCH" not in err, [x for x in err.splitlines() if "MISMATCH" in x][:5]
     levels = _levels(err)
     trees = [tuple(int(g) for g in m.groups()) for m in _TREE.finditer(err)]
     assert levels, err[-2000:]
-    assert len(trees) == shadow["trees"]
+    assert 0 < len(trees) <= shadow["trees"]
     assert all(t[2] == 0 for t in trees)
     assert trees[-1][3] == len(levels)
     assert trees[-1][4] == 0
-    # every tree hands over at a binding level (or completes) and is then shadowed to its final simulation
+    assert all(lv["r3_us"] > 0 and lv["apply_us"] > 0 for lv in levels)
     binding = [lv for lv in levels if lv["binding"] == 1]
     assert binding
     budget = extra["num_leaves"] - 1
-    assert all(lv["reuse"] <= lv["pops"] <= budget for lv in levels)
+    assert all(lv["pops"] <= budget for lv in levels)
+    # every routed tree ends with a level that creates nothing
+    assert sum(1 for lv in levels if lv["created"] == 0) == len(trees)
     if cell == "tied":
         # equal-gain leaves met in a binding simulation: the tie-break decided pops the device reproduced
         assert any(lv["ties"] > 0 for lv in binding), [lv["ties"] for lv in levels]
     if cell in ("fraud", "fewbin", "wide"):
-        # displaced splits collapsed
+        # displaced splits collapsed on the device
         assert any(lv["collapsed"] > 0 for lv in levels)
+    # the order is kept from the hand-off: no level rebuilt it from the records
+    assert all(lv["rounds"] == 0 for lv in levels)
 
 
 @_REQUIRES_CUDA
@@ -228,59 +245,39 @@ def test_r3_shadow_reports_a_corrupted_device_result_cuda():
     assert all("field=order pos=0" in x for x in mismatches)
     last = [tuple(int(g) for g in m.groups()) for m in _TREE.finditer(err)][-1]
     assert last[4] == len(levels)
-    # the host still decided: the model is the plain one; plain diag runs no shadow
-    plain, diag_err = _train(params, X, y, 2, "diag")
+    # the corruption is in the comparison's copy only: the model is the plain one
+    plain, _ = _train(params, X, y, 2, "")
     assert faulty["md5"] == plain["md5"]
-    assert "r3_shadow" not in diag_err
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("cell", sorted(_CELLS))
-def test_r3_parallel_shadow_matches_the_host_simulation_cuda(cell):
+@pytest.mark.parametrize("cell", ["budget", "tied"])
+def test_r3_route_rebuilding_the_order_every_level_cuda(cell):
     kind, extra, rows, cols, rounds = _CELLS[cell]
     X, y = _data(kind, rows, cols)
     params = _params(extra)
-    debug = "r3shadow=both" + (",r3rebuild" if cell in ("budget", "tied") else "")
-    shadow, err = _train(params, X, y, rounds, debug)
+    shadow, err = _train(params, X, y, rounds, "r3shadow,r3rebuild")
     plain, _ = _train(params, X, y, rounds, "")
     assert shadow["md5"] == plain["md5"]
     assert "MISMATCH" not in err, [x for x in err.splitlines() if "MISMATCH" in x][:5]
     levels = _levels(err)
     assert levels
-    assert all(lv["r3_us"] >= 0 and lv["par_us"] >= 0 for lv in levels)
-    # ties: the merge keeps its fixed tie order up to the first tie the tie key decides otherwise, and runs best-first
-    # from there; that pop is a host tie-break, at or after the host's first one
-    assert all(lv["par_resumes"] >= 0 for lv in levels)
-    resumed = [lv for lv in levels if lv["par_resume_at"] >= 0]
-    assert all(0 <= lv["tie_at"] <= lv["par_resume_at"] for lv in resumed)
-    if cell == "tied":
-        # binding levels whose host simulation broke ties, decided by the parallel kernel without a mismatch, some by
-        # an exact resume from the first tie the merge's fixed order got wrong
-        assert any(lv["ties"] > 0 for lv in levels if lv["binding"] == 1)
-        # A level resume (par_resume_at >= 0) is not guaranteed on this synthetic cell: it showed none, i.e. the merge's
-        # fixed tie order (old position, then frontier index) matched the tie key on every tied level. The gtest
-        # TwoValuedGainsTinyBudgets asserts level resumes on binding levels and at the budget's last pop.
-    if "r3rebuild" in debug:
-        assert all(lv["par_rounds"] > 0 for lv in levels if lv["applied"] > 0)
-    else:
-        # the order is kept from the last level after a tree's first one
-        assert any(lv["par_rounds"] == 0 and lv["applied"] > 0 for lv in levels)
+    assert all(lv["rounds"] > 0 for lv in levels if lv["applied"] > 0)
 
 
 @_REQUIRES_CUDA
-def test_r3_parallel_shadow_alone_and_corrupted_cuda():
-    kind, extra, rows, cols, rounds = _CELLS["fraud"]
+@pytest.mark.parametrize("cell", ["fraud", "fewbin"])
+def test_r3_route_hands_a_tree_back_to_the_host_loop_cuda(cell):
+    # r3cap: a record table just big enough for the hand-off level's records, so the route's first level that creates
+    # more stops before changing anything and the host loop grows the rest from the device's state
+    kind, extra, rows, cols, rounds = _CELLS[cell]
     X, y = _data(kind, rows, cols)
     params = _params(extra)
-    _, err = _train(params, X, y, 3, "r3shadow=par")
-    levels = _levels(err)
-    assert levels
-    assert "MISMATCH" not in err
-    assert all(lv["r3_us"] < 0 <= lv["par_us"] for lv in levels)
-    _, err = _train(params, X, y, 2, "r3shadow=par,r3fault")
-    mismatches = [x for x in err.splitlines() if "r3_shadow: MISMATCH" in x]
-    assert len(mismatches) == len(_levels(err)) > 0
-    assert all("field=order pos=0" in x and x.endswith("path=par") for x in mismatches)
+    capped, err = _train(params, X, y, rounds, "diag,r3cap")
+    host, _ = _train({**params, "cuda_plan": _OFF}, X, y, rounds, "")
+    assert capped["md5"] == host["md5"]
+    assert "device_tree: fallback (r3_capacity) route=selective_device" in err, err[-3000:]
+    assert re.search(r"selective route levels=\d+ bodies=\d+ created=\d+ error=2", err), err[-3000:]
 
 
 _RESET = (
@@ -299,8 +296,8 @@ _RESET = (
 
 @_REQUIRES_CUDA
 def test_r3_shadow_survives_a_larger_num_leaves_cuda():
-    # the shadow's blobs and the parallel kernel's kept order are sized by num_leaves: raising it (reset_parameter on
-    # the booster, then a second booster in the process) reallocates them instead of writing past their end
+    # the route's device state is sized by num_leaves: raising it (reset_parameter on the booster, then a second booster
+    # in the process) reallocates it instead of writing past its end
     kind, extra, rows, cols, _ = _CELLS["fraud"]
     X, y = _data(kind, rows, cols)
     params = _params(extra)
@@ -308,7 +305,7 @@ def test_r3_shadow_survives_a_larger_num_leaves_cuda():
         data = os.path.join(tmp, "data.npz")
         np.savez(data, X=X, y=y)
         env = {k: v for k, v in os.environ.items() if k != "FALCATA_DEBUG"}
-        env["FALCATA_DEBUG"] = "r3shadow=both"
+        env["FALCATA_DEBUG"] = "r3shadow"
         out = subprocess.run(
             [sys.executable, "-c", _RESET, data, json.dumps(params)],
             env=env,

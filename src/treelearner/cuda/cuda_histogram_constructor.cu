@@ -692,14 +692,31 @@ __global__ void ComputeBatchedConstructDimYKernel(
   }
 }
 
-__global__ void ZeroHistSlotsKernel(hist_t* hist, const int* slots, const size_t slot_size) {
-  uint4* const slot = reinterpret_cast<uint4*>(hist + static_cast<size_t>(slots[blockIdx.y]) * slot_size);
+// slots[blockIdx.y] (count null), or slots[y] for y = blockIdx.y, + gridDim.y, ... below *count (on the device)
+__global__ void ZeroHistSlotsKernel(hist_t* hist, const int* slots, const size_t slot_size, const int* count) {
+  const int num_slots = count == nullptr ? static_cast<int>(gridDim.y) : *count;
   const size_t num_words = slot_size / 2;
   const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
-  for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < num_words;
-       i += static_cast<size_t>(gridDim.x) * blockDim.x) {
-    slot[i] = zero;
+  for (int y = blockIdx.y; y < num_slots; y += gridDim.y) {
+    uint4* const slot = reinterpret_cast<uint4*>(hist + static_cast<size_t>(slots[y]) * slot_size);
+    for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < num_words;
+         i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+      slot[i] = zero;
+    }
   }
+}
+
+void CUDAHistogramConstructor::LaunchZeroHistSlotsDevice(const int* slots, const int* count, const int max_slots,
+                                                         cudaStream_t stream) {
+  constexpr int kThreads = 256;
+  const size_t slot_size = static_cast<size_t>(2 * num_total_bin_) * static_cast<size_t>(num_hist_planes_);
+  const size_t num_words = slot_size / 2;
+  const int blocks_x = static_cast<int>(std::max<size_t>(1, std::min<size_t>(16, (num_words + kThreads - 1) / kThreads)));
+  // (a level frees a few leaves; a wide one's slots loop over the grid's rows)
+  const int blocks_y = std::max(1, std::min(max_slots, 32));
+  ZeroHistSlotsKernel<<<dim3(blocks_x, blocks_y), kThreads, 0, stream>>>(cuda_hist_.RawData(), slots, slot_size,
+                                                                         count);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
 void CUDAHistogramConstructor::LaunchZeroHistSlotsKernel(const std::vector<int>& slots, const size_t slot_size) {
@@ -720,7 +737,8 @@ void CUDAHistogramConstructor::LaunchZeroHistSlotsKernel(const std::vector<int>&
   for (int first = 0; first < num_slots; first += kMaxSlotsPerLaunch) {
     const int count = std::min(kMaxSlotsPerLaunch, num_slots - first);
     ZeroHistSlotsKernel<<<dim3(blocks_x, count), kThreads, 0, 0>>>(cuda_hist_.RawData(),
-                                                                   cuda_zero_slots_.RawData() + first, slot_size);
+                                                                   cuda_zero_slots_.RawData() + first, slot_size,
+                                                                   nullptr);
   }
 }
 

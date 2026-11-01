@@ -9,9 +9,10 @@ FALCATA_GROWTH_ROUTES in include/Falcata/cuda/cuda_device_tree_reason.hpp; this 
 The cells are the lattice's `route/*` golden cells (tests/gates/lattice.py build_cells, md5s in md5_lattice.json),
 trained through the lattice's own worker, so the pin and the golden describe the same training. ROUTES_EXPECTED holds,
 per cell, the sequence of distinct (reason, route[, prefix]) tuples the run must report, in first-seen order;
-`("complete", "device_tree")` is a complete device tree, `("selective_handoff", "binding" | "complete")` a selective
-tree the device levels grew up to its first binding level (`device_tree: selective hand-off at level k (binding)`) or
-to the end (no valid leaf left). A change that moves a cell to another controller (a port to
+`("complete", "device_tree")` is a complete device tree, `("selective_handoff", "routed" | "binding" | "complete")` a
+selective tree the device levels grew up to its first binding level (`device_tree: selective hand-off at level k
+(routed)`: the host simulates that level once and the R3 route grows the rest on the device; `binding`: the host loop
+grows the rest) or to the end (no valid leaf left). A change that moves a cell to another controller (a port to
 the device, a deleted fallback) updates its row here, in the same change.
 
 sparse_layout is reached only non-quantized (r14a; quantized sparse data trains on the dense row bin); the 16-bit
@@ -62,7 +63,7 @@ CELLS = {c["id"]: c for c in LATTICE.build_cells() if c["id"].startswith("route/
 
 _COMPLETE = ("complete", "device_tree")
 _HANDOFF = "selective_handoff"
-_BINDING = (_HANDOFF, "binding")
+_ROUTED = (_HANDOFF, "routed")
 _CLASSIC = "classic"
 
 ROUTES_EXPECTED = {
@@ -70,10 +71,10 @@ ROUTES_EXPECTED = {
     "route/r01-depth13": [_COMPLETE],
     # vramfree=1: the per-pair search scratch runs in pair chunks instead of the former memory gate (P4)
     "route/r02-memgate": [_COMPLETE],
-    # selective trees on the device levels up to their first binding level (dynamic R1, P7); depth 10 lets some trees
-    # finish on the device (no valid leaf left: complete)
-    "route/r03a-budget": [_BINDING, (_HANDOFF, "complete")],
-    "route/r03b-unbounded": [_BINDING],
+    # selective trees on the device levels up to their first binding level (dynamic R1, P7), the levels after it on the
+    # R3 route (P8b); depth 10 lets some trees finish on the device levels (no valid leaf left: complete)
+    "route/r03a-budget": [_ROUTED, (_HANDOFF, "complete")],
+    "route/r03b-unbounded": [_ROUTED],
     # the non-quantized L1.5 graph's shapes take the complete device tree (P3; same md5)
     "route/r04a-nq-l15": [_COMPLETE],
     "route/r04b-nq-onesync": [("nonquant_onesync", "one_sync")],
@@ -122,7 +123,7 @@ ROUTES_EXPECTED = {
     "route/r22-roottail": [_COMPLETE],
     # the selective device levels turn their graphs off after 9 misses; the host's selective loop grows the rest
     "route/r24-churn": [
-        _BINDING,
+        _ROUTED,
         ("selective_unbounded", "selective_two_sync", "prefix_graph_churn"),
     ],
     "route/r27a-goss": [_COMPLETE],
@@ -147,7 +148,7 @@ def test_route_vocabulary_is_unique_and_pins_use_it():
     for cid, expected in ROUTES_EXPECTED.items():
         for reason, route, *prefix in expected:
             if reason == _HANDOFF:
-                assert route in ("binding", "complete"), (cid, route)
+                assert route in ("routed", "binding", "complete"), (cid, route)
                 assert not prefix, (cid, prefix)
                 continue
             assert reason == "complete" or reason in REASONS, (cid, reason)
@@ -189,3 +190,62 @@ def test_route_pin_cuda(cell_id, tmp_path):
     golden = json.loads(LATTICE.FINGERPRINT_FILE.read_text())["cells"].get(cell_id)
     if golden is not None:
         assert md5 == golden["md5"]
+
+
+# The R3 route's refusals and hand-backs (P8b): a selective tree whose levels after the first binding level the route
+# does not grow reports `device_tree: fallback (<reason>) route=selective_device` beside its hand-off line, and the host
+# loop grows those levels with the same model as device_tree:off. Synthetic cells (no lattice golden): reason ->
+# (params, rows, rounds, FALCATA_DEBUG hooks).
+R3_FALLBACKS = {
+    # num_leaves past the kernel's per-leaf index in shared memory (~25 K leaves at sm_120's 99 KB opt-in)
+    "r3_too_wide": ({"num_leaves": 26000, "min_data_in_leaf": 1}, 200000, 1, []),
+    # test hook r3cap: a record table just big enough for the hand-off level, so the route's first level runs out of
+    # records before changing anything and hands the tree back to the host loop
+    "r3_capacity": ({"num_leaves": 255, "min_data_in_leaf": 20}, 30000, 3, ["r3cap"]),
+}
+
+_R3_TRAIN = (
+    "import sys, json, hashlib, numpy as np, falcata as flc\n"
+    "p = json.loads(sys.argv[1])\n"
+    "rng = np.random.default_rng(3)\n"
+    "X = rng.standard_normal((int(sys.argv[2]), 10)).astype(np.float32)\n"
+    "y = (X[:, 0] + 0.6 * X[:, 1] * X[:, 2] + rng.normal(scale=0.3, size=len(X))).astype(np.float32)\n"
+    "b = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=int(sys.argv[3]))\n"
+    "lines = [x for x in b.model_to_string().splitlines() if 'cuda_plan' not in x]\n"
+    "print(hashlib.md5('\\n'.join(lines).encode()).hexdigest())\n"
+)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("reason", sorted(R3_FALLBACKS))
+def test_r3_route_fallback_pin_cuda(reason, tmp_path):
+    assert reason in REASONS
+    extra, rows, rounds, hooks = R3_FALLBACKS[reason]
+    params = {
+        "device_type": "cuda",
+        "use_quantized_grad": True,
+        "objective": "regression",
+        "max_depth": -1,
+        "verbose": -1,
+        "seed": 5,
+        **extra,
+    }
+
+    def run(p, debug):
+        env = {k: v for k, v in os.environ.items() if k != "FALCATA_DEBUG"}
+        if debug:
+            env["FALCATA_DEBUG"] = debug
+        out = subprocess.run(
+            [sys.executable, "-c", _R3_TRAIN, json.dumps(p), str(rows), str(rounds)],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=tmp_path,
+            check=True,
+        )
+        return out.stdout.strip().splitlines()[-1], out.stderr
+
+    md5, diag = run(params, ",".join(["diag", *hooks]))
+    host, _ = run({**params, "cuda_plan": "auto,device_tree:off"}, "")
+    assert f"device_tree: fallback ({reason}) route=selective_device" in diag, diag[-3000:]
+    assert md5 == host

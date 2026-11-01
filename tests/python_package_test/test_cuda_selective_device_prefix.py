@@ -5,11 +5,12 @@ A binding leaf budget (2^max_depth > num_leaves + 1) or unlimited depth trains w
 With device_tree and device_levels on (the default), its levels run on the device while A + S <= num_leaves - 1 (A
 applied splits, S valid leaves of the level: dynamic R1, tested on the device per level), where the host's greedy
 simulation selects every valid candidate, which is the device level's "split every valid leaf". The first level where
-it fails (the first binding level) and everything after stays with the host's selective loop, which continues from the
-levels' journal. Levels below floor(log2(num_leaves)) (where R1 cannot fail) are captured unrolled; the host tests R1
-for the next level from their readback, and later levels run as a relaunched two-level body. The models must be byte-identical to device_tree:off (the host's selective loop for every level) and to the
+it fails (the first binding level) the host's selective loop simulates once from the levels' journal; the R3 route
+(P8b, test_cuda_selective_r3_shadow.py) grows everything after it on the device (`routed`). Levels below
+floor(log2(num_leaves)) (where R1 cannot fail) are captured unrolled; the host tests R1 for the next level from their
+readback, and later levels run as a relaunched two-level body. The models must be byte-identical to device_tree:off (the host's selective loop for every level) and to the
 host flow (device_levels:off) across objectives, leaf budgets, gain and data gates, bagging, graph capture and pair
-chunks; FALCATA_DEBUG=diag reports one `device_tree: selective hand-off at level k (binding|complete)` line per tree,
+chunks; FALCATA_DEBUG=diag reports one `device_tree: selective hand-off at level k (routed|binding|complete)` line per tree,
 so the tests also check where the device handed the tree over.
 """
 
@@ -174,7 +175,7 @@ def _diag(params, rounds=4):
 
 
 _LINE = re.compile(
-    r"device_tree: selective hand-off at level (\d+) \((binding|complete)\) splits=(\d+) leaves=(\d+) "
+    r"device_tree: selective hand-off at level (\d+) \((routed|binding|complete)\) splits=(\d+) leaves=(\d+) "
     r"frontier=(\d+) unrolled=(\d+) bodies=(\d+)"
 )
 Handoff = collections.namedtuple("Handoff", "level kind splits leaves frontier unrolled bodies")
@@ -217,8 +218,9 @@ def test_selective_device_prefix_engages_cuda(leaves, depth, static_k):
         assert h.unrolled == unrolled
         # every level before the hand-off split leaves; a leaf without a valid split stays a dormant leaf
         assert h.leaves == h.splits + 1 <= min(2**h.level, leaves)
-        # R1 held on every applied level and failed at the hand-off: the host's selective loop grew the rest
-        assert h.kind == "binding"
+        # R1 held on every applied level and failed at the hand-off: the host simulated that level once and the R3
+        # route grew the rest on the device
+        assert h.kind == "routed"
         assert h.frontier > 0
         assert h.leaves + h.frontier > leaves
         assert final_leaves == leaves

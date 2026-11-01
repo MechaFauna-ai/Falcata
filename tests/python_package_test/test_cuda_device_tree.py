@@ -394,7 +394,9 @@ def test_device_tree_unsupported_cuda(case, plan, line):
     # line per tree); unsupported configurations use the host flow; the reason line names why and which controller
     # grew the trees, once (no route changes here; the comparison arms' plan_off lines aside)
     if line == "selective hand-off":
-        assert re.search(r"device_tree: selective hand-off at level \d+ \((binding|complete)\)", diag), diag[-3000:]
+        assert re.search(r"device_tree: selective hand-off at level \d+ \((routed|binding|complete)\)", diag), diag[
+            -3000:
+        ]
         assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag), diag[-3000:]
         assert "device_tree: complete" not in diag
         return

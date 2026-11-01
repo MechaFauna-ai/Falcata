@@ -1362,16 +1362,19 @@ inline bool FalcataVerifyEnabled() {
  *    including selective splits pruned later; keeps those trees off the
  *    device-drawn masks of device_bynode_masks, whose draws it would not
  *    see); does not change any result
- *  - ``r3shadow``   the CUDA selective loop also runs every level's greedy
- *    selection on the device (cuda_selective_r3) beside the host's and
- *    compares the two: one ``r3_shadow:`` timing line per level and a mismatch
- *    summary per tree (docs/performance.md); does not change any result
- *    (the sequential kernel); ``r3shadow=par`` runs the parallel kernel
- *    (P8c) instead, ``r3shadow=both`` both, each compared with the host
+ *  - ``r3shadow``   the R3 route (a CUDA selective tree's levels after its
+ *    first binding level on the device, cuda_selective_r3) runs one level at
+ *    a time with the host's simulation of each level beside it as the oracle,
+ *    and compares the two: one ``r3_shadow:`` line per level (kernel timings)
+ *    and a mismatch summary per tree (docs/performance.md); does not change
+ *    any result
  *  - ``r3fault``    test hook for r3shadow: corrupts the device result's first
  *    pop before the comparison, so a MISMATCH line must appear
- *  - ``r3rebuild``  test hook for the parallel shadow: rebuilds its kept order
- *    from the records on every level
+ *  - ``r3rebuild``  test hook for the R3 route: rebuilds the kept order from the
+ *    records on every level
+ *  - ``r3cap``      test hook for the R3 route: a record table just big enough
+ *    for the hand-off level, so a routed level stops and hands the tree back to
+ *    the host loop (``device_tree: fallback (r3_capacity)``)
  * debug and dump also keep trees off the device-driven flows (the device
  * controller does not replicate these hooks). The 1.1 tokens syncpairs,
  * aggressive and maxsplits=N, and the FALCATA_SINGLE_STREAM switch, were removed
@@ -1383,10 +1386,9 @@ struct FalcataDebugOptions {
   bool dump = false;
   bool bynode = false;
   bool r3shadow = false;
-  bool r3seq = false;  // r3shadow: the sequential kernel (P8a)
-  bool r3par = false;  // r3shadow: the parallel kernel (P8c)
   bool r3fault = false;
   bool r3rebuild = false;
+  bool r3cap = false;
   int64_t vramfree_mib = -1;  // -1 = the real free memory
 };
 
@@ -1405,11 +1407,10 @@ inline const FalcataDebugOptions& FalcataDebug() {
         o.dump = true;
       } else if (token == std::string("bynode")) {
         o.bynode = true;
-      } else if (token == std::string("r3shadow") || token == std::string("r3shadow=both")) {
-        o.r3shadow = o.r3seq = true;
-        o.r3par = token != std::string("r3shadow");
-      } else if (token == std::string("r3shadow=par")) {
-        o.r3shadow = o.r3par = true;
+      } else if (token == std::string("r3shadow")) {
+        o.r3shadow = true;
+      } else if (token == std::string("r3cap")) {
+        o.r3cap = true;
       } else if (token == std::string("r3fault")) {
         o.r3fault = true;
       } else if (token == std::string("r3rebuild")) {
