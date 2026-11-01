@@ -106,6 +106,17 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
   if (r3_flag_ != nullptr) {
     cudaFreeHost(r3_flag_);
   }
+  if (r3_final_host_ != nullptr) {
+    cudaFreeHost(r3_final_host_);
+  }
+  for (cudaEvent_t e : r3_fork_) {
+    if (e != nullptr) {
+      cudaEventDestroy(e);
+    }
+  }
+  if (r3_side_stream_ != nullptr) {
+    cudaStreamDestroy(r3_side_stream_);
+  }
 }
 
 void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_hessian) {
@@ -3029,6 +3040,9 @@ void CUDASingleGPUTreeLearner::ReleaseDeviceLevelGraphs() {
   device_level_graph_disabled_ = false;
   device_level_graph_hits_ = 0;
   device_level_graph_misses_ = 0;
+  r3_graph_hits_ = 0;
+  r3_graph_misses_ = 0;
+  r3_graph_disabled_ = false;
   device_level_graph_update_failed_ = false;
   device_level_graph_update_hits_ = 0;
   device_level_graph_update_misses_ = 0;
@@ -4029,6 +4043,7 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(r3_route_active_ ? r3_record_capacity_ : 0)));
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(r3_route_active_ ? r3_cfg_.rebuild : 0)));
     key.push_back(static_cast<const void*>(r3_route_active_ ? r3_flag_device_ : nullptr));
+    key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(r3_route_active_ ? r3_body_pairs_ : 0)));
   }
   if (cfg.whole_tree) {
     // Append only: leave prefix keys and old field indices unchanged; map allocation is independent.
@@ -4093,7 +4108,7 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       CUDASUCCESS_OR_FATAL(cudaGraphLaunch(device_level_graphs_.back()->exec, find_stream));
       // the host halves of the captured enqueue: the index buffers swap once per level
       cuda_data_partition_->SwapIndexBuffers(num_levels);
-      ++device_level_graph_hits_;
+      ++(r3_route_active_ ? r3_graph_hits_ : device_level_graph_hits_);
       if (FalcataDebug().diag && device_level_graph_hits_ + device_level_graph_misses_ == 64) {
         fprintf(stderr, "[hybrid-diag] device_level_graph: %d hits, %d misses in the first 64 trees (%d cached)\n",
                 device_level_graph_hits_, device_level_graph_misses_, static_cast<int>(device_level_graphs_.size()));
@@ -4111,10 +4126,20 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     }
   }
   // a new key: capture this tree's enqueue (its host halves run now; the graph runs right after)
-  ++device_level_graph_misses_;
+  if (r3_route_active_) {
+    // the R3 route's bodies (one graph per size class, SetSelectiveR3Pairs) keep their own count: keys that keep
+    // changing enqueue the route's bodies from here on, never the device levels before them
+    ++r3_graph_misses_;
+    if (r3_graph_misses_ > 32 && r3_graph_misses_ > r3_graph_hits_) {
+      r3_graph_disabled_ = true;
+      return false;
+    }
+  } else {
+    ++device_level_graph_misses_;
+  }
   const bool churning = device_level_graph_misses_ > 8 && device_level_graph_misses_ > device_level_graph_hits_;
   const bool update = FalcataPlan::Get().device_level_graph_update && !device_level_graph_update_failed_;
-  if (!cfg.whole_tree && churning) {
+  if (!cfg.whole_tree && churning && !r3_route_active_) {
     // per-tree keys keep changing (e.g. a sampled feature set every tree): the plain enqueue from here on
     device_level_graph_disabled_ = true;
     if (FalcataDebug().diag) {
@@ -4856,7 +4881,6 @@ int CUDASingleGPUTreeLearner::SelectiveTieBreak(const std::vector<int>& tied_cla
 
 int CUDASingleGPUTreeLearner::RunSelectiveLevel() {
   const auto sim_t0 = std::chrono::steady_clock::now();
-  sel_level_allocated_ = sel_num_allocated_;
   const int budget = config_->num_leaves - 1;
   // ---- 1. greedy simulation over live applied splits + the current frontier.
   // Exactly the classic leaf-wise selection: repeatedly take the max-gain
@@ -5460,7 +5484,7 @@ namespace {
 // the R3 route's device state in one allocation (base null: the sizes only): CUDASelectiveR3Config's arrays for
 // num_leaves and `records` records, the packed seed (seed_ints ints) and the final records
 CUDASelectiveR3Config SelectiveR3RouteLayout(char* base, const int num_leaves, const int records, size_t* bytes,
-                                             int** seed, size_t* seed_ints, CUDASelectiveR3Final** final_records) {
+                                             int** seed, size_t* seed_ints) {
   const size_t cap = static_cast<size_t>(num_leaves) + 2;
   const size_t recs = static_cast<size_t>(records);
   size_t off = 0;
@@ -5494,7 +5518,6 @@ CUDASelectiveR3Config SelectiveR3RouteLayout(char* base, const int num_leaves, c
   // the collapsed records and the freed leaves, and 2 + 3 per created record and order entry (each <= num_leaves)
   *seed_ints = static_cast<size_t>(kSelectiveR3SeedHeader) + 10 * recs + 4 * cap + 5 * static_cast<size_t>(num_leaves);
   *seed = reinterpret_cast<int*>(take(*seed_ints, sizeof(int)));
-  *final_records = reinterpret_cast<CUDASelectiveR3Final*>(take(num_leaves, sizeof(CUDASelectiveR3Final)));
   c.budget = num_leaves - 1;
   c.num_leaves = num_leaves;
   c.leaf_capacity = static_cast<int>(cap);
@@ -5503,27 +5526,24 @@ CUDASelectiveR3Config SelectiveR3RouteLayout(char* base, const int num_leaves, c
   return c;
 }
 
-// the pinned mirror after the seed's staging: the final records, the state, the windows (start, count) and the leaf
-// parents of the allocated leaves
-struct SelectiveR3Readback {
+// the mapped host memory the flag kernel writes a completed tree's final level into: the final records, then the
+// windows (start, count) and the parents of the allocated leaves
+struct SelectiveR3Final {
   CUDASelectiveR3Final* final_records;
-  CUDASelectiveR3State* state;
   data_size_t* start;
   data_size_t* num;
   int* leaf_parent;
 };
-SelectiveR3Readback SelectiveR3ReadbackLayout(char* pinned, const size_t seed_ints, const int num_leaves,
-                                              size_t* bytes) {
+SelectiveR3Final SelectiveR3FinalLayout(char* base, const int num_leaves, size_t* bytes) {
   const size_t cap = static_cast<size_t>(num_leaves) + 2;
-  size_t off = (seed_ints * sizeof(int) + 255) & ~static_cast<size_t>(255);
-  const auto take = [pinned, &off](const size_t count, const size_t size) {
-    char* at = reinterpret_cast<char*>(reinterpret_cast<uintptr_t>(pinned) + off);
+  size_t off = 0;
+  const auto take = [base, &off](const size_t count, const size_t size) {
+    char* at = reinterpret_cast<char*>(reinterpret_cast<uintptr_t>(base) + off);
     off += (count * size + 255) & ~static_cast<size_t>(255);
     return at;
   };
-  SelectiveR3Readback r;
+  SelectiveR3Final r;
   r.final_records = reinterpret_cast<CUDASelectiveR3Final*>(take(num_leaves, sizeof(CUDASelectiveR3Final)));
-  r.state = reinterpret_cast<CUDASelectiveR3State*>(take(1, sizeof(CUDASelectiveR3State)));
   r.start = reinterpret_cast<data_size_t*>(take(cap, sizeof(data_size_t)));
   r.num = reinterpret_cast<data_size_t*>(take(cap, sizeof(data_size_t)));
   r.leaf_parent = reinterpret_cast<int*>(take(cap, sizeof(int)));
@@ -5552,19 +5572,27 @@ void CUDASingleGPUTreeLearner::EnsureSelectiveR3Route(const int min_records) {
   CUDASUCCESS_OR_FATAL(cudaFreeHost(r3_pinned_));
   size_t bytes = 0;
   size_t seed_ints = 0;
-  int* seed = nullptr;
-  CUDASelectiveR3Final* final_records = nullptr;
-  SelectiveR3RouteLayout(nullptr, num_leaves, records, &bytes, &seed, &seed_ints, &final_records);
+  SelectiveR3RouteLayout(nullptr, num_leaves, records, &bytes, &r3_seed_, &seed_ints);
   CUDASUCCESS_OR_FATAL(cudaMalloc(&r3_device_, bytes));
-  r3_cfg_ = SelectiveR3RouteLayout(r3_device_, num_leaves, records, &bytes, &r3_seed_, &seed_ints, &r3_final_);
+  r3_cfg_ = SelectiveR3RouteLayout(r3_device_, num_leaves, records, &bytes, &r3_seed_, &seed_ints);
   r3_seed_ints_ = seed_ints;
-  size_t pinned_bytes = 0;
-  SelectiveR3ReadbackLayout(nullptr, seed_ints, num_leaves, &pinned_bytes);
-  CUDASUCCESS_OR_FATAL(cudaHostAlloc(&r3_pinned_, pinned_bytes, cudaHostAllocDefault));
+  CUDASUCCESS_OR_FATAL(cudaHostAlloc(&r3_pinned_, seed_ints * sizeof(int), cudaHostAllocDefault));
+  if (r3_num_leaves_ != num_leaves || r3_final_host_ == nullptr) {
+    if (r3_final_host_ != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaFreeHost(r3_final_host_));
+    }
+    SelectiveR3FinalLayout(nullptr, num_leaves, &bytes);
+    AllocatePinnedMappedHost(reinterpret_cast<void**>(&r3_final_host_), bytes, __FILE__, __LINE__);
+    r3_final_device_ = static_cast<char*>(MappedHostDevicePointer(r3_final_host_));
+  }
   if (r3_flag_ == nullptr) {
     AllocatePinnedMappedHost(reinterpret_cast<void**>(&r3_flag_), 8 * sizeof(int), __FILE__, __LINE__);
     r3_flag_device_ = static_cast<int*>(MappedHostDevicePointer(r3_flag_));
-    CHECK(r3_flag_device_ != nullptr);  // (the selective device levels ran: the device maps host memory)
+    CHECK(r3_flag_device_ != nullptr && r3_final_device_ != nullptr);  // (the device levels ran: it maps host memory)
+    CUDASUCCESS_OR_FATAL(cudaStreamCreateWithFlags(&r3_side_stream_, cudaStreamNonBlocking));
+    for (cudaEvent_t& e : r3_fork_) {
+      CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
+    }
   }
   r3_num_leaves_ = num_leaves;
   r3_record_capacity_ = records;
@@ -5575,27 +5603,28 @@ void CUDASingleGPUTreeLearner::EnqueueSelectiveR3(const CUDADeviceLevelConfig& c
   cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
   CHECK_EQ(cfg.whole_tree, 0);
   CHECK_NE(cfg.r1_binding, 0);
-  // (the levels' worst case: num_leaves / 2 pairs of num_leaves leaves; live-pair fix/subtract launches)
+  // (the levels' worst case: r3_body_pairs_ pairs and splits, at most num_leaves / 2; live-pair fix/subtract launches)
   cuda_histogram_constructor_->SetDeviceLevelState(cfg.state, /*whole_tree=*/true);
   cuda_best_split_finder_->SetDeviceLevelState(cfg.state);
+  const int max_splits = r3_body_pairs_;
+  CHECK_LE(max_splits, std::min(config_->num_leaves / 2, device_level_max_pairs_));
   if (part == R3Part::kHandoff) {
     // the records before the hand-off level's are the device levels' splits, in their journal's order
     const int journaled = static_cast<int>(sel_applied_.size() - sel_level_apply_.size());
     LaunchSelectiveR3Seed(r3_cfg_, r3_seed_, cfg.split_info_journal, journaled, find_stream);
-    EnqueueSelectiveR3Apply(cfg, /*r3=*/false);
+    EnqueueSelectiveR3Apply(cfg, /*r3=*/false, max_splits);
     return;
   }
   for (int i = 0; i < count; ++i) {
     if (part != R3Part::kSelect) {
-      CHECK_LE(config_->num_leaves / 2, device_level_max_pairs_);
-      EnqueueSelectiveLevelSearch(cfg, config_->num_leaves / 2, /*body=*/true, /*fuse=*/false);
+      EnqueueSelectiveLevelSearch(cfg, max_splits, /*body=*/true, /*fuse=*/false);
     }
     if (part != R3Part::kSearch) {
-      EnqueueSelectiveR3Apply(cfg, /*r3=*/true);
+      EnqueueSelectiveR3Apply(cfg, /*r3=*/true, max_splits);
     }
   }
   if (part == R3Part::kBody) {
-    LaunchSelectiveR3Flag(r3_cfg_, r3_flag_device_, find_stream);
+    LaunchSelectiveR3FlagFinal(find_stream);
   }
 }
 
@@ -5605,7 +5634,8 @@ void CUDASingleGPUTreeLearner::EnqueueSelectiveR3Part(const R3Part part) {
   EnqueueSelectiveR3(host_device_level_config_, part, 1);
 }
 
-void CUDASingleGPUTreeLearner::EnqueueSelectiveR3Apply(const CUDADeviceLevelConfig& cfg, const bool r3) {
+void CUDASingleGPUTreeLearner::EnqueueSelectiveR3Apply(const CUDADeviceLevelConfig& cfg, const bool r3,
+                                                       const int max_splits) {
   cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
   const int num_leaves = config_->num_leaves;
   const bool timed = FalcataDebug().r3shadow && r3;  // (the shadow's levels are never captured)
@@ -5619,19 +5649,47 @@ void CUDASingleGPUTreeLearner::EnqueueSelectiveR3Apply(const CUDADeviceLevelConf
     CUDASUCCESS_OR_FATAL(cudaEventRecord(r3_events_[1], find_stream));
   }
   // the freed leaves' histogram slots, zeroed before the children's construct accumulates into a recycled one (the
-  // host loop's ZeroHistSlots); the apply does not touch histograms
+  // host loop's ZeroHistSlots). The apply rewrites only the slots' pointers, never their contents, so the zeroing runs
+  // on a branch beside it (the shadow's timed levels: in line) and joins before the construct
+  cudaStream_t zero_stream = timed ? find_stream : r3_side_stream_;
+  if (!timed) {
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(r3_fork_[0], find_stream));
+    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(zero_stream, r3_fork_[0], 0));
+  }
   cuda_histogram_constructor_->LaunchZeroHistSlotsDevice(r3_cfg_.freed, &r3_cfg_.state->num_freed, num_leaves,
-                                                         find_stream);
+                                                         zero_stream);
   if (timed) {
     CUDASUCCESS_OR_FATAL(cudaEventRecord(r3_events_[2], find_stream));
+  } else {
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(r3_fork_[1], zero_stream));
   }
   // (the apply's last block writes the children's descriptors and block map: DeviceLevelPairsBlock)
-  cuda_data_partition_->LaunchDeviceLevelApply(num_leaves / 2, cfg.state, cuda_device_level_config_.RawDataReadOnly(),
+  // (a level's gaps lie between its sorted split windows: splits + gaps <= 2 * splits + 1)
+  cuda_data_partition_->LaunchDeviceLevelApply(max_splits, cfg.state, cuda_device_level_config_.RawDataReadOnly(),
                                                /*write_leaf_map=*/false, /*dl_map_only=*/false,
-                                               /*whole_joint_grid_bound=*/true, num_leaves);
+                                               /*whole_joint_grid_bound=*/true, 2 * max_splits + 1);
   if (timed) {
     CUDASUCCESS_OR_FATAL(cudaEventRecord(r3_events_[3], find_stream));
+  } else {
+    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(find_stream, r3_fork_[1], 0));
   }
+}
+
+void CUDASingleGPUTreeLearner::SetSelectiveR3Pairs(const int splits, const int levels) {
+  // a level creates at most its frontier, at most twice the last level's splits: the next `levels` levels hold at most
+  // splits * 2^levels splits and pairs (and never more than num_leaves / 2); one power of two per cached body graph
+  const int cap = std::min(config_->num_leaves / 2, device_level_max_pairs_);
+  int pairs = 1;
+  while (pairs < cap && pairs < (std::max(splits, 1) << levels)) {
+    pairs <<= 1;
+  }
+  r3_body_pairs_ = std::min(pairs, cap);
+}
+
+void CUDASingleGPUTreeLearner::LaunchSelectiveR3FlagFinal(cudaStream_t stream) {
+  size_t bytes = 0;
+  const SelectiveR3Final f = SelectiveR3FinalLayout(r3_final_device_, r3_num_leaves_, &bytes);
+  LaunchSelectiveR3Flag(r3_cfg_, r3_flag_device_, f.final_records, f.start, f.num, f.leaf_parent, stream);
 }
 
 bool CUDASingleGPUTreeLearner::TrainSelectiveR3Route(CUDATree* tree, std::vector<HybridPendingPair>* pairs) {
@@ -5656,8 +5714,7 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveR3Route(CUDATree* tree, std::vector
   int* seed = reinterpret_cast<int*>(r3_pinned_);
   const int order = static_cast<int>(sel_order_.size());
   const int header[kSelectiveR3SeedHeader] = {n, static_cast<int>(sel_free_leaves_.size()), sel_num_allocated_,
-    sel_level_allocated_, created, static_cast<int>(sel_collapse_tops_.size()),
-    static_cast<int>(sel_freed_hist_slots_.size()), order, 0};
+    created, static_cast<int>(sel_collapse_tops_.size()), static_cast<int>(sel_freed_hist_slots_.size()), order};
   std::copy(header, header + kSelectiveR3SeedHeader, seed);
   int* p = seed + kSelectiveR3SeedHeader;
   for (const SelectiveApplied& a : sel_applied_) {
@@ -5699,6 +5756,7 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveR3Route(CUDATree* tree, std::vector
   // record (or stops); each body ends with the flag the host reads
   r3_route_active_ = true;
   int levels_enqueued = 1;
+  SetSelectiveR3Pairs(created, 0);
   EnqueueSelectiveR3Part(R3Part::kHandoff);
   r3_route_bodies_ = 0;
   if (FalcataDebug().r3shadow) {
@@ -5709,7 +5767,9 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveR3Route(CUDATree* tree, std::vector
     do {
       // each body the flag continues on created records, which the record table bounds
       CHECK_LE(levels_enqueued, 2 * r3_record_capacity_ + 2);
-      if (!(graph && !device_level_graph_disabled_ &&
+      // (the last applied level's splits: the body's first search pairs; flag[5] after a body)
+      SetSelectiveR3Pairs(r3_route_bodies_ == 0 ? created : r3_flag_[5], 2);
+      if (!(graph && !r3_graph_disabled_ &&
             LaunchDeviceLevelGraph(tree, host_device_level_config_, 2, false, false, /*body=*/true))) {
         EnqueueDeviceLevels(tree, host_device_level_config_, 2, false, false, /*body=*/true);
       }
@@ -5723,9 +5783,9 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveR3Route(CUDATree* tree, std::vector
   cuda_data_partition_->FinishDeviceLevels(levels_enqueued, r3_flag_[1], 0);
   const int error = r3_flag_[2];
   if (FalcataDebug().diag) {
-    fprintf(stderr, "[hybrid-diag] device_tree: selective route levels=%d bodies=%d records=%d error=%d "
-            "graph_hits=%d graph_misses=%d\n", r3_flag_[1], r3_route_bodies_, r3_flag_[5], error,
-            device_level_graph_hits_, device_level_graph_misses_);
+    fprintf(stderr, "[hybrid-diag] device_tree: selective route levels=%d bodies=%d created=%d error=%d "
+            "graph_hits=%d graph_misses=%d\n", r3_flag_[1], r3_route_bodies_, r3_flag_[6], error, r3_graph_hits_,
+            r3_graph_misses_);
   }
   SelectiveR3ReadBack(error == 0, pairs);
   if (error != 0) {
@@ -5741,28 +5801,27 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveR3Route(CUDATree* tree, std::vector
 }
 
 void CUDASingleGPUTreeLearner::SelectiveR3ReadBack(const bool final, std::vector<HybridPendingPair>* pairs) {
-  cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
   const int num_leaves = config_->num_leaves;
-  size_t bytes = 0;
-  const SelectiveR3Readback r = SelectiveR3ReadbackLayout(r3_pinned_, r3_seed_ints_, num_leaves, &bytes);
   const int order = r3_flag_[3];
   const int allocated = r3_flag_[4];
   CHECK_LE(allocated, num_leaves);
-  if (final) {
-    LaunchSelectiveR3Gather(r3_cfg_, r3_final_, find_stream);
-    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(r.final_records, r3_final_, order * sizeof(CUDASelectiveR3Final),
-                                         cudaMemcpyDeviceToHost, find_stream));
+  size_t bytes = 0;
+  SelectiveR3Final r = SelectiveR3FinalLayout(r3_final_host_, num_leaves, &bytes);
+  std::vector<data_size_t> start;
+  std::vector<data_size_t> num;
+  std::vector<int> parents;
+  if (!final) {
+    // (a stopped level wrote nothing to the mapped buffer)
+    start.resize(allocated);
+    num.resize(allocated);
+    parents.resize(allocated);
+    CopyFromCUDADeviceToHost<data_size_t>(start.data(), r3_cfg_.leaf_data_start, start.size(), __FILE__, __LINE__);
+    CopyFromCUDADeviceToHost<data_size_t>(num.data(), r3_cfg_.leaf_num_data, num.size(), __FILE__, __LINE__);
+    CopyFromCUDADeviceToHost<int>(parents.data(), r3_cfg_.leaf_parent, parents.size(), __FILE__, __LINE__);
+    r.start = start.data();
+    r.num = num.data();
+    r.leaf_parent = parents.data();
   }
-  CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(r.state, r3_cfg_.state, sizeof(CUDASelectiveR3State), cudaMemcpyDeviceToHost,
-                                       find_stream));
-  CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(r.start, r3_cfg_.leaf_data_start, allocated * sizeof(data_size_t),
-                                       cudaMemcpyDeviceToHost, find_stream));
-  CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(r.num, r3_cfg_.leaf_num_data, allocated * sizeof(data_size_t),
-                                       cudaMemcpyDeviceToHost, find_stream));
-  CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(r.leaf_parent, r3_cfg_.leaf_parent, allocated * sizeof(int),
-                                       cudaMemcpyDeviceToHost, find_stream));
-  CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(find_stream));
-  const CUDASelectiveR3State& st = *r.state;
   sel_num_allocated_ = allocated;
   std::fill(sel_leaf_live_.begin(), sel_leaf_live_.end(), 0);
   for (int leaf = 0; leaf < allocated; ++leaf) {
@@ -5771,9 +5830,9 @@ void CUDASingleGPUTreeLearner::SelectiveR3ReadBack(const bool final, std::vector
     leaf_data_start_[leaf] = r.start[leaf];
   }
   // (the routed levels' counts; the hand-off level's are the host's own)
-  sel_stat_applied_ += st.created_total;
-  sel_stat_displaced_ += st.freed_total;
-  sel_stat_levels_ += std::max(st.levels - 1, 0);
+  sel_stat_applied_ += r3_flag_[6];
+  sel_stat_displaced_ += r3_flag_[7];
+  sel_stat_levels_ += std::max(r3_flag_[1] - 1, 0);
   if (final) {
     // the final level selected no frontier candidate: its order is the live records, in classic order (SelectiveFinalize
     // reads their best-split records; leaf numbers from the order: left keeps, right = position + 1)
@@ -5784,8 +5843,18 @@ void CUDASingleGPUTreeLearner::SelectiveR3ReadBack(const bool final, std::vector
     for (int t = 0; t < order; ++t) {
       const CUDASelectiveR3Final& f = r.final_records[t];
       SelectiveApplied& node = sel_applied_[t];
-      node.info = f.info;  // (the fields only: CUDASplitInfo's assignment leaves the device pointers null)
-      node.gain = node.info.gain;
+      node.info.is_valid = true;
+      node.info.inner_feature_index = f.inner_feature_index;
+      node.info.threshold = f.threshold;
+      node.info.default_left = f.default_left != 0;
+      node.info.gain = f.gain;
+      node.info.left_sum_hessians = f.left_sum_hessians;
+      node.info.right_sum_hessians = f.right_sum_hessians;
+      node.info.left_count = f.left_count;
+      node.info.right_count = f.right_count;
+      node.info.left_value = f.left_value;
+      node.info.right_value = f.right_value;
+      node.gain = f.gain;
       node.left_leaf = f.left_leaf;
       node.right_leaf = f.right_leaf;
       node.selected = true;
@@ -5797,6 +5866,8 @@ void CUDASingleGPUTreeLearner::SelectiveR3ReadBack(const bool final, std::vector
     return;
   }
   // ---- a stopped level: the whole state as the device left it after the level's search (the level changed nothing)
+  CUDASelectiveR3State st;
+  CopyFromCUDADeviceToHost<CUDASelectiveR3State>(&st, r3_cfg_.state, 1, __FILE__, __LINE__);
   const int num_records = st.num_records;
   std::vector<CUDASelectiveR3Record> records(static_cast<size_t>(num_records));
   std::vector<CUDASelectiveR3Payload> payload(static_cast<size_t>(num_records));
@@ -5807,7 +5878,7 @@ void CUDASingleGPUTreeLearner::SelectiveR3ReadBack(const bool final, std::vector
   CopyFromCUDADeviceToHost<int>(sel_free_leaves_.data(), r3_cfg_.free_leaves, sel_free_leaves_.size(), __FILE__,
                                 __LINE__);
   std::fill(sel_leaf_parent_.begin(), sel_leaf_parent_.end(), -1);
-  std::copy(r.leaf_parent, r.leaf_parent + allocated, sel_leaf_parent_.begin());
+  std::copy(parents.begin(), parents.end(), sel_leaf_parent_.begin());
   sel_applied_.assign(static_cast<size_t>(num_records), SelectiveApplied{});
   std::vector<int> depth(static_cast<size_t>(num_records), 0);
   for (int i = 0; i < num_records; ++i) {
@@ -5860,6 +5931,7 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowLevels(int* levels_enqueued) {
   std::vector<int> child_leaves;
   while (true) {
     // the device's search of the level, then the host's inputs as its own loop reads them: leaf entries and windows
+    SetSelectiveR3Pairs(static_cast<int>(sel_level_apply_.size()), 1);
     EnqueueSelectiveR3Part(R3Part::kSearch);
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(find_stream));
     cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(sel_num_allocated_, &host_leaf_best_splits_);
@@ -5887,7 +5959,7 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowLevels(int* levels_enqueued) {
     sel_device_collapse_ = false;
     // the device's selection and apply of the same level
     EnqueueSelectiveR3Part(R3Part::kSelect);
-    LaunchSelectiveR3Flag(r3_cfg_, r3_flag_device_, find_stream);
+    LaunchSelectiveR3FlagFinal(find_stream);
     ++*levels_enqueued;
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(find_stream));
     const bool mismatch = SelectiveR3ShadowCompare(levels);
@@ -5920,12 +5992,11 @@ bool CUDASingleGPUTreeLearner::SelectiveR3ShadowCompare(const int level) {
   size_t bytes = 0;
   size_t seed_ints = 0;
   int* seed = nullptr;
-  CUDASelectiveR3Final* final_records = nullptr;
-  SelectiveR3RouteLayout(nullptr, r3_num_leaves_, r3_record_capacity_, &bytes, &seed, &seed_ints, &final_records);
+  SelectiveR3RouteLayout(nullptr, r3_num_leaves_, r3_record_capacity_, &bytes, &seed, &seed_ints);
   r3_shadow_copy_.resize(bytes);
   CopyFromCUDADeviceToHost<char>(r3_shadow_copy_.data(), r3_device_, bytes, __FILE__, __LINE__);
   const CUDASelectiveR3Config d = SelectiveR3RouteLayout(r3_shadow_copy_.data(), r3_num_leaves_, r3_record_capacity_,
-                                                         &bytes, &seed, &seed_ints, &final_records);
+                                                         &bytes, &seed, &seed_ints);
   const CUDASelectiveR3State& ds = *d.state;
   std::vector<data_size_t> start(static_cast<size_t>(sel_num_allocated_));
   std::vector<data_size_t> num(static_cast<size_t>(sel_num_allocated_));

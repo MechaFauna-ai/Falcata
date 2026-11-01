@@ -277,7 +277,7 @@ def test_r3_route_hands_a_tree_back_to_the_host_loop_cuda(cell):
     host, _ = _train({**params, "cuda_plan": _OFF}, X, y, rounds, "")
     assert capped["md5"] == host["md5"]
     assert "device_tree: fallback (r3_capacity) route=selective_device" in err, err[-3000:]
-    assert re.search(r"selective route levels=\d+ bodies=\d+ records=\d+ error=2", err), err[-3000:]
+    assert re.search(r"selective route levels=\d+ bodies=\d+ created=\d+ error=2", err), err[-3000:]
 
 
 _RESET = (

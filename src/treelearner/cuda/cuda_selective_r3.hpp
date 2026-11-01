@@ -92,7 +92,6 @@ struct CUDASelectiveR3State {
   int rounds;         // merges that rebuilt the order from the records (0: the order was kept from the last level)
   // route only (P8b)
   int done;           // the tree is complete (a level created no record) or stopped with an error: later kernels skip
-  int gap_leaves;     // the leaves allocated before the level's records (the terminal-region scan's range)
   int levels;         // levels applied on the route (the hand-off level included)
   int created_total;  // records created on the route
   int freed_total;    // leaves freed on the route
@@ -188,25 +187,37 @@ void LaunchSelectiveR3Parallel(const CUDASelectiveR3Config& config, cudaStream_t
 void LaunchSelectiveR3Seed(const CUDASelectiveR3Config& config, const int* seed, const CUDASplitInfo* journal,
                            const int journaled, cudaStream_t stream);
 
-/*! \brief the route's flag after a body (mapped host memory, 8 ints): [0] 1 while the tree continues, [1] levels
- *  applied, [2] the error, [3] the last level's pops, [4] allocated leaves, [5] records */
-void LaunchSelectiveR3Flag(const CUDASelectiveR3Config& config, int* flag, cudaStream_t stream);
-
-/*! \brief the final level's records in pop order, gathered for the tree end's readback */
+/*! \brief the final level's records in pop order: the fields of their best-split records SelectiveFinalize reads, their
+ *  leaves and classic leaf */
 struct CUDASelectiveR3Final {
-  CUDASplitInfo info;
+  int inner_feature_index;
+  uint32_t threshold;
+  int default_left;
+  data_size_t left_count;
+  data_size_t right_count;
   int left_leaf;
   int right_leaf;
   int classic;
-  int pad;
+  double gain;
+  double left_sum_hessians;
+  double right_sum_hessians;
+  double left_value;
+  double right_value;
 };
-void LaunchSelectiveR3Gather(const CUDASelectiveR3Config& config, CUDASelectiveR3Final* out, cudaStream_t stream);
 
-/*! \brief the packed seed (ints): [0, kSeedHeader) counts {records, free, allocated, gap_leaves, created, collapsed,
- *  freed, order, unused}, then records (sizeof(CUDASelectiveR3Record) / 4 ints each), the records' windows (2 ints
+/*! \brief the route's flag after a body (mapped host memory, 8 ints): [0] 1 while the tree continues, [1] levels
+ *  applied, [2] the error, [3] the last level's pops, [4] allocated leaves, [5] the last level's created records (its
+ *  splits), [6] / [7] records created /
+ *  leaves freed by the routed levels. A completed tree (done, no error) also writes, when out is not null (mapped host
+ *  memory), its final records (out), and the allocated leaves' windows (start, num) and parents */
+void LaunchSelectiveR3Flag(const CUDASelectiveR3Config& config, int* flag, CUDASelectiveR3Final* out,
+                           data_size_t* start, data_size_t* num, int* leaf_parent, cudaStream_t stream);
+
+/*! \brief the packed seed (ints): [0, kSeedHeader) counts {records, free, allocated, created, collapsed, freed,
+ *  order}, then records (sizeof(CUDASelectiveR3Record) / 4 ints each), the records' windows (2 ints
  *  each), leaf parents (leaf_capacity), the free list, the created records' leaves and right leaves, the collapsed
  *  record ids, the freed leaves, and the order (3 ints per entry) */
-constexpr int kSelectiveR3SeedHeader = 9;
+constexpr int kSelectiveR3SeedHeader = 7;
 
 }  // namespace Falcata
 

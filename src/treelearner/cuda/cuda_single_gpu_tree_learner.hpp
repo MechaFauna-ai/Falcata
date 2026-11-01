@@ -572,7 +572,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void EnsureSelectiveR3Route(const int min_records);
   // one routed level's selection, the freed slots' zeroing and the apply (inside EnqueueSelectiveDeviceLevels'
   // stream exchange); r3: the kernel (false: the seed kernel ran in its place)
-  void EnqueueSelectiveR3Apply(const CUDADeviceLevelConfig& cfg, const bool r3);
+  void EnqueueSelectiveR3Apply(const CUDADeviceLevelConfig& cfg, const bool r3, const int max_splits);
+  // the next levels' worst case for their launches (r3_body_pairs_) after a level of `splits` splits
+  void SetSelectiveR3Pairs(const int splits, const int levels);
+  // the flag kernel after a level or body, with the mapped final buffer
+  void LaunchSelectiveR3FlagFinal(cudaStream_t stream);
   // final: the final level's records into the host's selective state for SelectiveFinalize; else (a stopped level)
   // the whole device state and the level's children
   void SelectiveR3ReadBack(const bool final, std::vector<HybridPendingPair>* pairs);
@@ -984,7 +988,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // right after the best-split readback
   std::vector<double> sel_leaf_vec_payloads_;
   int sel_num_allocated_ = 0;           // peak hybrid leaf count (dirty hist slots)
-  int sel_level_allocated_ = 0;         // sel_num_allocated_ before the last RunSelectiveLevel
   int sel_num_splits_ = 0;              // applied splits surviving readback bookkeeping
   int sel_last_peak_ = 0;               // sel_num_allocated_ of the finished tree
   // churn statistics (FALCATA_HYBRID_DEBUG): applied / displaced split totals
@@ -1009,10 +1012,17 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int* r3_seed_ = nullptr;                // device seed (ints)
   size_t r3_seed_ints_ = 0;
   std::vector<int> r3_position_;          // the seed's order positions by record id
-  CUDASelectiveR3Final* r3_final_ = nullptr;
+  char* r3_final_host_ = nullptr;         // mapped pinned: a completed tree's final level (SelectiveR3FinalLayout)
+  char* r3_final_device_ = nullptr;
+  cudaStream_t r3_side_stream_ = nullptr;  // the freed slots' zeroing beside the apply
+  cudaEvent_t r3_fork_[2] = {nullptr, nullptr};
   int* r3_flag_ = nullptr;                // mapped pinned, 8 ints (LaunchSelectiveR3Flag) and its device alias
   int* r3_flag_device_ = nullptr;
   int r3_route_bodies_ = 0;
+  int r3_graph_hits_ = 0;                 // the route's body graphs (LaunchDeviceLevelGraph), apart from the levels'
+  int r3_graph_misses_ = 0;
+  bool r3_graph_disabled_ = false;
+  int r3_body_pairs_ = 1;                 // the enqueued route levels' pairs and splits at most (SetSelectiveR3Pairs)
   int64_t r3_stat_levels_ = 0;            // r3shadow: levels compared, mismatches
   int64_t r3_stat_mismatches_ = 0;
   std::vector<char> r3_shadow_copy_;
