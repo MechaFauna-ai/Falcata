@@ -16,6 +16,14 @@
  *  receiving lane on a tie, so the occupied lane, and then warp, with the smallest bit-reversed index wins, and the
  *  smallest leaf within a lane), so the simulation is a heap on (gain desc, key asc) for any number of tied leaves.
  *  P8a runs it in shadow mode only (FALCATA_DEBUG=r3shadow): the host simulation decides, the learner compares.
+ *
+ *  The parallel R3 (P8c, LaunchSelectiveR3Parallel) produces the same results without a simulation. It keeps the last
+ *  level's pop order on the device (frontier picks renamed to the records they became: the best-first run over the
+ *  live records) and inserts the level's frontier candidates into it: with pairwise distinct gains a candidate pops
+ *  right before the first entry after its parent whose gain is lower than its own (or at the end), candidates in one
+ *  slot in gain order, and the level's selection is the first num_leaves - 1 entries (runs/device_default/
+ *  P8C_PARALLEL_R3.md has the proof). A level whose live gains are not pairwise distinct runs the sequential
+ *  simulation instead (in the same kernel), since the tie-break key moves with the classic numbers.
  */
 #ifndef FALCATA_TREELEARNER_CUDA_CUDA_SELECTIVE_R3_HPP_
 #define FALCATA_TREELEARNER_CUDA_CUDA_SELECTIVE_R3_HPP_
@@ -57,6 +65,17 @@ struct CUDASelectiveR3State {
   int num_freed;      // leaves pushed onto the free list, in push order
   int num_apply;      // records created for selected frontier candidates
   int error;          // 1: a right child past num_leaves - 1, 2: record capacity
+  // parallel R3 only
+  int path;           // 0: merge, 1: sequential simulation (equal gains among the live candidates)
+  int rounds;         // merges that rebuilt the order from the records (0: the order was kept from the last level)
+};
+
+/*! \brief the parallel R3's order, kept on the device across the levels of a tree */
+struct CUDASelectiveR3Persist {
+  int n;         // entries in the order
+  int parity;    // the half of order_buf that holds it
+  int distinct;  // 1: its records' gains are pairwise distinct (checked when it was built)
+  int valid;     // 0: rebuild it from the records
 };
 
 struct CUDASelectiveR3Config {
@@ -80,6 +99,15 @@ struct CUDASelectiveR3Config {
   int* collapsed;         // [record_capacity]: top-level collapsed record ids, ascending
   int* freed;             // [record_capacity]
   int* apply_right;       // [budget]
+  // parallel R3 only
+  CUDASelectiveR3Persist* persist;
+  int* order_buf;         // 2 x 3 x leaf_capacity: record id, classic leaf, parent (2 * position + right, -1 none)
+  int* rec_pos;           // [record_capacity]: a record's position in the order
+  int* rec_round;         // [record_capacity]: a record's depth while the order is rebuilt
+  int* cand;              // 4 x leaf_capacity: slot, rank, parent (as in order_buf; -2: not available), record id
+  double* cand_gain;      // 2 x leaf_capacity: gains, then the gains sorted
+  void* par_global;       // [R3ParallelAreaBytes] when the merge area does not fit shared memory
+  int rebuild;            // 1: rebuild the order from the records (the first level of a tree)
   int budget;             // num_leaves - 1
   int num_leaves;
   int leaf_capacity;
@@ -113,6 +141,20 @@ constexpr size_t kSelectiveR3HeapEntryBytes = 16;
 /*! \brief one level on `stream` (one block). The heap goes to shared memory when it fits the device's opt-in limit
  *  (and shared_heap, false only in tests), else to heap_global (which must then be non-null). */
 void LaunchSelectiveR3(const CUDASelectiveR3Config& config, cudaStream_t stream, const bool shared_heap = true);
+
+/*! \brief bytes of par_global: the parallel kernel's merge area (2 x pow2(num_leaves) doubles; the heap in a fallback) */
+__host__ __device__ inline size_t R3ParallelAreaBytes(const int num_leaves) {
+  size_t p = 1;
+  while (p < static_cast<size_t>(num_leaves)) {
+    p <<= 1;
+  }
+  return 2 * p * sizeof(double);
+}
+
+/*! \brief the parallel R3 on `stream` (one block). The merge area goes to shared memory when it fits (and shared_area,
+ *  false only in tests), else to par_global. Returns false when even the per-leaf index does not fit shared memory:
+ *  the sequential kernel then ran, and the order is marked for a rebuild. */
+bool LaunchSelectiveR3Parallel(const CUDASelectiveR3Config& config, cudaStream_t stream, const bool shared_area = true);
 
 }  // namespace Falcata
 

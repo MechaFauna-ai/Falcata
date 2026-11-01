@@ -95,12 +95,11 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
   for (cudaEvent_t e : r3_events_) {
     cudaEventDestroy(e);
   }
-  if (r3_device_blob_ != nullptr) {
-    cudaFree(r3_device_blob_);
+  for (int path = 0; path < 2; ++path) {
+    cudaFree(r3_device_blob_[path]);
+    cudaFreeHost(r3_pinned_blob_[path]);
   }
-  if (r3_pinned_blob_ != nullptr) {
-    cudaFreeHost(r3_pinned_blob_);
-  }
+  cudaFree(r3_par_state_);
   if (r3_stream_ != nullptr) {
     cudaStreamDestroy(r3_stream_);
   }
@@ -5056,7 +5055,8 @@ int CUDASingleGPUTreeLearner::RunSelectiveLevel() {
 namespace {
 // the R3 shadow blob (device; the pinned staging has the same layout): the copied inputs and outputs first, then the
 // kernel's scratch. Returns the config pointing into `base` and the size.
-CUDASelectiveR3Config SelectiveR3BlobConfig(char* base, const int num_leaves, const int record_capacity, size_t* bytes) {
+CUDASelectiveR3Config SelectiveR3BlobConfig(char* base, const int num_leaves, const int record_capacity, size_t* bytes,
+                                            const bool parallel = false) {
   const size_t leaves = static_cast<size_t>(num_leaves) + 2;
   const size_t records = static_cast<size_t>(record_capacity);
   size_t off = 0;
@@ -5083,6 +5083,13 @@ CUDASelectiveR3Config SelectiveR3BlobConfig(char* base, const int num_leaves, co
   c.stack = reinterpret_cast<int*>(take(records, sizeof(int)));
   c.child_table = take(records, kSelectiveR3ChildEntryBytes);
   c.heap_global = take(num_leaves, kSelectiveR3HeapEntryBytes);
+  if (parallel) {
+    c.rec_pos = reinterpret_cast<int*>(take(records, sizeof(int)));
+    c.rec_round = reinterpret_cast<int*>(take(records, sizeof(int)));
+    c.cand = reinterpret_cast<int*>(take(4 * leaves, sizeof(int)));
+    c.cand_gain = reinterpret_cast<double*>(take(2 * leaves, sizeof(double)));
+    c.par_global = take(R3ParallelAreaBytes(num_leaves), 1);
+  }
   c.budget = num_leaves - 1;
   c.num_leaves = num_leaves;
   c.leaf_capacity = static_cast<int>(leaves);
@@ -5091,7 +5098,7 @@ CUDASelectiveR3Config SelectiveR3BlobConfig(char* base, const int num_leaves, co
   return c;
 }
 
-constexpr int kR3EventsPerLevel = 6;  // kernel start, kernel stop, marks 0-3
+constexpr int kR3EventsPerLevel = 8;  // sequential kernel start/stop, marks 0-3, parallel kernel start/stop
 }  // namespace
 
 int CUDASingleGPUTreeLearner::RunSelectiveLevelShadowed(const std::vector<int>& child_leaves, const bool handoff) {
@@ -5137,71 +5144,107 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowLaunch(const std::vector<int>& c
   if (r3_stream_ == nullptr) {
     CUDASUCCESS_OR_FATAL(cudaStreamCreateWithFlags(&r3_stream_, cudaStreamNonBlocking));
   }
+  const bool run[2] = {FalcataDebug().r3seq, FalcataDebug().r3par};
   size_t bytes = 0;
-  if (r3_device_blob_ == nullptr || num_records + num_leaves > r3_record_capacity_) {
-    if (r3_device_blob_ != nullptr) {
-      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(r3_stream_));
-      CUDASUCCESS_OR_FATAL(cudaFree(r3_device_blob_));
-      CUDASUCCESS_OR_FATAL(cudaFreeHost(r3_pinned_blob_));
-    }
+  if (r3_device_blob_[0] == nullptr || num_records + num_leaves > r3_record_capacity_) {
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(r3_stream_));
     r3_record_capacity_ = std::max(4 * num_leaves, 2 * (num_records + num_leaves));
-    SelectiveR3BlobConfig(nullptr, num_leaves, r3_record_capacity_, &bytes);
-    CUDASUCCESS_OR_FATAL(cudaMalloc(&r3_device_blob_, bytes));
-    CUDASUCCESS_OR_FATAL(cudaHostAlloc(&r3_pinned_blob_, bytes, cudaHostAllocDefault));
-  }
-  CUDASelectiveR3Config cfg = SelectiveR3BlobConfig(r3_device_blob_, num_leaves, r3_record_capacity_, &bytes);
-  cfg.leaf_best = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
-  const CUDASelectiveR3Config h = SelectiveR3BlobConfig(r3_pinned_blob_, num_leaves, r3_record_capacity_, &bytes);
-  // the level's pre-simulation state, staged at the device offsets
-  *h.state = CUDASelectiveR3State{};
-  h.state->num_records = num_records;
-  h.state->num_free = static_cast<int>(sel_free_leaves_.size());
-  h.state->num_allocated = sel_num_allocated_;
-  h.state->num_children = static_cast<int>(child_leaves.size());
-  int live = 0;
-  for (int i = 0; i < num_records; ++i) {
-    const SelectiveApplied& a = sel_applied_[i];
-    h.records[i] = {a.parent, a.left_leaf, a.right_leaf, a.kid_left, a.kid_right, a.dead ? 1 : 0, a.gain};
-    live += a.dead ? 0 : 1;
-  }
-  std::copy(sel_leaf_parent_.begin(), sel_leaf_parent_.end(), h.leaf_parent);
-  std::copy(sel_free_leaves_.begin(), sel_free_leaves_.end(), h.free_leaves);
-  std::copy(child_leaves.begin(), child_leaves.end(), const_cast<int*>(h.child_leaves));
-  // copies between the blobs: [p, p + bytes) of the device config's pointer p
-  const auto copy = [this](const void* p, const size_t n, const cudaMemcpyKind kind) {
-    char* dev = const_cast<char*>(static_cast<const char*>(p));
-    char* host = r3_pinned_blob_ + (dev - r3_device_blob_);
-    if (n > 0) {
-      CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(kind == cudaMemcpyHostToDevice ? dev : host,
-                                           kind == cudaMemcpyHostToDevice ? host : dev, n, kind, r3_stream_));
+    for (int path = 0; path < 2; ++path) {
+      CUDASUCCESS_OR_FATAL(cudaFree(r3_device_blob_[path]));
+      CUDASUCCESS_OR_FATAL(cudaFreeHost(r3_pinned_blob_[path]));
+      SelectiveR3BlobConfig(nullptr, num_leaves, r3_record_capacity_, &bytes, path == 1);
+      CUDASUCCESS_OR_FATAL(cudaMalloc(&r3_device_blob_[path], bytes));
+      CUDASUCCESS_OR_FATAL(cudaHostAlloc(&r3_pinned_blob_[path], bytes, cudaHostAllocDefault));
     }
-  };
-  copy(cfg.state, sizeof(CUDASelectiveR3State), cudaMemcpyHostToDevice);
-  copy(cfg.records, num_records * sizeof(CUDASelectiveR3Record), cudaMemcpyHostToDevice);
-  copy(cfg.leaf_parent, sel_leaf_parent_.size() * sizeof(int), cudaMemcpyHostToDevice);
-  copy(cfg.free_leaves, sel_free_leaves_.size() * sizeof(int), cudaMemcpyHostToDevice);
-  copy(cfg.child_leaves, child_leaves.size() * sizeof(int), cudaMemcpyHostToDevice);
+  }
+  const size_t order_bytes = 6 * (static_cast<size_t>(num_leaves) + 2) * sizeof(int);
+  if (r3_par_state_ == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaMalloc(&r3_par_state_, 256 + order_bytes));
+    CUDASUCCESS_OR_FATAL(cudaMemset(r3_par_state_, 0, 256 + order_bytes));  // valid = 0
+  }
   const size_t ev = r3_levels_.size() * kR3EventsPerLevel;
   while (r3_events_.size() < ev + kR3EventsPerLevel) {
     r3_events_.push_back(nullptr);
     CUDASUCCESS_OR_FATAL(cudaEventCreate(&r3_events_.back()));
   }
-  CUDASUCCESS_OR_FATAL(cudaEventRecord(r3_events_[ev], r3_stream_));
-  LaunchSelectiveR3(cfg, r3_stream_);
-  CUDASUCCESS_OR_FATAL(cudaEventRecord(r3_events_[ev + 1], r3_stream_));
-  copy(cfg.state, sizeof(CUDASelectiveR3State), cudaMemcpyDeviceToHost);
-  copy(cfg.records, (num_records + num_leaves) * sizeof(CUDASelectiveR3Record), cudaMemcpyDeviceToHost);
-  copy(cfg.frontier_leaf, sel_leaf_parent_.size() * sizeof(int), cudaMemcpyDeviceToHost);
-  copy(cfg.frontier_gain, sel_leaf_parent_.size() * sizeof(double), cudaMemcpyDeviceToHost);
-  // leaf_parent through apply_right
-  copy(cfg.leaf_parent, reinterpret_cast<const char*>(cfg.child_leaves) - reinterpret_cast<const char*>(cfg.leaf_parent),
-       cudaMemcpyDeviceToHost);
+  int live = 0;
+  std::vector<double> live_gains;
+  for (int path = 0; path < 2; ++path) {
+    if (!run[path]) {
+      continue;
+    }
+    CUDASelectiveR3Config cfg = SelectiveR3BlobConfig(r3_device_blob_[path], num_leaves, r3_record_capacity_, &bytes,
+                                                      path == 1);
+    cfg.leaf_best = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
+    const CUDASelectiveR3Config h = SelectiveR3BlobConfig(r3_pinned_blob_[path], num_leaves, r3_record_capacity_,
+                                                          &bytes, path == 1);
+    // the level's pre-simulation state, staged at the device offsets
+    *h.state = CUDASelectiveR3State{};
+    h.state->num_records = num_records;
+    h.state->num_free = static_cast<int>(sel_free_leaves_.size());
+    h.state->num_allocated = sel_num_allocated_;
+    h.state->num_children = static_cast<int>(child_leaves.size());
+    live = 0;
+    live_gains.clear();
+    for (int i = 0; i < num_records; ++i) {
+      const SelectiveApplied& a = sel_applied_[i];
+      h.records[i] = {a.parent, a.left_leaf, a.right_leaf, a.kid_left, a.kid_right, a.dead ? 1 : 0, a.gain};
+      live += a.dead ? 0 : 1;
+      if (!a.dead) {
+        live_gains.push_back(a.gain);
+      }
+    }
+    std::copy(sel_leaf_parent_.begin(), sel_leaf_parent_.end(), h.leaf_parent);
+    std::copy(sel_free_leaves_.begin(), sel_free_leaves_.end(), h.free_leaves);
+    std::copy(child_leaves.begin(), child_leaves.end(), const_cast<int*>(h.child_leaves));
+    // copies between the blobs: [p, p + bytes) of the device config's pointer p
+    const auto copy = [this, path](const void* p, const size_t n, const cudaMemcpyKind kind) {
+      char* dev = const_cast<char*>(static_cast<const char*>(p));
+      char* host = r3_pinned_blob_[path] + (dev - r3_device_blob_[path]);
+      if (n > 0) {
+        CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(kind == cudaMemcpyHostToDevice ? dev : host,
+                                             kind == cudaMemcpyHostToDevice ? host : dev, n, kind, r3_stream_));
+      }
+    };
+    copy(cfg.state, sizeof(CUDASelectiveR3State), cudaMemcpyHostToDevice);
+    copy(cfg.records, num_records * sizeof(CUDASelectiveR3Record), cudaMemcpyHostToDevice);
+    copy(cfg.leaf_parent, sel_leaf_parent_.size() * sizeof(int), cudaMemcpyHostToDevice);
+    copy(cfg.free_leaves, sel_free_leaves_.size() * sizeof(int), cudaMemcpyHostToDevice);
+    copy(cfg.child_leaves, child_leaves.size() * sizeof(int), cudaMemcpyHostToDevice);
+    const size_t first = ev + (path == 0 ? 0 : 6);
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(r3_events_[first], r3_stream_));
+    if (path == 0) {
+      LaunchSelectiveR3(cfg, r3_stream_);
+    } else {
+      cfg.persist = reinterpret_cast<CUDASelectiveR3Persist*>(r3_par_state_);
+      cfg.order_buf = reinterpret_cast<int*>(r3_par_state_ + 256);
+      cfg.rebuild = r3_levels_.empty() || FalcataDebug().r3rebuild ? 1 : 0;
+      LaunchSelectiveR3Parallel(cfg, r3_stream_);
+    }
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(r3_events_[first + 1], r3_stream_));
+    copy(cfg.state, sizeof(CUDASelectiveR3State), cudaMemcpyDeviceToHost);
+    copy(cfg.records, (num_records + num_leaves) * sizeof(CUDASelectiveR3Record), cudaMemcpyDeviceToHost);
+    copy(cfg.frontier_leaf, sel_leaf_parent_.size() * sizeof(int), cudaMemcpyDeviceToHost);
+    copy(cfg.frontier_gain, sel_leaf_parent_.size() * sizeof(double), cudaMemcpyDeviceToHost);
+    // leaf_parent through apply_right
+    copy(cfg.leaf_parent, reinterpret_cast<const char*>(cfg.child_leaves) -
+         reinterpret_cast<const char*>(cfg.leaf_parent), cudaMemcpyDeviceToHost);
+  }
   r3_pre_records_ = num_records;
   SelectiveR3ShadowLevel lvl{};
   lvl.level = static_cast<int>(sel_stat_levels_ - r3_tree_levels_start_);
   lvl.applied = live;
   lvl.frontier = static_cast<int>(sel_frontier_.size());
   lvl.binding = live + lvl.frontier > num_leaves - 1 ? 1 : 0;
+  // equal gains among the live candidates: the levels the parallel kernel runs sequentially
+  for (const SelectiveFrontier& f : sel_frontier_) {
+    live_gains.push_back(f.gain);
+  }
+  std::sort(live_gains.begin(), live_gains.end());
+  for (size_t i = 1; i < live_gains.size(); ++i) {
+    lvl.eqgain += live_gains[i] == live_gains[i - 1] ? 1 : 0;
+  }
+  lvl.par_path = -1;
   lvl.ev = static_cast<int>(ev);
   lvl.marks = r3_pending_mark0_ ? 1 : 0;
   r3_pending_mark0_ = false;
@@ -5212,9 +5255,35 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowLaunch(const std::vector<int>& c
 void CUDASingleGPUTreeLearner::SelectiveR3ShadowCheck() {
   const auto t0 = std::chrono::steady_clock::now();
   CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(r3_stream_));
+  SelectiveR3ShadowLevel& lvl = r3_levels_.back();
+  const bool seq_mismatch = FalcataDebug().r3seq && SelectiveR3ShadowCompare(0);
+  const bool par_mismatch = FalcataDebug().r3par && SelectiveR3ShadowCompare(1);
+  // the pops this level shares with the last one (the last level's frontier picks renamed to the records they
+  // became): an incremental simulation (P8c) would re-run only the rest
+  if (r3_levels_.size() > 1) {
+    const int shared = static_cast<int>(std::min(r3_prev_order_.size(), sel_order_.size()));
+    while (lvl.reuse < shared && r3_prev_order_[lvl.reuse] == sel_order_[lvl.reuse] &&
+           r3_prev_classic_[lvl.reuse] == sel_order_classic_leaf_[lvl.reuse]) {
+      ++lvl.reuse;
+    }
+  }
+  r3_prev_order_ = sel_order_;
+  r3_prev_classic_ = sel_order_classic_leaf_;
+  for (int t = 0, k = 0; t < static_cast<int>(r3_prev_order_.size()); ++t) {
+    r3_prev_order_[t] = r3_prev_order_[t] < 0 ? r3_pre_records_ + k++ : r3_prev_order_[t];
+  }
+  ++r3_stat_levels_;
+  if (seq_mismatch || par_mismatch) {
+    lvl.mismatch = 1;
+    ++r3_stat_mismatches_;
+  }
+  lvl.shadow_host_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+}
+
+bool CUDASingleGPUTreeLearner::SelectiveR3ShadowCompare(const int path) {
   size_t bytes = 0;
-  const CUDASelectiveR3Config d = SelectiveR3BlobConfig(r3_pinned_blob_, config_->num_leaves, r3_record_capacity_,
-                                                        &bytes);
+  const CUDASelectiveR3Config d = SelectiveR3BlobConfig(r3_pinned_blob_[path], config_->num_leaves,
+                                                        r3_record_capacity_, &bytes, path == 1);
   const CUDASelectiveR3State& ds = *d.state;
   if (FalcataDebug().r3fault && ds.num_order > 0) {
     d.order_id[0] = ~d.order_id[0];  // test hook: the comparison must report this
@@ -5285,31 +5354,21 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowCheck() {
     diff("leaf_parent", leaf, sel_leaf_parent_[leaf], d.leaf_parent[leaf]);
   }
   SelectiveR3ShadowLevel& lvl = r3_levels_.back();
-  // the pops this level shares with the last one (the last level's frontier picks renamed to the records they
-  // became): an incremental simulation (P8c) would re-run only the rest
-  if (r3_levels_.size() > 1) {
-    const int shared = static_cast<int>(std::min(r3_prev_order_.size(), sel_order_.size()));
-    while (lvl.reuse < shared && r3_prev_order_[lvl.reuse] == sel_order_[lvl.reuse] &&
-           r3_prev_classic_[lvl.reuse] == sel_order_classic_leaf_[lvl.reuse]) {
-      ++lvl.reuse;
-    }
+  if (path == 1) {
+    lvl.par_path = ds.path;
+    lvl.par_rounds = ds.rounds;
   }
-  r3_prev_order_ = sel_order_;
-  r3_prev_classic_ = sel_order_classic_leaf_;
-  for (int t = 0, k = 0; t < static_cast<int>(r3_prev_order_.size()); ++t) {
-    r3_prev_order_[t] = r3_prev_order_[t] < 0 ? r3_pre_records_ + k++ : r3_prev_order_[t];
+  if (path == 0 || !FalcataDebug().r3seq) {
+    lvl.pops = ds.num_order;
+    lvl.collapsed = ds.num_collapsed;
+    lvl.created = ds.num_apply;
   }
-  lvl.pops = ds.num_order;
-  lvl.collapsed = ds.num_collapsed;
-  lvl.created = ds.num_apply;
-  ++r3_stat_levels_;
   if (field != nullptr) {
-    lvl.mismatch = 1;
-    ++r3_stat_mismatches_;
     fprintf(stderr, "[hybrid-diag] r3_shadow: MISMATCH tree=%" PRId64 " level=%d field=%s pos=%d host=%" PRId64
-            " device=%" PRId64 "\n", sel_stat_trees_, lvl.level, field, pos, host_value, device_value);
+            " device=%" PRId64 " path=%s\n", sel_stat_trees_, lvl.level, field, pos, host_value, device_value,
+            path == 0 ? "seq" : "par");
   }
-  lvl.shadow_host_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+  return field != nullptr;
 }
 
 void CUDASingleGPUTreeLearner::SelectiveR3ShadowTreeEnd() {
@@ -5332,9 +5391,12 @@ void CUDASingleGPUTreeLearner::SelectiveR3ShadowTreeEnd() {
       mismatches += lvl.mismatch;
       fprintf(stderr, "[hybrid-diag] r3_shadow: tree=%" PRId64 " level=%d handoff=%d binding=%d applied=%d "
               "frontier=%d pops=%d reuse=%d collapsed=%d created=%d r3_us=%.2f sim_us=%.2f ties=%d gap_readback_us=%.2f "
-              "gap_apply_us=%.2f shadow_host_us=%.2f\n", sel_stat_trees_, lvl.level, lvl.handoff, lvl.binding,
-              lvl.applied, lvl.frontier, lvl.pops, lvl.reuse, lvl.collapsed, lvl.created,
-              elapsed_us(lvl.ev, lvl.ev + 1), lvl.sim_us, lvl.ties, gap_readback, gap_apply, lvl.shadow_host_us);
+              "gap_apply_us=%.2f shadow_host_us=%.2f par_us=%.2f par_path=%d par_rounds=%d eqgain=%d\n",
+              sel_stat_trees_, lvl.level, lvl.handoff, lvl.binding, lvl.applied, lvl.frontier, lvl.pops, lvl.reuse,
+              lvl.collapsed, lvl.created, FalcataDebug().r3seq ? elapsed_us(lvl.ev, lvl.ev + 1) : -1.0, lvl.sim_us,
+              lvl.ties, gap_readback, gap_apply, lvl.shadow_host_us,
+              FalcataDebug().r3par ? elapsed_us(lvl.ev + 6, lvl.ev + 7) : -1.0, lvl.par_path, lvl.par_rounds,
+              lvl.eqgain);
     }
     fprintf(stderr, "[hybrid-diag] r3_shadow: tree=%" PRId64 " levels=%d mismatches=%d cumulative levels=%" PRId64
             " mismatches=%" PRId64 "\n", sel_stat_trees_, static_cast<int>(r3_levels_.size()), mismatches,

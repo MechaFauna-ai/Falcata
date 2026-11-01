@@ -551,6 +551,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int RunSelectiveLevelShadowed(const std::vector<int>& child_leaves, const bool handoff);
   void SelectiveR3ShadowLaunch(const std::vector<int>& child_leaves);
   void SelectiveR3ShadowCheck();
+  // path 0: the sequential kernel (P8a), 1: the parallel one (P8c, FALCATA_DEBUG=r3shadow=par|both); returns whether
+  // the path's result differed from the host's
+  bool SelectiveR3ShadowCompare(const int path);
   // records a timing event on the legacy stream (r3shadow only): 0 before the level's readback, 1 before its apply,
   // 2 after the apply, 3 before the children's search
   void SelectiveR3ShadowMark(const int which);
@@ -983,12 +986,16 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     int mismatch;
     double sim_us;
     int ties;       // SelectiveTieBreak calls of the host simulation
+    int eqgain;     // equal-gain pairs among the live candidates (applied records and frontier), sorted neighbours
+    int par_path;   // the parallel kernel's path (0 merge, 1 sequential: equal gains), -1 not run
+    int par_rounds;  // its merges that rebuilt the order from the records
     double shadow_host_us;
-    int ev;         // first of this level's 6 events: kernel start/stop, marks 0-3
+    int ev;         // first of this level's 8 events: sequential kernel start/stop, marks 0-3, parallel start/stop
     int marks;      // bit i: mark i recorded
   };
-  char* r3_device_blob_ = nullptr;
-  char* r3_pinned_blob_ = nullptr;
+  char* r3_device_blob_[2] = {nullptr, nullptr};  // per path (sequential, parallel)
+  char* r3_pinned_blob_[2] = {nullptr, nullptr};
+  char* r3_par_state_ = nullptr;  // the parallel kernel's kept order (CUDASelectiveR3Persist, order_buf)
   int r3_record_capacity_ = 0;
   cudaStream_t r3_stream_ = nullptr;
   std::vector<cudaEvent_t> r3_events_;

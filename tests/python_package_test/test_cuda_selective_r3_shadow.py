@@ -10,6 +10,11 @@ beside it). The shapes follow the P8a measurement cells (binding-budget 151/10, 
 255/-1, 4095/-1) on synthetic data, plus a shape whose leaves tie exactly (duplicated rows), where the host's
 simulation must resolve ties (the per-level ties= count). The test hook r3fault corrupts the device result, so a
 broken comparison cannot pass silently; plain diag does not run the shadow.
+
+FALCATA_DEBUG=r3shadow=both also runs the parallel R3 (P8c: the last level's order kept on the device, the frontier
+merged into it) and compares it the same way; a level with equal live gains (eqgain= on the host side) must take its
+sequential path (par_path=1), every other level the merge (par_path=0). r3rebuild rebuilds the kept order from the
+records on every level.
 """
 
 import json
@@ -228,3 +233,49 @@ def test_r3_shadow_reports_a_corrupted_device_result_cuda():
     plain, diag_err = _train(params, X, y, 2, "diag")
     assert faulty["md5"] == plain["md5"]
     assert "r3_shadow" not in diag_err
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("cell", sorted(_CELLS))
+def test_r3_parallel_shadow_matches_the_host_simulation_cuda(cell):
+    kind, extra, rows, cols, rounds = _CELLS[cell]
+    X, y = _data(kind, rows, cols)
+    params = _params(extra)
+    debug = "r3shadow=both" + (",r3rebuild" if cell in ("budget", "tied") else "")
+    shadow, err = _train(params, X, y, rounds, debug)
+    plain, _ = _train(params, X, y, rounds, "")
+    assert shadow["md5"] == plain["md5"]
+    assert "MISMATCH" not in err, [x for x in err.splitlines() if "MISMATCH" in x][:5]
+    levels = _levels(err)
+    assert levels
+    assert all(lv["r3_us"] >= 0 and lv["par_us"] >= 0 for lv in levels)
+    # the sequential path exactly where the device met equal live gains, which the host sees too
+    assert all(lv["par_path"] in (0, 1) for lv in levels)
+    assert all(lv["eqgain"] > 0 for lv in levels if lv["par_path"] == 1)
+    merged = [lv for lv in levels if lv["par_path"] == 0]
+    if cell == "tied":
+        assert any(lv["par_path"] == 1 for lv in levels if lv["binding"] == 1)
+    else:
+        assert merged
+        assert any(lv["binding"] == 1 for lv in merged)
+    if "r3rebuild" in debug:
+        assert all(lv["par_rounds"] > 0 for lv in levels if lv["applied"] > 0)
+    else:
+        # the order is rebuilt on the first level of a tree only (or after a sequential level)
+        assert any(lv["par_rounds"] == 0 and lv["applied"] > 0 for lv in merged)
+
+
+@_REQUIRES_CUDA
+def test_r3_parallel_shadow_alone_and_corrupted_cuda():
+    kind, extra, rows, cols, rounds = _CELLS["fraud"]
+    X, y = _data(kind, rows, cols)
+    params = _params(extra)
+    _, err = _train(params, X, y, 3, "r3shadow=par")
+    levels = _levels(err)
+    assert levels
+    assert "MISMATCH" not in err
+    assert all(lv["r3_us"] < 0 <= lv["par_us"] for lv in levels)
+    _, err = _train(params, X, y, 2, "r3shadow=par,r3fault")
+    mismatches = [x for x in err.splitlines() if "r3_shadow: MISMATCH" in x]
+    assert len(mismatches) == len(_levels(err)) > 0
+    assert all("field=order pos=0" in x and x.endswith("path=par") for x in mismatches)
