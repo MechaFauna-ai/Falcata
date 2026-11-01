@@ -146,7 +146,7 @@ def test_device_tree_default_reports_fallback_cuda(leaves, depth):
     assert "device_tree: complete" not in diag
     assert "device_tree: fallback (" not in diag, diag[-3000:]
     # (8190 leaves at depth 13: the trees reach the depth limit on the device, no valid leaf left: complete)
-    assert re.search(r"device_tree: selective hand-off at level \d+ \((binding|complete)\)", diag), diag[-3000:]
+    assert re.search(r"device_tree: selective hand-off at level \d+ \((routed|binding|complete)\)", diag), diag[-3000:]
     # device_tree:off: the host's selective loop runs every level
     off = _diag("auto,device_tree:off", leaves, depth)
     assert "device_levels: host fallback (plan_off)" in off

@@ -22,6 +22,7 @@
 #include "cuda_data_partition.hpp"
 #include "cuda_best_split_finder.hpp"
 #include "cuda_device_levels.hpp"
+#include "cuda_selective_r3.hpp"
 
 #include "cuda_gradient_discretizer.hpp"
 #include "../serial_tree_learner.h"
@@ -453,6 +454,17 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // the device state reached), each its apply, its children's search and the next level's select (the unrolled
   // levels: not after the last one), a body then its flag (LaunchDeviceLevelSegmentEnd)
   void EnqueueSelectiveDeviceLevels(const CUDADeviceLevelConfig& cfg, const int first_level, const int count);
+  // one selective level's children's search (construct, pair chunks or the live-pair fix/subtract, find, sync); fuse:
+  // the sync's last block may run the next level's R1 select. Returns whether it ran
+  bool EnqueueSelectiveLevelSearch(const CUDADeviceLevelConfig& cfg, const int max_splits, const bool body,
+                                   const bool fuse);
+  // the R3 route's levels (inside the device levels' stream exchange): kHandoff the seed's level (the seed kernel, the
+  // freed slots, the apply); kBody count levels, each the children's search, the selection, the freed slots and the
+  // apply, then the flag; kSearch and kSelect one level's two halves (the shadow simulates on the host between them)
+  enum class R3Part { kHandoff, kBody, kSearch, kSelect };
+  void EnqueueSelectiveR3(const CUDADeviceLevelConfig& cfg, const R3Part part, const int count);
+  // the same outside a captured or enqueued body (its own stream exchange)
+  void EnqueueSelectiveR3Part(const R3Part part);
   // cuda_plan key device_level_graph: launch the levels as a cached graph (captured on a key's first tree); false
   // when this tree cannot use one (the caller enqueues the levels)
   bool LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels,
@@ -544,21 +556,31 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // selected frontier candidates (right-child indices from the free list).
   // Returns the number of frontier candidates to apply this level.
   int RunSelectiveLevel();
-  // R3 shadow (FALCATA_DEBUG=r3shadow; P8a): RunSelectiveLevel with the device greedy simulation (cuda_selective_r3)
-  // launched beside it on the level's pre-simulation state, its selection, numbering, collapse and free list
-  // compared with the host's (a mismatch prints one line and counts; the host's result is the one used). handoff:
-  // the level's search came from the selective device levels' readback.
-  int RunSelectiveLevelShadowed(const std::vector<int>& child_leaves, const bool handoff);
-  void SelectiveR3ShadowLaunch(const std::vector<int>& child_leaves);
-  void SelectiveR3ShadowCheck();
-  // path 0: the sequential kernel (P8a), 1: the parallel one (P8c, FALCATA_DEBUG=r3shadow=par|both); returns whether
-  // the path's result differed from the host's
-  bool SelectiveR3ShadowCompare(const int path);
-  // records a timing event on the legacy stream (r3shadow only): 0 before the level's readback, 1 before its apply,
-  // 2 after the apply, 3 before the children's search
-  void SelectiveR3ShadowMark(const int which);
-  // one diag line per shadowed level of the tree, then the tree's and the cumulative mismatch counts
-  void SelectiveR3ShadowTreeEnd();
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  // ---- the R3 route (P8b, cuda_selective_r3): a selective tree's levels after its first binding level on the device.
+  // Why the route does not take a tree's levels after its hand-off (kNone: it does).
+  DeviceTreeReason SelectiveR3RouteRefusal() const;
+  // `device_tree: fallback (<reason>) route=selective_device`: the route refused or stopped a tree, F grows the rest
+  void LogSelectiveR3Fallback(const DeviceTreeReason reason);
+  // From the hand-off level, whose host simulation (RunSelectiveLevel, the collapse's device writes left to the route)
+  // just ran: seeds the device state, applies the level and grows the rest of the tree on the device. True: the tree
+  // is complete, its final records read back (SelectiveR3ReadBack). False: a level stopped before changing anything
+  // (record capacity, a NaN gain): the host state is read back as the device left it after the level's search, and
+  // *pairs holds that level's children; the host loop continues from there.
+  bool TrainSelectiveR3Route(CUDATree* tree, std::vector<HybridPendingPair>* pairs);
+  // the route's device state for this num_leaves and at least min_records records (reallocated outside the levels)
+  void EnsureSelectiveR3Route(const int min_records);
+  // one routed level's selection, the freed slots' zeroing and the apply (inside EnqueueSelectiveDeviceLevels'
+  // stream exchange); r3: the kernel (false: the seed kernel ran in its place)
+  void EnqueueSelectiveR3Apply(const CUDADeviceLevelConfig& cfg, const bool r3);
+  // final: the final level's records into the host's selective state for SelectiveFinalize; else (a stopped level)
+  // the whole device state and the level's children
+  void SelectiveR3ReadBack(const bool final, std::vector<HybridPendingPair>* pairs);
+  // FALCATA_DEBUG=r3shadow: the route's levels one at a time, the host's simulation of each beside it as the oracle
+  void SelectiveR3ShadowLevels(int* levels_enqueued);
+  // the device's level (after its apply) against the host's (RunSelectiveLevel); true on a difference
+  bool SelectiveR3ShadowCompare(const int level);
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   // Batched partition-only apply of the selected frontier splits (the CUDA tree
   // object is not touched during selective growth; the final tree is rebuilt
   // host-side after pruning). Fills *applied for the readback bookkeeping.
@@ -962,6 +984,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // right after the best-split readback
   std::vector<double> sel_leaf_vec_payloads_;
   int sel_num_allocated_ = 0;           // peak hybrid leaf count (dirty hist slots)
+  int sel_level_allocated_ = 0;         // sel_num_allocated_ before the last RunSelectiveLevel
   int sel_num_splits_ = 0;              // applied splits surviving readback bookkeeping
   int sel_last_peak_ = 0;               // sel_num_allocated_ of the finished tree
   // churn statistics (FALCATA_HYBRID_DEBUG): applied / displaced split totals
@@ -972,45 +995,28 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int64_t sel_stat_sim_ns_ = 0;
   int64_t sel_stat_ties_ = 0;  // equal-gain resolutions in RunSelectiveLevel (SelectiveTieBreak calls)
   int sel_first_tie_ = -1;     // the level's first tie-break pop index (-1: none)
-  // R3 shadow state (FALCATA_DEBUG=r3shadow): device and pinned blobs of the same layout (SelectiveR3ShadowLaunch), the
-  // side stream, the per-level timing events and records of the current tree, the mismatch counters
-  struct SelectiveR3ShadowLevel {
-    int level;
-    int handoff;
-    int binding;
-    int applied;    // live applied records before the level (A)
-    int frontier;   // valid frontier candidates (S)
-    int pops;
-    int reuse;      // leading pops equal to the last level's (frontier picks renamed to their records)
-    int collapsed;
-    int created;
-    int mismatch;
-    double sim_us;
-    int ties;       // SelectiveTieBreak calls of the host simulation
-    int tie_at;     // the pop index of the first one (-1 none)
-    int eqgain;     // equal-gain pairs among the live candidates (applied records and frontier), sorted neighbours
-    int par_resumes;    // the parallel kernel's exact best-first resumes from a tie (-1 not run)
-    int par_resume_at;  // the level's resume pop (-1 none)
-    int par_rounds;  // its merges that rebuilt the order from the records
-    double shadow_host_us;
-    int ev;         // first of this level's 8 events: sequential kernel start/stop, marks 0-3, parallel start/stop
-    int marks;      // bit i: mark i recorded
-  };
-  char* r3_device_blob_[2] = {nullptr, nullptr};  // per path (sequential, parallel)
-  char* r3_pinned_blob_[2] = {nullptr, nullptr};
-  char* r3_par_state_ = nullptr;  // the parallel kernel's kept order (CUDASelectiveR3Persist, order_buf)
+  std::vector<int> sel_collapse_tops_;  // the level's collapsed record ids, ascending
+  // the R3 route (P8b): the device state (one allocation, CUDASelectiveR3Config's arrays, the seed and the final
+  // records; its pinned mirror for the seed and the readbacks), sized for r3_num_leaves_ and r3_record_capacity_
+  bool sel_device_collapse_ = false;  // RunSelectiveLevel: the collapse's device writes are the route's
+  bool r3_route_active_ = false;      // EnqueueSelectiveDeviceLevels enqueues the route's levels
+  char* r3_device_ = nullptr;
+  char* r3_pinned_ = nullptr;
+  int r3_num_leaves_ = 0;
   int r3_record_capacity_ = 0;
-  int r3_blob_num_leaves_ = 0;  // the num_leaves the blobs and the kept order were sized for
-  cudaStream_t r3_stream_ = nullptr;
-  std::vector<cudaEvent_t> r3_events_;
-  std::vector<SelectiveR3ShadowLevel> r3_levels_;
-  int r3_pre_records_ = 0;
-  std::vector<int> r3_prev_order_;
-  std::vector<int> r3_prev_classic_;
-  bool r3_pending_mark0_ = false;
-  int64_t r3_tree_levels_start_ = 0;
-  int64_t r3_stat_levels_ = 0;
+  int r3_record_want_ = 0;                // a tree ran out of records: the next one's table
+  CUDASelectiveR3Config r3_cfg_ = {};
+  int* r3_seed_ = nullptr;                // device seed (ints)
+  size_t r3_seed_ints_ = 0;
+  std::vector<int> r3_position_;          // the seed's order positions by record id
+  CUDASelectiveR3Final* r3_final_ = nullptr;
+  int* r3_flag_ = nullptr;                // mapped pinned, 8 ints (LaunchSelectiveR3Flag) and its device alias
+  int* r3_flag_device_ = nullptr;
+  int r3_route_bodies_ = 0;
+  int64_t r3_stat_levels_ = 0;            // r3shadow: levels compared, mismatches
   int64_t r3_stat_mismatches_ = 0;
+  std::vector<char> r3_shadow_copy_;
+  cudaEvent_t r3_events_[4] = {nullptr, nullptr, nullptr, nullptr};
   // reusable device slab for CUDATree's per-tree arrays (see CUDATree ctor)
   CUDAVector<uint8_t> cuda_tree_pool_buffer_;
   // reusable growth buffers for the categorical split record of the tree being grown (see CUDATreeCatArena)

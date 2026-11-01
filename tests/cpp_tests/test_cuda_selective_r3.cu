@@ -241,11 +241,18 @@ struct ParallelRun {
   int rebuilt_rounds = 0;
 };
 
-// one level on the device from the pre-level state; compared field by field with the host reference's result. par:
-// the parallel kernel with its kept order (else the sequential one)
+// one level on the device from the pre-level state; compared field by field with the host reference's result. par: the
+// order kept across the levels of one tree; none: a fresh one, rebuilt from the records (force_global_area: the merge
+// area in global memory)
 void CheckLevel(const HostState& pre, const HostState& post, const LevelResult& want,
                 const std::vector<int>& children, const std::vector<char>& valid, const std::vector<double>& gain,
-                const int num_leaves, const bool force_global_heap = false, ParallelRun* par = nullptr) {
+                const int num_leaves, const bool force_global_area = false, ParallelRun* par = nullptr) {
+  ParallelRun fresh(num_leaves);
+  fresh.shared_area = !force_global_area;
+  const bool kept = par != nullptr;
+  if (!kept) {
+    par = &fresh;
+  }
   const int budget = num_leaves - 1;
   const int leaf_cap = num_leaves + 2;
   const int n_rec = static_cast<int>(pre.rec.size());
@@ -273,58 +280,48 @@ void CheckLevel(const HostState& pre, const HostState& post, const LevelResult& 
   DeviceBuffer<CUDASelectiveR3State> d_state(1);
   DeviceBuffer<CUDASelectiveR3Record> d_rec(rec_cap);
   DeviceBuffer<int> d_leaf_parent(leaf_cap), d_free(leaf_cap), d_children(children.size());
-  DeviceBuffer<int> d_leaf_frontier(leaf_cap), d_frontier_leaf(leaf_cap), d_selected(rec_cap), d_stack(rec_cap);
+  DeviceBuffer<int> d_frontier_leaf(leaf_cap);
   DeviceBuffer<double> d_frontier_gain(leaf_cap);
-  DeviceBuffer<char> d_child_table(rec_cap * Falcata::kSelectiveR3ChildEntryBytes);
-  DeviceBuffer<char> d_heap(num_leaves * Falcata::kSelectiveR3HeapEntryBytes);
-  DeviceBuffer<int> d_order(budget), d_classic(budget), d_collapsed(rec_cap), d_freed(rec_cap), d_apply(budget);
-  DeviceBuffer<int> d_rec_pos(rec_cap), d_rec_round(rec_cap), d_cand(14 * leaf_cap);
+  DeviceBuffer<int> d_order(budget), d_classic(budget), d_collapsed(leaf_cap), d_freed(leaf_cap), d_apply(budget);
+  DeviceBuffer<int> d_apply_leaf(budget), d_rec_pos(rec_cap), d_rec_round(rec_cap), d_cand(18 * leaf_cap);
   DeviceBuffer<double> d_cand_gain(3 * leaf_cap);
   d_state.Up({hs});
   d_rec.Up(recs);
   d_leaf_parent.Up(pre.leaf_parent);
   d_free.Up(free_leaves);
   d_children.Up(children);
-  CUDASelectiveR3Config cfg;
+  CUDASelectiveR3Config cfg = {};
   cfg.state = d_state.data();
   cfg.records = d_rec.data();
   cfg.leaf_parent = d_leaf_parent.data();
   cfg.free_leaves = d_free.data();
   cfg.child_leaves = d_children.data();
   cfg.leaf_best = d_best.data();
-  cfg.leaf_frontier = d_leaf_frontier.data();
   cfg.frontier_leaf = d_frontier_leaf.data();
   cfg.frontier_gain = d_frontier_gain.data();
-  cfg.selected = d_selected.data();
-  cfg.stack = d_stack.data();
-  cfg.child_table = d_child_table.data();
-  cfg.heap_global = d_heap.data();
   cfg.order_id = d_order.data();
   cfg.order_classic = d_classic.data();
   cfg.collapsed = d_collapsed.data();
   cfg.freed = d_freed.data();
   cfg.apply_right = d_apply.data();
+  cfg.apply_leaf = d_apply_leaf.data();
   cfg.budget = budget;
   cfg.num_leaves = num_leaves;
   cfg.leaf_capacity = leaf_cap;
   cfg.record_capacity = rec_cap;
-  if (par != nullptr) {
-    cfg.persist = par->persist.data();
-    cfg.order_buf = par->order_buf.data();
-    cfg.rec_pos = d_rec_pos.data();
-    cfg.rec_round = d_rec_round.data();
-    cfg.cand = d_cand.data();
-    cfg.cand_gain = d_cand_gain.data();
-    cfg.par_global = par->area.data();
-    cfg.rebuild = par->levels == 0 || (par->rebuild_every > 0 && par->levels % par->rebuild_every == 0);
-    ASSERT_TRUE(Falcata::LaunchSelectiveR3Parallel(cfg, nullptr, par->shared_area));
-  } else {
-    Falcata::LaunchSelectiveR3(cfg, nullptr, /*shared_heap=*/!force_global_heap);
-  }
+  cfg.persist = par->persist.data();
+  cfg.order_buf = par->order_buf.data();
+  cfg.rec_pos = d_rec_pos.data();
+  cfg.rec_round = d_rec_round.data();
+  cfg.cand = d_cand.data();
+  cfg.cand_gain = d_cand_gain.data();
+  cfg.par_global = par->area.data();
+  cfg.rebuild = par->levels == 0 || (par->rebuild_every > 0 && par->levels % par->rebuild_every == 0);
+  Falcata::LaunchSelectiveR3Parallel(cfg, nullptr, par->shared_area);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   const CUDASelectiveR3State ds = d_state.Down(1)[0];
   ASSERT_EQ(ds.error, 0);
-  if (par != nullptr) {
+  if (kept) {
     ++par->levels;
     par->merged += ds.resumes == 0;
     par->resumed += ds.resumes > 0;
@@ -368,7 +365,7 @@ void CheckLevel(const HostState& pre, const HostState& post, const LevelResult& 
 // grows whole trees level by level through the host reference, checking the device on every level. gain_of(leaf,
 // level) returns the candidate's gain, or a negative value for an invalid one.
 template <typename GainOf>
-int GrowAndCheck(const int num_leaves, const int max_levels, GainOf gain_of, const bool force_global_heap = false,
+int GrowAndCheck(const int num_leaves, const int max_levels, GainOf gain_of, const bool force_global_area = false,
                  ParallelRun* par = nullptr) {
   const int leaf_cap = num_leaves + 2;
   HostState s;
@@ -385,7 +382,7 @@ int GrowAndCheck(const int num_leaves, const int max_levels, GainOf gain_of, con
     }
     const HostState pre = s;
     const LevelResult want = HostLevel(&s, children, valid, gain, num_leaves);
-    CheckLevel(pre, s, want, children, valid, gain, num_leaves, force_global_heap);
+    CheckLevel(pre, s, want, children, valid, gain, num_leaves, force_global_area);
     if (par != nullptr) {
       CheckLevel(pre, s, want, children, valid, gain, num_leaves, false, par);
     }
@@ -528,14 +525,14 @@ TEST(CUDASelectiveR3, BudgetExactlyMetAndExceededByOne) {
   }
 }
 
-TEST(CUDASelectiveR3, WiderThanOneBlockAndGlobalHeap) {
-  // levels of more than 256 (one block) and 1024 candidates; num_leaves 5000 takes the opted-in shared heap
-  // (80 KB), 8000 the global heap (128 KB), and the forced global heap at 1500
+TEST(CUDASelectiveR3, WiderThanOneBlockAndGlobalArea) {
+  // levels of more than 512 (one block) and 1024 candidates; num_leaves 5000 and 8000 take the merge area in global
+  // memory, and the forced global area at 1500 (the order rebuilt from the records every level)
   std::mt19937 rng(11);
   for (const int num_leaves : {5000, 8000}) {
     GrowAndCheck(num_leaves, 30, [&rng](int, int) { return rng() % 50 == 0 ? -1.0 : static_cast<double>(rng() % 3); });
   }
-  GrowAndCheck(1500, 30, [&rng](int, int) { return static_cast<double>(rng() % 5); }, /*force_global_heap=*/true);
+  GrowAndCheck(1500, 30, [&rng](int, int) { return static_cast<double>(rng() % 5); }, /*force_global_area=*/true);
 }
 
 // ---- the parallel R3 (P8c): the same levels through the merge, its order kept on the device between them ----
@@ -617,6 +614,17 @@ TEST(CUDASelectiveR3Parallel, EqualGainsResolvedByTheTieKey) {
     ParallelRun par(63);
     GrowAndCheck(63, 30, [&](int, int level) { return level == 4 && calls++ < 2 ? 0.75 : u(rng); }, false, &par);
     EXPECT_GT(par.merged, 0);
+  }
+}
+
+TEST(CUDASelectiveR3Parallel, AllEqualGainsWideTrees) {
+  // every gain equal over 4095 and 8000 leaves, the order kept across the levels: a waiting entry's divergence is one
+  // tree query (R3FirstTieAbove) where the scan it replaced visited every equal entry popped while it waited (quadratic
+  // in one gain's entries: the P8c uncertainty)
+  for (const int num_leaves : {4095, 8000}) {
+    ParallelRun par(num_leaves);
+    GrowAndCheck(num_leaves, 16, [](int, int) { return 1.0; }, false, &par);
+    EXPECT_GT(par.levels, 8) << num_leaves;
   }
 }
 

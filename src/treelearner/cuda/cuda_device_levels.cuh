@@ -170,6 +170,49 @@ __device__ __forceinline__ void DeviceLevelBitonicSortGlobal(int* leaves, double
   }
 }
 
+/*! \brief a numerical split's apply descriptor as SplitLevelBatched writes it on the host, block offsets excepted: the
+ *  selective route's levels (R3ApplyLevel, cuda_selective_r3.cu; the select blocks below write the same fields inline) */
+__device__ __forceinline__ CUDAHybridApplyDescriptor DeviceLevelSplitDescriptor(
+    const CUDADeviceLevelConfig& cfg, const CUDASplitInfo* info, const int leaf, const int right, const int k,
+    const data_size_t start, const data_size_t num) {
+  const uint32_t threshold = info->threshold;
+  const CUDAHybridGraphFeatureMeta m = cfg.feature_meta[info->inner_feature_index];
+  const CUDAHybridGraphFeatureSource src = cfg.feature_source[info->inner_feature_index];
+  const uint32_t most_freq_offset = m.most_freq_bin == 0 ? 1u : 0u;
+  const bool default_left = m.most_freq_bin <= threshold;
+  const bool missing_left = (m.missing_is_zero || m.missing_is_na) && info->default_left;
+  CUDAHybridApplyDescriptor d;
+  memset(&d, 0, sizeof(CUDAHybridApplyDescriptor));
+  d.column_data = src.column_data;
+  d.best_split_info = info;
+  d.smaller_leaf_splits = cfg.pair_slots + 2 * k;
+  d.larger_leaf_splits = cfg.pair_slots + 2 * k + 1;
+  d.leaf_data_start = start;
+  d.num_data_in_leaf = num;
+  d.num_blocks = (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+  d.left_leaf_index = leaf;
+  d.right_leaf_index = right;
+  d.th = threshold + m.min_bin - most_freq_offset;
+  d.t_zero_bin = m.min_bin + m.default_bin - most_freq_offset;
+  d.max_bin = m.max_bin;
+  d.min_bin = m.min_bin;
+  d.default_leaf_index = default_left ? leaf : right;
+  d.missing_default_leaf_index = missing_left ? leaf : right;
+  d.split_default_to_left = default_left ? 1 : 0;
+  d.split_missing_default_to_left = missing_left ? 1 : 0;
+  d.packed_row_stride = src.packed_row_stride;
+  d.bit_type = src.bit_type;
+  d.packed_shift = src.packed_shift;
+  d.min_is_max = (m.min_bin < m.max_bin) ? 0 : 1;
+  d.missing_is_zero = m.missing_is_zero;
+  d.missing_is_na = m.missing_is_na;
+  d.mfb_is_zero = m.mfb_is_zero;
+  d.mfb_is_na = m.mfb_is_na;
+  d.max_bin_to_left = (m.max_bin <= d.th) ? 1 : 0;
+  d.use_min_bin = m.use_min_bin;
+  return d;
+}
+
 /*! \brief selective trees (CUDADeviceLevelConfig::r1_binding): whether a level of cur_leaves leaves (cur_leaves - 1
  *  applied splits) with n valid leaves binds, i.e. the host's greedy simulation would not select all of its
  *  candidates (applied + valid > num_leaves - 1). A level with no valid leaf never binds (cur_leaves <= the budget) */

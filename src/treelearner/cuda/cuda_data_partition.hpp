@@ -375,6 +375,10 @@ class CUDADataPartition: public NCCLInfo {
 
   const data_size_t* cuda_leaf_data_start() const { return cuda_leaf_data_start_.RawData(); }
 
+  /*! \brief the selective R3 route resets collapsed and freed leaves' windows on the device (R3ApplyLevel) */
+  data_size_t* mutable_cuda_leaf_num_data() { return cuda_leaf_num_data_.RawData(); }
+  data_size_t* mutable_cuda_leaf_data_start() { return cuda_leaf_data_start_.RawData(); }
+
   const int* cuda_data_index_to_leaf_index() const { return cuda_data_index_to_leaf_index_.RawData(); }
 
   bool use_bagging() const { return use_bagging_; }

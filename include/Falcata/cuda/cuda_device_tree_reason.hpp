@@ -21,8 +21,11 @@ namespace Falcata {
  * last fallback line: complete trees in between do not make the same line print again. Every learner prints its own
  * lines (one per rank under num_gpu > 1, one per forest slot). Trees the complete device tree grew
  * keep their `device_tree: complete ...` line; a selective tree the device levels grew up to its first binding level
- * (dynamic R1) reports `device_tree: selective hand-off at level <k> (binding|complete)` instead, once per tree, where
- * k is the level the host's selective loop took over (complete: no leaf had a valid split, the loop only finalizes).
+ * (dynamic R1) reports `device_tree: selective hand-off at level <k> (routed|binding|complete)` instead, once per tree,
+ * where k is the level the host's selective loop took over (routed: the host simulates level k once and the R3 route
+ * grows the rest on the device; binding: the host loop grows the rest; complete: no leaf had a valid split, the loop
+ * only finalizes). A tree the R3 route refuses or stops also reports `device_tree: fallback (<r3 reason>)
+ * route=selective_device`.
  * <reason> is the first refusal in the order of this list that holds for
  * the tree (several can hold at once; the order puts the long-lived fallbacks first, so a later port changes the
  * fewest pins). `prefix=` names why a device_levels prefix did not run in a flow that would otherwise have taken one
@@ -60,6 +63,9 @@ namespace Falcata {
   X(kBynodeOutsideBound, "bynode_outside_bound", "7")     /* per-node masks outside the depth bound */ \
   X(kSelectiveUnbounded, "selective_unbounded", "3")      /* max_depth <= 0 */                         \
   X(kSelectiveBudget, "selective_budget", "3")            /* 2^max_depth > num_leaves + 1 */           \
+  X(kR3TooWide, "r3_too_wide", "3")          /* R3 route: num_leaves past the kernel's shared index */     \
+  X(kR3Capacity, "r3_capacity", "3")         /* R3 route: a level past the record table, handed back */   \
+  X(kR3Error, "r3_error", "3")               /* R3 route: a NaN gain or a broken invariant, handed back */ \
   X(kScratchTooLarge, "scratch_too_large", "2")           /* 1 pair > half free; offsets overflow */   \
   X(kSetupFailed, "setup_failed", "-")                    /* SetupDeviceLevels refused */              \
   X(kPrefixGraphChurn, "prefix_graph_churn", "24")        /* prefix graphs off after cache misses */   \
@@ -86,7 +92,7 @@ inline const char* DeviceTreeReasonToken(const DeviceTreeReason reason) {
   X(kDeviceTree, "device_tree")                 /* the complete device tree */                          \
   X(kPrefix, "prefix")                          /* device_levels prefix, then the host two-sync loop */ \
   X(kHostTwoSync, "host_two_sync")              /* the host two-sync level loop */                      \
-  X(kSelectiveDevice, "selective_device")       /* device levels to the first binding level, then F */  \
+  X(kSelectiveDevice, "selective_device")       /* device levels; past the first binding level R3 or F */ \
   X(kSelectiveTwoSync, "selective_two_sync")    /* the host selective two-sync loop */                  \
   X(kSelectiveOneSync, "selective_one_sync")    /* the host selective one-sync loop (non-quantized) */  \
   X(kOneSync, "one_sync")                       /* the non-quantized one-sync level loop */             \
