@@ -198,7 +198,7 @@ def test_route_pin_cuda(cell_id, tmp_path):
 # (params, rows, rounds, FALCATA_DEBUG hooks).
 R3_FALLBACKS = {
     # num_leaves past the kernel's per-leaf index in shared memory (~25 K leaves at sm_120's 99 KB opt-in)
-    "r3_too_wide": ({"num_leaves": 26000, "min_data_in_leaf": 1, "max_bin": 63}, 60000, 1, []),
+    "r3_too_wide": ({"num_leaves": 26000, "min_data_in_leaf": 1}, 200000, 1, []),
     # test hook r3cap: a record table just big enough for the hand-off level, so the route's first level runs out of
     # records before changing anything and hands the tree back to the host loop
     "r3_capacity": ({"num_leaves": 255, "min_data_in_leaf": 20}, 30000, 3, ["r3cap"]),

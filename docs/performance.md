@@ -3500,78 +3500,82 @@ there) run the former prefix's launches and readback unchanged, plus a host coun
 is on shapes whose early levels leave leaves without a valid split (fraud: chain-like trees) and on budgets above
 1024 leaves (higgs 4095: the old 10-level cap).
 
-#### The device greedy selection in shadow mode (`FALCATA_DEBUG=r3shadow`)
+#### The levels after the first binding level on the device (the R3 route)
 
-From the first binding level on, the host's selective loop decides which candidates a level splits by simulating the
-greedy leaf-wise order (`RunSelectiveLevel`). Its device port, R3 (`cuda_selective_r3`), runs only as a shadow so far.
-It does not route or change any model. Under `FALCATA_DEBUG=r3shadow`, every level of the host loop also runs R3 on a
-side stream, from the same state and the device's own best-split cache, and compares the result field by field: the
-frontier (leaves, gains), the pop order and classic leaf numbers, the collapsed splits, the freed leaves and the free
-list, the created records, every record's links, dead flag and gain (bit for bit), and every leaf's parent record. It
-does not compare the collapse windows' row ranges, leaf depths, live flags or the created records' split payloads,
-which the host keeps. Lines (stderr, `[hybrid-diag]` prefix):
+From the first binding level on, a selective level's split set comes from the greedy leaf-wise simulation of
+`RunSelectiveLevel`. The host loop ran it per level, with a readback before and the apply's counts after it. Since
+FULL_DEVICE_PLAN P8b the device grows those levels. R3 (`cuda_selective_r3`) is the device selection; it keeps the
+last level's pop order and merges the next frontier into it (below).
 
-- `r3_shadow: tree=T level=k handoff=0|1 binding=0|1 applied=A frontier=S pops=P reuse=R collapsed=C created=N
-  r3_us= sim_us= ties= gap_readback_us= gap_apply_us= shadow_host_us=`: one per level, printed at the tree end.
-  - `reuse` is the number of leading pops equal to the previous level's.
-  - `r3_us` is the kernel time from cudaEvents.
-  - `sim_us` is the host simulation time, and `ties` counts its equal-gain resolutions.
-  - The two gaps are the device idle time the host loop spends between the level's search and its apply (the shadow's
-    host time taken out) and between the apply and the children's search; -1 where the level has no such span.
-- `r3_shadow: tree=T levels=L mismatches=M cumulative levels= mismatches=`: once per tree. The learner's destructor
-  prints `r3_shadow: end of training levels= mismatches=`.
+- **The hand-off level** (the first binding level) is simulated once on the host, from the device levels' journal as
+  before. Its state (records, windows, leaf parents, free list, the level's created and collapsed records, and its
+  pop order) goes to the device in one packed upload; the prefix's best-split records come from the device levels'
+  own journal. A seed kernel unpacks the state and applies the level.
+- **Every later level** runs in relaunched two-level bodies, captured once per size class (a level creates at most
+  twice the last level's splits, so a body is sized by the last level's splits rounded up to a power of two). Each
+  level runs the children's search of the device levels, then R3, which selects, numbers, collapses and frees, and
+  then the device half of the host's level. That half resets the collapsed nodes' windows and gives freed leaves no
+  rows. It copies each created record's best-split record and window, and writes the apply descriptors in pop order
+  with SplitLevelBatched's gaps (between the split windows sorted by start). The freed histogram slots are zeroed on a
+  branch beside the batched apply. A flag kernel tells the host whether the tree continues.
+- **The tree end**: a level that creates no record is the final simulation. The flag kernel writes its records in pop
+  order, and the allocated leaves' windows and parents, to mapped host memory, and SelectiveFinalize builds the tree.
+- **Refusals and hand-backs** (`device_tree: fallback (<reason>) route=selective_device`, the host loop grows the
+  levels after the hand-off with the same model): `r3_too_wide` (num_leaves above the kernel's per-leaf shared
+  index, about 25 K leaves on sm_120), `r3_capacity` (a level that would overflow the record table, 4 x num_leaves
+  and doubled for the next tree), `r3_error` (a NaN gain). The kernel checks these before it changes anything, and
+  the host reads the device's state back and continues from that level. Every other gate is the device levels' own
+  (categorical, vector leaves, per-node masks, multi-GPU and the rest keep the host loop for the whole tree as
+  before).
+
+`FALCATA_DEBUG=diag` reports a routed tree's hand-off as `device_tree: selective hand-off at level k (routed)` and the
+route as `device_tree: selective route levels= bodies= created= error= graph_hits= graph_misses=`.
+
+**Exactness.** The merge is exact (proof in P8C_PARALLEL_R3.md, kept here in short): the kept order is the run over
+the live records (the last level's selection is a prefix of a run over a superset, and the frontier picks are renamed
+to the records they became). Under a fixed total order a frontier candidate pops right before the first entry after
+its parent with a lower gain, and the budget truncates the merged run. Equal gains are merged in a fixed order that is
+the host's run up to the first pop where an equal-gain entry with a smaller tie key was waiting; from there the
+kernel runs best-first with the host's tie key. Each waiting entry's equal-gain entries are scanned in pop order; an
+entry with more than 16 of them (all gains equal, for example) takes one O(log n) query of a second segment tree
+(the largest tie key at each node's minimum gain) instead, so the scan is never quadratic. The apply half writes
+what the host's level writes: the same windows, payloads and split descriptors. Its gaps copy the same rows as the
+host's, the complement of the split windows in the tree's rows.
+
+**The shadow (`FALCATA_DEBUG=r3shadow`).** The route runs one level at a time. Before each level's selection the
+host reads the device's leaf entries and windows and runs `RunSelectiveLevel` on its own state as the oracle (its
+collapse's device writes left out). After the device's level it compares: the frontier (leaves and gains as bit
+patterns), the pop order, the classic leaves, the collapsed records, the freed leaves, the created records' leaves
+and right leaves, the free list, the allocated count, every record (links, dead flag, gain, window, and the
+best-split fields SelectiveFinalize reads, as bit patterns), the leaf parents, and the windows the level reset. Lines
+(stderr, `[hybrid-diag]` prefix):
+
+- `r3_shadow: tree= level= binding= applied= frontier= pops= collapsed= created= r3_us= zero_us= apply_us= sim_us=
+  ties= tie_at= resumes= resume_at= rounds=`: one per routed level. `r3_us` is the R3 kernel with its apply half,
+  `zero_us` the slot zeroing and `apply_us` the batched apply (cudaEvents; the shadow runs them in line), and
+  `sim_us` is the host simulation.
+- `r3_shadow: tree= levels= mismatches= cumulative levels= mismatches=` once per routed tree, and
+  `r3_shadow: end of training levels= mismatches=` from the learner's destructor.
 - `r3_shadow: MISMATCH tree= level= field= pos= host= device=`: the first difference of a level.
 
-The test hook `r3fault` corrupts the device result's first pop, so every level must report a mismatch.
+The test hooks: `r3fault` corrupts the device's first pop before the comparison, `r3rebuild` rebuilds the kept
+order from the records on every level, and `r3cap` sizes the record table to the hand-off level so the route hands
+the tree back.
 
-Measured with the shadow on (RTX 5090, 200 rounds; medians over the host loop's binding levels):
+Per routed level on the real cells (shadow on, 100 rounds, medians over binding levels; the host round trip is the
+host loop's device-idle time per level, measured in P8a/P8c):
 
-| cell | pops | R3 kernel | host simulation | host device-idle time | R3 / idle |
-|---|---:|---:|---:|---:|---:|
-| binding budget 151/10 | 150 | 159 µs | 11.9 µs | 25.1 µs | 6.3x |
-| unbounded-fewbin 1024/-1 | 1023 | 1340 µs | 55.0 µs | 75.3 µs | 17.8x |
-| fraud 255/-1 | 254 | 204 µs | 11.8 µs | 25.8 µs | 7.9x |
-| higgs 4095/-1 | 4094 | 5133 µs | 234 µs | 287 µs | 17.9x |
-
-There were no mismatches on 5,552 levels. The kernel's one-thread heap costs about 1.1 µs per pop, against about
-55 ns on the host. A device route through it would be slower on every cell, so the route waits for a parallel
-selection.
-
-**The parallel selection (`FALCATA_DEBUG=r3shadow=par`, or `r3shadow=both` for both kernels).** A second kernel produces
-the same results without simulating. It keeps the last level's pop order on the device and inserts the level's
-frontier into it: a candidate pops just before the first entry after its parent with a lower gain. It finds that
-entry with a segment tree, ranks the candidates in each slot and truncates the order at the budget. The classic leaf
-numbers, the collapse order and the free list follow in closed form. Equal gains are first merged in a fixed order.
-The kernel then finds, in parallel, the first pop where an equal-gain entry with a smaller tie key was waiting, and
-from that pop on it runs the greedy selection exactly. The order is rebuilt from the records on a tree's first shadowed
-level. The per-level line adds `par_us= par_resumes= par_resume_at= par_rounds= eqgain= tie_at=`:
-- `par_us` is the parallel kernel's time (`r3_us` and `par_us` are -1 for a kernel that did not run).
-- `par_resumes` and `par_resume_at` give the exact restarts from a tie and the level's restart pop.
-- `par_rounds` counts the rebuild merges.
-- `eqgain` counts equal gains among the live candidates.
-- `tie_at` is the host's first tie-break pop.
-
-Mismatch lines end with `path=seq|par`. The test hook `r3rebuild` rebuilds the order on every level.
-
-| cell | binding levels with host ties | parallel kernel, median (p90) | host device-idle time, median | median / idle |
+| cell | R3 + apply half (p90) | slot zeroing | host simulation | host round trip it replaces |
 |---|---:|---:|---:|---:|
-| binding budget 151/10 | 0% | 17.5 µs (19.6) | 25.5 µs | 0.69x |
-| unbounded-fewbin 1024/-1 | 0% | 27.7 µs (88.0) | 78.5 µs | 0.35x |
-| fraud 255/-1 | 68% (382 of 562) | 15.6 µs (18.1) | 27.5 µs | 0.57x |
-| higgs 4095/-1 | 0% | 66.6 µs (156.5) | 294 µs | 0.23x |
+| binding budget 151/10 | 21.1 µs (23.2) | 4.1 µs, beside the apply | 6.4 µs | 25.5 µs |
+| unbounded-fewbin 1024/-1 | 40.1 µs (108.0) | 4.1 µs | 49.1 µs | 78.5 µs |
+| fraud 255/-1 | 19.1 µs (20.9) | 4.1 µs | 6.8 µs | 27.5 µs |
+| higgs 4095/-1 | 80.3 µs (187.5) | 4.1 µs | 247 µs | 294 µs |
 
-The kernel times are median kernel times per binding level from cudaEvents around the launch. They do not include
-the launch latency or the device-side apply work (collapse windows, slot zeroing, record payloads) that a device route
-must add. The margins are thin where the round trip is short. Budget's p90 is 19.6 µs against 25.5 µs, and fewbin's p90
-(88 µs, levels with large frontiers) is above its 78.5 µs. A strict A/B of the device route on budget and fewbin is
-therefore the deciding test, not these medians.
+There were no mismatches on 2,451 levels (fraud: 370 levels with host tie-breaks, 32 exact restarts).
 
-There were no mismatches on 5,552 levels, including fraud's 549 levels with host tie-breaks. Only 42 of those levels
-needed an exact restart (median 38 pops); the fixed merge order already broke the other ties the host's way. The rebuild
-on a tree's first shadowed level (the hand-off from the device levels) costs 57, 215, 137 and 614 µs on these cells.
-That is one merge per depth level of the prefix, more than the round trip it would replace there.
-
-
+History: the first device selection (#187) simulated the heap on one thread and was 6-18x slower than the host round
+trip; the parallel merge (#188) brought the kernel alone to 0.23-0.69x; both ran only as shadows until this route.
 
 Whole-tree fused apply bounds only its physical workers by the joint split/gap row extent:
 `min(8192, max(1, ceil(N / 1024) + 2 * max_splits - 1))`, plus the controller CTA.
