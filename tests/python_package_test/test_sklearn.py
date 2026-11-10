@@ -2336,7 +2336,7 @@ def test_eval_set_raises():
     with pytest.raises(ValueError, match=msg):
         gbm.fit(X_train, y_train, eval_y=y_test)
 
-    msg = "If eval_X is a tuple, y_val must be a tuple of same length, and vice versa."
+    msg = "If eval_X is a tuple, eval_y must be a tuple of same length, and vice versa."
     with pytest.raises(ValueError, match=msg):
         gbm.fit(X_train, y_train, eval_X=(X_test, X_test), eval_y=y_test)
     with pytest.raises(ValueError, match=msg):

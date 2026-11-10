@@ -526,8 +526,8 @@ void GPUTreeLearner::AllocateGPUMemory() {
   // data transfer time
   std::chrono::duration<double, std::milli> end_time = std::chrono::steady_clock::now() - start_time;
   Log::Info("%d dense feature groups (%.2f MB) transferred to GPU in %f secs. %d sparse feature groups",
-            dense_feature_group_map_.size(), ((dense_feature_group_map_.size() + (dword_features_ - 1)) / dword_features_) * num_data_ * sizeof(Feature4) / (1024.0 * 1024.0),
-            end_time * 1e-3, sparse_feature_group_map_.size());
+            static_cast<int>(dense_feature_group_map_.size()), ((dense_feature_group_map_.size() + (dword_features_ - 1)) / dword_features_) * num_data_ * sizeof(Feature4) / (1024.0 * 1024.0),
+            end_time.count() * 1e-3, static_cast<int>(sparse_feature_group_map_.size()));
   #if GPU_DEBUG >= 1
   printf("Dense feature group list (size %lu): ", dense_feature_group_map_.size());
   for (int i = 0; i < num_dense_feature_groups_; ++i) {

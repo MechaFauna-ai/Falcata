@@ -99,7 +99,7 @@ class CrossEntropyMetric : public Metric {
 
     // check weight sum (may fail to be zero)
     if (sum_weights_ <= 0.0f) {
-      Log::Fatal("[%s:%s]: sum-of-weights = %f is non-positive", __func__, GetName()[0].c_str(), sum_weights_);
+      Log::Fatal("[%s:%s]: sum-of-weights = %f is non-positive", GetName()[0].c_str(), __func__, sum_weights_);
     }
     Log::Info("[%s:%s]: sum-of-weights = %f", GetName()[0].c_str(), __func__, sum_weights_);
   }
