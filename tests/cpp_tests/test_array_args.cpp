@@ -9,6 +9,7 @@
 #include <Falcata/utils/array_args.h>
 #include <Falcata/utils/threading.h>
 
+#include <algorithm>
 #include <random>
 #include <vector>
 
@@ -52,6 +53,38 @@ TEST(Partition, AllEqual) {
   EXPECT_EQ(gradients[middle_begin + 1], gradients[middle_end - 1]);
   EXPECT_EQ(middle_begin, -1);
   EXPECT_EQ(middle_end, 3);
+}
+
+// ArgMaxAtK leaves the k-th largest value at k, larger-or-equal values before
+// it and smaller-or-equal after (PercentileFun and GOSS rely on both sides),
+// on any input order. The quickselect it used took the last element as pivot,
+// so sorted input (a label column of a sorted file) was quadratic: 1.6 s for
+// 100,000 values.
+TEST(ArgMaxAtK, SelectsAndPartitionsOnAnyOrder) {
+  const int n = 200000;
+  std::mt19937 gen(5);
+  std::vector<score_t> base(n);
+  for (int i = 0; i < n; ++i) {
+    base[i] = static_cast<score_t>(gen() % 50000) / 8.0f;
+  }
+  std::vector<score_t> descending = base;
+  std::sort(descending.begin(), descending.end(), [](score_t a, score_t b) { return a > b; });
+  std::vector<std::vector<score_t>> inputs = {base, descending, std::vector<score_t>(descending.rbegin(), descending.rend()),
+                                              std::vector<score_t>(n, 1.5f)};
+  for (size_t t = 0; t < inputs.size(); ++t) {
+    for (int k : {0, 1, n / 3, n / 2, n - 2, n - 1}) {
+      std::vector<score_t> a = inputs[t];
+      const std::vector<score_t> sorted_desc = t == 3 ? a : descending;
+      ASSERT_EQ(ArrayArgs<score_t>::ArgMaxAtK(&a, 0, n, k), k);
+      EXPECT_EQ(a[k], sorted_desc[k]) << t << " " << k;
+      for (int i = 0; i < k; ++i) {
+        ASSERT_GE(a[i], a[k]) << t << " " << k << " " << i;
+      }
+      for (int i = k + 1; i < n; ++i) {
+        ASSERT_LE(a[i], a[k]) << t << " " << k << " " << i;
+      }
+    }
+  }
 }
 
 // An empty range made BlockInfo return zero blocks, and Run then read
