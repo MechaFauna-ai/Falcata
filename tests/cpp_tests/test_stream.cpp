@@ -10,8 +10,12 @@
 #include <Falcata/c_api.h>
 #include <Falcata/dataset.h>
 
+#include <cstdint>
+#include <functional>
 #include <iostream>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using Falcata::Dataset;
@@ -353,4 +357,29 @@ TEST(Stream, PushSparseRowsWithMetadata) {
 
   result = FLC_DatasetFree(ref_dataset_handle);
   EXPECT_EQ(0, result) << "FLC_DatasetFree result code: " << result;
+}
+
+// Internal helper of the CSC row iterators, defined in src/c_api.cpp.
+std::function<std::pair<int, double>(int idx)> IterateFunctionFromCSC(const void* col_ptr, int col_ptr_type,
+                                                                     const int32_t* indices, const void* data,
+                                                                     int data_type, int64_t ncol_ptr, int64_t nelem,
+                                                                     int col_idx);
+
+// IterateFunctionFromCSC reads col_ptr[col_idx + 1], but only checked
+// col_idx < ncol_ptr, so col_idx == ncol_ptr - 1 read one past the column
+// pointers. It must be rejected; every real column still iterates.
+TEST(CSCIterator, RejectsColumnWithoutEndPointer) {
+  const std::vector<int32_t> col_ptr = {0, 1, 2};  // 2 columns -> 3 pointers
+  const std::vector<int32_t> indices = {0, 1};
+  const std::vector<double> data = {1.5, 2.5};
+  const int64_t ncol_ptr = static_cast<int64_t>(col_ptr.size());
+  for (int col = 0; col < 2; ++col) {
+    auto it = IterateFunctionFromCSC(col_ptr.data(), C_API_DTYPE_INT32, indices.data(), data.data(),
+                                     C_API_DTYPE_FLOAT64, ncol_ptr, 2, col);
+    EXPECT_EQ(it(0), std::make_pair(col, data[col]));
+    EXPECT_EQ(it(1).first, -1);
+  }
+  EXPECT_THROW(IterateFunctionFromCSC(col_ptr.data(), C_API_DTYPE_INT32, indices.data(), data.data(),
+                                      C_API_DTYPE_FLOAT64, ncol_ptr, 2, 2),
+               std::runtime_error);
 }

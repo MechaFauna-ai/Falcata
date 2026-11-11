@@ -300,6 +300,10 @@ class TcpSocket {
   }
 
   inline int Send(const char *buf_, int len, int flag = 0) {
+#ifdef MSG_NOSIGNAL
+    // a peer that went away is an error to report, not a SIGPIPE that kills the process
+    flag |= MSG_NOSIGNAL;
+#endif
     int cur_cnt = send(sockfd_, buf_, len, flag);
     if (cur_cnt == SOCKET_ERROR) {
       int err_code = GetLastError();
@@ -323,6 +327,18 @@ class TcpSocket {
 #endif
     }
     return cur_cnt;
+  }
+
+  /*! \brief Shut down both directions without closing: a send or receive
+   *  blocked on this socket in another thread returns with an error */
+  inline void Shutdown() {
+    if (!IsClosed()) {
+#if defined(_WIN32)
+      shutdown(sockfd_, SD_BOTH);
+#else
+      shutdown(sockfd_, SHUT_RDWR);
+#endif
+    }
   }
 
   inline bool IsClosed() {

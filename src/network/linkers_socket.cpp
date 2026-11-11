@@ -12,7 +12,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -51,18 +53,29 @@ Linkers::Linkers(Config config) {
   }
   // construct listener
   listener_ = std::unique_ptr<TcpSocket>(new TcpSocket());
-  TryBind(local_listen_port_);
+  try {
+    TryBind(local_listen_port_);
 
-  for (int i = 0; i < num_machines_; ++i) {
-    linkers_.push_back(nullptr);
+    for (int i = 0; i < num_machines_; ++i) {
+      linkers_.push_back(nullptr);
+    }
+
+    // construct communication topo
+    bruck_map_ = BruckMap::Construct(rank_, num_machines_);
+    recursive_halving_map_ = RecursiveHalvingMap::Construct(rank_, num_machines_);
+
+    // construct linkers
+    Construct();
+  } catch (...) {
+    // the destructor does not run for a constructor that throws: close what was opened, so a retry can bind again
+    listener_->Close();
+    for (auto& link : linkers_) {
+      if (link != nullptr) {
+        link->Close();
+      }
+    }
+    throw;
   }
-
-  // construct communication topo
-  bruck_map_ = BruckMap::Construct(rank_, num_machines_);
-  recursive_halving_map_ = RecursiveHalvingMap::Construct(rank_, num_machines_);
-
-  // construct linkers
-  Construct();
   // free listener
   listener_->Close();
   is_init_ = true;
@@ -161,27 +174,56 @@ void Linkers::ListenThread(int incoming_cnt) {
     if (handler.IsClosed()) {
       continue;
     }
-    // receive rank
-    int read_cnt = 0;
-    int size_of_int = static_cast<int>(sizeof(int));
-    while (read_cnt < size_of_int) {
-      int cur_read_cnt = handler.Recv(buffer + read_cnt, size_of_int - read_cnt);
-      if (cur_read_cnt <= 0) {
-        // orderly shutdown before the rank arrived: retrying recv would spin
-        // forever, so drop this connection and wait for the next one
-        break;
+    // the handshake read is bounded by the socket timeout, and Construct can interrupt it (AbortHandshake)
+    handler.SetTimeout(socket_timeout_ * 1000 * 60);
+    {
+      std::lock_guard<std::mutex> lock(handshake_mutex_);
+      if (handshake_aborted_) {
+        handler.Close();
+        Log::Fatal("Linkers setup was aborted");
       }
-      read_cnt += cur_read_cnt;
+      handshake_socket_ = &handler;
     }
-    if (read_cnt < size_of_int) {
+    int in_rank = -1;
+    bool closed_early = false;
+    try {
+      // receive rank
+      int read_cnt = 0;
+      int size_of_int = static_cast<int>(sizeof(int));
+      while (read_cnt < size_of_int) {
+        int cur_read_cnt = handler.Recv(buffer + read_cnt, size_of_int - read_cnt);
+        if (cur_read_cnt <= 0) {
+          // orderly shutdown before the rank arrived: retrying recv would spin
+          // forever, so drop this connection and wait for the next one
+          closed_early = true;
+          break;
+        }
+        read_cnt += cur_read_cnt;
+      }
+      if (!closed_early) {
+        int* ptr_in_rank = reinterpret_cast<int*>(buffer);
+        in_rank = *ptr_in_rank;
+        if (in_rank < 0 || in_rank >= num_machines_) {
+          Log::Fatal("Invalid rank %d found during initialization of linkers. The world size is %d.", in_rank,
+                     num_machines_);
+        }
+      }
+    } catch (...) {
+      {
+        std::lock_guard<std::mutex> lock(handshake_mutex_);
+        handshake_socket_ = nullptr;
+      }
+      handler.Close();
+      throw;
+    }
+    {
+      std::lock_guard<std::mutex> lock(handshake_mutex_);
+      handshake_socket_ = nullptr;
+    }
+    if (closed_early) {
       Log::Warning("A peer closed its connection before sending its rank; waiting for another connection.");
       handler.Close();
       continue;
-    }
-    int* ptr_in_rank = reinterpret_cast<int*>(buffer);
-    int in_rank = *ptr_in_rank;
-    if (in_rank < 0 || in_rank >= num_machines_) {
-      Log::Fatal("Invalid rank %d found during initialization of linkers. The world size is %d.", in_rank, num_machines_);
     }
     // only lower ranks connect in (see Construct), each exactly once: a
     // duplicate or higher rank must not replace a linker or be counted
@@ -216,7 +258,33 @@ void Linkers::Construct() {
   // start listener
   listener_->SetTimeout(socket_timeout_ * 1000 * 60);
   listener_->Listen(incoming_cnt);
-  std::thread listen_thread(&Linkers::ListenThread, this, incoming_cnt);
+  // a failure in the listening thread is carried out of it and rethrown here once it has finished
+  std::exception_ptr listen_error;
+  std::thread listen_thread([this, incoming_cnt, &listen_error]() {
+    try {
+      ListenThread(incoming_cnt);
+    } catch (...) {
+      listen_error = std::current_exception();
+    }
+  });
+  try {
+    ConnectToHigherRanks(need_connect);
+  } catch (...) {
+    AbortHandshake();  // makes a handshake read in progress return
+    listener_->Shutdown();  // makes a blocked accept return, so the thread finishes
+    listen_thread.join();
+    throw;
+  }
+  // wait for listener
+  listen_thread.join();
+  if (listen_error) {
+    std::rethrow_exception(listen_error);
+  }
+  // print connected linkers
+  PrintLinkers();
+}
+
+void Linkers::ConnectToHigherRanks(const std::unordered_map<int, int>& need_connect) {
   const int connect_fail_constant_factor = 20;
   const int connect_fail_retries_scale_factor = static_cast<int>(num_machines_ / connect_fail_constant_factor);
   const int connect_fail_retry_cnt = std::max(connect_fail_constant_factor, connect_fail_retries_scale_factor);
@@ -246,10 +314,14 @@ void Linkers::Construct() {
       }
     }
   }
-  // wait for listener
-  listen_thread.join();
-  // print connected linkers
-  PrintLinkers();
+}
+
+void Linkers::AbortHandshake() {
+  std::lock_guard<std::mutex> lock(handshake_mutex_);
+  handshake_aborted_ = true;
+  if (handshake_socket_ != nullptr) {
+    handshake_socket_->Shutdown();
+  }
 }
 
 bool Linkers::CheckLinker(int rank) {
