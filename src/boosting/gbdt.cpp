@@ -265,7 +265,7 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
   parser_config_str_ = train_data_->parser_config_str();
 
   // check that forced splits does not use feature indices larger than dataset size
-  CheckForcedSplitFeatures();
+  CheckForcedSplitFeatures(forced_splits_json_);
 
   // if need bagging, create buffer
   data_sample_strategy_->ResetSampleConfig(config_.get(), true);
@@ -296,12 +296,12 @@ Json GBDT::ParseForcedSplits(const std::string& content, const std::string& file
   return forced_splits;
 }
 
-void GBDT::CheckForcedSplitFeatures() {
-  if (forced_splits_json_.is_null()) {
+void GBDT::CheckForcedSplitFeatures(const Json& forced_splits) const {
+  if (forced_splits.is_null()) {
     return;
   }
   std::queue<Json> forced_split_nodes;
-  forced_split_nodes.push(forced_splits_json_);
+  forced_split_nodes.push(forced_splits);
   while (!forced_split_nodes.empty()) {
     Json node = forced_split_nodes.front();
     forced_split_nodes.pop();
@@ -1143,8 +1143,10 @@ void GBDT::ResetConfig(const Config* config) {
       }
       std::stringstream buffer;
       buffer << forced_splits_file.rdbuf();
-      forced_splits_json_ = ParseForcedSplits(buffer.str(), new_config->forcedsplits_filename);
-      CheckForcedSplitFeatures();
+      // validate before replacing: the tree learner keeps a pointer to forced_splits_json_
+      Json forced_splits = ParseForcedSplits(buffer.str(), new_config->forcedsplits_filename);
+      CheckForcedSplitFeatures(forced_splits);
+      forced_splits_json_ = std::move(forced_splits);
       tree_learner_->SetForcedSplit(&forced_splits_json_);
     } else {
       forced_splits_json_ = Json();

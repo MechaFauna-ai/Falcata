@@ -3778,6 +3778,17 @@ def test_forced_split_malformed_file(tmp_path, content):
         lgb.train(params, lgb.Dataset(X, y))
 
 
+def test_forced_split_reset_rejects_bad_file_and_keeps_training(tmp_path):
+    X, y = make_synthetic_regression()
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"feature": -3, "threshold": 0.5}))
+    bst = lgb.train({"objective": "regression", "verbose": -1}, lgb.Dataset(X, y), 2, keep_training_booster=True)
+    with pytest.raises(lgb.basic.FalcataError, match="Forced splits file includes feature index -3"):
+        bst.reset_parameter({"forcedsplits_filename": str(bad)})
+    bst.update()
+    assert np.all(np.isfinite(bst.predict(X)))
+
+
 @pytest.mark.parametrize("side", ["root", "left", "right"])
 def test_forced_split_on_unused_feature_is_skipped(tmp_path, side):
     # A constant column is dropped from the binned dataset, so it has no inner
