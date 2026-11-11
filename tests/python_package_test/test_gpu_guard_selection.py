@@ -56,3 +56,23 @@ def test_guard_samples_spanning_the_window(guard, monkeypatch):
         guard.main()
     assert result.value.code == 0
     assert samples == [0.0, 20.0]
+
+
+def test_guard_explicit_hardware_id(guard, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    commands = []
+
+    def query(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "7000, 10\n", "")
+
+    monkeypatch.setattr(guard.subprocess, "run", query)
+    assert guard.gpu_state("1") == (7000, 10)
+    assert "--id=1" in commands[0]
+
+
+@pytest.mark.parametrize("visible", ["1", "MIG-example", ""])
+def test_guard_rejects_unsupported_selection(guard, monkeypatch, visible):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    with pytest.raises(ValueError, match="MIG|UUID"):
+        guard.gpu_state()

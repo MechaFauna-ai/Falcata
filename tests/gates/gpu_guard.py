@@ -57,7 +57,10 @@ def main():
     while True:
         try:
             free_mb, util = gpu_state(args.gpu_id)
-        except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
+        except ValueError as e:
+            print(f"gpu_guard: invalid GPU selection or telemetry ({e})", flush=True)
+            sys.exit(2)
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
             print(f"gpu_guard: cannot query nvidia-smi ({e})", flush=True)
             sys.exit(2)
         ok = free_mb >= args.require_free_mb and util <= args.max_util
