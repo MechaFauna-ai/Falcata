@@ -417,27 +417,26 @@ void BitonicArgSortGlobalHelper(const VAL_T* values, INDEX_T* indices, const siz
     len_to_shift >>= 1;
   }
   const int num_blocks = (static_cast<int>(len) + BITONIC_SORT_NUM_ELEMENTS - 1) / BITONIC_SORT_NUM_ELEMENTS;
+  // Every pass is ordered after the previous one on the default stream; one
+  // synchronize at the end surfaces errors instead of one per pass.
   BitonicArgSortGlobalKernel<VAL_T, INDEX_T, ASCENDING><<<num_blocks, BITONIC_SORT_NUM_ELEMENTS>>>(values, indices, static_cast<int>(len));
-  SynchronizeCUDADevice(__FILE__, __LINE__);
   for (int depth = max_depth - 11; depth >= 1; --depth) {
     const int segment_length = (1 << (max_depth - depth));
     int half_segment_length = (segment_length >> 1);
     {
       BitonicArgCompareKernel<VAL_T, INDEX_T, ASCENDING, true><<<num_blocks, BITONIC_SORT_NUM_ELEMENTS>>>(
         values, indices, half_segment_length, segment_length, static_cast<int>(len));
-      SynchronizeCUDADevice(__FILE__, __LINE__);
       half_segment_length >>= 1;
     }
     for (int inner_depth = depth + 1; inner_depth <= max_depth - 11; ++inner_depth) {
       BitonicArgCompareKernel<VAL_T, INDEX_T, ASCENDING, false><<<num_blocks, BITONIC_SORT_NUM_ELEMENTS>>>(
         values, indices, half_segment_length, segment_length, static_cast<int>(len));
-      SynchronizeCUDADevice(__FILE__, __LINE__);
       half_segment_length >>= 1;
     }
     BitonicArgSortMergeKernel<VAL_T, INDEX_T, ASCENDING><<<num_blocks, BITONIC_SORT_NUM_ELEMENTS>>>(
       values, indices, segment_length, static_cast<int>(len));
-    SynchronizeCUDADevice(__FILE__, __LINE__);
   }
+  SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
 template <>
