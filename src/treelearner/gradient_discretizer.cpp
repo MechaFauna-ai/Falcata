@@ -6,12 +6,14 @@
  */
 
 #include "gradient_discretizer.hpp"
-#include "quantized_index.hpp"
+
 #include <Falcata/network.h>
 
 #include <algorithm>
 #include <string>
 #include <vector>
+
+#include "quantized_index.hpp"
 
 namespace Falcata {
 
