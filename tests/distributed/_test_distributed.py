@@ -2,9 +2,9 @@ import copy
 import io
 import socket
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+import time
 from pathlib import Path
-from typing import Any, Dict, Generator, List
+from typing import Any, Dict, Generator, List, Optional
 
 import numpy as np
 import pytest
@@ -81,11 +81,40 @@ class DistributedMockup:
     def __init__(self, executable: str):
         self.executable = executable
 
-    def worker_train(self, i: int) -> subprocess.CompletedProcess:
-        """Start the training process on the `i`-th worker."""
+    # A port found free by _find_random_open_port is released before the worker binds it, so another process can
+    # take it in between. A worker that then fails to bind ("Binding port ... failed") is retried with fresh ports.
+    max_port_attempts = 5
+
+    def worker_train(self, i: int) -> subprocess.Popen:
+        """Start the training process on the `i`-th worker; its output goes to train{i}.log."""
         config_path = TESTS_DIR / f"train{i}.conf"
         cmd = [self.executable, f"config={config_path}"]
-        return subprocess.run(cmd, check=True)
+        with open(TESTS_DIR / f"train{i}.log", "wt") as log:
+            return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+
+    def _run_workers(self) -> Optional[int]:
+        """Run every worker to completion.
+
+        Returns None when all succeed, or the index of the worker that lost its port to another process (the
+        other workers, which would wait for it, are stopped). Any other failure raises.
+        """
+        procs = [self.worker_train(i) for i in range(self.n_workers)]
+        failed = None
+        while failed is None and any(p.poll() is None for p in procs):
+            failed = next((i for i, p in enumerate(procs) if p.poll() not in (None, 0)), None)
+            time.sleep(0.05)
+        if failed is None:
+            failed = next((i for i, p in enumerate(procs) if p.returncode != 0), None)
+        if failed is None:
+            return None
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+            p.wait()
+        log = (TESTS_DIR / f"train{failed}.log").read_text()
+        if f"Binding port {self.listen_ports[failed]} failed" in log:
+            return failed
+        raise subprocess.CalledProcessError(procs[failed].returncode, procs[failed].args, output=log)
 
     def _set_ports(self) -> None:
         """Randomly assign a port for training to each worker and save all ports to mlist.txt."""
@@ -125,17 +154,17 @@ class DistributedMockup:
         self.train_config = copy.deepcopy(self.default_train_config)
         self.train_config.update(train_config)
         self.n_workers = self.train_config["num_machines"]
-        self._set_ports()
         self._write_data(partitions)
         self.label_ = np.hstack([partition[:, 0] for partition in partitions])
-        futures = []
-        with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+        self.port_attempts = 0
+        for _ in range(self.max_port_attempts):
+            self.port_attempts += 1
+            self._set_ports()
             for i in range(self.n_workers):
                 self.write_train_config(i)
-                train_future = executor.submit(self.worker_train, i)
-                futures.append(train_future)
-            for f in futures:
-                f.result()
+            if self._run_workers() is None:
+                return
+        raise RuntimeError(f"Workers could not bind their ports in {self.max_port_attempts} attempts.")
 
     def predict(self, predict_config: Dict[str, Any]) -> np.ndarray:
         """Compute the predictions using the model created in the fit step.
@@ -198,3 +227,28 @@ def test_regressor(executable):
     reg.fit(partitions, train_params)
     y_pred = reg.predict(predict_config={})
     np.testing.assert_allclose(y_pred, reg.label_, rtol=0.2, atol=50.0)
+
+
+def test_port_taken_before_the_worker_binds_is_retried(executable, monkeypatch):
+    """Another process takes a worker's port between discovery and bind: training retries with fresh ports."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as thief:
+        thief.bind(("", 0))
+        thief.listen(1)
+        stolen = thief.getsockname()[1]
+        handed_out = []
+
+        def find_port_first_stolen() -> int:
+            port = stolen if not handed_out else _find_random_open_port_unpatched()
+            handed_out.append(port)
+            return port
+
+        _find_random_open_port_unpatched = _find_random_open_port
+        monkeypatch.setattr(f"{__name__}._find_random_open_port", find_port_first_stolen)
+        num_machines = 2
+        data = create_data(task="binary-classification")
+        clf = DistributedMockup(executable)
+        clf.fit(np.array_split(data, num_machines), {"objective": "binary", "num_machines": num_machines})
+        assert handed_out[0] == stolen
+        assert clf.port_attempts == 2
+        assert stolen not in clf.listen_ports
+        assert accuracy_score(clf.label_, clf.predict(predict_config={}) > 0.5) == 1.0
