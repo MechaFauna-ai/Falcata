@@ -1104,19 +1104,37 @@ void GBDT::ResetConfig(const Config* config) {
     }
     vector_leaf_mode_ = new_config->tree_mode == std::string("vector_leaf");
   }
-  if (tree_learner_ != nullptr) {
-    tree_learner_->ResetConfig(new_config.get());
-    boosting_on_gpu_ = objective_function_ != nullptr && objective_function_->IsCUDAObjective() &&
-                      !data_sample_strategy_->IsHessianChange();  // for sample strategy with Hessian change, fall back to boosting on CPU
-    tree_learner_->ResetBoostingOnGPU(boosting_on_gpu_);
-  }
-
-  if (train_data_ != nullptr) {
-    data_sample_strategy_->ResetSampleConfig(new_config.get(), false);
-    if (data_sample_strategy_->NeedResizeGradients()) {
-      // resize gradient vectors to copy the customized gradients for goss or bagging with subset
-      ResetGradientBuffers();
+  // The tree learner and the sample strategy keep a pointer to the config they are reset
+  // with. If a later step fails (e.g. "Cannot use bagging in GOSS" from ResetSampleConfig),
+  // new_config is freed while they still point at it: re-point them at the config the
+  // booster keeps (config_) before the error propagates.
+  try {
+    if (tree_learner_ != nullptr) {
+      tree_learner_->ResetConfig(new_config.get());
+      boosting_on_gpu_ = objective_function_ != nullptr && objective_function_->IsCUDAObjective() &&
+                        !data_sample_strategy_->IsHessianChange();  // for sample strategy with Hessian change, fall back to boosting on CPU
+      tree_learner_->ResetBoostingOnGPU(boosting_on_gpu_);
     }
+
+    if (train_data_ != nullptr) {
+      data_sample_strategy_->ResetSampleConfig(new_config.get(), false);
+      if (data_sample_strategy_->NeedResizeGradients()) {
+        // resize gradient vectors to copy the customized gradients for goss or bagging with subset
+        ResetGradientBuffers();
+      }
+    }
+  } catch (...) {
+    if (config_ != nullptr) {
+      early_stopping_round_ = config_->early_stopping_round;
+      shrinkage_rate_ = config_->learning_rate;
+      if (tree_learner_ != nullptr) {
+        tree_learner_->ResetConfig(config_.get());
+      }
+      if (train_data_ != nullptr) {
+        data_sample_strategy_->ResetSampleConfig(config_.get(), false);
+      }
+    }
+    throw;
   }
   if (config_.get() != nullptr && config_->forcedsplits_filename != new_config->forcedsplits_filename) {
     // Forced splits are a training-time tree-learner setting. The C API
