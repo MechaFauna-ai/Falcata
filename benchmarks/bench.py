@@ -27,7 +27,7 @@ import time
 import traceback
 
 import numpy as np
-from common import ALL_LIBRARIES, CACHE_DIR, DATASETS, REGIMES, RUNS_JSONL, SEED
+from common import ALL_LIBRARIES, CACHE_DIR, DATASETS, REGIMES, RUNS_JSONL, SEED, valid_run_record
 
 NUM_THREADS = int(os.environ.get("FALCATA_BENCH_THREADS", "0")) or os.cpu_count()
 
@@ -669,7 +669,7 @@ def recorded_cells(path, library, dataset):
                     r = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if r.get("library") == library and r.get("dataset") == dataset:
+                if valid_run_record(r) and r["library"] == library and r["dataset"] == dataset:
                     done[(r["regime"], r["kind"])] = r["status"]
     return done
 

@@ -34,6 +34,7 @@ from common import (
     dataset_ready,
     library_runs_cell,
     regimes_for,
+    valid_run_record,
     venv_python,
 )
 
@@ -78,6 +79,8 @@ def load_done(results):
                 try:
                     r = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                if not valid_run_record(r):
                     continue
                 done[(r["library"], r["dataset"], r["regime"], r["kind"])] = r["status"]
     return done
