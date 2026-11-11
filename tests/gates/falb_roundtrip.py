@@ -33,7 +33,9 @@ def resolve_lib():
     except Exception:
         pass
     explicit = os.environ.get("FALCATA_LIB")
-    path = explicit or installed or "./lib_falcata.so"
+    if not explicit and not installed:
+        raise RuntimeError("Cannot import falcata; set FALCATA_LIB explicitly for a source-tree build")
+    path = explicit or installed
     stamp = "missing"
     if os.path.exists(path):
         mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
