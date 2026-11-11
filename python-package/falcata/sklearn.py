@@ -199,6 +199,7 @@ class _ObjectiveFunctionWrapper:
             and grad and hess should be returned in the same format.
         """
         self.func = func
+        self._argc = len(signature(func).parameters)
 
     def __call__(
         self,
@@ -224,7 +225,7 @@ class _ObjectiveFunctionWrapper:
             with respect to the elements of preds for each sample point.
         """
         labels = _get_label_from_constructed_dataset(dataset)
-        argc = len(signature(self.func).parameters)
+        argc = self._argc
         if argc == 2:
             grad, hess = self.func(labels, preds)  # type: ignore[call-arg]
             return grad, hess
@@ -282,6 +283,7 @@ class _EvalFunctionWrapper:
                     Are higher values better? e.g. ``True`` for AUC and ``False`` for binary error.
         """
         self.func = func
+        self._argc = len(signature(func).parameters)
 
     def __call__(
         self,
@@ -307,7 +309,7 @@ class _EvalFunctionWrapper:
             Are higher values better? e.g. ``True`` for AUC and ``False`` for binary error.
         """
         labels = _get_label_from_constructed_dataset(dataset)
-        argc = len(signature(self.func).parameters)
+        argc = self._argc
         if argc == 2:
             return self.func(labels, preds)  # type: ignore[call-arg]
 
@@ -1034,11 +1036,11 @@ class FalcataModel(_FalcataModelBase):
                 # raise an error on 0-row and 1-row inputs
                 ensure_min_samples=2,
             )
-            if sample_weight is not None:
-                if SKLEARN_CHECK_SAMPLE_WEIGHT_HAS_ALLOW_ZERO_WEIGHTS_ARG:
-                    sample_weight = _FalcataCheckSampleWeight(sample_weight, _X, allow_all_zero_weights=True)
-                else:
-                    sample_weight = _FalcataCheckSampleWeight(sample_weight, _X)
+        if sample_weight is not None:
+            if SKLEARN_CHECK_SAMPLE_WEIGHT_HAS_ALLOW_ZERO_WEIGHTS_ARG:
+                sample_weight = _FalcataCheckSampleWeight(sample_weight, _X, allow_all_zero_weights=True)
+            else:
+                sample_weight = _FalcataCheckSampleWeight(sample_weight, _X)
 
         if self._class_weight is None:
             self._class_weight = self.class_weight

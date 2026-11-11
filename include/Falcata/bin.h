@@ -669,11 +669,14 @@ inline uint32_t BinMapper::ValueToBin(double value) const {
     }
     return l;
   } else {
-    int int_value = static_cast<int>(value);
-    // convert negative value to NaN bin
-    if (int_value < 0) {
+    // convert negative value to NaN bin. Test the double before the cast:
+    // casting +-inf or a value outside int's range to int is undefined.
+    // value > -1.0 keeps the old truncation semantics ((-1, 0) -> category 0),
+    // and a value >= 2^31 cannot be a category key, so it is unseen (bin 0)
+    if (!(value > -1.0) || value >= 2147483648.0) {
       return 0;
     }
+    int int_value = static_cast<int>(value);
     if (categorical_2_bin_.count(int_value)) {
       return categorical_2_bin_.at(int_value);
     } else {

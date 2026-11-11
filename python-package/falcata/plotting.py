@@ -333,7 +333,6 @@ def plot_metric(
         If None, title is disabled.
     ylabel : str or None, optional (default="@metric@")
         Y-axis title label.
-        If 'auto', metric name is used.
         If None, title is disabled.
         @metric@ placeholder can be used, and it will be replaced with metric name.
     figsize : tuple of 2 elements or None, optional (default=None)
@@ -451,7 +450,7 @@ def _determine_direction_for_numeric_split(
 
 
 def _determine_direction_for_categorical_split(fval: float, thresholds: str) -> str:
-    if math.isnan(fval) or int(fval) < 0:
+    if not math.isfinite(fval) or int(fval) < 0:
         return "right"
     int_thresholds = {int(t) for t in thresholds.split("||")}
     return "left" if int(fval) in int_thresholds else "right"

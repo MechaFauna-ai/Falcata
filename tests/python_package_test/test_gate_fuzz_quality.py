@@ -641,6 +641,8 @@ with open(os.environ["NIGHTLY_TEST_CALLS"], "a") as output:
     output.write(json.dumps([name, *args]) + "\\n")
 if name == "git" and "rev-parse" in args:
     print("01234567")
+if name == "python" and args and args[0] == "tests/gates/lattice.py":
+    sys.exit(int(os.environ.get("NIGHTLY_TEST_LATTICE_STATUS", "0")))
 if name == "python" and args and args[0] == "tests/gates/fuzz.py":
     sys.exit(int(os.environ["NIGHTLY_TEST_FUZZ_STATUS"]))
 sys.exit(0)
@@ -666,11 +668,15 @@ printf '%s\n' '["ci_build"]' >> "$NIGHTLY_TEST_CALLS"
         "NIGHTLY_TEST_CALLS": str(calls_file),
     }
 
-    def run(fuzz_status):
+    def run(fuzz_status, lattice_status=0):
         proc = subprocess.run(
             ["/bin/bash", str(nightly)],
             cwd=repo,
-            env={**env, "NIGHTLY_TEST_FUZZ_STATUS": str(fuzz_status)},
+            env={
+                **env,
+                "NIGHTLY_TEST_FUZZ_STATUS": str(fuzz_status),
+                "NIGHTLY_TEST_LATTICE_STATUS": str(lattice_status),
+            },
             capture_output=True,
             text=True,
             timeout=30,
@@ -732,3 +738,11 @@ def test_nightly_shell_stops_reserved_timeout_but_continues_quality_failure(nigh
         assert "fuzz (45 min, corpus first)" in status
         assert "UNRESOLVED_CUDA_TIMEOUT" not in log
         assert "=== GATES FAILED:" in log
+
+
+def test_nightly_shell_stops_after_lattice_timeout(nightly_shell):
+    proc, calls, log, status = nightly_shell(0, lattice_status=125)
+    assert proc.returncode == 125, log + proc.stderr
+    workloads = [c[1] for c in calls if c[0] == "python"]
+    assert workloads == ["tests/gates/lattice.py"]
+    assert status.startswith("UNRESOLVED_CUDA_TIMEOUT")
