@@ -30,7 +30,12 @@ def test_empty_predictions(kind, sparse, multiclass):
     batch = csr_matrix(data) if sparse else data
     prediction = booster.predict(batch[:0], **options)
     expected = booster.predict(batch[:1], **options)
-    assert prediction.shape == (0, *expected.shape[1:])
+    if isinstance(prediction, list):
+        assert len(prediction) == len(expected)
+        for empty, one_row in zip(prediction, expected, strict=True):
+            assert empty.shape == (0, *one_row.shape[1:])
+    else:
+        assert prediction.shape == (0, *expected.shape[1:])
 
 
 def test_empty_fil_host_input_falls_back():

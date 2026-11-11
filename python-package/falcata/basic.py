@@ -1574,6 +1574,15 @@ class _InnerPredictor:
         predict_type: int,
     ) -> Tuple[_FALCATA_PredictSparseReturnType, int]:
         """Predict for a CSR data."""
+        if csr.shape[0] == 0 and predict_type == _C_API_PREDICT_CONTRIB:
+            width = (
+                self.__get_num_preds(
+                    start_iteration=start_iteration, num_iteration=num_iteration, nrow=1, predict_type=predict_type
+                )
+                // self.num_class
+            )
+            matrices = [scipy.sparse.csr_matrix((0, width), dtype=np.float64) for _ in range(self.num_class)]
+            return (matrices[0] if self.num_class == 1 else matrices), 0
         if predict_type == _C_API_PREDICT_CONTRIB:
             return self.__inner_predict_csr_sparse(
                 csr=csr,
