@@ -341,17 +341,15 @@ def test_cuda_quantile_leaf_renewal_matches_numpy_quantile(alpha):
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("n", [2, 3, 4, 5, 8, 9])
 def test_cuda_l1_median_handles_small_even_and_odd_leaves(n):
-    """Targets the specific failure mode of the old PercentileDevice formula:
-    even-length leaves returning sorted[1] instead of avg(sorted[1], sorted[2]),
-    and odd-length leaves returning avg(sorted[1], sorted[2]) instead of
-    sorted[2]. We force every datapoint into its own leaf, then split a couple
-    in half and check the leaf medians.
+    """Check each observed greedy leaf median on even- and odd-sized inputs.
+
+    The layout is determined by split gain, so compare every actual leaf
+    against numpy.median rather than assuming a forced partition.
     """
     rng = np.random.default_rng(7)
-    # one feature so we deterministically split on it; values are well-separated
+    # One ordered feature; each backend learns its greedy leaf partition.
     X = np.arange(n, dtype=np.float64).reshape(-1, 1)
-    # values designed so that splitting on the only feature produces leaves of
-    # exactly the requested cardinalities at depth 1 and 2.
+    # Random targets exercise several small-leaf layouts across input sizes.
     y = rng.standard_normal(n).astype(np.float64)
 
     for device_type in ("cpu", "cuda"):

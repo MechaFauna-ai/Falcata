@@ -918,6 +918,16 @@ class HistogramPool {
     if (mapper_[src_idx] < 0) {
       return;
     }
+    if (src_idx == dst_idx) {
+      return;
+    }
+    // Release the old destination slot before installing the source. Otherwise
+    // its later eviction invalidates the destination's new mapping.
+    const int old_dst_slot = mapper_[dst_idx];
+    if (old_dst_slot >= 0) {
+      inverse_mapper_[old_dst_slot] = -1;
+      last_used_time_[old_dst_slot] = 0;
+    }
     // get slot of src idx
     int slot = mapper_[src_idx];
     // reset src_idx
