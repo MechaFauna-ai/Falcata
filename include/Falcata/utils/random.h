@@ -6,6 +6,8 @@
 #ifndef FALCATA_INCLUDE_FALCATA_UTILS_RANDOM_H_
 #define FALCATA_INCLUDE_FALCATA_UTILS_RANDOM_H_
 
+#include <Falcata/utils/log.h>
+
 #include <cstdint>
 #include <random>
 #include <set>
@@ -40,7 +42,7 @@ class Random {
   * \return The random integer between [lower_bound, upper_bound)
   */
   inline int NextShort(int lower_bound, int upper_bound) {
-    return (RandInt16()) % (upper_bound - lower_bound) + lower_bound;
+    return (RandInt16()) % Range(lower_bound, upper_bound) + lower_bound;
   }
 
   /*!
@@ -50,7 +52,7 @@ class Random {
   * \return The random integer between [lower_bound, upper_bound)
   */
   inline int NextInt(int lower_bound, int upper_bound) {
-    return (RandInt32()) % (upper_bound - lower_bound) + lower_bound;
+    return (RandInt32()) % Range(lower_bound, upper_bound) + lower_bound;
   }
 
   /*!
@@ -99,6 +101,15 @@ class Random {
   }
 
  private:
+  // upper_bound - lower_bound, which must be in [1, INT_MAX]
+  static inline int Range(int lower_bound, int upper_bound) {
+    const int64_t range = static_cast<int64_t>(upper_bound) - lower_bound;
+    if (range <= 0 || range > INT32_MAX) {
+      Log::Fatal("Random: invalid range [%d, %d)", lower_bound, upper_bound);
+    }
+    return static_cast<int>(range);
+  }
+
   inline int RandInt16() {
     x = (214013 * x + 2531011);
     return static_cast<int>((x >> 16) & 0x7FFF);
