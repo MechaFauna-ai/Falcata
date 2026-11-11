@@ -14,6 +14,7 @@ from .libpath import _LIB  # isort: skip
 import abc
 import ctypes
 import inspect
+import io
 import json
 import os
 import tempfile
@@ -950,11 +951,12 @@ def _falb_payload_end(file: Any, header: bytes, size: int) -> Optional[int]:
 def _load_pandas_categorical(
     file_name: Optional[Union[str, Path]] = None,
     model_str: Optional[str] = None,
+    model_bin: Optional[bytes] = None,
 ) -> Optional[List[List]]:
     pandas_key = "pandas_categorical:"
     offset = -len(pandas_key)
-    if file_name is not None:
-        with open(file_name, "rb") as f:
+    if file_name is not None or model_bin is not None:
+        with open(file_name, "rb") if file_name is not None else io.BytesIO(model_bin) as f:  # type: ignore[arg-type]
             f.seek(0, SEEK_END)
             size = f.tell()
             f.seek(0)
@@ -4145,7 +4147,9 @@ class Booster:
                 # back zero, and feature_importance() -- which only counts
                 # splits whose gain is positive -- reports zeros for a model
                 # that predicts perfectly well.
-                this["_handle"] = self.model_to_binary(num_iteration=-1, with_stats=True, with_diagnostics=True)
+                this["_handle"] = self._model_to_binary_payload(
+                    num_iteration=-1, with_stats=True, with_diagnostics=True
+                )
             else:
                 this["_handle"] = self.model_to_string(num_iteration=-1)
         return this
@@ -4994,7 +4998,7 @@ class Booster:
             stripped = [x for x in suffixes if x != ".gz"]
             format = "falb" if stripped and stripped[-1] == ".falb" else "txt"
         if format == "falb":
-            blob = self.model_to_binary(
+            blob = self._model_to_binary_payload(
                 num_iteration=num_iteration,
                 start_iteration=start_iteration,
                 importance_type=importance_type,
@@ -5064,8 +5068,34 @@ class Booster:
         Returns
         -------
         model_bin : bytes
-            The serialized model.
+            The serialized model. When the Booster carries pandas categories,
+            they follow the binary payload as the same ``pandas_categorical:``
+            trailer :meth:`save_model` writes, so :meth:`model_from_binary`
+            restores them; the FALB reader ignores bytes after the payload.
         """
+        blob = self._model_to_binary_payload(
+            num_iteration=num_iteration,
+            start_iteration=start_iteration,
+            importance_type=importance_type,
+            with_stats=with_stats,
+            with_diagnostics=with_diagnostics,
+            f32_leaves=f32_leaves,
+            compress_level=compress_level,
+        )
+        if self.pandas_categorical is not None:
+            blob += _dump_pandas_categorical(self.pandas_categorical).encode("utf-8")
+        return blob
+
+    def _model_to_binary_payload(
+        self,
+        num_iteration: Optional[int] = None,
+        start_iteration: int = 0,
+        importance_type: str = "split",
+        with_stats: bool = False,
+        with_diagnostics: bool = False,
+        f32_leaves: bool = False,
+        compress_level: int = 6,
+    ) -> bytes:
         if num_iteration is None:
             num_iteration = self.best_iteration
         importance_type_int = _FEATURE_IMPORTANCE_TYPE_MAPPER[importance_type]
@@ -5128,7 +5158,7 @@ class Booster:
             raise
         self._replace_model_handle(new_handle)
         self.__dict__["_Booster__num_class"] = out_num_class.value
-        self.pandas_categorical = None
+        self.pandas_categorical = _load_pandas_categorical(model_bin=bytes(model_bin))
         self.params = self._get_loaded_param()
         return self
 
