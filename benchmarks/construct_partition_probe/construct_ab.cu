@@ -110,6 +110,10 @@ __global__ void construct_dyn(
   }
 }
 
+// the generated gradients are in [-kMaxAbsGrad, kMaxAbsGrad], every hessian is kMaxHess
+constexpr int kMaxAbsGrad = 3;
+constexpr int kMaxHess = 1;
+
 struct Layout {
   int num_feature, bins, cols_per_part, parts, block_x, block_y;
   std::vector<int> part_col_off; std::vector<uint32_t> col_hist_off, part_hist_off;
@@ -145,7 +149,7 @@ int main(int argc, char** argv) {
   // data is stored partitioned, and the per-partition slice layout differs by
   // cols_per_part: the byte buffer is built per layout below.
   std::vector<int32_t> h_gh(num_data); std::vector<int32_t> h_idx(num_data_in_leaf);
-  for (int i=0;i<num_data;i++){ int16_t g=(int16_t)(bd(rng)%7-3); int16_t h=1; h_gh[i]=((int32_t)g<<16)|((int32_t)h&0xffff);}
+  for (int i=0;i<num_data;i++){ int16_t g=(int16_t)(bd(rng)%7-3); int16_t h=kMaxHess; h_gh[i]=((int32_t)g<<16)|((int32_t)h&0xffff);}
   for (int i=0;i<num_data_in_leaf;i++) h_idx[i]=i;
 
   int32_t *d_gh,*d_idx; cudaMalloc(&d_gh,num_data*4); cudaMalloc(&d_idx,num_data_in_leaf*4);
@@ -186,6 +190,19 @@ int main(int argc, char** argv) {
     int block_y = L.block_y;
     int grid_y = 160;  // like epsilon root level
     dim3 grid(L.parts, grid_y, 1), block(cf.cols, block_y, 1);
+    // The shared histogram packs (grad << 16) | hess into one int32 per bin, and the flush reads the hessian back as
+    // the low 16 bits: if one block's rows can push a bin's hessian sum past 65535 or its gradient sum out of int16,
+    // the fields wrap silently (all of a 400k-row leaf in one y-block and one bin gives grad 20358, hess 6784
+    // instead of 1200000, 400000). Refuse such a launch shape.
+    {
+      const long long ndpt = (num_data_in_leaf + (long long)grid_y * block_y - 1) / ((long long)grid_y * block_y);
+      const long long rows_per_block = ndpt * block_y;
+      if (rows_per_block * kMaxHess > 65535 || rows_per_block * kMaxAbsGrad > 32767) {
+        printf("%-8s refused: %lld rows per block can overflow the packed 16-bit hessian/gradient fields\n",
+               cf.name, rows_per_block);
+        return 1;
+      }
+    }
     size_t dynb = (size_t)2 * (bins * cf.cols) * 2; // int16 slots * 2 bytes; *2 pad safety
     // exact needed: max partition bins * 2 (int16 per int32 slot) *2 bytes
     size_t need = (size_t)(bins * cf.cols) * 4; // bins*cols int32 = *4 bytes = int16*2
