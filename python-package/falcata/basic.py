@@ -4076,6 +4076,7 @@ class Booster:
                 )
             state["_handle"] = handle
         self.__dict__.update(state)
+        self.__num_dataset = 0
 
     def _get_loaded_param(self) -> Dict[str, Any]:
         buffer_len = 1 << 20
