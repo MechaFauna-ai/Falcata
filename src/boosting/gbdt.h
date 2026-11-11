@@ -603,7 +603,6 @@ class GBDT : public GBDTBase {
   mutable size_t metric_transferred_size_ = 0;
 #endif  // USE_CUDA
 
-
   /*!
   * \brief Print metric result of current iteration
   * \param iter Current iteration
