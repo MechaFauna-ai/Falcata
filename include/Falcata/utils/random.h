@@ -8,6 +8,7 @@
 
 #include <Falcata/utils/log.h>
 
+#include <cmath>
 #include <cstdint>
 #include <random>
 #include <set>
@@ -36,17 +37,20 @@ class Random {
     x = seed;
   }
   /*!
-  * \brief Generate random integer, int16 range. [0, 65536]
+  * \brief Generate random integer from a 15-bit draw (RandInt16 returns [0, 32767]).
+  *        The range upper_bound - lower_bound must be in [1, 32768].
   * \param lower_bound lower bound
   * \param upper_bound upper bound
-  * \return The random integer between [lower_bound, upper_bound)
+  * \return The random integer between [lower_bound, upper_bound); uniform only when upper_bound - lower_bound
+  *         divides 32768, and never above lower_bound + 32767
   */
   inline int NextShort(int lower_bound, int upper_bound) {
     return (RandInt16()) % Range(lower_bound, upper_bound) + lower_bound;
   }
 
   /*!
-  * \brief Generate random integer, int32 range
+  * \brief Generate random integer from a 31-bit source.
+  *        The range upper_bound - lower_bound must be positive.
   * \param lower_bound lower bound
   * \param upper_bound upper bound
   * \return The random integer between [lower_bound, upper_bound)

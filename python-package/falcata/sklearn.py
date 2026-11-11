@@ -199,6 +199,7 @@ class _ObjectiveFunctionWrapper:
             and grad and hess should be returned in the same format.
         """
         self.func = func
+        self._argc = len(signature(func).parameters)
 
     def __call__(
         self,
@@ -224,7 +225,7 @@ class _ObjectiveFunctionWrapper:
             with respect to the elements of preds for each sample point.
         """
         labels = _get_label_from_constructed_dataset(dataset)
-        argc = len(signature(self.func).parameters)
+        argc = self._argc
         if argc == 2:
             grad, hess = self.func(labels, preds)  # type: ignore[call-arg]
             return grad, hess
@@ -282,6 +283,7 @@ class _EvalFunctionWrapper:
                     Are higher values better? e.g. ``True`` for AUC and ``False`` for binary error.
         """
         self.func = func
+        self._argc = len(signature(func).parameters)
 
     def __call__(
         self,
@@ -307,7 +309,7 @@ class _EvalFunctionWrapper:
             Are higher values better? e.g. ``True`` for AUC and ``False`` for binary error.
         """
         labels = _get_label_from_constructed_dataset(dataset)
-        argc = len(signature(self.func).parameters)
+        argc = self._argc
         if argc == 2:
             return self.func(labels, preds)  # type: ignore[call-arg]
 

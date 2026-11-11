@@ -195,13 +195,13 @@ class CrossEntropyLambdaMetric : public Metric {
       if (weights_ == nullptr) {
         #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) reduction(+:sum_loss)
         for (data_size_t i = 0; i < num_data_; ++i) {
-          double hhat = std::log1p(std::exp(score[i]));  // auto-convert
+          double hhat = std::max(score[i], 0.0) + std::log1p(std::exp(-std::fabs(score[i])));  // auto-convert
           sum_loss += XentLambdaLoss(label_[i], 1.0f, hhat);
         }
       } else {
         #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) reduction(+:sum_loss)
         for (data_size_t i = 0; i < num_data_; ++i) {
-          double hhat = std::log1p(std::exp(score[i]));  // auto-convert
+          double hhat = std::max(score[i], 0.0) + std::log1p(std::exp(-std::fabs(score[i])));  // auto-convert
           sum_loss += XentLambdaLoss(label_[i], weights_[i], hhat);
         }
       }
