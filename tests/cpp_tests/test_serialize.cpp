@@ -44,7 +44,7 @@ TEST(Serialization, JustWorks) {
       buffer = static_cast<ByteBuffer*>(buffer_handle);
 
       // Deserialize the reference
-      DatasetHandle deserialized_dataset_handle;
+      DatasetHandle deserialized_dataset_handle = nullptr;
       result = FLC_DatasetCreateFromSerializedReference(buffer->Data(),
                                                          static_cast<int32_t>(buffer->GetSize()),
                                                          dataset->num_data(),
@@ -53,9 +53,11 @@ TEST(Serialization, JustWorks) {
                                                          &deserialized_dataset_handle);
       EXPECT_EQ(0, result) << "FLC_DatasetCreateFromSerializedReference result code: " << result;
 
-      // Confirm 1 successful API call
-      deserialized_dataset = static_cast<Dataset*>(deserialized_dataset_handle);
-      EXPECT_EQ(dataset->num_data(), deserialized_dataset->num_data());
+      // Confirm 1 successful API call; on failure the handle was never set
+      if (result == 0) {
+        deserialized_dataset = static_cast<Dataset*>(deserialized_dataset_handle);
+        EXPECT_EQ(dataset->num_data(), deserialized_dataset->num_data());
+      }
     } catch (std::exception& ex) {
       succeeded = false;
       exceptionText = std::string(ex.what());
