@@ -1077,6 +1077,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_ndcg_reinitialization.cpp
       tests/cpp_tests/test_opencl_host_buffers.cpp
       tests/cpp_tests/test_partition_leaf_predictions.cpp
+      tests/cpp_tests/test_predictor_threads.cpp
       tests/cpp_tests/test_quantized_index.cpp
       tests/cpp_tests/test_random.cpp
       tests/cpp_tests/test_serialize.cpp
