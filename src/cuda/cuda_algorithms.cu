@@ -567,14 +567,20 @@ std::string CompiledArchNames() {
 // nothing could run. A device accepted on PTX alone can still fail in
 // CheckCUDADeviceSupportsThisBuild (driver too old for the PTX, JIT disabled),
 // whose message names device_type=cpu as the way out.
-bool CUDADeviceUsableByDefault() {
+bool CUDADeviceUsableByDefault(const int device_id) {
   int count = 0;
   if (cudaGetDeviceCount(&count) != cudaSuccess || count < 1) {
     return false;
   }
+  // judge the GPU training will run on: gpu_device_id, or device 0 when it is negative (the tree learner's
+  // resolution in CUDASingleGPUTreeLearner::Init); a device that does not exist cannot run anything
+  const int device = device_id >= 0 ? device_id : 0;
+  if (device >= count) {
+    return false;
+  }
 #ifdef __CUDA_ARCH_LIST__
   cudaDeviceProp prop{};
-  if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
+  if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) {
     return false;
   }
   return HasCubinFor(prop) || HasPtxFor(prop);

@@ -28,7 +28,7 @@ namespace Falcata {
 // rather than pulled in from a header because cuda_algorithms.hpp is device
 // code and will not compile in a host TU.
 size_t CUDASideSizeOfConfig();
-bool CUDADeviceUsableByDefault();
+bool CUDADeviceUsableByDefault(int device_id);
 #endif  // USE_CUDA
 
 void Config::KV2Map(std::unordered_map<std::string, std::vector<std::string>>* params, const char* kv) {
@@ -313,7 +313,9 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   // device_type keeps LightGBM's "cpu" spelling in parameter files, but in
   // this library UNSET means auto: a CUDA build with a usable GPU trains on
   // it. Passing device_type explicitly (either value) pins the choice.
-  if (params.count("device_type") == 0 && CUDADeviceUsableByDefault()) {
+  int auto_device_id = -1;  // gpu_device_id is parsed below, with the other members
+  GetInt(params, "gpu_device_id", &auto_device_id);
+  if (params.count("device_type") == 0 && CUDADeviceUsableByDefault(auto_device_id)) {
     device_type = "cuda";
     device_type_from_auto = true;
     static std::once_flag auto_cuda_logged;
