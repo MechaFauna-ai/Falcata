@@ -2136,21 +2136,13 @@ class Dataset:
             if used_indices is not None:
                 assert not self._need_slice
                 if isinstance(data, (str, Path)):
-                    sub_init_score = np.empty(num_data * predictor.num_class, dtype=np.float64)
                     assert num_data == len(used_indices)
-                    for i in range(len(used_indices)):
-                        for j in range(predictor.num_class):
-                            sub_init_score[i * predictor.num_class + j] = init_score[
-                                used_indices[i] * predictor.num_class + j
-                            ]
-                    init_score = sub_init_score
+                    init_score = init_score.reshape(-1, predictor.num_class)[used_indices].ravel()
             if predictor.num_class > 1:
-                # need to regroup init_score
-                new_init_score = np.empty(init_score.size, dtype=np.float64)
-                for i in range(num_data):
-                    for j in range(predictor.num_class):
-                        new_init_score[j * num_data + i] = init_score[i * predictor.num_class + j]
-                init_score = new_init_score
+                # Native init scores are class-major; predictor output is row-major.
+                init_score = (
+                    np.asarray(init_score, dtype=np.float64).reshape(num_data, predictor.num_class).ravel(order="F")
+                )
         elif self.init_score is not None:
             init_score = np.full_like(self.init_score, fill_value=0.0, dtype=np.float64)
         else:
