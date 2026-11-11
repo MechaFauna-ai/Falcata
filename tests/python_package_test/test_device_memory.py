@@ -26,6 +26,10 @@ _REQUIRES_CUDA = pytest.mark.skipif(
 )
 
 ROWS, FEATS = 50_000, 40
+# nvidia-smi reports per-process memory in whole 2 MiB allocator chunks; a 50k x 40 nibble dataset is about 1 MB, so
+# whether its columns open a new chunk depends on what else the run left in the last one. Copy-counting tests size
+# their data so one copy spans several chunks.
+COPY_ROWS = 500_000
 PARAMS = {"objective": "regression", "num_leaves": 15, "max_bin": 15, "verbosity": -1, "num_threads": 4}
 
 
@@ -51,10 +55,10 @@ def _isolated(snippet):
     return int(out.stdout.strip().splitlines()[-1])
 
 
-def _data(seed=0):
+def _data(seed=0, rows=ROWS):
     rng = np.random.default_rng(seed)
-    X = rng.integers(0, 10, size=(ROWS, FEATS)).astype(np.float32)
-    y = X[:, 0] * 0.4 + rng.normal(size=ROWS) * 0.1
+    X = rng.integers(0, 10, size=(rows, FEATS)).astype(np.float32)
+    y = X[:, 0] * 0.4 + rng.normal(size=rows) * 0.1
     return X, y
 
 
@@ -323,7 +327,7 @@ def test_subset_of_a_host_only_parent_holds_one_copy():
     """
     one_copy = _isolated(
         """
-X, y = dm._data()
+X, y = dm._data(rows=dm.COPY_ROWS)
 p = {**dm.PARAMS, "device_type": "cuda"}
 warmup_ds = dm.lgb.Dataset(X[:200], label=y[:200], params=p)
 dm.lgb.train(p, warmup_ds, num_boost_round=1)
@@ -341,13 +345,13 @@ print(dm._resident_gpu_used_bytes() - start)
     grew = _isolated(
         """
 import numpy as np
-X, y = dm._data()
+X, y = dm._data(rows=dm.COPY_ROWS)
 p = {**dm.PARAMS, "device_type": "cuda"}
 warmup_ds = dm.lgb.Dataset(X[:200], label=y[:200], params=p)
 dm.lgb.train(p, warmup_ds, num_boost_round=1)
 parent = dm.lgb.Dataset(X, label=y, params=p)
 parent.construct()  # host-only until something uses it on the device
-sub = parent.subset(list(np.where(np.arange(dm.ROWS) % 100 != 0)[0]))
+sub = parent.subset(list(np.where(np.arange(dm.COPY_ROWS) % 100 != 0)[0]))
 sub.construct()
 before = dm._resident_gpu_used_bytes()
 dm.lgb.train(p, sub, num_boost_round=10)
