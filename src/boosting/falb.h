@@ -35,6 +35,13 @@ namespace FALB {
 constexpr char kMagic[4] = {'F', 'A', 'L', 'B'};
 constexpr uint32_t kVersion = 1;
 
+inline size_t ThresholdFeatureIndex(int feature, size_t num_features) {
+  if (feature < 0 || static_cast<size_t>(feature) >= num_features) {
+    Log::Fatal("FALB: threshold feature %d outside dictionary range", feature);
+  }
+  return static_cast<size_t>(feature);
+}
+
 /*! \brief required-capability bits: a reader MUST fail on any bit it does not
  *  know, so a future writer can never be silently misparsed. */
 enum Flags : uint64_t {
