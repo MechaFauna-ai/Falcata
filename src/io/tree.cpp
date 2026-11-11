@@ -569,6 +569,26 @@ std::string Tree::NodeToJSON(int index) const {
   return str_buf.str();
 }
 
+namespace {
+
+// a double as a C++ expression for the if-else export: std::stringstream
+// prints infinity and NaN as "inf" and "nan", which do not compile
+std::string DoubleToCppLiteral(double value) {
+  if (std::isnan(value)) {
+    return "std::numeric_limits<double>::quiet_NaN()";
+  }
+  if (std::isinf(value)) {
+    return value > 0 ? "std::numeric_limits<double>::infinity()"
+                     : "-std::numeric_limits<double>::infinity()";
+  }
+  std::stringstream str_buf;
+  Common::C_stringstream(str_buf);
+  str_buf << std::setprecision(std::numeric_limits<double>::digits10 + 2) << value;
+  return str_buf.str();
+}
+
+}  // namespace
+
 std::string Tree::NumericalDecisionIfElse(int node) const {
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
@@ -578,20 +598,22 @@ std::string Tree::NumericalDecisionIfElse(int node) const {
   if (missing_type != MissingType::NaN) {
     str_buf << "if (std::isnan(fval)) fval = 0.0;";
   }
+  // like NumericalDecision: a missing value takes the default direction, any
+  // other value is compared with the threshold
   if (missing_type == MissingType::Zero) {
     if (default_left) {
-      str_buf << "if (Tree::IsZero(fval)) {";
+      str_buf << "if (Tree::IsZero(fval) || fval <= " << DoubleToCppLiteral(threshold_[node]) << ") {";
     } else {
-      str_buf << "if (!Tree::IsZero(fval)) {";
+      str_buf << "if (!Tree::IsZero(fval) && fval <= " << DoubleToCppLiteral(threshold_[node]) << ") {";
     }
   } else if (missing_type == MissingType::NaN) {
     if (default_left) {
-      str_buf << "if (std::isnan(fval)) {";
+      str_buf << "if (std::isnan(fval) || fval <= " << DoubleToCppLiteral(threshold_[node]) << ") {";
     } else {
-      str_buf << "if (!std::isnan(fval)) {";
+      str_buf << "if (!std::isnan(fval) && fval <= " << DoubleToCppLiteral(threshold_[node]) << ") {";
     }
   } else {
-    str_buf << "if (fval <= " << threshold_[node] << ") {";
+    str_buf << "if (fval <= " << DoubleToCppLiteral(threshold_[node]) << ") {";
   }
   return str_buf.str();
 }
@@ -626,7 +648,7 @@ std::string Tree::ToIfElse(int index, bool predict_leaf_index) const {
   }
   str_buf << "(const double* arr) { ";
   if (num_leaves_ <= 1) {
-    str_buf << "return " << leaf_value_[0] << ";";
+    str_buf << "return " << DoubleToCppLiteral(leaf_value_[0]) << ";";
   } else {
     str_buf << "const std::vector<uint32_t> cat_threshold = {";
     for (size_t i = 0; i < cat_threshold_.size(); ++i) {
@@ -654,7 +676,7 @@ std::string Tree::ToIfElse(int index, bool predict_leaf_index) const {
   }
   str_buf << "(const std::unordered_map<int, double>& arr) { ";
   if (num_leaves_ <= 1) {
-    str_buf << "return " << leaf_value_[0] << ";";
+    str_buf << "return " << DoubleToCppLiteral(leaf_value_[0]) << ";";
   } else {
     str_buf << "const std::vector<uint32_t> cat_threshold = {";
     for (size_t i = 0; i < cat_threshold_.size(); ++i) {
@@ -700,7 +722,7 @@ std::string Tree::NodeToIfElse(int index, bool predict_leaf_index) const {
     if (predict_leaf_index) {
       str_buf << ~index;
     } else {
-      str_buf << leaf_value_[~index];
+      str_buf << DoubleToCppLiteral(leaf_value_[~index]);
     }
     str_buf << ";";
   }
@@ -732,7 +754,7 @@ std::string Tree::NodeToIfElseByMap(int index, bool predict_leaf_index) const {
     if (predict_leaf_index) {
       str_buf << ~index;
     } else {
-      str_buf << leaf_value_[~index];
+      str_buf << DoubleToCppLiteral(leaf_value_[~index]);
     }
     str_buf << ";";
   }
