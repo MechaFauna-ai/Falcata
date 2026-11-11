@@ -35,6 +35,27 @@ def _cmd_convert(args: argparse.Namespace) -> int:
             "compress_level": args.compress_level,
         }
     booster.save_model(str(dst), num_iteration=-1, format=fmt, **kwargs)
+    src_size, dst_size = src.stat().st_size, dst.stat().st_size
+    ratio = src_size / dst_size if dst_size else float("nan")
+    print(f"{src} ({src_size:,} B) -> {dst} ({dst_size:,} B, {ratio:.1f}x)")  # noqa: T201
+    if fmt == "falb":
+        dropped = []
+        unavailable = []
+        if args.drop_stats:
+            dropped.append("stats")
+            unavailable.append("pred_contrib")
+        if args.drop_diagnostics:
+            dropped.append("diagnostics")
+            unavailable.append("feature_importance('gain')")
+        if dropped:
+            print(  # noqa: T201
+                f"  dropped {' and '.join(dropped)}: {' / '.join(unavailable)} unavailable",
+                file=sys.stderr,
+            )
+        if args.f32_leaves:
+            print("  float32 leaves: lossy model conversion", file=sys.stderr)  # noqa: T201
+        elif not dropped:
+            print("  lossless model conversion")  # noqa: T201
     return 0
 
 
