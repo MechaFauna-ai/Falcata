@@ -196,7 +196,9 @@ class RF : public GBDT {
         new_tree.reset(tree_learner_->Train(grad, hess, false));
       }
 
-      if (new_tree->num_leaves() > 1) {
+      if (class_need_train_[cur_tree_id]) {
+        // A grown tree, including one that found no split: a 1-leaf tree is still a member of
+        // the forest (its root output, renewed, plus the class bias, like any other tree).
         double pred = init_scores_[cur_tree_id];
         auto residual_getter = [pred](const label_t* label, int i) {return static_cast<double>(label[i]) - pred; };
         // the residual base is the init score (residual_getter on the host; on the device, the objective's kernel
@@ -215,7 +217,10 @@ class RF : public GBDT {
         }
         // update score
         const int num_averaged = iter_ + num_init_iteration_;
-        if (DeferTrainScore()) {
+        if (new_tree->num_leaves() <= 1) {
+          FlushDeferredTrainTrees();
+          AddTreeToAveragedScores(new_tree.get(), cur_tree_id, num_averaged);
+        } else if (DeferTrainScore()) {
           // cuda_plan key rf_lazy_train_score: the validation scores now, the train score when it is read; the bag
           // order the in-bag score update restores is restored all the same (the next tree of the bag starts from it)
           deferred_train_trees_.push_back({new_tree.get(), cur_tree_id, num_averaged});
@@ -232,26 +237,13 @@ class RF : public GBDT {
           MultiplyScore(cur_tree_id, 1.0 / (num_averaged + 1));
         }
       } else {
-        // A tree without a split (a class with nothing to learn, or no split found). RF
-        // predicts the AVERAGE of its trees, so this round's tree has to carry the class's
-        // constant: a 0 after the first round pulled the average toward 0 (an absent class's
-        // probability grew with num_iterations).
-        double output = init_scores_[cur_tree_id];
-        if (!class_need_train_[cur_tree_id]) {
-          output = objective_function_->BoostFromScore(cur_tree_id);
-        }
-        new_tree->AsConstantTree(output, num_data_);
+        // A class with nothing to learn (e.g. absent from the labels). RF predicts the AVERAGE
+        // of its trees, so every round's tree carries the class's constant: a 0-output tree
+        // after the first round pulled the average toward 0 (an absent class's probability
+        // grew with num_iterations).
+        new_tree->AsConstantTree(objective_function_->BoostFromScore(cur_tree_id), num_data_);
         FlushDeferredTrainTrees();
-        MultiplyScore(cur_tree_id, (iter_ + num_init_iteration_));
-        // A constant tree adds its output to every row. UpdateScore would go through the
-        // tree learner, whose data partition belongs to the last tree it grew: the serial
-        // learner adds nothing for a 1-leaf tree, and the linear learner reads linear
-        // metadata this tree does not have.
-        train_score_updater_->AddScore(output, cur_tree_id);
-        for (auto& score_updater : valid_score_updater_) {
-          score_updater->AddScore(output, cur_tree_id);
-        }
-        MultiplyScore(cur_tree_id, 1.0 / (iter_ + num_init_iteration_ + 1));
+        AddTreeToAveragedScores(new_tree.get(), cur_tree_id, iter_ + num_init_iteration_);
       }
       // add model
       models_.push_back(std::move(new_tree));
@@ -284,6 +276,21 @@ class RF : public GBDT {
       models_.pop_back();
     }
     --iter_;
+  }
+
+  /*!
+   * \brief Average one more tree into the training and validation scores of a class, evaluating the tree on the
+   *        data. Used for 1-leaf trees: GBDT::UpdateScore goes through the tree learner, whose data partition belongs
+   *        to the last tree it grew; the serial learner adds nothing for a 1-leaf tree, and the linear learner reads
+   *        linear metadata a constant tree does not have.
+   */
+  void AddTreeToAveragedScores(const Tree* tree, const int cur_tree_id, const int num_averaged) {
+    MultiplyScore(cur_tree_id, num_averaged);
+    train_score_updater_->AddScore(tree, cur_tree_id);
+    for (auto& score_updater : valid_score_updater_) {
+      score_updater->AddScore(tree, cur_tree_id);
+    }
+    MultiplyScore(cur_tree_id, 1.0 / (num_averaged + 1));
   }
 
   void MultiplyScore(const int cur_tree_id, double val) {
