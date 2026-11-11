@@ -8,7 +8,12 @@ import pytest
 
 @pytest.mark.parametrize(
     ("inner", "expected"),
-    [("std::vector<int>", "multi-int"), ("std::vector<std::vector<int>>", "multi-multi-int")],
+    [
+        ("std::vector<int>", "multi-int"),
+        ("std::vector<std::vector<int>>", "multi-multi-int"),
+        ("std::vector<std::string>", "multi-string"),
+        ("std::string", "string"),
+    ],
 )
 def test_container_documentation_type(inner, expected, tmp_path):
     path = Path(__file__).resolve().parents[2] / ".ci" / "parameter-generator.py"
