@@ -4126,6 +4126,7 @@ class Booster:
         """Replace the native model and invalidate state tied to the old handle."""
         old_handle = self._handle
         self._handle = new_handle
+        self.free_dataset()
         self._free_buffer()
         self._invalidate_fil_cache()
         if old_handle:
