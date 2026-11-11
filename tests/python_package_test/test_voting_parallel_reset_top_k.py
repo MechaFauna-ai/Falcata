@@ -12,8 +12,11 @@ import multiprocessing as mp
 import socket
 
 import numpy as np
+import pytest
 
 import falcata as flc
+
+from .utils import BuildInfo
 
 
 def _free_ports(n):
@@ -63,6 +66,7 @@ def _train(initial_top_k, reset_top_k=None):
     return models[0].split("parameters:")[0]
 
 
+@pytest.mark.skipif(BuildInfo.has_cuda, reason="Voting-parallel training is not supported by CUDA version")
 def test_reset_top_k_takes_effect():
     small = _train(1)
     large = _train(20)
