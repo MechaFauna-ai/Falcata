@@ -105,7 +105,7 @@ def _stop_lattice_tree(proc):
     # stopped child, whereas the SIGKILL below always terminates it.
     cancel = {signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGQUIT}
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, cancel)
-    pending, frozen, seen = [proc.pid], [], set()
+    pending, frozen, seen, stop_errors = [proc.pid], [], set(), []
     try:
         try:
             while pending:
@@ -118,7 +118,10 @@ def _stop_lattice_tree(proc):
                 except ProcessLookupError:
                     continue
                 frozen.append(pid)
-                _wait_stopped(pid)
+                try:
+                    _wait_stopped(pid)
+                except UnresolvedCUDATimeout as exc:
+                    stop_errors.append(str(exc))
                 pending.extend(_children_pids(pid))
         finally:
             for pid in reversed(frozen):
@@ -130,6 +133,8 @@ def _stop_lattice_tree(proc):
             proc.communicate(timeout=10)
         except subprocess.TimeoutExpired as exc:
             raise UnresolvedCUDATimeout("CUDA timeout: lattice cleanup did not complete; stop GPU job") from exc
+        if stop_errors:
+            raise UnresolvedCUDATimeout("; ".join(stop_errors))
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
@@ -144,6 +149,12 @@ def _remeasure_timeout():
     return timeout
 
 
+def _validate_supervision():
+    children = Path(f"/proc/{os.getpid()}/task/{os.getpid()}/children")
+    if sys.platform != "linux" or not children.is_file():
+        raise GPUQContextError("remeasurement supervision requires Linux procfs child tracking")
+
+
 def remeasure(cell_id):
     """Re-run one lattice cell and return its construct+train seconds.
 
@@ -152,8 +163,7 @@ def remeasure(cell_id):
     aborts the GPU job with 125; the owned process tree is stopped before returning.
     FALCATA_REMEASURE_TIMEOUT_SEC overrides the 30-minute default.
     """
-    if sys.platform != "linux":
-        raise GPUQContextError("remeasurement supervision requires Linux procfs")
+    _validate_supervision()
     gates_dir = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "results.json"
@@ -290,8 +300,9 @@ def main(argv=None):
     if not args.gpuq_strict:
         ap.error("use --gpuq-strict inside gpuq submit --exclusive with an explicit bounded timeout; no bypass")
     try:
+        _validate_supervision()
         _remeasure_timeout()
-    except ValueError as exc:
+    except (ValueError, GPUQContextError) as exc:
         print(f"  FAIL perf configuration: {exc}", file=sys.stderr)
         return 2
     try:

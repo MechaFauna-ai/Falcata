@@ -13,10 +13,11 @@ GATES = Path(__file__).resolve().parents[1] / "gates"
 
 
 @pytest.fixture
-def perf():
+def perf(monkeypatch):
     spec = importlib.util.spec_from_file_location("perf_policy_under_test", GATES / "perf_gate.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_validate_supervision", lambda: None)
     return module
 
 

@@ -24,12 +24,12 @@ def perf():
     return module
 
 
-@pytest.mark.parametrize("outcome", ["timeout", "stop", "interrupt"])
+@pytest.mark.parametrize("outcome", ["timeout", "stop", "interrupt", "stop-failed"])
 def test_remeasurement_stops_on_timeout(perf, monkeypatch, outcome):
     process = Mock(pid=12345, returncode=125)
     process.communicate.side_effect = (
         [subprocess.TimeoutExpired(["lattice"], 7), ("", "")]
-        if outcome == "timeout"
+        if outcome in ("timeout", "stop-failed")
         else [KeyboardInterrupt(), ("", "")]
         if outcome == "interrupt"
         else [("", "")]
@@ -39,7 +39,12 @@ def test_remeasurement_stops_on_timeout(perf, monkeypatch, outcome):
     monkeypatch.setattr(perf.subprocess, "Popen", spawn)
     monkeypatch.setattr(perf.os, "kill", kill)
     monkeypatch.setattr(perf, "_children_pids", lambda pid: [12346] if pid == 12345 else [])
-    monkeypatch.setattr(perf, "_wait_stopped", lambda pid: None)
+    if outcome == "stop-failed":
+        monkeypatch.setattr(
+            perf, "_wait_stopped", Mock(side_effect=perf.UnresolvedCUDATimeout("CUDA timeout stopping worker"))
+        )
+    else:
+        monkeypatch.setattr(perf, "_wait_stopped", lambda pid: None)
     monkeypatch.setenv("FALCATA_REMEASURE_TIMEOUT_SEC", "7")
 
     expected = (
@@ -86,6 +91,19 @@ def test_remeasurement_stops_real_cpu_descendants(perf, tmp_path, monkeypatch):
     monkeypatch.setattr(perf, "__file__", str(tmp_path / "perf_gate.py"))
     monkeypatch.setenv("FALCATA_TEST_PIDS", str(marker))
     monkeypatch.setenv("FALCATA_REMEASURE_TIMEOUT_SEC", "2")
+    original_spawn = perf.subprocess.Popen
+
+    def ready_spawn(*args, **kwargs):
+        process = original_spawn(*args, **kwargs)
+        deadline = time.monotonic() + 10
+        while not marker.exists():
+            if process.poll() is not None or time.monotonic() >= deadline:
+                perf._stop_lattice_tree(process)
+                pytest.fail("CPU test worker failed to initialize")
+            time.sleep(0.01)
+        return process
+
+    monkeypatch.setattr(perf.subprocess, "Popen", ready_spawn)
     try:
         with pytest.raises(perf.UnresolvedCUDATimeout, match="CUDA timeout"):
             perf.remeasure("first")
@@ -93,8 +111,12 @@ def test_remeasurement_stops_real_cpu_descendants(perf, tmp_path, monkeypatch):
         assert pids["pgrp"] == os.getpgrp()
         child_stat = Path(f"/proc/{pids['child']}/stat")
         deadline = time.monotonic() + 2
-        while child_stat.exists():
-            if child_stat.read_text().rsplit(") ", 1)[1].split()[0] in ("Z", "X"):
+        while True:
+            try:
+                state = child_stat.read_text().rsplit(") ", 1)[1].split()[0]
+            except FileNotFoundError:  # reaped between polls
+                break
+            if state in ("Z", "X"):
                 break
             assert time.monotonic() < deadline, "worker descendant survived timeout cleanup"
             time.sleep(0.01)
