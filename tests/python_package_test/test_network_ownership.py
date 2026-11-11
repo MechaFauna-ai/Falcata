@@ -12,6 +12,17 @@ import falcata as lgb
 from falcata import basic
 
 
+@pytest.fixture(autouse=True)
+def check_network_ownership_balance():
+    gc.collect()
+    if hasattr(basic, "_get_network_state"):
+        assert basic._get_network_state().refcount == 0
+    yield
+    gc.collect()
+    if hasattr(basic, "_get_network_state"):
+        assert basic._get_network_state().refcount == 0
+
+
 @pytest.mark.parametrize("machines_in_params", [False, True])
 @pytest.mark.parametrize("delete_original", [False, True])
 def test_refit_keeps_network_until_last_owner(monkeypatch, machines_in_params, delete_original):
@@ -121,15 +132,6 @@ def test_pickle_does_not_copy_network_ownership(monkeypatch, legacy_state):
         original.free_network()
 
 
-@pytest.fixture(autouse=True)
-def check_network_ownership_balance():
-    gc.collect()
-    assert basic._get_network_state().refcount == 0
-    yield
-    gc.collect()
-    assert basic._get_network_state().refcount == 0
-
-
 @pytest.mark.parametrize("release_on_other_thread", [False, True])
 def test_network_ownership_follows_native_thread_state(monkeypatch, release_on_other_thread):
     calls = []
@@ -185,3 +187,66 @@ def test_network_acquired_before_reentrant_initialization(monkeypatch):
     finally:
         original.free_network()
         other.free_network()
+
+
+def test_deferred_free_before_new_acquisition(monkeypatch):
+    calls = []
+    monkeypatch.setattr(basic._LIB, "FLC_NetworkInit", lambda *args: calls.append("init") or 0)
+    monkeypatch.setattr(basic._LIB, "FLC_NetworkFree", lambda: calls.append("free") or 0)
+    data = np.arange(60).reshape(20, 3)
+    original = lgb.train({"verbosity": -1, "num_threads": 1}, lgb.Dataset(data, label=data[:, 0]), 1)
+    other = lgb.Booster(model_str=original.model_to_string())
+    original.set_network("localhost:12400")
+    get_state = basic._get_network_state
+
+    def get_state_after_release():
+        state = get_state()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(original.free_network).result()
+        return state
+
+    monkeypatch.setattr(basic, "_get_network_state", get_state_after_release)
+    try:
+        other.set_network("localhost:12400")
+        assert calls == ["init", "free", "init"]
+        monkeypatch.setattr(basic, "_get_network_state", get_state)
+        assert get_state().refcount == 1
+        assert calls == ["init", "free", "init"]
+        other.free_network()
+        assert calls == ["init", "free", "init", "free"]
+    finally:
+        original.free_network()
+        other.free_network()
+
+
+@pytest.mark.parametrize("operation", ["set_network", "refit"])
+def test_network_booster_can_be_used_from_another_thread(monkeypatch, operation):
+    calls = []
+    monkeypatch.setattr(basic._LIB, "FLC_NetworkInit", lambda *args: calls.append(("init", get_ident())) or 0)
+    monkeypatch.setattr(basic._LIB, "FLC_NetworkFree", lambda: calls.append(("free", get_ident())) or 0)
+    data = np.random.default_rng(42).normal(size=(50, 3))
+    original = lgb.train(
+        {"verbosity": -1, "num_threads": 1, "min_data_in_leaf": 2}, lgb.Dataset(data, label=data[:, 0]), 2
+    )
+    original.set_network("localhost:12400")
+
+    def worker():
+        if operation == "set_network":
+            original.set_network("localhost:12401")
+            original.free_network()
+        else:
+            refitted = original.refit(data, data[:, 0])
+            assert not refitted._network
+        return get_ident()
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            worker_ident = executor.submit(worker).result()
+        original.free_network()
+        basic._get_network_state()
+        expected = [("init", get_ident())]
+        if operation == "set_network":
+            expected += [("init", worker_ident), ("free", worker_ident)]
+        assert calls == expected + [("free", get_ident())]
+    finally:
+        original.free_network()

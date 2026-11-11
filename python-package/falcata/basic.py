@@ -67,7 +67,7 @@ def _get_network_state() -> _NetworkState:
         _NETWORK_LOCAL.state = _NetworkState()
     state: _NetworkState = _NETWORK_LOCAL.state
     with state.lock:
-        if state.pending_free:
+        if state.pending_free and state.refcount == 0:
             _safe_call(_LIB.FLC_NetworkFree())
             state.pending_free = False
     return state
@@ -4194,9 +4194,13 @@ class Booster:
         if isinstance(machines, (list, set)):
             machines = ",".join(machines)
         state = _get_network_state()
+        if self._network and self._network_state is not state:
+            self.free_network()
         with state.lock:
-            if self._network and self._network_state is not state:
-                raise FalcataError("Network must be initialized on its owning thread")
+            # A cross-thread release may have happened after state lookup.
+            if state.pending_free:
+                _safe_call(_LIB.FLC_NetworkFree())
+                state.pending_free = False
             acquired = not self._network
             if acquired:
                 state.refcount += 1
@@ -5627,9 +5631,7 @@ class Booster:
         new_booster = Booster(new_params, train_set)
         state = _get_network_state()
         with state.lock:
-            if self._network and not new_booster._network:
-                if self._network_state is not state:
-                    raise FalcataError("Network must be refitted on its owning thread")
+            if self._network and self._network_state is state and not new_booster._network:
                 state.refcount += 1
                 new_booster._network_state = state
                 new_booster._network = True
