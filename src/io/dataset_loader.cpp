@@ -578,25 +578,29 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
   }
   if (dataset->has_raw()) {
     dataset->ResizeRaw(dataset->num_data());
-      size_t row_size = dataset->num_numeric_features_ * sizeof(float);
-      if (row_size > buffer_size) {
-        buffer_size = row_size;
-        buffer.resize(buffer_size);
+    const size_t row_size = dataset->num_numeric_features_ * sizeof(float);
+    // read the row-major raw values a block of rows at a time
+    const int num_data = dataset->num_data();
+    const int rows_per_block = row_size == 0 ? num_data
+        : static_cast<int>(std::max<size_t>(1, std::min<size_t>(num_data, (size_t{16} << 20) / row_size)));
+    std::vector<char> block(static_cast<size_t>(rows_per_block) * row_size);
+    for (int block_start = 0; block_start < num_data; block_start += rows_per_block) {
+      const int block_rows = std::min(rows_per_block, num_data - block_start);
+      const size_t block_bytes = static_cast<size_t>(block_rows) * row_size;
+      read_cnt = reader->Read(block.data(), block_bytes);
+      if (read_cnt != block_bytes) {
+        Log::Fatal("Binary file error: rows %d to %d of raw data are incorrect, read count: %zu",
+                   block_start, block_start + block_rows - 1, read_cnt);
       }
-    for (int i = 0; i < dataset->num_data(); ++i) {
-      read_cnt = reader->Read(buffer.data(), row_size);
-      if (read_cnt != row_size) {
-        Log::Fatal("Binary file error: row %d of raw data is incorrect, read count: %zu", i, read_cnt);
-      }
-      mem_ptr = buffer.data();
-      const float* tmp_ptr_raw_row = reinterpret_cast<const float*>(mem_ptr);
-      for (int j = 0; j < dataset->num_features(); ++j) {
-        int feat_ind = dataset->numeric_feature_map_[j];
-        if (feat_ind >= 0) {
-          dataset->raw_data_[feat_ind][i] = tmp_ptr_raw_row[feat_ind];
+      for (int r = 0; r < block_rows; ++r) {
+        const float* tmp_ptr_raw_row = reinterpret_cast<const float*>(block.data() + static_cast<size_t>(r) * row_size);
+        for (int j = 0; j < dataset->num_features(); ++j) {
+          int feat_ind = dataset->numeric_feature_map_[j];
+          if (feat_ind >= 0) {
+            dataset->raw_data_[feat_ind][block_start + r] = tmp_ptr_raw_row[feat_ind];
+          }
         }
       }
-      mem_ptr += row_size;
     }
   }
 
