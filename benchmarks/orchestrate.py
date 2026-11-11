@@ -100,7 +100,7 @@ def run_child(cmd, timeout):
             status = "timeout"
         stderr.seek(0, os.SEEK_END)
         # UTF-8 needs at most four bytes per character. Trim after decoding.
-        stderr.seek(max(0, stderr.tell() - 8000))
+        stderr.seek(max(0, stderr.tell() - 8003))
         tail = stderr.read().decode(errors="replace")[-2000:]
     return status, tail
 
