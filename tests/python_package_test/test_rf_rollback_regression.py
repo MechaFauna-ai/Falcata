@@ -28,9 +28,9 @@ def test_rollback_first_forest_iteration(with_valid):
     )
     booster.rollback_one_iter()
     assert booster.current_iteration() == 0
-    assert np.isfinite(booster._Booster__inner_predict(data_idx=0)).all()
+    np.testing.assert_array_equal(booster._Booster__inner_predict(data_idx=0), 0.0)
     if with_valid:
-        assert np.isfinite(booster._Booster__inner_predict(data_idx=1)).all()
+        np.testing.assert_array_equal(booster._Booster__inner_predict(data_idx=1), 0.0)
     booster.update()
     assert np.isfinite(booster._Booster__inner_predict(data_idx=0)).all()
     assert np.isfinite(booster.eval_train()[0][2])
