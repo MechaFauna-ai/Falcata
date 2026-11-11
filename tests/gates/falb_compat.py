@@ -77,6 +77,12 @@ def freeze(only=None):
         p = dict(params, verbose=-1, seed=42, num_threads=1, deterministic=True)
         ds = flc.Dataset(x, label=y, params=p, categorical_feature=cats or "auto")
         bst = flc.train(p, ds, num_boost_round=20)
+        leaves = leaf_counts(bst.model_to_string(num_iteration=-1))
+        if "constant" in name and not (min(leaves) == 1 < max(leaves)):
+            raise SystemExit(
+                f"{name}: this fixture exists to carry constant trees next to grown ones, "
+                f"but the recipe produced leaf counts {sorted(set(leaves))}"
+            )
         np.save(d / "X.npy", x.astype(np.float64))
         np.save(d / "preds.npy", bst.predict(x))
         bst.save_model(str(d / "model.falb"), format="falb")
@@ -84,12 +90,6 @@ def freeze(only=None):
         (d / "meta.json").write_text(
             json.dumps({"falcata_version": flc.__version__, "params": params}, indent=1) + "\n"
         )
-        leaves = leaf_counts((d / "model.txt").read_text())
-        if "constant" in name and not (min(leaves) == 1 < max(leaves)):
-            raise SystemExit(
-                f"{name}: this fixture exists to carry constant trees next to grown ones, "
-                f"but the recipe produced leaf counts {sorted(set(leaves))}"
-            )
         print(f"froze {name} (writer {flc.__version__}, {len(leaves)} trees, {min(leaves)}-{max(leaves)} leaves)")
 
 
