@@ -333,7 +333,6 @@ def plot_metric(
         If None, title is disabled.
     ylabel : str or None, optional (default="@metric@")
         Y-axis title label.
-        If 'auto', metric name is used.
         If None, title is disabled.
         @metric@ placeholder can be used, and it will be replaced with metric name.
     figsize : tuple of 2 elements or None, optional (default=None)
