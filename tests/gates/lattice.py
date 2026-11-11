@@ -28,8 +28,8 @@ Usage:
   python tests/gates/lattice.py --list               # print the cell matrix
 Cells run sequentially in chunked worker subprocesses (crash isolation: a
 crashing cell fails alone and the runner respawns for the rest). Workers
-have a30-minute deadline (FALCATA_LATTICE_TIMEOUT_SEC overrides it). A timeout
-aborts all later cells with status125; the GPU job must stop.
+have a 30-minute deadline (FALCATA_LATTICE_TIMEOUT_SEC overrides it). A timeout
+aborts all later cells with status 125; the GPU job must stop.
 """
 
 import argparse
@@ -46,9 +46,7 @@ GATES_DIR = Path(__file__).resolve().parent
 FINGERPRINT_FILE = GATES_DIR / "md5_lattice.json"
 RESULTS_FILE = Path(os.environ.get("FALCATA_GATES_RESULTS", GATES_DIR / "lattice_results.json"))
 WORKER_CHUNK = 30
-WORKER_TIMEOUT_SEC = int(os.environ.get("FALCATA_LATTICE_TIMEOUT_SEC", "1800"))
-if WORKER_TIMEOUT_SEC <= 0:
-    raise ValueError("FALCATA_LATTICE_TIMEOUT_SEC must be positive")
+WORKER_TIMEOUT_SEC = 1800
 METRIC_TOLERANCE = 0.02  # relative; only applied to non-fingerprinted (nondeterministic) cells
 
 # --------------------------------------------------------------------------- #
@@ -1960,6 +1958,7 @@ def check(cells, results, fingerprints, update_ids=None, write_all=False):
 
 
 def main():
+    global WORKER_TIMEOUT_SEC
     ap = argparse.ArgumentParser()
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true")
@@ -2004,6 +2003,13 @@ def main():
                 keep.add(c["equal_to"])
         cells = [c for c in cells if c["id"] in keep]
 
+    try:
+        WORKER_TIMEOUT_SEC = int(os.environ.get("FALCATA_LATTICE_TIMEOUT_SEC", "1800"))
+        if WORKER_TIMEOUT_SEC <= 0:
+            raise ValueError
+    except ValueError:
+        ap.error("FALCATA_LATTICE_TIMEOUT_SEC must be a positive integer")
+
     fingerprints = {}
     if FINGERPRINT_FILE.exists():
         fingerprints = json.loads(FINGERPRINT_FILE.read_text())["cells"]
@@ -2012,7 +2018,8 @@ def main():
     try:
         results = run_cells(cells)
     except subprocess.TimeoutExpired as exc:
-        print(f"UNRESOLVED_CUDA_TIMEOUT: worker exceeded {exc.timeout}s; stop GPU job", file=sys.stderr)
+        stalled = ", ".join(cell["id"] for cell in json.loads(exc.cmd[-1]))
+        print(f"UNRESOLVED_CUDA_TIMEOUT: worker [{stalled}] exceeded {exc.timeout}s; stop GPU job", file=sys.stderr)
         return 125
     elapsed = time.monotonic() - t0
 

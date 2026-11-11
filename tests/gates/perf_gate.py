@@ -34,6 +34,10 @@ HISTORY = 20
 REMEASURE_TRIES = 3
 
 
+class UnresolvedCUDATimeout(RuntimeError):
+    """A worker timeout requires stopping the entire GPU job."""
+
+
 class GPUQContextError(RuntimeError):
     """The scheduler's strict-job evidence cannot be trusted or read."""
 
@@ -86,6 +90,8 @@ def remeasure(cell_id):
             check=False,
             env={**os.environ, "FALCATA_GATES_RESULTS": str(out)},
         )
+        if proc.returncode == 125:
+            raise UnresolvedCUDATimeout("lattice reported an unresolved CUDA timeout; stop GPU job")
         if proc.returncode != 0 or not out.exists():
             print(f"  note {cell_id}: re-measurement unavailable, keeping original timing")
             return None
@@ -202,6 +208,9 @@ def main(argv=None):
         ap.error("use --gpuq-strict inside gpuq submit --exclusive with an explicit bounded timeout; no bypass")
     try:
         return evaluate(args, StrictGPUQ())
+    except UnresolvedCUDATimeout as e:
+        print(f"UNRESOLVED_CUDA_TIMEOUT: {e}", file=sys.stderr)
+        return 125
     except GPUQContextError as e:
         print(f"  FAIL strict gpuq context: {e}", file=sys.stderr)
         return 2
