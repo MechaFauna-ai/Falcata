@@ -12,6 +12,7 @@
 #include <string>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <unordered_set>
 
 #if defined(_WIN32)
@@ -241,10 +242,18 @@ class TcpSocket {
     return ip_list;
   }
 #endif
+  inline static bool IsIPv4Address(const char* url) {
+    in_addr addr;
+    return inet_pton(AF_INET, url, &addr) == 1;
+  }
+
   inline static sockaddr_in GetAddress(const char* url, int port) {
     sockaddr_in addr = sockaddr_in();
     std::memset(&addr, 0, sizeof(sockaddr_in));
-    inet_pton(AF_INET, url, &addr.sin_addr);
+    if (inet_pton(AF_INET, url, &addr.sin_addr) != 1) {
+      // left unparsed, the zeroed address would silently mean 0.0.0.0
+      Log::Fatal("Invalid IPv4 address '%s' (machine lists take numeric IPv4 addresses)", url);
+    }
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<u_short>(port));
     return addr;
@@ -267,7 +276,14 @@ class TcpSocket {
   }
 
   inline void Listen(int backlog = 128) {
-    listen(sockfd_, backlog);
+    if (listen(sockfd_, backlog) == SOCKET_ERROR) {
+      int err_code = GetLastError();
+#if defined(_WIN32)
+      Log::Fatal("Socket listen error (code: %d)", err_code);
+#else
+      Log::Fatal("Socket listen error, %s (code: %d)", std::strerror(err_code), err_code);
+#endif
+    }
   }
 
   inline TcpSocket Accept() {
