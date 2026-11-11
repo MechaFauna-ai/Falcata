@@ -25,6 +25,7 @@ def test_invalid_constant_recipe_preserves_fixture(tmp_path, monkeypatch):
         save_model=lambda filename, **kwargs: Path(filename).write_text(text),
         model_to_string=lambda **kwargs: text,
     )
+    monkeypatch.setattr(module.flc, "__version__", "test", raising=False)
     monkeypatch.setattr(module.flc, "train", lambda *args, **kwargs: model)
     monkeypatch.setattr(module, "make_data", lambda *args, **kwargs: (np.zeros((2, 1)), np.zeros(2), []))
     with pytest.raises(SystemExit, match="constant trees"):
