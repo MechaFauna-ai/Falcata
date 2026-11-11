@@ -76,6 +76,10 @@ __global__ void CopySubrowKernel_ColumnData(
 }
 
 void CUDAColumnData::LaunchCopySubrowKernel(uint8_t* const* in_cuda_data_by_column) {
+  // an empty subset (or no columns) has nothing to copy, and its grid would be empty, an invalid launch
+  if (num_used_indices_ <= 0 || num_columns_ <= 0) {
+    return;
+  }
   const int num_blocks = CUDABlockCount(num_used_indices_, COPY_SUBROW_BLOCK_SIZE_COLUMN_DATA);
   CopySubrowKernel_ColumnData<<<num_blocks, COPY_SUBROW_BLOCK_SIZE_COLUMN_DATA>>>(
     in_cuda_data_by_column,
@@ -84,6 +88,8 @@ void CUDAColumnData::LaunchCopySubrowKernel(uint8_t* const* in_cuda_data_by_colu
     num_used_indices_,
     num_columns_,
     cuda_data_by_column_.RawData());
+  // a launch error is not sticky: report it here rather than at whichever later check reads it
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
 }  // namespace Falcata

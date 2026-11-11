@@ -59,8 +59,8 @@ struct ReaderPrefer {
     std::size_t rwcount = 0;
   };
 
-  static void before_wait_wlock(const state&) {}
-  static void after_wait_wlock(const state&) {}
+  static void before_wait_wlock(const state*) {}
+  static void after_wait_wlock(const state*) {}
 
   static bool wait_wlock(const state& s) { return (s.rwcount != 0); }
 

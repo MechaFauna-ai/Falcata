@@ -67,6 +67,7 @@ class RankingObjective : public ObjectiveFunction {
       const data_size_t cnt = query_boundaries_[query_index + 1] - query_boundaries_[query_index];
       std::vector<double> score_adjusted;
       if (num_position_ids_ > 0) {
+        score_adjusted.reserve(cnt);
         for (data_size_t j = 0; j < cnt; ++j) {
           score_adjusted.push_back(score[start + j] + pos_biases_[positions_[start + j]]);
         }
@@ -412,12 +413,14 @@ class RankXENDCG : public RankingObjective {
     }
 
     // Turn scores into a probability distribution using Softmax.
-    std::vector<double> rho(cnt, 0.0);
+    thread_local std::vector<double> rho;
+    rho.resize(cnt);
     Common::Softmax(score, rho.data(), cnt);
 
     // An auxiliary buffer of parameters used to form the ground-truth
     // distribution and compute the loss.
-    std::vector<double> params(cnt);
+    thread_local std::vector<double> params;
+    params.resize(cnt);
 
     double inv_denominator = 0;
     for (data_size_t i = 0; i < cnt; ++i) {

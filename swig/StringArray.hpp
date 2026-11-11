@@ -9,6 +9,7 @@
 #define FALCATA_SWIG_STRINGARRAY_HPP_
 
 #include <algorithm>
+#include <cstring>
 #include <new>
 #include <string>
 #include <vector>
@@ -33,6 +34,9 @@ class StringArray {
         _array(num_elements + 1, nullptr) {
         _allocate_strings(num_elements, string_size);
     }
+
+    StringArray(const StringArray&) = delete;
+    StringArray& operator=(const StringArray&) = delete;
 
     ~StringArray() {
         _release_strings();
@@ -73,11 +77,11 @@ class StringArray {
      *
      * @return In case index results in out of bounds access,
      * or content + 1 (null-terminator byte) doesn't fit
-     * into the target string (_string_size), it errors out
+     * into the target buffer (_string_size + 1), it errors out
      * and returns -1.
      */
     int setitem(size_t index, const std::string &content) noexcept {
-        if (_in_bounds(index) && content.size() < _string_size) {
+        if (_in_bounds(index) && content.size() <= _string_size) {
             std::strcpy(_array[index], content.c_str());  // NOLINT
             return 0;
         } else {

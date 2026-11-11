@@ -146,9 +146,15 @@ LIBRARY_CELLS = {
 ALL_LIBRARIES = LIBRARIES + [x for x in dict.fromkeys(sum(LIBRARIES_BY_REGIME.values(), [])) if x not in LIBRARIES]
 
 
+def valid_run_record(record):
+    """Whether a journal entry has the fields needed for benchmark resumption."""
+    fields = ("library", "dataset", "regime", "kind", "status")
+    return isinstance(record, dict) and all(isinstance(record.get(field), str) for field in fields)
+
+
 def libraries_for(regime: str):
     """Libraries benchmarked in ``regime``."""
-    return LIBRARIES_BY_REGIME.get(regime, LIBRARIES)
+    return list(LIBRARIES_BY_REGIME.get(regime, LIBRARIES))
 
 
 def library_runs_cell(library: str, dataset: str, regime: str) -> bool:
