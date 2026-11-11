@@ -55,8 +55,15 @@ class PipelineReader {
         [=, &last_read_cnt, &reader, &buffer_read] {
         last_read_cnt = reader->Read(buffer_read.data(), buffer_size);
       });
-      // start process
-      cnt += process_fun(buffer_process.data(), read_cnt);
+      // start process; if it throws (e.g. Log::Fatal on a malformed line),
+      // join the reader before unwinding: destroying a joinable std::thread
+      // calls std::terminate, and the reader still uses this frame's buffers
+      try {
+        cnt += process_fun(buffer_process.data(), read_cnt);
+      } catch (...) {
+        read_worker.join();
+        throw;
+      }
       // wait for read thread
       read_worker.join();
       // exchange the buffer

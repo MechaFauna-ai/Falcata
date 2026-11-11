@@ -31,9 +31,7 @@ struct ByteBuffer final : public BinaryWriter {
 
   size_t Write(const void* data, size_t bytes) {
     const char* mem_ptr = static_cast<const char*>(data);
-    for (size_t i = 0; i < bytes; ++i) {
-      buffer_.push_back(mem_ptr[i]);
-    }
+    buffer_.insert(buffer_.end(), mem_ptr, mem_ptr + bytes);
 
     return bytes;
   }
