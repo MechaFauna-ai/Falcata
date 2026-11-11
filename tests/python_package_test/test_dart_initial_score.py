@@ -3,16 +3,23 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+import falcata as flc
 from falcata.basic import _LIB
 
 
 def test_dart_initial_score(tmp_path):
-    if os.getenv("FALCATA_RUN_CPU_CPP_REGRESSIONS") != "1":
-        pytest.skip("Internal C++ test requires an explicitly selected CPU-only library")
+    if sys.platform != "linux" or os.getenv("TASK") in {"cuda", "gpu", "mpi"}:
+        pytest.skip("Native sanitizer harness requires a Linux CPU build")
+    if _LIB.FLC_DatasetDeviceBuilderFree(None) == 0:
+        pytest.skip("Private-header harness does not support CUDA library layouts")
+    if b"requires a CUDA build" not in _LIB.FLC_GetLastError():
+        pytest.skip("Cannot identify the loaded library as a CPU build")
     compiler = shutil.which("c++")
     if compiler is None:
         pytest.skip("C++ compiler unavailable")
@@ -41,9 +48,6 @@ def test_dart_initial_score(tmp_path):
 
 
 def test_dart_custom_objective_before_first_iteration():
-    import falcata as flc
-    import numpy as np
-
     x = np.random.default_rng(42).normal(size=(60, 2))
     y = x[:, 0]
 
