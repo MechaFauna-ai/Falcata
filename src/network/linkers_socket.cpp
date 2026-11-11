@@ -17,6 +17,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "linkers.h"
@@ -134,8 +135,8 @@ void Linkers::TryBind(int port) {
   }
 }
 
-void Linkers::SetLinker(int rank, const TcpSocket& socket) {
-  linkers_[rank].reset(new TcpSocket(socket));
+void Linkers::SetLinker(int rank, TcpSocket socket) {
+  linkers_[rank].reset(new TcpSocket(std::move(socket)));
   // set timeout
   linkers_[rank]->SetTimeout(socket_timeout_ * 1000 * 60);
 }
@@ -163,7 +164,7 @@ void Linkers::ListenThread(int incoming_cnt) {
       Log::Fatal("Invalid rank %d found during initialization of linkers. The world size is %d.", in_rank, num_machines_);
     }
     // add new socket
-    SetLinker(in_rank, handler);
+    SetLinker(in_rank, std::move(handler));
     ++connected_cnt;
   }
 }
@@ -204,7 +205,7 @@ void Linkers::Construct() {
         if (cur_socket.Connect(client_ips_[out_rank].c_str(), client_ports_[out_rank])) {
           // send local rank
           cur_socket.Send(reinterpret_cast<const char*>(&rank_), sizeof(rank_));
-          SetLinker(out_rank, cur_socket);
+          SetLinker(out_rank, std::move(cur_socket));
           break;
         } else {
           Log::Warning("Connecting to rank %d failed, waiting for %d milliseconds", out_rank, connect_fail_delay_time);

@@ -114,11 +114,22 @@ class TcpSocket {
     ConfigSocket();
   }
 
-  TcpSocket(const TcpSocket &object) {
-    sockfd_ = object.sockfd_;
-    ConfigSocket();
+  // owns its descriptor: move-only, and the destructor closes it
+  TcpSocket(const TcpSocket &) = delete;
+  TcpSocket &operator=(const TcpSocket &) = delete;
+  TcpSocket(TcpSocket &&other) noexcept : sockfd_(other.sockfd_) {
+    other.sockfd_ = INVALID_SOCKET;
+  }
+  TcpSocket &operator=(TcpSocket &&other) noexcept {
+    if (this != &other) {
+      Close();
+      sockfd_ = other.sockfd_;
+      other.sockfd_ = INVALID_SOCKET;
+    }
+    return *this;
   }
   ~TcpSocket() {
+    Close();
   }
   inline void SetTimeout(int timeout_ms) {
 #if defined(_WIN32)

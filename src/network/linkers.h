@@ -110,7 +110,7 @@ class Linkers {
   * \param rank
   * \param socket
   */
-  void SetLinker(int rank, const TcpSocket& socket);
+  void SetLinker(int rank, TcpSocket socket);
   /*!
   * \brief Thread for listening
   * \param incoming_cnt Number of incoming machines
