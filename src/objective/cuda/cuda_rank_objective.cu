@@ -124,12 +124,13 @@ __global__ void GetGradientsKernel_LambdarankNDCG(const double* cuda_scores, con
         const int high_label = static_cast<int>(cuda_label_pointer[high]);
         const double high_score = shared_scores[high];
         const double high_label_gain = label_gain_ptr[high_label];
-        const double high_discount = log2(2.0f + high_rank);
+        // pair discounts as the CPU objective (DCGCalculator::GetDiscount, also behind inverse_max_dcg): 1 / log2(2 + rank)
+        const double high_discount = 1.0 / log2(2.0 + static_cast<double>(high_rank));
         const data_size_t low = shared_indices[low_rank];
         const int low_label = static_cast<int>(cuda_label_pointer[low]);
         const double low_score = shared_scores[low];
         const double low_label_gain = label_gain_ptr[low_label];
-        const double low_discount = log2(2.0f + low_rank);
+        const double low_discount = 1.0 / log2(2.0 + static_cast<double>(low_rank));
 
         const double delta_score = high_score - low_score;
 
@@ -265,12 +266,12 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Sorted(
           const int high_label = static_cast<int>(cuda_label_pointer[high]);
           const double high_score = cuda_scores_pointer[high];
           const double high_label_gain = label_gain_ptr[high_label];
-          const double high_discount = log2(2.0f + high_rank);
+          const double high_discount = 1.0 / log2(2.0 + static_cast<double>(high_rank));
           const data_size_t low = cuda_item_indices_buffer_pointer[low_rank];
           const int low_label = static_cast<int>(cuda_label_pointer[low]);
           const double low_score = cuda_scores_pointer[low];
           const double low_label_gain = label_gain_ptr[low_label];
-          const double low_discount = log2(2.0f + low_rank);
+          const double low_discount = 1.0 / log2(2.0 + static_cast<double>(low_rank));
 
           const double delta_score = high_score - low_score;
 
@@ -455,11 +456,11 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Deterministic(
       const data_size_t high = shared_indices[high_rank];
       const double high_score = shared_scores[high];
       const double high_label_gain = label_gain_ptr[static_cast<int>(cuda_label_pointer[high])];
-      const double high_discount = log2(2.0f + high_rank);
+      const double high_discount = 1.0 / log2(2.0 + static_cast<double>(high_rank));
       const data_size_t low = shared_indices[low_rank];
       const double low_score = shared_scores[low];
       const double low_label_gain = label_gain_ptr[static_cast<int>(cuda_label_pointer[low])];
-      const double low_discount = log2(2.0f + low_rank);
+      const double low_discount = 1.0 / log2(2.0 + static_cast<double>(low_rank));
       const double delta_score = high_score - low_score;
       const double dcg_gap = high_label_gain - low_label_gain;
       const double paired_discount = fabs(high_discount - low_discount);
@@ -507,8 +508,8 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Deterministic(
         const double low_label_gain  = label_gain_ptr[static_cast<int>(slot_is_high ? i_label : slot_label)];
         const double high_score = slot_is_high ? static_cast<double>(slot_score_t) : static_cast<double>(shared_scores[i_orig]);
         const double low_score  = slot_is_high ? static_cast<double>(shared_scores[i_orig]) : static_cast<double>(slot_score_t);
-        const double high_discount = log2(2.0f + high_rank);
-        const double low_discount  = log2(2.0f + low_rank);
+        const double high_discount = 1.0 / log2(2.0 + static_cast<double>(high_rank));
+        const double low_discount  = 1.0 / log2(2.0 + static_cast<double>(low_rank));
         const double delta_score = high_score - low_score;
         const double dcg_gap = high_label_gain - low_label_gain;
         const double paired_discount = fabs(high_discount - low_discount);
@@ -542,8 +543,8 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Deterministic(
           const double low_label_gain  = label_gain_ptr[static_cast<int>(slot_is_high ? j_label : slot_label)];
           const double high_score = slot_is_high ? static_cast<double>(slot_score_t) : static_cast<double>(shared_scores[j_orig]);
           const double low_score  = slot_is_high ? static_cast<double>(shared_scores[j_orig]) : static_cast<double>(slot_score_t);
-          const double high_discount = log2(2.0f + high_rank);
-          const double low_discount  = log2(2.0f + low_rank);
+          const double high_discount = 1.0 / log2(2.0 + static_cast<double>(high_rank));
+          const double low_discount  = 1.0 / log2(2.0 + static_cast<double>(low_rank));
           const double delta_score = high_score - low_score;
           const double dcg_gap = high_label_gain - low_label_gain;
           const double paired_discount = fabs(high_discount - low_discount);
@@ -643,11 +644,11 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Sorted_Deterministic(
       const data_size_t high = cuda_item_indices_buffer_pointer[high_rank];
       const double high_score = cuda_scores_pointer[high];
       const double high_label_gain = label_gain_ptr[static_cast<int>(cuda_label_pointer[high])];
-      const double high_discount = log2(2.0f + high_rank);
+      const double high_discount = 1.0 / log2(2.0 + static_cast<double>(high_rank));
       const data_size_t low = cuda_item_indices_buffer_pointer[low_rank];
       const double low_score = cuda_scores_pointer[low];
       const double low_label_gain = label_gain_ptr[static_cast<int>(cuda_label_pointer[low])];
-      const double low_discount = log2(2.0f + low_rank);
+      const double low_discount = 1.0 / log2(2.0 + static_cast<double>(low_rank));
       const double delta_score = high_score - low_score;
       const double dcg_gap = high_label_gain - low_label_gain;
       const double paired_discount = fabs(high_discount - low_discount);
@@ -696,10 +697,10 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Sorted_Deterministic(
           if (slot != high && slot != low) continue;
           const double high_score = cuda_scores_pointer[high];
           const double high_label_gain = label_gain_ptr[static_cast<int>(cuda_label_pointer[high])];
-          const double high_discount = log2(2.0f + high_rank);
+          const double high_discount = 1.0 / log2(2.0 + static_cast<double>(high_rank));
           const double low_score = cuda_scores_pointer[low];
           const double low_label_gain = label_gain_ptr[static_cast<int>(cuda_label_pointer[low])];
-          const double low_discount = log2(2.0f + low_rank);
+          const double low_discount = 1.0 / log2(2.0 + static_cast<double>(low_rank));
           const double delta_score = high_score - low_score;
           const double dcg_gap = high_label_gain - low_label_gain;
           const double paired_discount = fabs(high_discount - low_discount);
