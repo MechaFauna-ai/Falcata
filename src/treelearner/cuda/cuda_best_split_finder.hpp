@@ -791,7 +791,7 @@ class CUDABestSplitFinder {
   int warp_find_all_num_narrow_ = 0;
   int warp_find_all_pad_ = 0;
   // number of total bins in the dataset
-  const int num_total_bin_;
+  int num_total_bin_;
   // has categorical feature
   bool has_categorical_feature_;
   // maximum number of bins of categorical features
