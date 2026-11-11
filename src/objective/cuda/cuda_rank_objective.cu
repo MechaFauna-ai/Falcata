@@ -11,6 +11,7 @@
 #include "cuda_rank_objective.hpp"
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_random.hpp>
 #include <cub/block/block_reduce.cuh>
 #include <random>
 #include <algorithm>
@@ -1094,9 +1095,33 @@ __global__ void GetGradientsKernel_RankXENDCG_GlobalMemory(
   }
 }
 
+// one block per query: item t gets Random::NextFloat's value after t + 1 steps of the query's generator (RandInt16
+// takes bits 16-30 of the new state); thread 0 then moves the state past the query's items, as the CPU loop does
+__global__ void GenerateItemRandsKernel_RankXENDCG(const data_size_t* cuda_query_boundaries, uint32_t* query_rand_states,
+                                                   double* item_rands) {
+  const data_size_t query_index = static_cast<data_size_t>(blockIdx.x);
+  const data_size_t item_start = cuda_query_boundaries[query_index];
+  const data_size_t item_count = cuda_query_boundaries[query_index + 1] - item_start;
+  const uint32_t state = query_rand_states[query_index];
+  for (data_size_t t = static_cast<data_size_t>(threadIdx.x); t < item_count; t += static_cast<data_size_t>(blockDim.x)) {
+    const uint32_t x = CUDARandom::AdvanceState(state, static_cast<uint32_t>(t) + 1u);
+    item_rands[item_start + t] = static_cast<double>(CUDARandom::FloatFromState(x));
+  }
+  if (threadIdx.x == 0) {
+    query_rand_states[query_index] = CUDARandom::AdvanceState(state, static_cast<uint32_t>(item_count));
+  }
+}
+
+void CUDARankXENDCG::LaunchGenerateItemRandsKernel() const {
+  if (num_queries_ <= 0) {
+    return;
+  }
+  GenerateItemRandsKernel_RankXENDCG<<<num_queries_, 256>>>(cuda_query_boundaries_, cuda_query_rand_states_.RawData(),
+                                                            cuda_item_rands_.RawData());
+}
+
 void CUDARankXENDCG::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
-  GenerateItemRands();
-  CopyFromHostToCUDADevice<double>(cuda_item_rands_.RawData(), item_rands_.data(), item_rands_.size(), __FILE__, __LINE__);
+  LaunchGenerateItemRandsKernel();
 
   const int num_blocks = (num_queries_ + NUM_QUERY_PER_BLOCK - 1) / NUM_QUERY_PER_BLOCK;
   if (max_items_in_query_aligned_ <= 1024) {
