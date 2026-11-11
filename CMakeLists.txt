@@ -1061,6 +1061,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_single_row.cpp
       tests/cpp_tests/test_split_info.cpp
       tests/cpp_tests/test_stream.cpp
+      tests/cpp_tests/test_threshold_dictionary_bounds.cpp
       tests/cpp_tests/test_xentropy_lambda.cpp
       tests/cpp_tests/testutils.cpp
     )

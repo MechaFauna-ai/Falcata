@@ -203,7 +203,7 @@ class ThresholdDictionary {
   }
 
   uint32_t IndexOf(int feature, double value) const {
-    const auto& m = index_[feature];
+    const auto& m = index_[ThresholdFeatureIndex(feature, index_.size())];
     auto it = m.find(value);
     if (it == m.end()) {
       Log::Fatal("FALB: threshold %.17g of feature %d missing from dictionary",
