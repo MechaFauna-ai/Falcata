@@ -67,8 +67,13 @@ def _objective_mapping(xgb_objective: str, num_class: int) -> Tuple[str, int, in
     if xgb_objective in ("binary:logistic", "reg:logistic"):
 
         def _logit(p: float) -> float:
-            p = min(max(p, 1e-12), 1 - 1e-12)
-            return math.log(p / (1.0 - p))
+            # XGBoost's own ProbToMargin: clamp to [1e-6, 1 - 1e-6], then
+            # -log(1/p - 1) in float32. A tighter clamp maps a degenerate
+            # base_score (0 or 1, e.g. from all-negative labels) to a margin
+            # ~14 logits away from the one XGBoost adds.
+            eps = np.float32(1e-6)
+            p32 = min(max(np.float32(p), eps), np.float32(1) - eps)
+            return float(-np.log(np.float32(1) / p32 - np.float32(1)))
 
         return "binary sigmoid:1", 1, 1, _logit
     if xgb_objective in ("binary:logitraw",):
