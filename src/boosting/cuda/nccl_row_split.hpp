@@ -9,6 +9,7 @@
 #include <Falcata/meta.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 
 namespace Falcata {
@@ -49,6 +50,13 @@ inline bool NCCLAnyEmptyRank(const data_size_t num_data, const int num_ranks) {
     }
   }
   return false;
+}
+
+// Element offset of row `row` of class `class_id` in a class-major buffer holding `num_rows` rows per class (the
+// gradients, hessians and scores). Computed in size_t: num_class * num_data passes INT32_MAX on large multiclass data
+// (100M rows x 22 classes), where the int product wrapped.
+inline size_t NCCLClassMajorOffset(const int class_id, const data_size_t num_rows, const data_size_t row = 0) {
+  return static_cast<size_t>(class_id) * static_cast<size_t>(num_rows) + static_cast<size_t>(row);
 }
 
 }  // namespace Falcata

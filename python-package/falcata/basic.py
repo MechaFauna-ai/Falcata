@@ -25,6 +25,7 @@ from functools import wraps
 from os import SEEK_END, environ
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from threading import RLock, local
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 import narwhals as nw
@@ -48,6 +49,29 @@ __all__ = [
     "register_logger",
     "Sequence",
 ]
+
+# Native network state is shared by boosters on the same thread (THREAD_LOCAL
+# in network.cpp). Keep each ownership record alive even if a booster moves threads.
+_NETWORK_LOCAL = local()
+
+
+class _NetworkState:
+    def __init__(self) -> None:
+        self.refcount = 0
+        self.pending_free = False
+        self.lock = RLock()
+
+
+def _get_network_state() -> _NetworkState:
+    if not hasattr(_NETWORK_LOCAL, "state"):
+        _NETWORK_LOCAL.state = _NetworkState()
+    state: _NetworkState = _NETWORK_LOCAL.state
+    with state.lock:
+        if state.pending_free and state.refcount == 0:
+            _safe_call(_LIB.FLC_NetworkFree())
+            state.pending_free = False
+    return state
+
 
 _BoosterHandle = ctypes.c_void_p
 _DatasetHandle = ctypes.c_void_p
@@ -903,6 +927,26 @@ def _dump_pandas_categorical(
     return pandas_str
 
 
+def _falb_payload_end(file: Any, header: bytes, size: int) -> Optional[int]:
+    # FALB v1 (FALB::kVersion in src/boosting/falb.h): 32-byte header
+    # followed by 40-byte section entries.
+    # Categories are appended after all stored section payloads.
+    if len(header) != 32 or int.from_bytes(header[4:8], "little") != 1:
+        return None
+    section_count = int.from_bytes(header[24:28], "little")
+    if section_count > (size - 32) // 40:
+        return None
+    payload_end = 32 + 40 * section_count
+    for _ in range(section_count):
+        entry = file.read(40)
+        section_offset = int.from_bytes(entry[16:24], "little")
+        stored_len = int.from_bytes(entry[24:32], "little")
+        if section_offset > size or stored_len > size - section_offset:
+            return None
+        payload_end = max(payload_end, section_offset + stored_len)
+    return payload_end
+
+
 def _load_pandas_categorical(
     file_name: Optional[Union[str, Path]] = None,
     model_str: Optional[str] = None,
@@ -913,13 +957,22 @@ def _load_pandas_categorical(
         with open(file_name, "rb") as f:
             f.seek(0, SEEK_END)
             size = f.tell()
-            tail_len = min(size, len(pandas_key))
-            while True:
-                f.seek(-tail_len, SEEK_END)
+            f.seek(0)
+            header = f.read(32)
+            if _is_falb(header):
+                payload_end = _falb_payload_end(f, header, size)
+                if payload_end is None:
+                    return None
+                f.seek(payload_end)
                 lines = f.readlines()
-                if len(lines) >= 2 or tail_len == size:
-                    break
-                tail_len = min(size, tail_len * 2)
+            else:
+                tail_len = min(size, len(pandas_key))
+                while True:
+                    f.seek(-tail_len, SEEK_END)
+                    lines = f.readlines()
+                    if len(lines) >= 2 or tail_len == size:
+                        break
+                    tail_len = min(size, tail_len * 2)
         # Search for a line-aligned trailer before decoding anything. FALB
         # payloads are arbitrary bytes and are not UTF-8 model text.
         marker = pandas_key.encode("ascii")
@@ -1266,8 +1319,14 @@ class _InnerPredictor:
         if pred_leaf:
             preds = preds.astype(np.int32)
         is_sparse = isinstance(preds, (list, scipy.sparse.spmatrix))
-        if not is_sparse and (preds.size != nrow or pred_leaf or pred_contrib):
-            if preds.size % nrow == 0:
+        if not is_sparse and (nrow == 0 or preds.size != nrow or pred_leaf or pred_contrib):
+            if nrow == 0:
+                width = self.__get_num_preds(
+                    start_iteration=start_iteration, num_iteration=num_iteration, nrow=1, predict_type=predict_type
+                )
+                if width != 1 or pred_leaf or pred_contrib:
+                    preds = preds.reshape(0, width)
+            elif preds.size % nrow == 0:
                 preds = preds.reshape(nrow, -1)
             else:
                 raise ValueError(f"Length of predict result ({preds.size}) cannot be divide nrow ({nrow})")
@@ -1569,6 +1628,15 @@ class _InnerPredictor:
         """Predict for a CSR data."""
         if csr.shape[1] > _MAX_INT32:
             raise ValueError(f"CSR prediction cannot use more than {_MAX_INT32} columns")
+        if csr.shape[0] == 0 and predict_type == _C_API_PREDICT_CONTRIB:
+            width = (
+                self.__get_num_preds(
+                    start_iteration=start_iteration, num_iteration=num_iteration, nrow=1, predict_type=predict_type
+                )
+                // self.num_class
+            )
+            matrices = [scipy.sparse.csr_matrix((0, width), dtype=np.float64) for _ in range(self.num_class)]
+            return (matrices[0] if self.num_class == 1 else matrices), 0
         if predict_type == _C_API_PREDICT_CONTRIB:
             return self.__inner_predict_csr_sparse(
                 csr=csr,
@@ -1996,7 +2064,7 @@ class Dataset:
         num_per_col_ptr, _, _ = _c_int_array(num_per_col)
 
         self._handle = ctypes.c_void_p()
-        params_str = _param_dict_to_str(self.get_params())
+        params_str = _param_dict_to_str(self.params)
         _safe_call(
             _LIB.FLC_DatasetCreateFromSampledColumn(
                 ctypes.cast(sample_col_ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_double))),
@@ -2026,7 +2094,7 @@ class Dataset:
             Dataset object.
         """
         nrow, ncol = data.shape
-        data = data.reshape(data.size)
+        data, _ = _np2d_to_np1d(np.ascontiguousarray(data))
         data_ptr, data_type, _ = _c_float_array(data)
 
         _safe_call(
@@ -2136,21 +2204,13 @@ class Dataset:
             if used_indices is not None:
                 assert not self._need_slice
                 if isinstance(data, (str, Path)):
-                    sub_init_score = np.empty(num_data * predictor.num_class, dtype=np.float64)
                     assert num_data == len(used_indices)
-                    for i in range(len(used_indices)):
-                        for j in range(predictor.num_class):
-                            sub_init_score[i * predictor.num_class + j] = init_score[
-                                used_indices[i] * predictor.num_class + j
-                            ]
-                    init_score = sub_init_score
+                    init_score = init_score.reshape(-1, predictor.num_class)[used_indices].ravel()
             if predictor.num_class > 1:
-                # need to regroup init_score
-                new_init_score = np.empty(init_score.size, dtype=np.float64)
-                for i in range(num_data):
-                    for j in range(predictor.num_class):
-                        new_init_score[j * num_data + i] = init_score[i * predictor.num_class + j]
-                init_score = new_init_score
+                # Native init scores are class-major; predictor output is row-major.
+                init_score = (
+                    np.asarray(init_score, dtype=np.float64).reshape(num_data, predictor.num_class).ravel(order="F")
+                )
         elif self.init_score is not None:
             init_score = np.full_like(self.init_score, fill_value=0.0, dtype=np.float64)
         else:
@@ -2319,7 +2379,8 @@ class Dataset:
 
         # Select sampled rows, transpose to column order.
         sampled = np.array(list(self._yield_row_from_seqlist(seqs, indices)))
-        sampled = sampled.T
+        sampled_1d, _ = _np2d_to_np1d(sampled)
+        sampled = sampled_1d.astype(np.float64).reshape(sampled.shape).T
 
         filtered = []
         filtered_idx = []
@@ -3772,7 +3833,8 @@ def _fil_run_device(model: Any, data: Any) -> Optional[Any]:
         data = data.astype(np.float32)
     try:
         return model.predict_proba(data) if model.is_classifier else model.predict(data)
-    except Exception:
+    except Exception as exc:
+        _log_warning(f"FIL prediction failed ({type(exc).__name__}: {exc}); using CPU predictor.")
         return None
 
 
@@ -3788,6 +3850,8 @@ def _fil_run_host_slabs(model: Any, data: np.ndarray) -> Optional[np.ndarray]:
     multi-minute predict into seconds.
     """
     n_rows = data.shape[0]
+    if n_rows == 0:
+        return None
     slab_rows = max(1, min(n_rows, _FIL_HOST_SLAB_ELEMENTS // max(1, data.shape[1])))
     out = []
     for start in range(0, n_rows, slab_rows):
@@ -3796,7 +3860,8 @@ def _fil_run_host_slabs(model: Any, data: np.ndarray) -> Optional[np.ndarray]:
             slab = slab.astype(np.float32)
         try:
             preds = model.predict_proba(slab) if model.is_classifier else model.predict(slab)
-        except Exception:
+        except Exception as exc:
+            _log_warning(f"FIL host prediction failed ({type(exc).__name__}: {exc}); using CPU predictor.")
             return None
         if not isinstance(preds, np.ndarray):
             import cupy  # noqa: PLC0415
@@ -3875,6 +3940,7 @@ class Booster:
         """
         self._handle = ctypes.c_void_p()
         self._network = False
+        self._network_state: Optional[_NetworkState] = None
         self.__need_reload_eval_info = True
         self._train_data_name = "training"
         self.__set_objective_to_none = False
@@ -4029,9 +4095,15 @@ class Booster:
 
     def __getstate__(self) -> Dict[str, Any]:
         this = self.__dict__.copy()
+        # A serialized model does not own this process's native network.
+        this["_network"] = False
+        this.pop("_network_state", None)
         handle = this["_handle"]
         this.pop("train_set", None)
         this.pop("valid_sets", None)
+        this["_Booster__inner_predict_buffer"] = []
+        this["_Booster__is_predicted_cur_iter"] = []
+        this["_Booster__num_dataset"] = 0
         this.pop("_fil_models", None)
         if handle is not None:
             # FALB by default: same model, ~10x less to write and read. Opt out
@@ -4077,6 +4149,9 @@ class Booster:
                 )
             state["_handle"] = handle
         self.__dict__.update(state)
+        # Also discard ownership flags from pickles written by older versions.
+        self._network = False
+        self._network_state = None
 
     def _get_loaded_param(self) -> Dict[str, Any]:
         buffer_len = 1 << 20
@@ -4128,6 +4203,7 @@ class Booster:
         """Replace the native model and invalidate state tied to the old handle."""
         old_handle = self._handle
         self._handle = new_handle
+        self.free_dataset()
         self._free_buffer()
         self._invalidate_fil_cache()
         if old_handle:
@@ -4141,6 +4217,10 @@ class Booster:
         num_machines: int = 1,
     ) -> "Booster":
         """Set the network configuration.
+
+        The native network is shared by boosters on the calling thread. Each
+        call initializes it, while repeated calls on this booster retain one
+        ownership reference.
 
         Parameters
         ----------
@@ -4160,27 +4240,66 @@ class Booster:
         """
         if isinstance(machines, (list, set)):
             machines = ",".join(machines)
-        _safe_call(
-            _LIB.FLC_NetworkInit(
-                _c_str(machines),
-                ctypes.c_int(local_listen_port),
-                ctypes.c_int(listen_time_out),
-                ctypes.c_int(num_machines),
-            )
-        )
-        self._network = True
+        state = _get_network_state()
+        if self._network and self._network_state is not state:
+            self.free_network()
+        with state.lock:
+            # A cross-thread release may have happened after state lookup.
+            if state.pending_free:
+                _safe_call(_LIB.FLC_NetworkFree())
+                state.pending_free = False
+            acquired = not self._network
+            if acquired:
+                state.refcount += 1
+                self._network_state = state
+                self._network = True
+            try:
+                # Always initialize: peers may be starting a new distributed session.
+                _safe_call(
+                    _LIB.FLC_NetworkInit(
+                        _c_str(machines),
+                        ctypes.c_int(local_listen_port),
+                        ctypes.c_int(listen_time_out),
+                        ctypes.c_int(num_machines),
+                    )
+                )
+            except Exception:
+                if acquired:
+                    state.refcount -= 1
+                    self._network = False
+                    self._network_state = None
+                raise
         return self
 
     def free_network(self) -> "Booster":
-        """Free Booster's network.
+        """Release this booster's network ownership.
+
+        The native network is freed after the last owner releases it. Repeated
+        calls on a booster without network ownership have no effect. If released
+        from another thread, native cleanup waits until the owning thread next
+        accesses its network state or exits.
 
         Returns
         -------
         self : Booster
             Booster with freed network.
         """
-        _safe_call(_LIB.FLC_NetworkFree())
-        self._network = False
+        state = self._network_state
+        if state is None:
+            return self
+        with state.lock:
+            if self._network:
+                if state.refcount == 1:
+                    if getattr(_NETWORK_LOCAL, "state", None) is state:
+                        _safe_call(_LIB.FLC_NetworkFree())
+                    else:
+                        # Native TLS cannot be freed from another thread. Defer
+                        # until the owner thread next accesses its network state;
+                        # native thread exit also releases its resources.
+                        state.pending_free = True
+                state.refcount -= 1
+                self._network = False
+                self._network_state = None
         return self
 
     def trees_to_dataframe(self) -> pd_DataFrame:
@@ -5266,7 +5385,8 @@ class Booster:
                 device="gpu",
                 precision=None if precision == "native" else precision,
             )
-        except Exception:
+        except Exception as exc:
+            _log_warning(f"FIL conversion failed ({type(exc).__name__}: {exc}); using CPU predictor.")
             return None
 
     def _fil_predict(
@@ -5557,6 +5677,12 @@ class Booster:
         )
         new_params["refit_decay_rate"] = decay_rate
         new_booster = Booster(new_params, train_set)
+        state = _get_network_state()
+        with state.lock:
+            if self._network and self._network_state is state and not new_booster._network:
+                state.refcount += 1
+                new_booster._network_state = state
+                new_booster._network = True
         # Copy models
         _safe_call(
             _LIB.FLC_BoosterMerge(
@@ -5574,7 +5700,6 @@ class Booster:
                 ctypes.c_int32(ncol),
             )
         )
-        new_booster._network = self._network
         return new_booster
 
     def get_leaf_output(self, tree_id: int, leaf_id: int) -> float:

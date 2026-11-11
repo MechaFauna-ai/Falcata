@@ -412,8 +412,13 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
         // eligibility check bounded the total size
         const int64_t size = CategoryTableSize(*mapper);
         meta.cat_size = static_cast<int>(size);
+        // one hash lookup per id and up to 2^24 ids (kMaxCategoryTableEntries): fill the slots in parallel;
+        // ValueToBin only reads the mapper
+        const size_t table_start = cat_bins.size();
+        cat_bins.resize(table_start + static_cast<size_t>(size));
+        #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) if (size >= 65536)
         for (int64_t v = 0; v < size; ++v) {
-          cat_bins.push_back(mapper->ValueToBin(static_cast<double>(v)));
+          cat_bins[table_start + static_cast<size_t>(v)] = mapper->ValueToBin(static_cast<double>(v));
         }
       } else {
         const std::vector<double>& ub = mapper->bin_upper_bound();
