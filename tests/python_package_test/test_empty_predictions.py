@@ -8,16 +8,25 @@ import falcata as flc
 from falcata.basic import _fil_run_host_slabs
 
 
-@pytest.mark.parametrize("kind", ["normal", "leaf", "contrib"])
+@pytest.mark.parametrize("kind", ["normal", "raw", "leaf", "contrib"])
+@pytest.mark.parametrize("multiclass", [False, True])
 @pytest.mark.parametrize("sparse", [False, True])
-def test_empty_predictions(kind, sparse):
+def test_empty_predictions(kind, sparse, multiclass):
     data = np.arange(80, dtype=np.float64).reshape(40, 2)
+    params = {"num_threads": 2, "verbosity": -1, "min_data_in_leaf": 1}
+    if multiclass:
+        params.update(objective="multiclass", num_class=3)
     booster = flc.train(
-        {"num_threads": 2, "verbosity": -1, "min_data_in_leaf": 1},
-        flc.Dataset(data, label=np.arange(40)),
+        params,
+        flc.Dataset(data, label=np.arange(40) % 3 if multiclass else np.arange(40)),
         num_boost_round=2,
     )
-    options = {"pred_leaf": kind == "leaf", "pred_contrib": kind == "contrib", "use_fil": False}
+    options = {
+        "pred_leaf": kind == "leaf",
+        "pred_contrib": kind == "contrib",
+        "raw_score": kind == "raw",
+        "use_fil": False,
+    }
     batch = csr_matrix(data) if sparse else data
     prediction = booster.predict(batch[:0], **options)
     expected = booster.predict(batch[:1], **options)
