@@ -69,7 +69,8 @@ TreeLearner* TreeLearner::CreateTreeLearner(const std::string& learner_type, con
         // the same (each rank runs the single-GPU flow on a feature stripe)
         return new CUDASingleGPUTreeLearner(c, on_cuda);
       }
-      Log::Fatal("Currently cuda version only supports training on a single machine.");
+      Log::Fatal("CUDA requires tree_learner=serial, or tree_learner=feature with num_gpu>1 "
+                 "(got tree_learner=%s, num_gpu=%d).", lt.c_str(), c->num_gpu);
       return nullptr;
     }},
   };
