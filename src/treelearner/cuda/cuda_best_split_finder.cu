@@ -3810,7 +3810,8 @@ void CUDABestSplitFinder::LaunchFindBestFromAllSplitsKernel(
     cuda_best_split_info_buffer_.RawData(),
     cuda_leaf_best_split_info_.RawData());
   std::vector<int> host_leaf_best_split_info_buffer(8, 0);
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // the synchronous copy runs on the legacy default stream, which waits for both kernels above on the blocking
+  // cuda_streams_
   CopyFromCUDADeviceToHost<int>(host_leaf_best_split_info_buffer.data(), cuda_best_split_info_buffer_.RawData(), 8, __FILE__, __LINE__);
   *smaller_leaf_best_split_feature = host_leaf_best_split_info_buffer[0];
   *smaller_leaf_best_split_threshold = static_cast<uint32_t>(host_leaf_best_split_info_buffer[1]);
