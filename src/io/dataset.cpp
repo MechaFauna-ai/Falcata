@@ -461,6 +461,11 @@ std::vector<std::vector<int>> FastFeatureBundling(
 
   std::vector<std::vector<int>> tmp_indices;
   std::vector<int> tmp_num_per_col(num_sample_col, 0);
+  // the fixed index lists below live in tmp_indices, which dies with this
+  // function: point a local copy of the pointer array at them, never the
+  // caller's array (it would be left dangling)
+  std::vector<int*> local_sample_indices(sample_indices, sample_indices + num_sample_col);
+  sample_indices = local_sample_indices.data();
   for (auto fidx : used_features) {
     if (fidx >= num_sample_col) {
       continue;
