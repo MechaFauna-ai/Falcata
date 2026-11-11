@@ -174,14 +174,27 @@ class TextReader {
     if (!reader->Init()) {
       return ret;
     }
+    // read straight into the result, a chunk at a time (no staging copy)
     const size_t buffer_size = 16 * 1024 * 1024;
-    auto buffer_read = std::vector<char>(buffer_size);
-    size_t read_cnt = 0;
-    do {
-      read_cnt = reader->Read(buffer_read.data(), buffer_size);
-      ret.insert(ret.end(), buffer_read.begin(), buffer_read.begin() + read_cnt);
-      *out_len += read_cnt;
-    } while (read_cnt > 0);
+    while (true) {
+      if (ret.capacity() - ret.size() < buffer_size) {
+        // the next chunk would grow the result: check for more data first, so
+        // a file ending at the current capacity does not grow it for nothing
+        char probe;
+        if (reader->Read(&probe, 1) == 0) {
+          break;
+        }
+        ret.push_back(probe);
+      }
+      const size_t old_size = ret.size();
+      ret.resize(old_size + buffer_size);
+      const size_t read_cnt = reader->Read(ret.data() + old_size, buffer_size);
+      ret.resize(old_size + read_cnt);
+      if (read_cnt == 0) {
+        break;
+      }
+    }
+    *out_len = ret.size();
     return ret;
   }
 
