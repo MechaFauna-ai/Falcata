@@ -180,11 +180,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     const double* cuda_leaf_coeff, const int* cuda_leaf_coeff_offset, const int* cuda_leaf_coeff_col,
     const int* leaf_num_coeff, const double* cuda_leaf_output, double* score) const;
 
-  void ReduceLeafStat(CUDATree* old_tree, const score_t* gradients, const score_t* hessians, const data_size_t* num_data_in_leaf) const;
-
-  void LaunchReduceLeafStatKernel(const score_t* gradients, const score_t* hessians, const data_size_t* num_data_in_leaf,
-    const int* leaf_parent, const int* left_child, const int* right_child,
-    const int num_leaves, const data_size_t num_data, double* cuda_leaf_value, const double shrinkage_rate) const;
+  /*! \brief refit: sums the refit rows' gradients and hessians per leaf (by the partition's row -> leaf map) into the
+   *  first num_leaves entries of cuda_leaf_gradient_stat_buffer_ / cuda_leaf_hessian_stat_buffer_ */
+  void LaunchReduceLeafStatKernel(const score_t* gradients, const score_t* hessians, const int num_leaves,
+                                  const data_size_t num_data) const;
 
   void ConstructBitsetForCategoricalSplit(const CUDASplitInfo* best_split_info);
 

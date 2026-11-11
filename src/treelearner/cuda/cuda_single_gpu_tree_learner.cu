@@ -244,10 +244,11 @@ __global__ void CalcRefitLeafOutputKernel(
 }
 
 void CUDASingleGPUTreeLearner::LaunchReduceLeafStatKernel(
-  const score_t* gradients, const score_t* hessians, const data_size_t* num_data_in_leaf,
-  const int* leaf_parent, const int* left_child, const int* right_child, const int num_leaves,
-  const data_size_t num_data, double* cuda_leaf_value, const double shrinkage_rate) const {
-  int num_block = (num_data + CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE - 1) / CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE;
+  const score_t* gradients, const score_t* hessians, const int num_leaves, const data_size_t num_data) const {
+  if (num_data <= 0) {
+    return;  // no refit rows: every leaf sum stays 0
+  }
+  const int num_block = (num_data + CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE - 1) / CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE;
   if (num_leaves <= 2048) {
     ReduceLeafStatKernel_SharedMemory<<<num_block, CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE, 2 * num_leaves * sizeof(double)>>>(
       gradients, hessians, num_leaves, num_data, cuda_data_partition_->cuda_data_index_to_leaf_index(),
@@ -257,34 +258,6 @@ void CUDASingleGPUTreeLearner::LaunchReduceLeafStatKernel(
       gradients, hessians, num_leaves, num_data, cuda_data_partition_->cuda_data_index_to_leaf_index(),
       cuda_leaf_gradient_stat_buffer_.RawData(), cuda_leaf_hessian_stat_buffer_.RawData());
   }
-  const bool use_l1 = config_->lambda_l1 > 0.0f;
-  const bool use_smoothing = config_->path_smooth > 0.0f;
-  num_block = (num_leaves + CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE - 1) / CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE;
-
-  #define CalcRefitLeafOutputKernel_ARGS \
-    num_leaves, cuda_leaf_gradient_stat_buffer_.RawData(), cuda_leaf_hessian_stat_buffer_.RawData(), num_data_in_leaf, \
-    leaf_parent, left_child, right_child, \
-    config_->lambda_l1, config_->lambda_l2, config_->path_smooth, config_->max_delta_step, \
-    shrinkage_rate, config_->refit_decay_rate, cuda_leaf_value
-
-  if (!use_l1) {
-    if (!use_smoothing) {
-      CalcRefitLeafOutputKernel<false, false>
-        <<<num_block, CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE>>>(CalcRefitLeafOutputKernel_ARGS);
-    } else {
-      CalcRefitLeafOutputKernel<false, true>
-        <<<num_block, CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE>>>(CalcRefitLeafOutputKernel_ARGS);
-    }
-  } else {
-    if (!use_smoothing) {
-      CalcRefitLeafOutputKernel<true, false>
-        <<<num_block, CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE>>>(CalcRefitLeafOutputKernel_ARGS);
-    } else {
-      CalcRefitLeafOutputKernel<true, true>
-        <<<num_block, CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE>>>(CalcRefitLeafOutputKernel_ARGS);
-    }
-  }
-  #undef CalcRefitLeafOutputKernel_ARGS
 }
 
 template <typename T, bool IS_INNER>
