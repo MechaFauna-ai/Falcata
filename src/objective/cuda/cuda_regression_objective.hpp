@@ -38,6 +38,40 @@ class CUDARegressionObjectiveInterface: public CUDAObjectiveInterface<HOST_OBJEC
   CUDAVector<label_t> cuda_trans_label_;
 };
 
+/*! \brief L1 and quantile losses: both seed the init score from a global percentile of the labels and renew leaf
+ *  outputs from per-leaf percentiles of the residuals, through the same device buffers, sized here for both. */
+template <typename HOST_OBJECTIVE>
+class CUDAPercentileRegressionObjective : public CUDARegressionObjectiveInterface<HOST_OBJECTIVE> {
+ public:
+  explicit CUDAPercentileRegressionObjective(const Config& config)
+      : CUDARegressionObjectiveInterface<HOST_OBJECTIVE>(config) {}
+
+  explicit CUDAPercentileRegressionObjective(const std::vector<std::string>& strs)
+      : CUDARegressionObjectiveInterface<HOST_OBJECTIVE>(strs) {}
+
+  void Init(const Metadata& metadata, data_size_t num_data) override {
+    CUDARegressionObjectiveInterface<HOST_OBJECTIVE>::Init(metadata, num_data);
+    cuda_data_indices_buffer_.Resize(static_cast<size_t>(num_data));
+    cuda_percentile_result_.Resize(1);
+    if (this->cuda_weights_ != nullptr) {
+      cuda_weights_prefix_sum_.Resize(static_cast<size_t>(num_data));
+      // one partial sum per prefix-sum block, plus one
+      cuda_weights_prefix_sum_buffer_.Resize(
+        static_cast<size_t>(CUDABlockCount(num_data, GET_GRADIENTS_BLOCK_SIZE_REGRESSION)) + 1);
+      cuda_weight_by_leaf_buffer_.Resize(static_cast<size_t>(num_data));
+    }
+    cuda_residual_buffer_.Resize(static_cast<size_t>(num_data));
+  }
+
+ protected:
+  CUDAVector<data_size_t> cuda_data_indices_buffer_;
+  CUDAVector<double> cuda_weights_prefix_sum_;
+  CUDAVector<double> cuda_weights_prefix_sum_buffer_;
+  CUDAVector<double> cuda_residual_buffer_;
+  CUDAVector<label_t> cuda_weight_by_leaf_buffer_;
+  CUDAVector<label_t> cuda_percentile_result_;
+};
+
 class CUDARegressionL2loss : public CUDARegressionObjectiveInterface<RegressionL2loss> {
  public:
   explicit CUDARegressionL2loss(const Config& config);
@@ -74,7 +108,7 @@ class CUDAMultiRegressionL2 : public CUDAObjectiveInterface<MultiRegressionL2> {
 };
 
 
-class CUDARegressionL1loss : public CUDARegressionObjectiveInterface<RegressionL1loss> {
+class CUDARegressionL1loss : public CUDAPercentileRegressionObjective<RegressionL1loss> {
  public:
   explicit CUDARegressionL1loss(const Config& config);
 
@@ -82,16 +116,7 @@ class CUDARegressionL1loss : public CUDARegressionObjectiveInterface<RegressionL
 
   ~CUDARegressionL1loss();
 
-  void Init(const Metadata& metadata, data_size_t num_data) override;
-
  protected:
-  CUDAVector<data_size_t> cuda_data_indices_buffer_;
-  CUDAVector<double> cuda_weights_prefix_sum_;
-  CUDAVector<double> cuda_weights_prefix_sum_buffer_;
-  CUDAVector<double> cuda_residual_buffer_;
-  CUDAVector<label_t> cuda_weight_by_leaf_buffer_;
-  CUDAVector<label_t> cuda_percentile_result_;
-
   double LaunchCalcInitScoreKernel(const int class_id) const override;
 
   void LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const override;
@@ -152,15 +177,13 @@ class CUDARegressionPoissonLoss : public CUDARegressionObjectiveInterface<Regres
 };
 
 
-class CUDARegressionQuantileloss : public CUDARegressionObjectiveInterface<RegressionQuantileloss> {
+class CUDARegressionQuantileloss : public CUDAPercentileRegressionObjective<RegressionQuantileloss> {
  public:
   explicit CUDARegressionQuantileloss(const Config& config);
 
   explicit CUDARegressionQuantileloss(const std::vector<std::string>& strs);
 
   ~CUDARegressionQuantileloss();
-
-  void Init(const Metadata& metadata, data_size_t num_data) override;
 
  protected:
   void LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const override;
@@ -170,13 +193,6 @@ class CUDARegressionQuantileloss : public CUDARegressionObjectiveInterface<Regre
   void LaunchRenewTreeOutputCUDAKernel(
     const double* score, const data_size_t* data_indices_in_leaf, const data_size_t* num_data_in_leaf,
     const data_size_t* data_start_in_leaf, const int num_leaves, double* leaf_value) const override;
-
-  CUDAVector<data_size_t> cuda_data_indices_buffer_;
-  CUDAVector<double> cuda_weights_prefix_sum_;
-  CUDAVector<double> cuda_weights_prefix_sum_buffer_;
-  CUDAVector<double> cuda_residual_buffer_;
-  CUDAVector<label_t> cuda_weight_by_leaf_buffer_;
-  CUDAVector<label_t> cuda_percentile_result_;
 };
 
 
