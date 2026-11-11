@@ -763,11 +763,18 @@ inline static void CheckElementsIntervalClosed(const T *y, T ymin, T ymax, int n
 }
 
 // One-pass scan over array w with nw elements: find min, max and sum of elements;
-// this is useful for checking weight requirements. With no elements the sum is 0
-// and min and max are left unchanged.
+// this is useful for checking weight requirements. With no elements min, max
+// and sum are all 0 (every output is written, so callers never read an
+// uninitialized value).
 template <typename T1, typename T2>
 inline static void ObtainMinMaxSum(const T1 *w, int nw, T1 *mi, T1 *ma, T2 *su) {
   if (nw <= 0) {
+    if (mi != nullptr) {
+      *mi = static_cast<T1>(0);
+    }
+    if (ma != nullptr) {
+      *ma = static_cast<T1>(0);
+    }
     if (su != nullptr) {
       *su = static_cast<T2>(0);
     }

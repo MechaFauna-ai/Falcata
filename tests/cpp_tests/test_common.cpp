@@ -294,13 +294,13 @@ TEST(Softmax, EmptyInputIsANoOp) {
   EXPECT_LT(rec[0], rec[1]);
 }
 
-TEST(ObtainMinMaxSum, EmptyInputGivesZeroSumAndKeepsMinMax) {
+TEST(ObtainMinMaxSum, EmptyInputGivesZeros) {
   std::vector<float> empty;
   float mi = -1.0f, ma = -2.0f;
   double su = -3.0;
   Falcata::Common::ObtainMinMaxSum(empty.data(), 0, &mi, &ma, &su);
-  EXPECT_EQ(mi, -1.0f);
-  EXPECT_EQ(ma, -2.0f);
+  EXPECT_EQ(mi, 0.0f);
+  EXPECT_EQ(ma, 0.0f);
   EXPECT_EQ(su, 0.0);
 
   for (int n = 1; n <= 5; ++n) {
