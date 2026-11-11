@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <functional>
 #include <iomanip>
+#include <cmath>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -787,6 +788,9 @@ Tree::Tree(const char* str, size_t* used_len) {
   }
 
   Common::Atoi(key_vals["num_cat"].c_str(), &num_cat_);
+  if (num_cat_ < 0 || num_cat_ > std::max(num_leaves_ - 1, 0)) {
+    Log::Fatal("Tree model has invalid num_cat=%d for num_leaves=%d", num_cat_, num_leaves_);
+  }
 
   leaf_value_dim_ = 1;
   if (key_vals.count("leaf_value_dim")) {
@@ -937,6 +941,9 @@ Tree::Tree(const char* str, size_t* used_len) {
     if (num_feat.size() > 0) {
       int total_num_feat = 0;
       for (size_t i = 0; i < num_feat.size(); ++i) {
+        if (num_feat[i] < 0 || num_feat[i] > std::numeric_limits<int>::max() - total_num_feat) {
+          Log::Fatal("Tree model has invalid num_features=%d for leaf %zu", num_feat[i], i);
+        }
         total_num_feat += num_feat[i];
       }
       std::vector<int> all_leaf_features;
@@ -965,6 +972,15 @@ Tree::Tree(const char* str, size_t* used_len) {
   if (num_cat_ > 0) {
     if (key_vals.count("cat_boundaries")) {
       cat_boundaries_ = CommonC::StringToArrayFast<int>(key_vals["cat_boundaries"], num_cat_ + 1);
+      // cat_threshold is sized by the last boundary, so check them first
+      if (cat_boundaries_.empty() || cat_boundaries_.front() != 0) {
+        Log::Fatal("Tree model has invalid cat_boundaries: must start at 0");
+      }
+      for (size_t i = 1; i < cat_boundaries_.size(); ++i) {
+        if (cat_boundaries_[i] < cat_boundaries_[i - 1]) {
+          Log::Fatal("Tree model has invalid cat_boundaries: must be non-decreasing");
+        }
+      }
     } else {
       Log::Fatal("Tree model should contain cat_boundaries field.");
     }
@@ -1148,6 +1164,99 @@ double Tree::ExpectedValue() const {
     exp_value += (leaf_count_[i] / total_count)*LeafOutput(i);
   }
   return exp_value;
+}
+
+void Tree::CheckLoadedStructure(int num_features) const {
+  if (num_leaves_ < 1) {
+    Log::Fatal("Tree model has invalid num_leaves=%d", num_leaves_);
+  }
+  if (leaf_value_.size() < static_cast<size_t>(num_leaves_)) {
+    Log::Fatal("Tree model has %zu leaf values for %d leaves", leaf_value_.size(), num_leaves_);
+  }
+  const int num_nodes = num_leaves_ - 1;
+  if (num_nodes > 0) {
+    const size_t n = static_cast<size_t>(num_nodes);
+    if (left_child_.size() < n || right_child_.size() < n || split_feature_.size() < n ||
+        threshold_.size() < n || decision_type_.size() < n) {
+      Log::Fatal("Tree model has node arrays shorter than its %d internal nodes", num_nodes);
+    }
+    // Walk from the root. Every internal node except the root and every
+    // leaf must be reached exactly once: that rules out cycles (which made
+    // prediction loop forever and the recursive writers overflow the stack),
+    // shared subtrees and out-of-range children.
+    std::vector<uint8_t> node_seen(n, 0), leaf_seen(static_cast<size_t>(num_leaves_), 0);
+    std::vector<int> stack(1, 0);
+    node_seen[0] = 1;
+    int nodes_reached = 1, leaves_reached = 0;
+    while (!stack.empty()) {
+      const int node = stack.back();
+      stack.pop_back();
+      for (const int child : {left_child_[node], right_child_[node]}) {
+        if (child >= 0) {
+          if (child >= num_nodes || node_seen[child]) {
+            Log::Fatal("Tree model is corrupt: node %d has invalid child node %d", node, child);
+          }
+          node_seen[child] = 1;
+          ++nodes_reached;
+          stack.push_back(child);
+        } else {
+          const int leaf = ~child;
+          if (leaf >= num_leaves_ || leaf_seen[leaf]) {
+            Log::Fatal("Tree model is corrupt: node %d has invalid child leaf %d", node, leaf);
+          }
+          leaf_seen[leaf] = 1;
+          ++leaves_reached;
+        }
+      }
+    }
+    if (nodes_reached != num_nodes || leaves_reached != num_leaves_) {
+      Log::Fatal("Tree model is corrupt: %d of %d nodes and %d of %d leaves are reachable from the root",
+                 nodes_reached, num_nodes, leaves_reached, num_leaves_);
+    }
+    for (int node = 0; node < num_nodes; ++node) {
+      const int feature = split_feature_[node];
+      if (feature < 0 || feature >= num_features) {
+        Log::Fatal("Tree model is corrupt: node %d splits on feature %d, the model has %d features",
+                   node, feature, num_features);
+      }
+      if (GetDecisionType(decision_type_[node], kCategoricalMask)) {
+        const double t = threshold_[node];
+        if (!(t >= 0.0 && t < static_cast<double>(num_cat_)) || t != std::floor(t)) {
+          Log::Fatal("Tree model is corrupt: categorical node %d refers to bitset %g of %d",
+                     node, t, num_cat_);
+        }
+      }
+    }
+  }
+  if (num_cat_ > 0) {
+    if (cat_boundaries_.size() != static_cast<size_t>(num_cat_) + 1 || cat_boundaries_.front() != 0 ||
+        static_cast<size_t>(cat_boundaries_.back()) != cat_threshold_.size()) {
+      Log::Fatal("Tree model has inconsistent cat_boundaries / cat_threshold");
+    }
+    for (size_t i = 1; i < cat_boundaries_.size(); ++i) {
+      if (cat_boundaries_[i] < cat_boundaries_[i - 1]) {
+        Log::Fatal("Tree model has invalid cat_boundaries: must be non-decreasing");
+      }
+    }
+  }
+  if (is_linear_) {
+    if (leaf_const_.size() < static_cast<size_t>(num_leaves_) ||
+        leaf_features_.size() < static_cast<size_t>(num_leaves_) ||
+        leaf_coeff_.size() < static_cast<size_t>(num_leaves_)) {
+      Log::Fatal("Linear tree model has leaf arrays shorter than its %d leaves", num_leaves_);
+    }
+    for (int leaf = 0; leaf < num_leaves_; ++leaf) {
+      if (leaf_coeff_[leaf].size() < leaf_features_[leaf].size()) {
+        Log::Fatal("Linear tree model is corrupt: leaf %d has fewer coefficients than features", leaf);
+      }
+      for (const int feature : leaf_features_[leaf]) {
+        if (feature < 0 || feature >= num_features) {
+          Log::Fatal("Linear tree model is corrupt: leaf %d uses feature %d, the model has %d features",
+                     leaf, feature, num_features);
+        }
+      }
+    }
+  }
 }
 
 void Tree::RecomputeMaxDepth() {

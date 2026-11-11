@@ -200,7 +200,8 @@ class GBDT : public GBDTBase {
     str_buf << "{";
     for (const auto& line : lines) {
       const auto pair = Common::Split(line.c_str(), ":");
-      if (pair[1] == " ]")
+      // a "[name: value]" line; skip anything else rather than index past it
+      if (pair.size() < 2 || pair[0].size() < 2 || pair[1].size() < 2 || pair[1] == " ]")
         continue;
       const auto param = pair[0].substr(1);
       const auto value_str = pair[1].substr(1, pair[1].size() - 2);

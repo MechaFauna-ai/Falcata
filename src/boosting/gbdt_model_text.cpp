@@ -447,14 +447,23 @@ bool GBDT::SaveModelToFile(int start_iteration, int num_iteration, int feature_i
 }
 
 int GBDT::CheckLeafValueDimensions(const std::vector<const Tree*>& models) const {
-  if (models.empty()) {
-    return 1;
-  }
+  // checked even without trees: every load divides by num_tree_per_iteration_
   if (num_tree_per_iteration_ <= 0 || num_class_ <= 0) {
     Log::Fatal(
         "Model has invalid output metadata: num_tree_per_iteration=%d, "
         "num_class=%d",
         num_tree_per_iteration_, num_class_);
+  }
+  if (models.empty()) {
+    // no tree fixes the leaf dimension; a zero-tree model still predicts
+    // num_tree_per_iteration outputs into a num_class-wide buffer
+    if (num_tree_per_iteration_ != num_class_ && num_tree_per_iteration_ != 1) {
+      Log::Fatal(
+          "Model metadata is inconsistent: num_tree_per_iteration=%d but "
+          "num_class=%d",
+          num_tree_per_iteration_, num_class_);
+    }
+    return 1;
   }
   if (models.size() % static_cast<size_t>(num_tree_per_iteration_) != 0) {
     Log::Fatal(
@@ -464,6 +473,14 @@ int GBDT::CheckLeafValueDimensions(const std::vector<const Tree*>& models) const
   }
 
   const int leaf_value_dim = models.front()->leaf_value_dim();
+  if (leaf_value_dim == 1 && num_tree_per_iteration_ != num_class_) {
+    // predictions are sized by num_class but each iteration writes one
+    // output per tree: a mismatch overflows the caller's buffer
+    Log::Fatal(
+        "Model metadata is inconsistent: num_tree_per_iteration=%d but "
+        "num_class=%d",
+        num_tree_per_iteration_, num_class_);
+  }
   for (size_t tree = 1; tree < models.size(); ++tree) {
     if (models[tree]->leaf_value_dim() != leaf_value_dim) {
       Log::Fatal(
@@ -495,6 +512,7 @@ void GBDT::ValidateLeafValueDimensions() {
   std::vector<const Tree*> model_trees;
   model_trees.reserve(models_.size());
   for (const auto& tree : models_) {
+    tree->CheckLoadedStructure(max_feature_idx_ + 1);
     model_trees.push_back(tree.get());
   }
   leaf_value_dim_ = CheckLeafValueDimensions(model_trees);
