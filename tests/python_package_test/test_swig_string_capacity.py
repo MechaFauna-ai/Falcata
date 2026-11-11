@@ -13,7 +13,6 @@ def test_string_capacity_includes_terminator(tmp_path):
         pytest.skip("g++ is required")
     source = tmp_path / "capacity.cpp"
     source.write_text(
-        "#include <cstring>\n"
         '#include "swig/StringArray.hpp"\n'
         "#include <cassert>\n"
         "int main() {\n"

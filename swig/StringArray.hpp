@@ -9,6 +9,7 @@
 #define FALCATA_SWIG_STRINGARRAY_HPP_
 
 #include <algorithm>
+#include <cstring>
 #include <new>
 #include <string>
 #include <vector>
