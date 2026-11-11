@@ -124,6 +124,9 @@ struct TreeIndexRecord {
 class ByteWriter {
  public:
   void Align(size_t alignment) {
+    if (alignment == 0) {
+      Log::Fatal("FALB: alignment must be positive");
+    }
     while (buf_.size() % alignment != 0) buf_.push_back(0);
   }
   size_t size() const { return buf_.size(); }
