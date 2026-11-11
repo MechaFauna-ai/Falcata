@@ -1046,6 +1046,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_arrow_deprecated.cpp
       tests/cpp_tests/test_byte_buffer.cpp
       tests/cpp_tests/test_chunked_array.cpp
+      tests/cpp_tests/test_colwise_iterators.cpp
       tests/cpp_tests/test_common.cpp
       tests/cpp_tests/test_dataset_subset.cpp
       tests/cpp_tests/test_host_quantization.cpp
