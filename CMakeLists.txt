@@ -1064,6 +1064,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_multi_val_sparse_bin.cpp
       tests/cpp_tests/test_nccl_row_split.cpp
       tests/cpp_tests/test_opencl_host_buffers.cpp
+      tests/cpp_tests/test_partition_leaf_predictions.cpp
       tests/cpp_tests/test_serialize.cpp
       tests/cpp_tests/test_single_row.cpp
       tests/cpp_tests/test_split_info.cpp
