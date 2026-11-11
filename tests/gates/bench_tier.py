@@ -32,7 +32,7 @@ REPEATS = 3
 # the same width as the perf gate's fail threshold, so it fired on its own
 # upper tail and taught readers to ignore the gate. Every cell's tail reaches
 # ~8%; the short ones just get there often. Median over more samples narrows
-# that, and nine repeats of a 0.4s cell costs about four seconds.
+# that: int(3.0 / 0.4) + 1 gives eight repeats, costing about 3.2 seconds.
 MEASURE_BUDGET_SEC = 3.0
 MAX_REPEATS = 15
 
