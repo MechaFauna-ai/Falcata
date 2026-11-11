@@ -1,5 +1,6 @@
 """Categorical prediction must not convert out-of-range doubles to int."""
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,6 +11,8 @@ from falcata.basic import _LIB
 
 
 def test_categorical_value_range(tmp_path):
+    if os.getenv("FALCATA_RUN_CPU_CPP_REGRESSIONS") != "1":
+        pytest.skip("Internal C++ test requires an explicitly selected CPU-only library")
     compiler = shutil.which("c++")
     if compiler is None:
         pytest.skip("C++ compiler unavailable")
