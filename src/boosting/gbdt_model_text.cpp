@@ -225,7 +225,7 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   // Predict
   str_buf << "void GBDT::Predict(const double* features, double *output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
   str_buf << "\t" << "PredictRaw(features, output, early_stop);" << '\n';
-  str_buf << "\t" << "if (average_output_) {" << '\n';
+  str_buf << "\t" << "if (average_output_ && num_iteration_for_pred_ > 0) {" << '\n';
   str_buf << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << '\n';
   str_buf << "\t\t\t" << "output[k] /= num_iteration_for_pred_;" << '\n';
   str_buf << "\t\t" << "}" << '\n';
@@ -239,7 +239,7 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   // PredictByMap
   str_buf << "void GBDT::PredictByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
   str_buf << "\t" << "PredictRawByMap(features, output, early_stop);" << '\n';
-  str_buf << "\t" << "if (average_output_) {" << '\n';
+  str_buf << "\t" << "if (average_output_ && num_iteration_for_pred_ > 0) {" << '\n';
   str_buf << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << '\n';
   str_buf << "\t\t\t" << "output[k] /= num_iteration_for_pred_;" << '\n';
   str_buf << "\t\t" << "}" << '\n';
