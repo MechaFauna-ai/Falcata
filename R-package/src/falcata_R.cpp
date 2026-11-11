@@ -636,9 +636,11 @@ SEXP FLC_BoosterLoadModelFromString_R(SEXP model_str) {
   int n_protected = 1;
   int out_num_iterations = 0;
   const char* model_str_ptr = nullptr;
+  std::string raw_model;
   switch (TYPEOF(model_str)) {
     case RAWSXP: {
-      model_str_ptr = reinterpret_cast<const char*>(RAW(model_str));
+      raw_model.assign(reinterpret_cast<const char*>(RAW(model_str)), Rf_xlength(model_str));
+      model_str_ptr = raw_model.c_str();
       break;
     }
     case CHARSXP: {
@@ -646,10 +648,16 @@ SEXP FLC_BoosterLoadModelFromString_R(SEXP model_str) {
       break;
     }
     case STRSXP: {
+      if (Rf_xlength(model_str) != 1) {
+        Log::Fatal("model_str must contain exactly one string");
+      }
       temp = Rf_protect(STRING_ELT(model_str, 0));
       n_protected++;
       model_str_ptr = reinterpret_cast<const char*>(CHAR(temp));
+      break;
     }
+    default:
+      Log::Fatal("model_str must be a raw vector or a string");
   }
   BoosterHandle handle = nullptr;
   CHECK_CALL(FLC_BoosterLoadModelFromString(model_str_ptr, &out_num_iterations, &handle));
