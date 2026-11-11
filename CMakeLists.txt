@@ -1064,6 +1064,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_leaf_splits.cpp
       tests/cpp_tests/test_linkers_sendrecv.cpp
       tests/cpp_tests/test_loaded_binary_objective.cpp
+      tests/cpp_tests/test_loaded_tree_dataset_score.cpp
       tests/cpp_tests/test_log.cpp
       tests/cpp_tests/test_main.cpp
       tests/cpp_tests/test_multi_val_sparse_bin.cpp
