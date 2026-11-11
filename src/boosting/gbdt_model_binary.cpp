@@ -679,6 +679,9 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
     out.Align(8);  // raw sections stay 8-byte aligned so they are mmap-friendly
     sections[i].entry.offset = out.size();
     out.WriteBytes(sections[i].payload.data(), sections[i].payload.size());
+    // This section is now owned by out; release its duplicate before growing
+    // the container further or making the final string copy.
+    std::vector<char>().swap(sections[i].payload);
     out.PatchAt(table_offset + i * sizeof(SectionEntry), sections[i].entry);
   }
 
