@@ -1418,8 +1418,15 @@ def fil_cuda_booster():
             lgb.Dataset(X, y),
             num_boost_round=10,
         )
-    except lgb.basic.FalcataError:
-        pytest.skip("no CUDA device / CUDA build available")
+    except lgb.basic.FalcataError as error:
+        unavailable = (
+            "cuda tree learner was not enabled",
+            "no cuda-capable device",
+            "cuda driver version is insufficient",
+        )
+        if any(message in str(error).lower() for message in unavailable):
+            pytest.skip(f"no CUDA device / CUDA build available: {error}")
+        raise
     return booster, X
 
 
