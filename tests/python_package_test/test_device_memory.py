@@ -79,6 +79,14 @@ def _pid_namespace_inode():
         return None
 
 
+def _procfs_namespace_inode():
+    """Inode of the PID namespace the mounted /proc belongs to (that of its PID 1), or None when unreadable."""
+    try:
+        return os.stat("/proc/1/ns/pid").st_ino
+    except OSError:
+        return None
+
+
 def _nvidia_smi_pid():
     """This process's PID as nvidia-smi reports it, or None when it cannot be known.
 
@@ -86,7 +94,9 @@ def _nvidia_smi_pid():
     container with its own PID namespace os.getpid() is the container's PID.
     /proc/self/status NSpid lists the PID in every namespace from the one of
     the mounted /proc down to ours, so with more than one entry the first is
-    the outer (host) PID. With a single entry inside a nested namespace (the
+    the PID in the /proc's namespace: the host PID when that namespace is the
+    initial one, and otherwise (an intermediate namespace's /proc) not one
+    nvidia-smi knows. With a single entry inside a nested namespace (the
     container mounts its own /proc), the host PID is not visible at all.
     """
     status = _read_proc_status()
@@ -96,7 +106,7 @@ def _nvidia_smi_pid():
         if line.startswith("NSpid:"):
             pids = [int(v) for v in line.split()[1:]]
             if len(pids) > 1:
-                return pids[0]
+                return pids[0] if _procfs_namespace_inode() == _PROC_PID_INIT_INO else None
             break
     inode = _pid_namespace_inode()
     if inode is not None and inode != _PROC_PID_INIT_INO:
@@ -179,9 +189,22 @@ def test_gpu_memory_is_found_by_host_pid_inside_a_pid_namespace(monkeypatch):
     monkeypatch.setattr(os, "getpid", lambda: 1)
     monkeypatch.setattr(sys.modules[__name__], "_read_proc_status", lambda: "Name:\tpython\nNSpid:\t98765\t1\n")
     monkeypatch.setattr(sys.modules[__name__], "_pid_namespace_inode", lambda: 4026532999)
+    monkeypatch.setattr(sys.modules[__name__], "_procfs_namespace_inode", lambda: _PROC_PID_INIT_INO)
     _fake_nvidia_smi(monkeypatch, "98765, 64\n1, 7\n")
     assert _nvidia_smi_pid() == 98765
     assert _gpu_used_bytes() == 64 * 1024 * 1024
+
+
+def test_gpu_memory_is_unavailable_from_an_intermediate_namespace_proc(monkeypatch):
+    """NSpid read through an intermediate namespace's /proc starts with that namespace's PID, not the host's."""
+    monkeypatch.setattr(os, "getpid", lambda: 1)
+    monkeypatch.setattr(sys.modules[__name__], "_read_proc_status", lambda: "Name:\tpython\nNSpid:\t300\t1\n")
+    monkeypatch.setattr(sys.modules[__name__], "_pid_namespace_inode", lambda: 4026532999)
+    for procfs_inode in (4026532500, None):  # an intermediate namespace, or /proc/1 unreadable
+        monkeypatch.setattr(sys.modules[__name__], "_procfs_namespace_inode", lambda inode=procfs_inode: inode)
+        _fake_nvidia_smi(monkeypatch, "300, 64\n")
+        assert _nvidia_smi_pid() is None
+        assert _gpu_used_bytes() is None
 
 
 def test_gpu_memory_is_unavailable_when_the_host_pid_is_hidden(monkeypatch):
