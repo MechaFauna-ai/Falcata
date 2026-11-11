@@ -1054,6 +1054,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_csc_row_iterator.cpp
       tests/cpp_tests/test_dataset_subset.cpp
       tests/cpp_tests/test_discretizer_zero_scale.cpp
+      tests/cpp_tests/test_empty_binary_ranking_metrics.cpp
       tests/cpp_tests/test_falb_unaligned_view.cpp
       tests/cpp_tests/test_falb_writer_alignment.cpp
       tests/cpp_tests/test_find_groups.cpp
