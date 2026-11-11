@@ -1267,7 +1267,12 @@ class _InnerPredictor:
             preds = preds.astype(np.int32)
         is_sparse = isinstance(preds, (list, scipy.sparse.spmatrix))
         if not is_sparse and (preds.size != nrow or pred_leaf or pred_contrib):
-            if preds.size % nrow == 0:
+            if nrow == 0:
+                width = self.__get_num_preds(
+                    start_iteration=start_iteration, num_iteration=num_iteration, nrow=1, predict_type=predict_type
+                )
+                preds = preds.reshape(0, width)
+            elif preds.size % nrow == 0:
                 preds = preds.reshape(nrow, -1)
             else:
                 raise ValueError(f"Length of predict result ({preds.size}) cannot be divide nrow ({nrow})")
@@ -3786,6 +3791,8 @@ def _fil_run_host_slabs(model: Any, data: np.ndarray) -> Optional[np.ndarray]:
     multi-minute predict into seconds.
     """
     n_rows = data.shape[0]
+    if n_rows == 0:
+        return None
     slab_rows = max(1, min(n_rows, _FIL_HOST_SLAB_ELEMENTS // max(1, data.shape[1])))
     out = []
     for start in range(0, n_rows, slab_rows):

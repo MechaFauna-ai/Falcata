@@ -1,0 +1,28 @@
+"""Empty batches preserve prediction output dimensions."""
+
+import numpy as np
+import pytest
+from scipy.sparse import csr_matrix
+
+import falcata as flc
+from falcata.basic import _fil_run_host_slabs
+
+
+@pytest.mark.parametrize("kind", ["normal", "leaf", "contrib"])
+@pytest.mark.parametrize("sparse", [False, True])
+def test_empty_predictions(kind, sparse):
+    data = np.arange(80, dtype=np.float64).reshape(40, 2)
+    booster = flc.train(
+        {"num_threads": 2, "verbosity": -1, "min_data_in_leaf": 1},
+        flc.Dataset(data, label=np.arange(40)),
+        num_boost_round=2,
+    )
+    options = {"pred_leaf": kind == "leaf", "pred_contrib": kind == "contrib", "use_fil": False}
+    batch = csr_matrix(data) if sparse else data
+    prediction = booster.predict(batch[:0], **options)
+    expected = booster.predict(batch[:1], **options)
+    assert prediction.shape == (0, *expected.shape[1:])
+
+
+def test_empty_fil_host_input_falls_back():
+    assert _fil_run_host_slabs(object(), np.empty((0, 2))) is None
