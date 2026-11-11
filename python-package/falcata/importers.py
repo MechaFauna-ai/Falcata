@@ -348,6 +348,8 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
     Predictions match XGBoost's ``output_margin=False`` output to float32
     rounding. Verified against XGBoost for regression, binary and multiclass
     objectives, including missing values (see tests/gates/import_xgboost.py).
+    For ``multi:softmax``, Falcata returns class probabilities instead of class
+    labels; use ``booster.predict(data).argmax(axis=1)`` for the source labels.
     """
     raw = _xgb_json(model)
     learner = raw.get("learner", raw)
