@@ -10,6 +10,7 @@
 #include <Falcata/utils/common.h>
 #include <Falcata/utils/log.h>
 
+#include <cmath>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -64,6 +65,9 @@ class TSVParser: public Parser {
     int idx = 0;
     double val = 0.0f;
     int offset = 0;
+    // like CSVParser: a line without a label column must not keep the
+    // caller's previous label
+    *out_label = 0.0f;
     while (*str != '\0') {
       str = atof_(str, &val);
       if (idx == label_idx_) {
@@ -103,6 +107,7 @@ class LibSVMParser: public Parser {
     std::vector<std::pair<int, double>>* out_features, double* out_label) const override {
     int idx = 0;
     double val = 0.0f;
+    *out_label = 0.0f;  // label_idx_ == -1: no label column (see CSVParser)
     if (label_idx_ == 0) {
       str = atof_(str, &val);
       *out_label = val;
