@@ -7409,6 +7409,20 @@ void CUDASingleGPUTreeLearner::InitLinearTreeCUDA(const Dataset* train_data) {
     }
   }
   CHECK_EQ(col, num_numeric_features_);
+  // features whose raw values hold a NaN (CPU LinearTreeLearner::InitLinear's contains_nan_)
+  linear_contains_nan_.assign(num_features, 0);
+#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  for (int feat = 0; feat < num_features; ++feat) {
+    if (inner_feature_to_numeric_col_[feat] >= 0) {
+      const float* values = train_data->raw_index(feat);
+      for (data_size_t i = 0; i < train_data->num_data(); ++i) {
+        if (std::isnan(values[i])) {
+          linear_contains_nan_[feat] = 1;
+          break;
+        }
+      }
+    }
+  }
   if (num_numeric_features_ == 0) {
     return;
   }
@@ -7424,6 +7438,16 @@ void CUDASingleGPUTreeLearner::InitLinearTreeCUDA(const Dataset* train_data) {
       cuda_raw_data_.RawData() + static_cast<size_t>(c) * static_cast<size_t>(num_data_),
       train_data->raw_index(feat), static_cast<size_t>(num_data_), __FILE__, __LINE__);
   }
+}
+
+bool CUDASingleGPUTreeLearner::LinearSplitsContainNan(const Tree* tree) const {
+  for (int i = 0; i < tree->num_leaves() - 1; ++i) {
+    const int inner = train_data_->InnerFeatureIndex(tree->split_feature(i));
+    if (inner >= 0 && linear_contains_nan_[inner]) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void CUDASingleGPUTreeLearner::CalculateLinearCUDA(
@@ -7473,10 +7497,14 @@ void CUDASingleGPUTreeLearner::CalculateLinearCUDA(
                              &h_gram, &gram_offset, &h_nonzero);
 
   // ---- per-leaf solve (host Eigen, matching CPU exactly) + store into tree ----
+  // a leaf model is fitted on the leaf's complete rows; with a NaN in a split feature, a leaf without linear
+  // features (only categorical ones on its path) counts none and keeps the constant (CPU CalculateLinear<true>)
+  const bool has_nan = LinearSplitsContainNan(tree);
   const double lambda = config_->linear_lambda;
   for (int leaf = 0; leaf < num_leaves; ++leaf) {
     const int num_feat = host_num_feat[leaf];
-    if (h_nonzero[leaf] < num_feat + 1) {
+    const int complete_rows = (has_nan && num_feat == 0) ? 0 : h_nonzero[leaf];
+    if (complete_rows < num_feat + 1) {
       // degenerate leaf: constant model (matches CPU non-refit branch)
       tree->SetLeafConst(leaf, tree->LeafOutput(leaf));
       continue;
@@ -7496,31 +7524,7 @@ void CUDASingleGPUTreeLearner::RefitLinearCUDA(CUDATree* tree, const std::vector
   const int num_leaves = tree->num_leaves();
   const data_size_t num_rows = static_cast<data_size_t>(leaf_pred.size());
 
-  // a leaf model is fitted on the leaf's complete rows; with a NaN in a split feature, a leaf without linear
-  // features counts none and keeps the constant fallback (CPU LinearTreeLearner::CalculateLinear<true>)
-  if (refit_contains_nan_.empty()) {
-    refit_contains_nan_.assign(train_data_->num_features(), -1);
-  }
-  auto contains_nan = [this](int inner) {
-    if (refit_contains_nan_[inner] < 0) {
-      refit_contains_nan_[inner] = 0;
-      if (train_data_->FeatureBinMapper(inner)->bin_type() == BinType::NumericalBin) {
-        const float* values = train_data_->raw_index(inner);
-        for (data_size_t i = 0; i < num_data_; ++i) {
-          if (std::isnan(values[i])) {
-            refit_contains_nan_[inner] = 1;
-            break;
-          }
-        }
-      }
-    }
-    return refit_contains_nan_[inner] == 1;
-  };
-  bool has_nan = false;
-  for (int i = 0; i < num_leaves - 1 && !has_nan; ++i) {
-    const int inner = train_data_->InnerFeatureIndex(tree->split_feature(i));
-    has_nan = inner >= 0 && contains_nan(inner);
-  }
+  const bool has_nan = LinearSplitsContainNan(tree);
 
   // ---- per-leaf numeric features from the tree's own leaf models (refit path) ----
   std::vector<std::vector<int>> leaf_feat_inner(num_leaves);

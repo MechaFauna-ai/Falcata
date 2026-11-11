@@ -155,6 +155,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void BuildAndUploadLinearScoreModel(const Tree* tree) const;
   // Refit counterpart of CalculateLinearCUDA (the CPU LinearTreeLearner's is_refit branch): refit the
   // tree's linear leaf models on the refit rows, which leaf_pred assigns to leaves.
+  // whether a split feature of the tree holds a NaN: its leaves are then fitted on complete rows only
+  bool LinearSplitsContainNan(const Tree* tree) const;
   void RefitLinearCUDA(CUDATree* tree, const std::vector<int>& leaf_pred, const score_t* gradients,
                        const score_t* hessians) const;
   // Leaf windows for the gram reduction in place of the data partition's: device row indices grouped by leaf,
@@ -1200,10 +1202,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   mutable CUDAVector<int> cuda_linear_chunk_count_;
   mutable CUDAVector<double> cuda_linear_gram_;
   mutable CUDAVector<int> cuda_linear_nonzero_;
-  // linear refit: the refit rows grouped by leaf (grow-only), and per inner feature whether its raw values
-  // hold a NaN (-1 until first needed), as the CPU LinearTreeLearner's contains_nan_
+  // linear refit: the refit rows grouped by leaf (grow-only)
   mutable CUDAVector<data_size_t> cuda_refit_linear_indices_;
-  mutable std::vector<int8_t> refit_contains_nan_;
+  // per inner feature whether its raw values hold a NaN, as the CPU LinearTreeLearner's contains_nan_
+  std::vector<int8_t> linear_contains_nan_;
   // device copies of the fitted per-leaf linear model, used by the score kernel.
   // Rebuilt from the (post-shrinkage) tree at score time, so mutable/const-built.
   mutable CUDAVector<double> cuda_linear_leaf_const_;
