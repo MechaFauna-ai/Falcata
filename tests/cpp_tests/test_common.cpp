@@ -4,6 +4,7 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <gtest/gtest.h>
+#include <Falcata/bin.h>
 #include <Falcata/utils/common.h>
 #include <Falcata/utils/json11.h>
 
@@ -198,4 +199,26 @@ TEST(SortForPair, SortsOnlyTheSuffixFromStart) {
   Falcata::Common::SortForPair<int, int>(&keys, &values, 1, true);
   EXPECT_EQ(keys, (std::vector<int>{9, 8, 3, 2, 1}));
   EXPECT_EQ(values, (std::vector<int>{90, 80, 30, 20, 10}));
+}
+
+// Categorical ValueToBin used to cast the double to int before any range
+// check, which is undefined for +-inf and values outside int's range (UBSan:
+// "1e+20 is outside the range of representable values of type 'int'").
+// Values must still truncate as before: (-1, 0) is category 0, <= -1 and
+// out-of-range values go to bin 0.
+TEST(BinMapper, CategoricalValueToBinOutOfRange) {
+  std::vector<double> values;
+  for (int i = 0; i < 300; ++i) {
+    values.push_back(i % 3);
+  }
+  Falcata::BinMapper mapper;
+  mapper.FindBin(values.data(), static_cast<int>(values.size()), values.size(), 255, 3, 1, false,
+                 Falcata::BinType::CategoricalBin, true, false, {});
+  const uint32_t bin_of_zero = mapper.ValueToBin(0.0);
+  EXPECT_EQ(mapper.ValueToBin(-0.5), bin_of_zero);
+  EXPECT_EQ(mapper.ValueToBin(2.7), mapper.ValueToBin(2.0));
+  for (double v : {-1.0, -1e20, 1e20, 2147483648.0, std::numeric_limits<double>::infinity(),
+                   -std::numeric_limits<double>::infinity()}) {
+    EXPECT_EQ(mapper.ValueToBin(v), 0u) << v;
+  }
 }
