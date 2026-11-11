@@ -6,7 +6,7 @@ import pytest
 import falcata as flc
 
 
-@pytest.mark.parametrize("dtype", [np.float32, np.int32, np.float64])
+@pytest.mark.parametrize("dtype", [np.float32, np.int16, np.float64])
 def test_sequence_numeric_dtype(dtype):
     data = np.arange(80).reshape(40, 2).astype(dtype)
 
