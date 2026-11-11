@@ -1062,6 +1062,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_histogram_pool_move.cpp
       tests/cpp_tests/test_host_quantization.cpp
       tests/cpp_tests/test_init_score_layout.cpp
+      tests/cpp_tests/test_int_histogram.cpp
       tests/cpp_tests/test_leaf_splits.cpp
       tests/cpp_tests/test_linkers_sendrecv.cpp
       tests/cpp_tests/test_loaded_binary_objective.cpp
