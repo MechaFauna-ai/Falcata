@@ -16,7 +16,7 @@ def test_resume_skips_invalid_records(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     path = tmp_path / "runs.jsonl"
-    valid = dict(library="falcata-stoch", dataset="higgs", regime="shallow", kind="timed1", status="ok")
+    valid = {"library": "falcata-stoch", "dataset": "higgs", "regime": "shallow", "kind": "timed1", "status": "ok"}
     records = [{}, [], None, {**valid, "library": []}, valid]
     path.write_text("broken JSON\n" + "\n".join(json.dumps(r) for r in records))
     assert module.load_done(path) == {("falcata-stoch", "higgs", "shallow", "timed1"): "ok"}
