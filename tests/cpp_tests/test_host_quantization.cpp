@@ -28,8 +28,10 @@ namespace {
 // quant_bins_from_auto (false) disagreeing with the value. Config only: no
 // device is touched.
 TEST(HostQuantization, DeterministicKeepsExplicitQuantBins) {
+  // Config::Set takes canonical names (aliases such as quant_bins are
+  // resolved earlier, by Config::Str2Map / KeyAliasTransform).
   Config explicit_four;
-  explicit_four.Set({{"device_type", "cuda"}, {"deterministic", "true"}, {"quant_bins", "4"}});
+  explicit_four.Set({{"device_type", "cuda"}, {"deterministic", "true"}, {"num_grad_quant_bins", "4"}});
   EXPECT_EQ(explicit_four.ResolvedQuantMode(), QuantMode::kFixedPoint);
   EXPECT_EQ(explicit_four.num_grad_quant_bins, 4);
   EXPECT_FALSE(explicit_four.quant_bins_from_auto);
