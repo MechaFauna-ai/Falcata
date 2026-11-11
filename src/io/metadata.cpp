@@ -15,6 +15,8 @@
 #include "../arrow/array.hpp"
 #endif  // LGB_R_BUILD
 
+#include "init_score_layout.hpp"
+
 namespace Falcata {
 
 Metadata::Metadata() {
@@ -440,9 +442,9 @@ void Metadata::InsertInitScores(const double* init_scores, data_size_t start_ind
   int nclasses = num_init_score_classes();
 
   for (int32_t col = 0; col < nclasses; ++col) {
-    const size_t dest_offset = static_cast<size_t>(num_data_) * col + start_index;
+    const size_t dest_offset = InitScoreOffset(col, num_data_, start_index);
     // We need to use source_size here, because len might not equal size (due to a partially loaded dataset)
-    const size_t source_offset = static_cast<size_t>(source_size) * col;
+    const size_t source_offset = InitScoreOffset(col, source_size);
     memcpy(init_score_.data() + dest_offset, init_scores + source_offset, sizeof(double) * len);
   }
   init_score_load_from_file_ = false;

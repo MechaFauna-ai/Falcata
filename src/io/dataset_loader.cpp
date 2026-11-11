@@ -15,13 +15,14 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
-#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include "init_score_layout.hpp"
 
 namespace Falcata {
 
@@ -202,17 +203,6 @@ void DatasetLoader::SetHeader(const char* filename) {
       }
     }
   }
-}
-
-// Metadata::SetInitScore takes a data_size_t length, so an initial-model
-// score buffer of num_data * num_class entries has to fit in it.
-static size_t InitScoreSize(data_size_t num_data, int num_class) {
-  const size_t size = static_cast<size_t>(num_data) * static_cast<size_t>(num_class);
-  if (size > static_cast<size_t>(std::numeric_limits<data_size_t>::max())) {
-    Log::Fatal("Initial scores for %d rows x %d classes exceed the supported %d entries",
-               num_data, num_class, std::numeric_limits<data_size_t>::max());
-  }
-  return size;
 }
 
 void CheckSampleSize(size_t sample_cnt, size_t num_data) {
@@ -1365,7 +1355,7 @@ void DatasetLoader::ExtractFeaturesFromMemory(std::vector<std::string>* text_dat
       std::vector<double> oneline_init_score(num_class_);
       predict_fun_(oneline_features, oneline_init_score.data());
       for (int k = 0; k < num_class_; ++k) {
-        init_score[static_cast<size_t>(k) * dataset->num_data_ + i] = static_cast<double>(oneline_init_score[k]);
+        init_score[InitScoreOffset(k, dataset->num_data_, i)] = static_cast<double>(oneline_init_score[k]);
       }
       // set label
       dataset->metadata_.SetLabelAt(i, static_cast<label_t>(tmp_label));
@@ -1446,7 +1436,7 @@ void DatasetLoader::ExtractFeaturesFromFile(const char* filename, const Parser* 
         std::vector<double> oneline_init_score(num_class_);
         predict_fun_(oneline_features, oneline_init_score.data());
         for (int k = 0; k < num_class_; ++k) {
-          init_score[static_cast<size_t>(k) * dataset->num_data_ + start_idx + i] = static_cast<double>(oneline_init_score[k]);
+          init_score[InitScoreOffset(k, dataset->num_data_, start_idx + i)] = static_cast<double>(oneline_init_score[k]);
         }
       }
       // set label
