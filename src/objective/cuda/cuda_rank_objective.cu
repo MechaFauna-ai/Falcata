@@ -1103,6 +1103,8 @@ __global__ void GenerateItemRandsKernel_RankXENDCG(const data_size_t* cuda_query
   const data_size_t item_start = cuda_query_boundaries[query_index];
   const data_size_t item_count = cuda_query_boundaries[query_index + 1] - item_start;
   const uint32_t state = query_rand_states[query_index];
+  // every thread holds the state before thread 0 advances it below
+  __syncthreads();
   for (data_size_t t = static_cast<data_size_t>(threadIdx.x); t < item_count; t += static_cast<data_size_t>(blockDim.x)) {
     const uint32_t x = CUDARandom::AdvanceState(state, static_cast<uint32_t>(t) + 1u);
     item_rands[item_start + t] = static_cast<double>(CUDARandom::FloatFromState(x));
