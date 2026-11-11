@@ -54,3 +54,32 @@ def test_explicit_monitor_device_override(monkeypatch, monitor_class):
     monkeypatch.setattr(subprocess, "run", query)
     assert monitor_class()._gpu_memory_mb() == 12
     assert "--id=GPU-selected" in query.call_args.args[0]
+
+
+@pytest.mark.parametrize("visible", ["", "-1"])
+def test_cpu_only_monitor_skips_gpu_query(monkeypatch, monitor_class, visible):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    monkeypatch.delenv("FALCATA_BENCH_GPU_ID", raising=False)
+    query = Mock(side_effect=AssertionError("GPU query with CUDA disabled"))
+    monkeypatch.setattr(subprocess, "run", query)
+    assert monitor_class()._gpu_memory_mb() == 0
+    query.assert_not_called()
+
+
+def test_unavailable_monitor_memory_is_optional(monkeypatch, monitor_class):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.delenv("FALCATA_BENCH_GPU_ID", raising=False)
+    monkeypatch.setattr(subprocess, "run", Mock(return_value=subprocess.CompletedProcess([], 0, "[N/A]\n", "")))
+    monitor = monitor_class()
+    monitor._thread = Mock()
+    monitor.__enter__()
+    monitor._thread.start.assert_called_once()
+    assert monitor.gpu_peak_mb == 0
+
+
+@pytest.mark.parametrize("visible", ["1", "MIG-example"])
+def test_ambiguous_or_mig_monitor_selection_is_explicit(monkeypatch, monitor_class, visible):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    monkeypatch.delenv("FALCATA_BENCH_GPU_ID", raising=False)
+    with pytest.raises(ValueError, match="MIG|UUID"):
+        monitor_class()

@@ -56,8 +56,10 @@ class ResourceMonitor:
 
     def __init__(self, interval=0.25):
         self.interval = interval
-        self._gpu_id = os.environ.get("FALCATA_BENCH_GPU_ID")
+        self._gpu_id = os.environ.get("FALCATA_BENCH_GPU_ID") or None
         visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if (visible or "").split(",")[0].strip().startswith("MIG-") or (self._gpu_id or "").startswith("MIG-"):
+            raise ValueError("MIG per-instance GPU memory telemetry is unsupported by this benchmark")
         if self._gpu_id is None and visible is not None:
             first = visible.split(",")[0].strip()
             if first.startswith("GPU-"):
@@ -83,7 +85,10 @@ class ResourceMonitor:
         rows = result.stdout.strip().splitlines()
         if len(rows) > 1:
             raise ValueError("Multiple GPUs: select a GPU UUID or set FALCATA_BENCH_GPU_ID")
-        return int(rows[0]) if rows else None
+        try:
+            return int(rows[0]) if rows else None
+        except ValueError:
+            return None  # Optional memory telemetry can be unavailable (e.g. [N/A]).
 
     def _run(self):
         import psutil
