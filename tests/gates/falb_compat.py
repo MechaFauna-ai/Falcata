@@ -69,6 +69,9 @@ def leaf_counts(model_text):
 
 
 def freeze(only=None):
+    unknown = set(only or ()) - SHAPES.keys()
+    if unknown:
+        raise ValueError(f"Unknown fixture names: {', '.join(sorted(unknown))}")
     for name, (params, knobs) in SHAPES.items():
         if only and name not in only:
             continue
