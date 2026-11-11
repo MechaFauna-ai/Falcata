@@ -189,15 +189,36 @@ class ByteReader {
     return v;
   }
 
-  /*! \brief typed view into the buffer; the data is NOT copied, so the caller
-   *  must not outlive the buffer (loads copy into the Tree immediately). */
+  // Array elements are loaded with memcpy: section payloads and mixed-width
+  // stats arrays need not have the alignment of T. Keep views allocation-free.
   template <typename T>
-  const T* View(uint64_t offset, uint64_t count, const char* where) const {
-    Require(offset, count, sizeof(T), where);
-    if (count > 0 && reinterpret_cast<uintptr_t>(data_ + offset) % alignof(T) != 0) {
-      Log::Fatal("FALB: corrupt model -- unaligned %s", where);
+  class ArrayView {
+   public:
+    ArrayView(const char* data, size_t count) : data_(data), count_(count) {}
+    T operator[](size_t index) const {
+      T value;
+      std::memcpy(&value, data_ + index * sizeof(T), sizeof(T));
+      return value;
     }
-    return reinterpret_cast<const T*>(data_ + offset);
+    void CopyTo(T* output) const {
+      if (count_ > 0) std::memcpy(output, data_, count_ * sizeof(T));
+    }
+
+   private:
+    const char* data_;
+    size_t count_;
+  };
+
+  /*! \brief Non-owning typed view, safe even for unaligned input. */
+  template <typename T>
+  ArrayView<T> View(uint64_t offset, uint64_t count, const char* where) const {
+    Require(offset, count, sizeof(T), where);
+    return ArrayView<T>(data_ + offset, static_cast<size_t>(count));
+  }
+
+  const char* Bytes(uint64_t offset, uint64_t count, const char* where) const {
+    Require(offset, count, 1, where);
+    return data_ + offset;
   }
 
   const char* data() const { return data_; }
