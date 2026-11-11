@@ -903,6 +903,25 @@ def _dump_pandas_categorical(
     return pandas_str
 
 
+def _falb_payload_end(file: Any, header: bytes, size: int) -> Optional[int]:
+    # FALB v1: 32-byte header followed by 40-byte section entries.
+    # Categories are appended after all stored section payloads.
+    if len(header) != 32 or int.from_bytes(header[4:8], "little") != 1:
+        return None
+    section_count = int.from_bytes(header[24:28], "little")
+    if section_count > (size - 32) // 40:
+        return None
+    payload_end = 32 + 40 * section_count
+    for _ in range(section_count):
+        entry = file.read(40)
+        section_offset = int.from_bytes(entry[16:24], "little")
+        stored_len = int.from_bytes(entry[24:32], "little")
+        if section_offset > size or stored_len > size - section_offset:
+            return None
+        payload_end = max(payload_end, section_offset + stored_len)
+    return payload_end
+
+
 def _load_pandas_categorical(
     file_name: Optional[Union[str, Path]] = None,
     model_str: Optional[str] = None,
@@ -913,13 +932,22 @@ def _load_pandas_categorical(
         with open(file_name, "rb") as f:
             f.seek(0, SEEK_END)
             size = f.tell()
-            tail_len = min(size, len(pandas_key))
-            while True:
-                f.seek(-tail_len, SEEK_END)
+            f.seek(0)
+            header = f.read(32)
+            if _is_falb(header):
+                payload_end = _falb_payload_end(f, header, size)
+                if payload_end is None:
+                    return None
+                f.seek(payload_end)
                 lines = f.readlines()
-                if len(lines) >= 2 or tail_len == size:
-                    break
-                tail_len = min(size, tail_len * 2)
+            else:
+                tail_len = min(size, len(pandas_key))
+                while True:
+                    f.seek(-tail_len, SEEK_END)
+                    lines = f.readlines()
+                    if len(lines) >= 2 or tail_len == size:
+                        break
+                    tail_len = min(size, tail_len * 2)
         # Search for a line-aligned trailer before decoding anything. FALB
         # payloads are arbitrary bytes and are not UTF-8 model text.
         marker = pandas_key.encode("ascii")
