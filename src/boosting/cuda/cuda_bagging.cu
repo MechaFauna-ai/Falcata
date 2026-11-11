@@ -201,6 +201,11 @@ data_size_t CUDABaggingSample(const data_size_t num_data,
                               CUDAVector<data_size_t>* scratch,
                               CUDAVector<data_size_t>* block_buffer,
                               data_size_t* out_indices) {
+  // no rows: nothing to draw, and the launches below would have an empty grid
+  // and the count readback would read flags[-1]
+  if (num_data <= 0) {
+    return 0;
+  }
 #if !defined(__HIP_PLATFORM_AMD__)
   if (FalcataPlan::Get().bagging_fused_scan) {
     const int fused_blocks = (num_data + kBagFusedBlock - 1) / kBagFusedBlock;
@@ -225,8 +230,8 @@ data_size_t CUDABaggingSample(const data_size_t num_data,
 #endif  // !defined(__HIP_PLATFORM_AMD__)
   constexpr int kBlock = GLOBAL_PREFIX_SUM_BLOCK_SIZE;
   const int num_blocks = (num_data + kBlock - 1) / kBlock;
-  // ShufflePrefixSumGlobalKernel writes values[index] without a bounds check,
-  // so the scan buffer is padded to a whole number of blocks.
+  // The scan runs over a whole number of blocks: the padding flags past
+  // num_data are zero, so the scan's last real entry is the in-bag count.
   const size_t padded = static_cast<size_t>(num_blocks) * kBlock;
   if (scratch->Size() < padded) {
     scratch->Resize(padded);

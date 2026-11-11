@@ -97,7 +97,7 @@ class DistributedMockup:
             candidates = _generate_n_ports(n_ports_left)
             ports.update(candidates)
             i += 1
-        if i == max_tries:
+        if len(ports) < self.n_workers:
             raise RuntimeError("Unable to find non-colliding ports.")
         self.listen_ports = list(ports)
         with open(TESTS_DIR / "mlist.txt", "wt") as f:
@@ -198,3 +198,13 @@ def test_regressor(executable):
     reg.fit(partitions, train_params)
     y_pred = reg.predict(predict_config={})
     np.testing.assert_allclose(y_pred, reg.label_, rtol=0.2, atol=50.0)
+
+
+def test_ports_found_on_last_attempt(tmp_path, monkeypatch):
+    attempts = iter([[1], *([[1]] * 99), [2]])
+    monkeypatch.setattr(f"{__name__}._generate_n_ports", lambda count: next(attempts))
+    monkeypatch.setattr(f"{__name__}.TESTS_DIR", tmp_path)
+    mockup = DistributedMockup("unused")
+    mockup.n_workers = 2
+    mockup._set_ports()
+    assert set(mockup.listen_ports) == {1, 2}

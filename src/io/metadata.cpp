@@ -15,6 +15,8 @@
 #include "../arrow/array.hpp"
 #endif  // LGB_R_BUILD
 
+#include "init_score_layout.hpp"
+
 namespace Falcata {
 
 Metadata::Metadata() {
@@ -375,9 +377,9 @@ void Metadata::SetInitScoresFromIterator(It first, It last) {
   if (((last - first) % num_data_) != 0) {
     Log::Fatal("Initial score size doesn't match data size");
   }
-  if (init_score_.empty()) {
-    init_score_.resize(last - first);
-  }
+  // resize unconditionally: a previous call may have stored a different
+  // number of classes, and a smaller buffer would be overrun below
+  init_score_.resize(last - first);
   num_init_score_ = last - first;
 
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 512) if (num_init_score_ >= 1024)
@@ -440,9 +442,9 @@ void Metadata::InsertInitScores(const double* init_scores, data_size_t start_ind
   int nclasses = num_init_score_classes();
 
   for (int32_t col = 0; col < nclasses; ++col) {
-    int32_t dest_offset = num_data_ * col + start_index;
+    const size_t dest_offset = InitScoreOffset(col, num_data_, start_index);
     // We need to use source_size here, because len might not equal size (due to a partially loaded dataset)
-    int32_t source_offset = source_size * col;
+    const size_t source_offset = InitScoreOffset(col, source_size);
     memcpy(init_score_.data() + dest_offset, init_scores + source_offset, sizeof(double) * len);
   }
   init_score_load_from_file_ = false;

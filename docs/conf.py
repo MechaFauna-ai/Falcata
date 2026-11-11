@@ -19,6 +19,7 @@
 """Sphinx configuration file."""
 
 import datetime
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -261,6 +262,52 @@ def generate_doxygen_xml(app: Sphinx) -> None:
         raise Exception(f"An error has occurred while executing Doxygen\n{e}")
 
 
+R_DOCS_FINGERPRINT = CURR_PATH / "_R_DOCS_FINGERPRINT.flag"
+
+
+def r_docs_fingerprint() -> str:
+    """Hash everything the generated R documentation is built from.
+
+    The R package sources (minus the roxygen/pkgdown outputs ``man/``, ``docs/`` and ``NAMESPACE``), the library
+    sources it compiles and whose output its examples print, the external headers the CRAN build vendors, the
+    package version and the build scripts.
+
+    Returns
+    -------
+    str
+        Hex digest; equal digests mean regenerating the R documentation would reproduce it.
+    """
+    root = CURR_PATH.parent
+    generated = [root / "R-package" / "docs", root / "R-package" / "man"]
+    files = [root / "build-cran-package.sh", root / ".ci" / "build-docs.R", root / "VERSION.txt"]
+    # build-cran-package.sh also vendors these external headers into the package
+    vendored = ("external_libs/fast_double_parser/include", "external_libs/fmt/include", "external_libs/eigen/Eigen")
+    for top in ("R-package", "src", "include", *vendored):
+        files.extend(path for path in (root / top).rglob("*") if path.is_file())
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        if path == root / "R-package" / "NAMESPACE" or any(out in path.parents for out in generated):
+            continue
+        digest.update(str(path.relative_to(root)).encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes() if path.exists() else b"")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def r_docs_up_to_date() -> bool:
+    """Whether a local build already generated the R documentation from the current sources.
+
+    Returns
+    -------
+    bool
+        True when ``R-package/docs`` exists and was built from sources with the current fingerprint.
+    """
+    if not (CURR_PATH.parent / "R-package" / "docs").is_dir() or not R_DOCS_FINGERPRINT.is_file():
+        return False
+    return R_DOCS_FINGERPRINT.read_text(encoding="utf-8").strip() == r_docs_fingerprint()
+
+
 def generate_r_docs(app: Sphinx) -> None:
     """Generate documentation for R-package.
 
@@ -289,6 +336,9 @@ def generate_r_docs(app: Sphinx) -> None:
         if process.returncode != 0:
             raise RuntimeError(output)
         print(output)
+        if not RTD:
+            # later local builds skip the R package build/install/pkgdown while these sources stay unchanged
+            R_DOCS_FINGERPRINT.write_text(r_docs_fingerprint() + "\n", encoding="utf-8")
         print("Done building R-package documentation")
     except BaseException as e:
         raise Exception(f"An error has occurred while generating documentation for R-package\n{e}")
@@ -326,7 +376,10 @@ def setup(app: Sphinx) -> None:
         app.connect("builder-inited", generate_doxygen_xml)
     else:
         app.add_directive("doxygenfile", IgnoredDirective)
-    if first_run:
+    # RTD builds the R documentation once per build environment (the flag above); a local build rebuilds it only when
+    # its sources changed since the last local build (building, installing and documenting the R package takes
+    # minutes)
+    if first_run and (RTD or not r_docs_up_to_date()):
         app.connect("builder-inited", generate_r_docs)
     app.connect(
         "build-finished",

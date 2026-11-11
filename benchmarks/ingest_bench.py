@@ -26,7 +26,7 @@ import sys
 from common import CACHE_DIR, REGIMES, RESULTS_DIR, SEED
 
 INGEST_JSONL = os.path.join(RESULTS_DIR, "ingest.jsonl")
-WARMUP_TREES = 5
+FIRST_TREES = 5
 
 
 def measure_one(kind):
@@ -76,7 +76,7 @@ def measure_one(kind):
     create_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    for _ in range(WARMUP_TREES):
+    for _ in range(FIRST_TREES):
         bst.update()
     trees_s = time.perf_counter() - t0
 
@@ -86,7 +86,7 @@ def measure_one(kind):
                 "kind": kind,
                 "construct_s": round(construct_s, 2),
                 "create_s": round(create_s, 2),
-                f"trees{WARMUP_TREES}_s": round(trees_s, 2),
+                f"trees{FIRST_TREES}_s": round(trees_s, 2),
                 "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2, 1),
                 "version": lgb.__version__,
             }
@@ -125,7 +125,7 @@ def main():
             print(f"{kind} repeat {rep}: {out}", flush=True)
 
     print(f"\nmedians over {args.repeats} repeats (numerai, Falcata cuda):")
-    keys = ["construct_s", "create_s", f"trees{WARMUP_TREES}_s", "peak_rss_gb"]
+    keys = ["construct_s", "create_s", f"trees{FIRST_TREES}_s", "peak_rss_gb"]
     header = "flow      " + "".join(f"{k:>14}" for k in keys)
     print(header)
     for kind in ("f32", "i8"):

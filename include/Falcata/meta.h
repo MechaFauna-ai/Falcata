@@ -85,7 +85,7 @@ typedef void(*AllgatherFunction)(char* input, comm_size_t input_size, const comm
 
 const int kAlignedSize = 32;
 
-#define SIZE_ALIGNED(t) ((t) + kAlignedSize - 1) / kAlignedSize * kAlignedSize
+#define SIZE_ALIGNED(t) (((t) + kAlignedSize - 1) / kAlignedSize * kAlignedSize)
 
 // Refer to https://docs.microsoft.com/en-us/cpp/error-messages/compiler-warnings/compiler-warning-level-4-c4127?view=vs-2019
 #ifdef _MSC_VER
