@@ -1055,6 +1055,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_linkers_sendrecv.cpp
       tests/cpp_tests/test_main.cpp
       tests/cpp_tests/test_nccl_row_split.cpp
+      tests/cpp_tests/test_opencl_host_buffers.cpp
       tests/cpp_tests/test_serialize.cpp
       tests/cpp_tests/test_single_row.cpp
       tests/cpp_tests/test_split_info.cpp
