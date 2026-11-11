@@ -939,7 +939,8 @@ class Booster {
     int idx = 0;
     for (const auto& metric : train_metric_) {
       for (const auto& name : metric->GetName()) {
-        if (idx < len) {
+        // buffer_len == 0 is a size query: nothing may be written
+        if (idx < len && buffer_len > 0) {
           std::memcpy(out_strs[idx], name.c_str(), std::min(name.size() + 1, buffer_len));
           out_strs[idx][buffer_len - 1] = '\0';
         }
@@ -955,7 +956,8 @@ class Booster {
     *out_buffer_len = 0;
     int idx = 0;
     for (const auto& name : boosting_->FeatureNames()) {
-      if (idx < len) {
+      // buffer_len == 0 is a size query: nothing may be written
+      if (idx < len && buffer_len > 0) {
         std::memcpy(out_strs[idx], name.c_str(), std::min(name.size() + 1, buffer_len));
         out_strs[idx][buffer_len - 1] = '\0';
       }
@@ -2703,7 +2705,8 @@ int FLC_DatasetGetFeatureNames(
   auto inside_feature_name = dataset->feature_names();
   *num_feature_names = static_cast<int>(inside_feature_name.size());
   for (int i = 0; i < *num_feature_names; ++i) {
-    if (i < len) {
+    // buffer_len == 0 is a size query: nothing may be written
+    if (i < len && buffer_len > 0) {
       std::memcpy(feature_names[i], inside_feature_name[i].c_str(), std::min(inside_feature_name[i].size() + 1, buffer_len));
       feature_names[i][buffer_len - 1] = '\0';
     }
@@ -3440,15 +3443,21 @@ int FLC_BoosterValidateFeatureNames(BoosterHandle handle,
                                      const char** data_names,
                                      int data_num_features) {
   API_BEGIN();
-  int booster_num_features;
-  size_t out_buffer_len;
-  FLC_BoosterGetFeatureNames(handle, 0, &booster_num_features, 0, &out_buffer_len, nullptr);
+  int booster_num_features = 0;
+  size_t out_buffer_len = 0;
+  // the nested calls record their own error message; pass the failure on
+  if (FLC_BoosterGetFeatureNames(handle, 0, &booster_num_features, 0, &out_buffer_len, nullptr) != 0) {
+    return -1;
+  }
   if (booster_num_features != data_num_features) {
     Log::Fatal("Model was trained on %d features, but got %d input features to predict.", booster_num_features, data_num_features);
   }
   std::vector<std::vector<char>> tmp_names(booster_num_features, std::vector<char>(out_buffer_len));
   std::vector<char*> booster_names = Vector2Ptr(&tmp_names);
-  FLC_BoosterGetFeatureNames(handle, data_num_features, &booster_num_features, out_buffer_len, &out_buffer_len, booster_names.data());
+  if (FLC_BoosterGetFeatureNames(handle, data_num_features, &booster_num_features, out_buffer_len, &out_buffer_len,
+                                 booster_names.data()) != 0) {
+    return -1;
+  }
   for (int i = 0; i < booster_num_features; ++i) {
     if (strcmp(data_names[i], booster_names[i]) != 0) {
       Log::Fatal("Expected '%s' at position %d but found '%s'", booster_names[i], i, data_names[i]);
