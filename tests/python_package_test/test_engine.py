@@ -3759,6 +3759,52 @@ def test_forced_split_feature_indices(tmp_path):
         lgb.train(params, lgb_train)
 
 
+def test_forced_split_negative_feature_index(tmp_path):
+    X, y = make_synthetic_regression()
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps({"feature": -1, "threshold": 0.5}))
+    params = {"objective": "regression", "forcedsplits_filename": tmp_split_file, "verbose": -1}
+    with pytest.raises(lgb.basic.FalcataError, match="Forced splits file includes feature index -1"):
+        lgb.train(params, lgb.Dataset(X, y))
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+def test_forced_split_malformed_file(tmp_path, content):
+    X, y = make_synthetic_regression()
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(content)
+    params = {"objective": "regression", "forcedsplits_filename": tmp_split_file, "verbose": -1}
+    with pytest.raises(lgb.basic.FalcataError, match="(?i)forced splits file"):
+        lgb.train(params, lgb.Dataset(X, y))
+
+
+@pytest.mark.parametrize("side", ["root", "left", "right"])
+def test_forced_split_on_unused_feature_is_skipped(tmp_path, side):
+    # A constant column is dropped from the binned dataset, so it has no inner
+    # feature index. Forcing a split on it used to index the histogram arrays
+    # with -1 (heap-buffer-overflow, usually a segfault).
+    X, y = make_synthetic_regression()
+    X = X.copy()
+    X[:, 1] = 3.25
+    forced = {"feature": 0, "threshold": 0.0}
+    if side == "root":
+        forced = {"feature": 1, "threshold": 0.5}
+    else:
+        forced[side] = {"feature": 1, "threshold": 0.5}
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps(forced))
+    params = {"objective": "regression", "verbose": -1, "num_leaves": 7, "deterministic": True}
+    bst = lgb.train({**params, "forcedsplits_filename": tmp_split_file}, lgb.Dataset(X, y), num_boost_round=3)
+    preds = bst.predict(X)
+    assert np.all(np.isfinite(preds))
+    if side == "root":
+        # nothing can be forced, so the trees are the ordinary ones
+        plain = lgb.train(params, lgb.Dataset(X, y), num_boost_round=3)
+        np.testing.assert_array_equal(preds, plain.predict(X))
+    split_features = bst.trees_to_dataframe()["split_feature"].dropna()
+    assert "Column_1" not in set(split_features)
+
+
 def test_forced_split_missing_file(tmp_path):
     X, y = make_synthetic_regression()
     lgb_train = lgb.Dataset(X, y)

@@ -176,6 +176,9 @@ class SerialTreeLearner: public TreeLearner {
 
   std::set<int> FindAllForceFeatures(Json force_split_leaf_setting);
 
+  /*! \brief Warn, once per feature, that a forced split names a feature the dataset does not use */
+  void WarnUnusedForcedSplitFeature(int feature);
+
   /*!
   * \brief Get the number of data in a leaf
   * \param leaf_idx The index of leaf
@@ -240,6 +243,8 @@ class SerialTreeLearner: public TreeLearner {
   // uninitialized garbage (segfault in HybridGrowthUsable's
   // forced_split_json_->is_null() on NCCL worker threads).
   const Json* forced_split_json_ = nullptr;
+  /*! \brief forced-split features already reported as unused by the dataset */
+  std::set<int> warned_unused_forced_split_features_;
   std::unique_ptr<TrainingShareStates> share_state_;
   std::unique_ptr<CostEfficientGradientBoosting> cegb_;
   std::unique_ptr<GradientDiscretizer> gradient_discretizer_;

@@ -64,6 +64,9 @@ class GBDT : public GBDTBase {
   */
   void CheckForcedSplitFeatures();
 
+  /*! \brief Parse a forced splits file, failing on malformed JSON or a non-object root */
+  static Json ParseForcedSplits(const std::string& content, const std::string& filename);
+
   /*!
   * \brief Merge model from other boosting object. Will insert to the front of current boosting object
   * \param other

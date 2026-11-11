@@ -202,8 +202,7 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
     }
     std::stringstream buffer;
     buffer << forced_splits_file.rdbuf();
-    std::string err;
-    forced_splits_json_ = Json::parse(buffer.str(), &err);
+    forced_splits_json_ = ParseForcedSplits(buffer.str(), config->forcedsplits_filename);
   }
 
   objective_function_ = objective_function;
@@ -285,15 +284,30 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
   }
 }
 
+Json GBDT::ParseForcedSplits(const std::string& content, const std::string& filename) {
+  std::string err;
+  Json forced_splits = Json::parse(content, &err);
+  if (!err.empty()) {
+    Log::Fatal("Could not parse forced splits file %s: %s", filename.c_str(), err.c_str());
+  }
+  if (!forced_splits.is_object()) {
+    Log::Fatal("Forced splits file %s must hold a JSON object (the root split)", filename.c_str());
+  }
+  return forced_splits;
+}
+
 void GBDT::CheckForcedSplitFeatures() {
+  if (forced_splits_json_.is_null()) {
+    return;
+  }
   std::queue<Json> forced_split_nodes;
   forced_split_nodes.push(forced_splits_json_);
   while (!forced_split_nodes.empty()) {
     Json node = forced_split_nodes.front();
     forced_split_nodes.pop();
     const int feature_index = node["feature"].int_value();
-    if (feature_index > max_feature_idx_) {
-      Log::Fatal("Forced splits file includes feature index %d, but maximum feature index in dataset is %d",
+    if (feature_index < 0 || feature_index > max_feature_idx_) {
+      Log::Fatal("Forced splits file includes feature index %d, but feature indices in dataset are 0 to %d",
         feature_index, max_feature_idx_);
     }
     if (node.object_items().count("left") > 0) {
@@ -1129,8 +1143,8 @@ void GBDT::ResetConfig(const Config* config) {
       }
       std::stringstream buffer;
       buffer << forced_splits_file.rdbuf();
-      std::string err;
-      forced_splits_json_ = Json::parse(buffer.str(), &err);
+      forced_splits_json_ = ParseForcedSplits(buffer.str(), new_config->forcedsplits_filename);
+      CheckForcedSplitFeatures();
       tree_learner_->SetForcedSplit(&forced_splits_json_);
     } else {
       forced_splits_json_ = Json();

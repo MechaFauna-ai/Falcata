@@ -549,6 +549,13 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
       const int left_feature = left["feature"].int_value();
       const double left_threshold_double = left["threshold"].number_value();
       const int left_inner_feature_index = train_data_->InnerFeatureIndex(left_feature);
+      if (left_inner_feature_index < 0) {
+        // The feature exists but the dataset dropped it (constant, or filtered when the
+        // dataset was built): it has no bins to split on, so this forced split cannot be applied.
+        WarnUnusedForcedSplitFeature(left_feature);
+        abort_last_forced_split = true;
+        break;
+      }
       const uint32_t left_threshold = train_data_->BinThreshold(
               left_inner_feature_index, left_threshold_double);
       auto leaf_histogram_array = (left_smaller) ? smaller_leaf_histogram_array_ : larger_leaf_histogram_array_;
@@ -571,6 +578,11 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
       const int right_feature = right["feature"].int_value();
       const double right_threshold_double = right["threshold"].number_value();
       const int right_inner_feature_index = train_data_->InnerFeatureIndex(right_feature);
+      if (right_inner_feature_index < 0) {
+        WarnUnusedForcedSplitFeature(right_feature);
+        abort_last_forced_split = true;
+        break;
+      }
       const uint32_t right_threshold = train_data_->BinThreshold(
               right_inner_feature_index, right_threshold_double);
       auto leaf_histogram_array = (left_smaller) ? larger_leaf_histogram_array_ : smaller_leaf_histogram_array_;
@@ -645,6 +657,14 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
   return result_count;
 }
 
+void SerialTreeLearner::WarnUnusedForcedSplitFeature(int feature) {
+  if (warned_unused_forced_split_features_.insert(feature).second) {
+    Log::Warning("Forced split on feature %d is skipped: the training data does not use that feature "
+                 "(it is constant or was filtered out), so the remaining splits are found normally",
+                 feature);
+  }
+}
+
 std::set<int> SerialTreeLearner::FindAllForceFeatures(Json force_split_leaf_setting) {
   std::set<int> force_features;
   std::queue<Json> force_split_leaves;
@@ -657,7 +677,9 @@ std::set<int> SerialTreeLearner::FindAllForceFeatures(Json force_split_leaf_sett
 
     const int feature_index = split_leaf["feature"].int_value();
     const int feature_inner_index = train_data_->InnerFeatureIndex(feature_index);
-    force_features.insert(feature_inner_index);
+    if (feature_inner_index >= 0) {
+      force_features.insert(feature_inner_index);
+    }
 
     if (split_leaf.object_items().count("left") > 0) {
       force_split_leaves.push(split_leaf["left"]);
