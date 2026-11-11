@@ -34,10 +34,9 @@ class BinaryLogloss: public ObjectiveFunction {
     if (is_unbalance_ && std::fabs(scale_pos_weight_ - 1.0f) > 1e-6) {
       Log::Fatal("Cannot set is_unbalance and scale_pos_weight at the same time");
     }
-    use_default_label_ = is_pos == nullptr;
     is_pos_ = is_pos;
     if (is_pos_ == nullptr) {
-      is_pos_ = [](label_t label) { return label > 0; };
+      is_pos_ = DefaultLabelPredicate();
     }
   }
 
@@ -128,11 +127,12 @@ class BinaryLogloss: public ObjectiveFunction {
     if (!need_train_) {
       return;
     }
+    const bool use_default_label = is_pos_.target<DefaultLabelPredicate>() != nullptr;
     if (weights_ == nullptr) {
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
       for (data_size_t i = 0; i < num_data_; ++i) {
         // get label and label weights
-        const int is_pos = use_default_label_ ? label_[i] > 0 : is_pos_(label_[i]);
+        const int is_pos = use_default_label ? label_[i] > 0 : is_pos_(label_[i]);
         const int label = label_val_[is_pos];
         const double label_weight = label_weights_[is_pos];
         // calculate gradients and hessians
@@ -145,7 +145,7 @@ class BinaryLogloss: public ObjectiveFunction {
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
       for (data_size_t i = 0; i < num_data_; ++i) {
         // get label and label weights
-        const int is_pos = use_default_label_ ? label_[i] > 0 : is_pos_(label_[i]);
+        const int is_pos = use_default_label ? label_[i] > 0 : is_pos_(label_[i]);
         const int label = label_val_[is_pos];
         const double label_weight = label_weights_[is_pos];
         // calculate gradients and hessians
@@ -212,6 +212,10 @@ class BinaryLogloss: public ObjectiveFunction {
   data_size_t NumPositiveData() const override { return num_pos_data_; }
 
  protected:
+  struct DefaultLabelPredicate {
+    bool operator()(label_t label) const { return label > 0; }
+  };
+
   /*! \brief Number of data */
   data_size_t num_data_;
   /*! \brief Number of positive samples */
@@ -231,7 +235,6 @@ class BinaryLogloss: public ObjectiveFunction {
   /*! \brief Weights for data */
   const label_t* weights_;
   double scale_pos_weight_;
-  bool use_default_label_ = true;
   std::function<bool(label_t)> is_pos_;
   bool need_train_;
   const bool deterministic_;

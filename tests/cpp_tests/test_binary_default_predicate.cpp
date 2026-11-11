@@ -8,6 +8,15 @@
 
 #include "../../src/objective/binary_objective.hpp"
 
+namespace {
+class ReplacedBinaryPredicate : public Falcata::BinaryLogloss {
+ public:
+  explicit ReplacedBinaryPredicate(const Falcata::Config& config) : BinaryLogloss(config) {
+    is_pos_ = [](Falcata::label_t label) { return label == 2; };
+  }
+};
+}  // namespace
+
 TEST(BinaryObjective, DefaultAndCustomPredicatesAgree) {
   Falcata::Config config;
   config.sigmoid = 1.5;
@@ -39,6 +48,13 @@ TEST(BinaryObjective, DefaultAndCustomPredicatesAgree) {
       custom.GetGradients(scores, actual_g.data(), actual_h.data());
       EXPECT_EQ(expected_g, actual_g);
       EXPECT_EQ(expected_h, actual_h);
+      if (one_vs_all) {
+        ReplacedBinaryPredicate replaced(config);
+        replaced.Init(metadata, 4);
+        replaced.GetGradients(scores, actual_g.data(), actual_h.data());
+        EXPECT_EQ(expected_g, actual_g);
+        EXPECT_EQ(expected_h, actual_h);
+      }
     }
   }
 }
