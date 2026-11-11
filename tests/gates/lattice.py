@@ -27,7 +27,9 @@ Usage:
   python tests/gates/lattice.py --update 'route/*' --only 'route/*'   # ids are fnmatch patterns
   python tests/gates/lattice.py --list               # print the cell matrix
 Cells run sequentially in chunked worker subprocesses (crash isolation: a
-crashing cell fails alone and the runner respawns for the rest).
+crashing cell fails alone and the runner respawns for the rest). Workers
+have a30-minute deadline (FALCATA_LATTICE_TIMEOUT_SEC overrides it). A timeout
+aborts all later cells with status125; the GPU job must stop.
 """
 
 import argparse
@@ -44,6 +46,9 @@ GATES_DIR = Path(__file__).resolve().parent
 FINGERPRINT_FILE = GATES_DIR / "md5_lattice.json"
 RESULTS_FILE = Path(os.environ.get("FALCATA_GATES_RESULTS", GATES_DIR / "lattice_results.json"))
 WORKER_CHUNK = 30
+WORKER_TIMEOUT_SEC = int(os.environ.get("FALCATA_LATTICE_TIMEOUT_SEC", "1800"))
+if WORKER_TIMEOUT_SEC <= 0:
+    raise ValueError("FALCATA_LATTICE_TIMEOUT_SEC must be positive")
 METRIC_TOLERANCE = 0.02  # relative; only applied to non-fingerprinted (nondeterministic) cells
 
 # --------------------------------------------------------------------------- #
@@ -1834,6 +1839,7 @@ def run_tier_cell(cell):
         capture_output=True,
         text=True,
         check=False,
+        timeout=WORKER_TIMEOUT_SEC,
         env={**os.environ, "FALCATA_DEBUG": ",".join(tokens)},
     )
     recs = [json.loads(line[5:]) for line in proc.stdout.splitlines() if line.startswith("CELL ")]
@@ -1871,6 +1877,7 @@ def run_cells(cells):
             capture_output=True,
             text=True,
             check=False,
+            timeout=WORKER_TIMEOUT_SEC,
         )
         seen = set()
         for line in proc.stdout.splitlines():
@@ -2002,7 +2009,11 @@ def main():
         fingerprints = json.loads(FINGERPRINT_FILE.read_text())["cells"]
 
     t0 = time.monotonic()
-    results = run_cells(cells)
+    try:
+        results = run_cells(cells)
+    except subprocess.TimeoutExpired as exc:
+        print(f"UNRESOLVED_CUDA_TIMEOUT: worker exceeded {exc.timeout}s; stop GPU job", file=sys.stderr)
+        return 125
     elapsed = time.monotonic() - t0
 
     failures, new_fp = check(
