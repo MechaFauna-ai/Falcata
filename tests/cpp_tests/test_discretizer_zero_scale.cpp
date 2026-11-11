@@ -17,7 +17,7 @@ TEST(GradientDiscretizer, ZeroScalesProduceZeroQuantizedValues) {
         discretizer.DiscretizeGradients(2, zero_gradient ? zeros : nonzero, zeros);
         const auto* values = discretizer.discretized_gradients_and_hessians();
         for (int row = 0; row < 2; ++row) {
-          if (zero_gradient) EXPECT_EQ(values[2 * row + 1], 0);
+          EXPECT_EQ(values[2 * row + 1], zero_gradient ? 0 : (row == 0 ? -2 : 2));
           EXPECT_EQ(values[2 * row], constant ? 1 : 0);
         }
       }
