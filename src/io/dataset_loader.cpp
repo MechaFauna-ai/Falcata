@@ -108,6 +108,10 @@ void DatasetLoader::SetHeader(const char* filename) {
     }
 
     if (!feature_names_.empty()) {
+      if (label_idx_ < 0 || label_idx_ >= static_cast<int>(feature_names_.size())) {
+        Log::Fatal("label_column %d is out of range: the header has %d columns", label_idx_,
+                   static_cast<int>(feature_names_.size()));
+      }
       // erase label column name
       feature_names_.erase(feature_names_.begin() + label_idx_);
       for (size_t i = 0; i < feature_names_.size(); ++i) {
@@ -218,7 +222,7 @@ void CheckSampleSize(size_t sample_cnt, size_t num_data) {
 Dataset* DatasetLoader::LoadFromFile(const char* filename, int rank, int num_machines) {
   // don't support query id in data file when using distributed training
   if (num_machines > 1 && !config_.pre_partition) {
-    if (group_idx_ > 0) {
+    if (group_idx_ >= 0) {
       Log::Fatal("Using a query id without pre-partitioning the data file is not supported for distributed training.\n"
                  "Please use an additional query file or pre-partition the data");
     }
@@ -1537,11 +1541,19 @@ std::vector<std::vector<double>> DatasetLoader::GetForcedBins(std::string forced
       buffer << forced_bins_stream.rdbuf();
       std::string err;
       Json forced_bins_json = Json::parse(buffer.str(), &err);
-      CHECK(forced_bins_json.is_array());
+      if (!err.empty()) {
+        Log::Fatal("Could not parse forced bins file %s: %s", forced_bins_path.c_str(), err.c_str());
+      }
+      if (!forced_bins_json.is_array()) {
+        Log::Fatal("Forced bins file %s must contain a JSON array", forced_bins_path.c_str());
+      }
       std::vector<Json> forced_bins_arr = forced_bins_json.array_items();
       for (size_t i = 0; i < forced_bins_arr.size(); ++i) {
         int feature_num = forced_bins_arr[i]["feature"].int_value();
-        CHECK_LT(feature_num, num_total_features);
+        if (feature_num < 0 || feature_num >= num_total_features) {
+          Log::Fatal("Forced bins file %s names feature %d, outside [0, %d)", forced_bins_path.c_str(),
+                     feature_num, num_total_features);
+        }
         if (categorical_features.count(feature_num)) {
           Log::Warning("Feature %d is categorical. Will ignore forced bins for this feature.", feature_num);
         } else {
@@ -1551,9 +1563,13 @@ std::vector<std::vector<double>> DatasetLoader::GetForcedBins(std::string forced
           }
         }
       }
-      // remove duplicates
+      // remove duplicates (std::unique alone only drops adjacent ones), keeping
+      // the first occurrence and the given order: FindBin takes the bounds in
+      // this order while it has room for them
       for (int i = 0; i < num_total_features; ++i) {
-        auto new_end = std::unique(forced_bins[i].begin(), forced_bins[i].end());
+        std::unordered_set<double> seen;
+        auto new_end = std::remove_if(forced_bins[i].begin(), forced_bins[i].end(),
+                                      [&seen](double bound) { return !seen.insert(bound).second; });
         forced_bins[i].erase(new_end, forced_bins[i].end());
       }
     }
@@ -1575,7 +1591,9 @@ void DatasetLoader::CheckCategoricalFeatureNumBin(
     }
   } else {
     const int num_threads = OMP_NUM_THREADS();
-    std::vector<bool> thread_need_warning(num_threads, false);
+    // char, not bool: std::vector<bool> packs the per-thread flags into shared
+    // words, so concurrent writes from different threads would race
+    std::vector<char> thread_need_warning(num_threads, false);
     Threading::For<size_t>(0, bin_mappers.size(), 1,
       [&bin_mappers, &thread_need_warning, &max_bin_by_feature, max_bin] (int thread_index, size_t start, size_t end) {
         for (size_t i = start; i < end; ++i) {
