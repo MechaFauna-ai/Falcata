@@ -1382,19 +1382,24 @@ SEXP FLC_BoosterDumpModel_R(SEXP handle,
   _AssertBoosterHandleNotNull(handle);
   SEXP model_str;
   int64_t out_len = 0;
-  int64_t buf_len = 1024 * 1024;
+  // FLC_BoosterDumpModel serializes the whole model on every call and reports the size it needs, so a buffer that
+  // is too small costs a second full serialization. Start from a large, uninitialized buffer: the pages a dump does
+  // not write are never touched, so the reserve is free, and a dump of up to 64 MiB takes one call (the old 1 MiB
+  // zero-filled start serialized every larger model twice).
+  int64_t buf_len = 64 * 1024 * 1024;
   int num_iter = Rf_asInteger(num_iteration);
   int start_iter = Rf_asInteger(start_iteration);
   int importance_type = Rf_asInteger(feature_importance_type);
-  std::vector<char> inner_char_buf(buf_len);
-  CHECK_CALL(FLC_BoosterDumpModel(R_ExternalPtrAddr(handle), start_iter, num_iter, importance_type, buf_len, &out_len, inner_char_buf.data()));
+  std::unique_ptr<char[]> inner_char_buf(new char[buf_len]);
+  CHECK_CALL(FLC_BoosterDumpModel(R_ExternalPtrAddr(handle), start_iter, num_iter, importance_type, buf_len, &out_len, inner_char_buf.get()));
   // if the model string was larger than the initial buffer, allocate a bigger buffer and try again
   if (out_len > buf_len) {
-    inner_char_buf.resize(out_len);
-    CHECK_CALL(FLC_BoosterDumpModel(R_ExternalPtrAddr(handle), start_iter, num_iter, importance_type, out_len, &out_len, inner_char_buf.data()));
+    buf_len = out_len;
+    inner_char_buf.reset(new char[buf_len]);
+    CHECK_CALL(FLC_BoosterDumpModel(R_ExternalPtrAddr(handle), start_iter, num_iter, importance_type, buf_len, &out_len, inner_char_buf.get()));
   }
   model_str = Rf_protect(safe_R_string(static_cast<R_xlen_t>(1), &cont_token));
-  SET_STRING_ELT(model_str, 0, safe_R_mkChar(inner_char_buf.data(), &cont_token));
+  SET_STRING_ELT(model_str, 0, safe_R_mkChar(inner_char_buf.get(), &cont_token));
   Rf_unprotect(2);
   return model_str;
   R_API_END();
