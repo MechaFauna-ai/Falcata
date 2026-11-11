@@ -1476,7 +1476,6 @@ class _InnerPredictor:
         ptr_indptr, type_ptr_indptr, _ = _c_int_array(csr.indptr)
         ptr_data, type_ptr_data, _ = _c_float_array(csr.data)
 
-        assert csr.shape[1] <= _MAX_INT32
         csr_indices = csr.indices.astype(np.int32, copy=False)
 
         _safe_call(
@@ -1568,6 +1567,8 @@ class _InnerPredictor:
         predict_type: int,
     ) -> Tuple[_FALCATA_PredictSparseReturnType, int]:
         """Predict for a CSR data."""
+        if csr.shape[1] > _MAX_INT32:
+            raise ValueError(f"CSR prediction cannot use more than {_MAX_INT32} columns")
         if predict_type == _C_API_PREDICT_CONTRIB:
             return self.__inner_predict_csr_sparse(
                 csr=csr,
