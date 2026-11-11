@@ -25,24 +25,24 @@ TEST(MapMetric, TopKMatchesStableFullSortWithTies) {
       scores[i] = rng() % 8;
     }
     for (const std::vector<int>& ks : {std::vector<int>{1, 3, 5}, std::vector<int>{1, 3, 5, 10001}}) {
-    std::vector<int> order(n);
-    std::iota(order.begin(), order.end(), 0);
-    std::stable_sort(order.begin(), order.end(), [&scores](int a, int b) { return scores[a] > scores[b]; });
-    std::vector<double> expected;
-    for (int k : ks) {
-      double sum = 0;
-      int hits = 0;
-      for (int i = 0; i < std::min(k, n); ++i) {
-        if (labels[order[i]] > 0.5) sum += static_cast<double>(++hits) / (i + 1);
+      std::vector<int> order(n);
+      std::iota(order.begin(), order.end(), 0);
+      std::stable_sort(order.begin(), order.end(), [&scores](int a, int b) { return scores[a] > scores[b]; });
+      std::vector<double> expected;
+      for (int k : ks) {
+        double sum = 0;
+        int hits = 0;
+        for (int i = 0; i < std::min(k, n); ++i) {
+          if (labels[order[i]] > 0.5) sum += static_cast<double>(++hits) / (i + 1);
+        }
+        expected.push_back(positives ? sum / std::min(positives, std::min(k, n)) : 1.0);
       }
-      expected.push_back(positives ? sum / std::min(positives, std::min(k, n)) : 1.0);
-    }
-    std::vector<double> actual(ks.size());
-    metric.CalMapAtK(ks, positives, labels.data(), scores.data(), n, &actual);
-    EXPECT_EQ(actual, expected);
-    const std::vector<Falcata::label_t> zero_labels(n, 0);
-    metric.CalMapAtK(ks, 0, zero_labels.data(), scores.data(), n, &actual);
-    EXPECT_EQ(actual, std::vector<double>(ks.size(), 1.0));
+      std::vector<double> actual(ks.size());
+      metric.CalMapAtK(ks, positives, labels.data(), scores.data(), n, &actual);
+      EXPECT_EQ(actual, expected);
+      const std::vector<Falcata::label_t> zero_labels(n, 0);
+      metric.CalMapAtK(ks, 0, zero_labels.data(), scores.data(), n, &actual);
+      EXPECT_EQ(actual, std::vector<double>(ks.size(), 1.0));
     }
   }
 }
