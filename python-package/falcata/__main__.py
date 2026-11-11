@@ -35,14 +35,6 @@ def _cmd_convert(args: argparse.Namespace) -> int:
             "compress_level": args.compress_level,
         }
     booster.save_model(str(dst), num_iteration=-1, format=fmt, **kwargs)
-    src_size, dst_size = src.stat().st_size, dst.stat().st_size
-    src_size / dst_size if dst_size else float("nan")
-    if fmt == "falb":
-        dropped = [n for n, d in (("stats", args.drop_stats), ("diagnostics", args.drop_diagnostics)) if d]
-        if dropped:
-            pass
-        elif not args.f32_leaves:
-            pass
     return 0
 
 
