@@ -52,7 +52,14 @@ std::string GBDT::DumpModel(int start_iteration, int num_iteration, int feature_
     std::stringstream json_str_buf;
     Common::C_stringstream(json_str_buf);
     auto strs = Common::Split(feature_infos_[i].c_str(), ":");
+    if (strs.empty() || strs[0].empty()) {
+      Log::Fatal("Invalid feature_infos entry for feature %zu", i);
+    }
     if (strs[0][0] == '[') {
+      if (strs.size() != 2 || strs[0].size() < 2 ||
+          strs[1].size() < 2 || strs[1].back() != ']') {
+        Log::Fatal("Invalid numeric feature_infos entry for feature %zu", i);
+      }
       strs[0].erase(0, 1);  // remove '['
       strs[1].erase(strs[1].size() - 1);  // remove ']'
       double max_, min_;
