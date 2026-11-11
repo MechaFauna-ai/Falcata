@@ -64,6 +64,26 @@ def test_binary_view_alignment_sanitizer(tmp_path):
     if compiler is None:
         pytest.skip("No C++ compiler available")
     root = Path(__file__).resolve().parents[2]
+    # the gtest tests/cpp_tests/test_falb_unaligned_view.cpp runs the same reads in CI; here they run once more
+    # under the alignment sanitizer, which the gtest binary is not built with
+    source = tmp_path / "reader.cpp"
+    source.write_text(
+        "#include <cstdint>\n"
+        "#include <cstdlib>\n"
+        "#include <cstring>\n"
+        f'#include "{root / "src/boosting/falb.h"}"\n'
+        "int main() {\n"
+        "  alignas(8) char data[16] = {};\n"
+        "  const uint32_t value = 123;\n"
+        "  std::memcpy(data + 1, &value, sizeof(value));\n"
+        "  Falcata::FALB::ByteReader reader(data, sizeof(data));\n"
+        '  const auto view = reader.View<uint32_t>(1, 1, "test");\n'
+        "  if (view[0] != value) return 1;\n"
+        "  uint32_t copied = 0;\n"
+        "  view.CopyTo(&copied);\n"
+        "  return copied == value ? 0 : 1;\n"
+        "}\n"
+    )
     executable = tmp_path / "reader"
     subprocess.run(
         [
@@ -72,7 +92,7 @@ def test_binary_view_alignment_sanitizer(tmp_path):
             "-fsanitize=alignment",
             "-fno-sanitize-recover=all",
             f"-I{root / 'include'}",
-            str(root / "tests/cpp_tests/test_falb_unaligned_view_regression.cpp"),
+            str(source),
             "-o",
             str(executable),
         ],
