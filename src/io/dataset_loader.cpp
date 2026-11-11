@@ -203,6 +203,15 @@ void DatasetLoader::SetHeader(const char* filename) {
   }
 }
 
+void DatasetLoader::CheckNotMonotoneCategorical(int feature_idx) const {
+  // every bin-mapper construction path (sampled, text, distributed) applies
+  // this; the text-file paths used to skip it and silently accept the config
+  if (feature_idx < static_cast<int>(config_.monotone_constraints.size()) &&
+      config_.monotone_constraints[feature_idx] != 0) {
+    Log::Fatal("The output cannot be monotone with respect to categorical features");
+  }
+}
+
 void CheckSampleSize(size_t sample_cnt, size_t num_data) {
   if (static_cast<double>(sample_cnt) / num_data < 0.2f &&
       sample_cnt < 100000) {
@@ -649,10 +658,7 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
       BinType bin_type = BinType::NumericalBin;
       if (categorical_features_.count(i)) {
         bin_type = BinType::CategoricalBin;
-        bool feat_is_unconstrained = ((config_.monotone_constraints.size() == 0) || (config_.monotone_constraints[i] == 0));
-        if (!feat_is_unconstrained) {
-            Log::Fatal("The output cannot be monotone with respect to categorical features");
-        }
+        CheckNotMonotoneCategorical(i);
       }
       bin_mappers[i].reset(new BinMapper());
       if (config_.max_bin_by_feature.empty()) {
@@ -699,6 +705,7 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
       BinType bin_type = BinType::NumericalBin;
       if (categorical_features_.count(start[rank] + i)) {
         bin_type = BinType::CategoricalBin;
+        CheckNotMonotoneCategorical(i);
       }
       bin_mappers[i].reset(new BinMapper());
       if (num_col <= start[rank] + i) {
@@ -1162,6 +1169,7 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
       BinType bin_type = BinType::NumericalBin;
       if (categorical_features_.count(i)) {
         bin_type = BinType::CategoricalBin;
+        CheckNotMonotoneCategorical(i);
       }
       bin_mappers[i].reset(new BinMapper());
       if (config_.max_bin_by_feature.empty()) {
@@ -1204,6 +1212,7 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
       BinType bin_type = BinType::NumericalBin;
       if (categorical_features_.count(start[rank] + i)) {
         bin_type = BinType::CategoricalBin;
+        CheckNotMonotoneCategorical(i);
       }
       bin_mappers[i].reset(new BinMapper());
       if (static_cast<int>(sample_values.size()) <= start[rank] + i) {
