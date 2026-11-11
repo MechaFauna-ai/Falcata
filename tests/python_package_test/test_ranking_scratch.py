@@ -5,11 +5,15 @@ import pytest
 
 import falcata as lgb
 
+from .utils import BuildInfo
+
 
 @pytest.mark.parametrize("objective", ["lambdarank", "rank_xendcg"])
 @pytest.mark.parametrize("threads", [1, 4])
 @pytest.mark.parametrize("position_bias", [False, True])
 def test_ranking_scratch_reuse(objective, threads, position_bias):
+    if position_bias and BuildInfo.has_cuda:
+        pytest.skip("Positions in learning to rank is not supported in CUDA version yet")
     rng = np.random.default_rng(7)
     x = rng.normal(size=(256, 4))
     labels = rng.integers(0, 4, len(x))
@@ -19,6 +23,9 @@ def test_ranking_scratch_reuse(objective, threads, position_bias):
         "num_leaves": 3,
         "min_data_in_leaf": 3,
         "seed": 7,
+        # the CUDA lambdarank gradients accumulate pair lambdas with float atomics, so without it two identical runs
+        # differ by about 1e-8 (repeat at the same query size on cuda); the CPU objective is unaffected
+        "deterministic": True,
         "verbosity": -1,
     }
     expected = {}

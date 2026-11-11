@@ -11,6 +11,8 @@
 
 #include <Falcata/cuda/cuda_utils.hu>
 
+#include <vector>
+
 #include "../score_updater.hpp"
 
 namespace Falcata {
@@ -64,11 +66,32 @@ class CUDAScoreUpdater: public ScoreUpdater {
   void ScoreLinearTreeOnHost(const Tree* tree, size_t offset,
                              const data_size_t* data_indices, data_size_t data_cnt);
 
+  /*! \brief Add a linear tree's predictions on the device: the tree routes each row to its leaf (CUDATree's
+   *  traversal) and a kernel evaluates the leaf regression from the dataset's raw feature values, in the host
+   *  evaluator's order and rounding. Returns false (nothing done) for a tree that is not a CUDATree. */
+  bool ScoreLinearTreeOnDevice(const Tree* tree, size_t offset,
+                               const data_size_t* data_indices, data_size_t data_cnt);
+
+  void LaunchLinearTreeScoreKernel(const data_size_t* data_indices, data_size_t data_cnt, int num_leaves,
+                                   size_t offset);
+
   void LaunchAddScoreConstantKernel(const double val, const size_t offset);
 
   void LaunchMultiplyScoreConstantKernel(const double val, const size_t offset);
 
   CUDAVector<double> cuda_score_;
+
+  /*! \brief linear trees: each row's leaf, from CUDATree::LeafIndexOnDevice */
+  CUDAVector<int> cuda_linear_leaf_index_;
+  /*! \brief linear trees: data_'s raw values of the features the leaf regressions used so far, one num_data_ slot
+   *  per feature, uploaded on first use (they never change) */
+  CUDAVector<float> cuda_linear_raw_;
+  /*! \brief inner feature -> slot in cuda_linear_raw_, -1 until uploaded */
+  std::vector<int> linear_raw_slot_;
+  int num_linear_raw_slots_ = 0;
+  /*! \brief the tree's flattened linear model: [leaf_const | leaf_output | coeff] and [coeff_offset | coeff slot] */
+  CUDAVector<double> cuda_linear_model_;
+  CUDAVector<int> cuda_linear_model_index_;
 
   const int num_threads_per_block_;
 

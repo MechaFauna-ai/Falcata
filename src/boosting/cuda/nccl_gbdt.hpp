@@ -144,6 +144,12 @@ class NCCLGBDT: public GBDT_T {
   std::vector<ncclComm_t> nccl_communicators_;
 
   std::vector<std::unique_ptr<NCCLGBDTComponent>> nccl_gbdt_components_;
+
+  /*! \brief the per-GPU training scores gathered by EvalOneMetric. Within one metric pass
+   *  (GBDT::MetricScoreTransferScope) every training metric reads the same scores, so they are gathered once per
+   *  pass, and copied back to the device at most once for the CUDA metrics. */
+  mutable std::vector<double> gathered_train_score_;
+  mutable bool gathered_train_score_on_device_ = false;
 };
 
 }  // namespace Falcata

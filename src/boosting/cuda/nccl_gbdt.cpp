@@ -242,17 +242,29 @@ template <typename GBDT_T>
 std::vector<double> NCCLGBDT<GBDT_T>::EvalOneMetric(const Metric* metric, const double* score, const data_size_t num_data) const {
   if (score == this->train_score_updater_->score()) {
     // delegate to per gpu train score updater
-    std::vector<double> tmp_score(static_cast<size_t>(num_data) * static_cast<size_t>(this->num_class_), 0.0f);
-
-    nccl_topology_->RunPerDevice<NCCLGBDTComponent, void>(nccl_gbdt_components_, [this, &tmp_score] (NCCLGBDTComponent* thread_data) {
-      const data_size_t data_start = thread_data->data_start_index();
-      const data_size_t num_data_in_gpu = thread_data->num_data_in_gpu();
-      for (int class_id = 0; class_id < this->num_class_; ++class_id) {
-        CopyFromCUDADeviceToHost<double>(tmp_score.data() + NCCLClassMajorOffset(class_id, this->num_data_, data_start),
-          thread_data->train_score_updater()->score() + NCCLClassMajorOffset(class_id, num_data_in_gpu),
-          static_cast<size_t>(num_data_in_gpu), __FILE__, __LINE__);
-      }
-    });
+    const size_t total_size = static_cast<size_t>(num_data) * static_cast<size_t>(this->num_class_);
+    // GBDT::OutputMetric / GetEvalAt evaluate every training metric inside one MetricScoreTransferScope, over
+    // scores that cannot change in between: gather them for the first metric only. The scope resets
+    // metric_transferred_source_ on entry and exit, and the base EvalOneMetric overwrites it for any other score
+    // it transfers, so the mark below holds only while gathered_train_score_ is these scores.
+    const bool gathered = this->metric_transfer_scope_active_ && this->metric_transferred_source_ == score &&
+                          this->metric_transferred_size_ == total_size && gathered_train_score_.size() == total_size;
+    if (!gathered) {
+      gathered_train_score_.assign(total_size, 0.0);
+      std::vector<double>& tmp_score = gathered_train_score_;
+      nccl_topology_->RunPerDevice<NCCLGBDTComponent, void>(nccl_gbdt_components_, [this, &tmp_score] (NCCLGBDTComponent* thread_data) {
+        const data_size_t data_start = thread_data->data_start_index();
+        const data_size_t num_data_in_gpu = thread_data->num_data_in_gpu();
+        for (int class_id = 0; class_id < this->num_class_; ++class_id) {
+          CopyFromCUDADeviceToHost<double>(tmp_score.data() + NCCLClassMajorOffset(class_id, this->num_data_, data_start),
+            thread_data->train_score_updater()->score() + NCCLClassMajorOffset(class_id, num_data_in_gpu),
+            static_cast<size_t>(num_data_in_gpu), __FILE__, __LINE__);
+        }
+      });
+      gathered_train_score_on_device_ = false;
+      this->metric_transferred_source_ = score;
+      this->metric_transferred_size_ = total_size;
+    }
 
     if (metric->IsCUDAMetric()) {
       // a CUDA metric reads device memory: hand it a device copy of the gathered score (GBDT::EvalOneMetric's
@@ -260,14 +272,17 @@ std::vector<double> NCCLGBDT<GBDT_T>::EvalOneMetric(const Metric* metric, const 
       // DispatchPerDevice. That is the device the metric was initialized on only when gpu_device_id is one of the
       // ranks' devices; with a gpu_device_id_list that does not contain it (or gpu_device_id -1 with a list), the
       // metric's own buffers may live on another device than this copy.
-      if (tmp_score.size() > this->cuda_score_.Size()) {
-        this->cuda_score_.Resize(tmp_score.size());
+      if (!gathered_train_score_on_device_) {
+        if (total_size > this->cuda_score_.Size()) {
+          this->cuda_score_.Resize(total_size);
+        }
+        CopyFromHostToCUDADevice<double>(this->cuda_score_.RawData(), gathered_train_score_.data(), total_size,
+                                         __FILE__, __LINE__);
+        gathered_train_score_on_device_ = true;
       }
-      CopyFromHostToCUDADevice<double>(this->cuda_score_.RawData(), tmp_score.data(), tmp_score.size(), __FILE__,
-                                       __LINE__);
       return metric->Eval(this->cuda_score_.RawData(), this->objective_function_);
     }
-    return metric->Eval(tmp_score.data(), this->objective_function_);
+    return metric->Eval(gathered_train_score_.data(), this->objective_function_);
   } else {
     return GBDT_T::EvalOneMetric(metric, score, num_data);
   }
