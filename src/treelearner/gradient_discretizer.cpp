@@ -6,18 +6,21 @@
  */
 
 #include "gradient_discretizer.hpp"
+
 #include <Falcata/network.h>
 
 #include <algorithm>
 #include <string>
 #include <vector>
 
+#include "quantized_index.hpp"
+
 namespace Falcata {
 
 void GradientDiscretizer::Init(
   const data_size_t num_data, const int num_leaves,
   const int num_features, const Dataset* train_data) {
-  discretized_gradients_and_hessians_vector_.resize(num_data * 2);
+  discretized_gradients_and_hessians_vector_.resize(QuantizedPairOffset(num_data));
   gradient_random_values_.resize(num_data);
   hessian_random_values_.resize(num_data);
   random_values_use_start_eng_ = std::mt19937(random_seed_);
@@ -63,7 +66,7 @@ void GradientDiscretizer::Init(
     change_hist_bits_buffer_[feature_index].resize((bin_mapper->num_bin() - static_cast<int>(bin_mapper->GetMostFreqBin() == 0)) * 2);
   }
 
-  ordered_int_gradients_and_hessians_.resize(2 * num_data);
+  ordered_int_gradients_and_hessians_.resize(QuantizedPairOffset(num_data));
 }
 
 void GradientDiscretizer::DiscretizeGradients(
@@ -111,8 +114,8 @@ void GradientDiscretizer::DiscretizeGradients(
   } else {
     hessian_scale_ = max_hessian_abs_ / static_cast<double>(num_grad_quant_bins_);
   }
-  inverse_gradient_scale_ = 1.0f / gradient_scale_;
-  inverse_hessian_scale_ = 1.0f / hessian_scale_;
+  inverse_gradient_scale_ = gradient_scale_ == 0.0 ? 0.0 : 1.0 / gradient_scale_;
+  inverse_hessian_scale_ = hessian_scale_ == 0.0 ? 0.0 : 1.0 / hessian_scale_;
 
   const int random_values_use_start = random_values_use_start_dist_(random_values_use_start_eng_);
   int8_t* discretized_int8 = discretized_gradients_and_hessians_vector_.data();
@@ -121,21 +124,21 @@ void GradientDiscretizer::DiscretizeGradients(
       #pragma omp parallel for schedule(static) num_threads(num_threads)
       for (data_size_t i = 0; i < num_data; ++i) {
         const double gradient = input_gradients[i];
-        const data_size_t random_value_pos = (i + random_values_use_start) % num_data;
-        discretized_int8[2 * i + 1] = gradient >= 0.0f ?
+        const data_size_t random_value_pos = QuantizedRandomIndex(i, random_values_use_start, num_data);
+        discretized_int8[QuantizedPairOffset(i) + 1] = gradient >= 0.0f ?
           static_cast<int8_t>(gradient * inverse_gradient_scale_ + gradient_random_values_[random_value_pos]) :
           static_cast<int8_t>(gradient * inverse_gradient_scale_ - gradient_random_values_[random_value_pos]);
-        discretized_int8[2 * i] = static_cast<int8_t>(1);
+        discretized_int8[QuantizedPairOffset(i)] = static_cast<int8_t>(1);
       }
     } else {
       #pragma omp parallel for schedule(static) num_threads(num_threads)
       for (data_size_t i = 0; i < num_data; ++i) {
         const double gradient = input_gradients[i];
-        const data_size_t random_value_pos = (i + random_values_use_start) % num_data;
-        discretized_int8[2 * i + 1] = gradient >= 0.0f ?
+        const data_size_t random_value_pos = QuantizedRandomIndex(i, random_values_use_start, num_data);
+        discretized_int8[QuantizedPairOffset(i) + 1] = gradient >= 0.0f ?
           static_cast<int8_t>(gradient * inverse_gradient_scale_ + gradient_random_values_[random_value_pos]) :
           static_cast<int8_t>(gradient * inverse_gradient_scale_ - gradient_random_values_[random_value_pos]);
-        discretized_int8[2 * i] = static_cast<int8_t>(input_hessians[i] * inverse_hessian_scale_ + hessian_random_values_[random_value_pos]);
+        discretized_int8[QuantizedPairOffset(i)] = static_cast<int8_t>(input_hessians[i] * inverse_hessian_scale_ + hessian_random_values_[random_value_pos]);
       }
     }
   } else {
@@ -143,19 +146,19 @@ void GradientDiscretizer::DiscretizeGradients(
       #pragma omp parallel for schedule(static) num_threads(num_threads)
       for (data_size_t i = 0; i < num_data; ++i) {
         const double gradient = input_gradients[i];
-        discretized_int8[2 * i + 1] = gradient >= 0.0f ?
+        discretized_int8[QuantizedPairOffset(i) + 1] = gradient >= 0.0f ?
           static_cast<int8_t>(gradient * inverse_gradient_scale_ + 0.5) :
           static_cast<int8_t>(gradient * inverse_gradient_scale_ - 0.5);
-        discretized_int8[2 * i] = static_cast<int8_t>(1);
+        discretized_int8[QuantizedPairOffset(i)] = static_cast<int8_t>(1);
       }
     } else {
       #pragma omp parallel for schedule(static) num_threads(num_threads)
       for (data_size_t i = 0; i < num_data; ++i) {
         const double gradient = input_gradients[i];
-        discretized_int8[2 * i + 1] = gradient >= 0.0f ?
+        discretized_int8[QuantizedPairOffset(i) + 1] = gradient >= 0.0f ?
           static_cast<int8_t>(gradient * inverse_gradient_scale_ + 0.5) :
           static_cast<int8_t>(gradient * inverse_gradient_scale_ - 0.5);
-        discretized_int8[2 * i] = static_cast<int8_t>(input_hessians[i] * inverse_hessian_scale_ + 0.5);
+        discretized_int8[QuantizedPairOffset(i)] = static_cast<int8_t>(input_hessians[i] * inverse_hessian_scale_ + 0.5);
       }
     }
   }

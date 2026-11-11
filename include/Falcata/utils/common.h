@@ -14,6 +14,7 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -514,7 +515,8 @@ inline std::string Join<int8_t>(const std::vector<int8_t>& strs, const char* del
 
 template<typename T>
 inline static std::string Join(const std::vector<T>& strs, size_t start, size_t end, const char* delimiter, const bool force_C_locale = false) {
-  if (end - start <= 0) {
+  // size_t: end - start would wrap for end < start, so compare directly
+  if (end <= start || strs.empty()) {
     return std::string("");
   }
   start = std::min(start, static_cast<size_t>(strs.size()) - 1);
@@ -538,6 +540,9 @@ inline static std::string Join(const std::vector<T>& strs, size_t start, size_t 
  */
 inline static void Softmax(std::vector<double>* p_rec) {
   std::vector<double> &rec = *p_rec;
+  if (rec.empty()) {
+    return;
+  }
   double wmax = rec[0];
   for (size_t i = 1; i < rec.size(); ++i) {
     wmax = std::max(rec[i], wmax);
@@ -553,6 +558,9 @@ inline static void Softmax(std::vector<double>* p_rec) {
 }
 
 inline static void Softmax(const double* input, double* output, int len) {
+  if (len <= 0) {
+    return;
+  }
   double wmax = input[0];
   for (int i = 1; i < len; ++i) {
     wmax = std::max(input[i], wmax);
@@ -755,9 +763,23 @@ inline static void CheckElementsIntervalClosed(const T *y, T ymin, T ymax, int n
 }
 
 // One-pass scan over array w with nw elements: find min, max and sum of elements;
-// this is useful for checking weight requirements.
+// this is useful for checking weight requirements. With no elements min, max
+// and sum are all 0 (every output is written, so callers never read an
+// uninitialized value).
 template <typename T1, typename T2>
 inline static void ObtainMinMaxSum(const T1 *w, int nw, T1 *mi, T1 *ma, T2 *su) {
+  if (nw <= 0) {
+    if (mi != nullptr) {
+      *mi = static_cast<T1>(0);
+    }
+    if (ma != nullptr) {
+      *ma = static_cast<T1>(0);
+    }
+    if (su != nullptr) {
+      *su = static_cast<T2>(0);
+    }
+    return;
+  }
   T1 minw;
   T1 maxw;
   T1 sumw;
@@ -799,21 +821,21 @@ inline static void ObtainMinMaxSum(const T1 *w, int nw, T1 *mi, T1 *ma, T2 *su) 
   }
 }
 
-inline static std::vector<uint32_t> EmptyBitset(int n) {
-  int size = n / 32;
-  if (n % 32 != 0) ++size;
-  return std::vector<uint32_t>(size);
+// Bit counts and positions are size_t-capable: the CEGB lazy-feature bitset
+// holds num_features * num_data bits, which can exceed INT_MAX.
+inline static std::vector<uint32_t> EmptyBitset(size_t n) {
+  return std::vector<uint32_t>(n / 32 + (n % 32 != 0 ? 1 : 0));
 }
 
 template<typename T>
 inline static void InsertBitset(std::vector<uint32_t>* vec, const T val) {
   auto& ref_v = *vec;
-  int i1 = val / 32;
-  int i2 = val % 32;
-  if (static_cast<int>(vec->size()) < i1 + 1) {
+  const size_t i1 = static_cast<size_t>(val / 32);
+  const int i2 = static_cast<int>(val % 32);
+  if (vec->size() < i1 + 1) {
     vec->resize(i1 + 1, 0);
   }
-  ref_v[i1] |= (1 << i2);
+  ref_v[i1] |= (1u << i2);
 }
 
 template<typename T>
@@ -830,13 +852,20 @@ inline static std::vector<uint32_t> ConstructBitset(const T* vals, int n) {
   return ret;
 }
 
+// n is the number of 32-bit words in bits; a negative pos is absent.
 template<typename T>
-inline static bool FindInBitset(const uint32_t* bits, int n, T pos) {
-  int i1 = pos / 32;
+inline static bool FindInBitset(const uint32_t* bits, size_t n, T pos) {
+  if constexpr (std::is_signed<T>::value) {
+    // -k / 32 is 0 for small k and -k % 32 a negative shift: test first
+    if (pos < 0) {
+      return false;
+    }
+  }
+  const size_t i1 = static_cast<size_t>(pos / 32);
   if (i1 >= n) {
     return false;
   }
-  int i2 = pos % 32;
+  const int i2 = static_cast<int>(pos % 32);
   return (bits[i1] >> i2) & 1;
 }
 
@@ -1142,9 +1171,16 @@ inline static std::vector<T> StringToArrayFast(const std::string& str, int n) {
     return std::vector<T>();
   }
   auto p_str = str.c_str();
+  auto p_end = p_str + str.size();
   __StringToTHelperFast<T, std::is_floating_point<T>::value> helper;
   std::vector<T> ret(n);
   for (int i = 0; i < n; ++i) {
+    // like Common::StringToArrayFast: a short string must not silently
+    // yield 0 (integers) or NaN (floats) for the missing values
+    p_str = Common::SkipSpaceAndTab(p_str);
+    if (p_str >= p_end) {
+      Log::Fatal("Malformed model file: not enough values in string for array of size %d", n);
+    }
     p_str = helper(p_str, &ret[i]);
   }
   return ret;

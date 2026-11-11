@@ -29,6 +29,7 @@ def gpu_state():
         capture_output=True,
         text=True,
         check=True,
+        timeout=10,
     ).stdout.strip()
     free_mb, util = (int(x.strip()) for x in out.split("\n")[0].split(","))
     return free_mb, util
@@ -48,7 +49,7 @@ def main():
     while True:
         try:
             free_mb, util = gpu_state()
-        except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, ValueError) as e:
             print(f"gpu_guard: cannot query nvidia-smi ({e})", flush=True)
             sys.exit(2)
         ok = free_mb >= args.require_free_mb and util <= args.max_util

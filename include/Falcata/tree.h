@@ -454,7 +454,8 @@ class Tree {
 
   inline int CategoricalDecision(double fval, int node) const {
     int int_fval;
-    if (std::isnan(fval)) {
+    if (!(fval >= static_cast<double>(std::numeric_limits<int>::min()) &&
+          fval <= static_cast<double>(std::numeric_limits<int>::max()))) {
       return right_child_[node];
     } else {
       int_fval = static_cast<int>(fval);
