@@ -1168,11 +1168,11 @@ class Dataset {
   /*! \brief Mapper from real feature index to used index*/
   std::vector<int> used_feature_map_;
   /*! \brief Number of used features*/
-  int num_features_;
+  int num_features_ = 0;
   /*! \brief Number of total features*/
-  int num_total_features_;
+  int num_total_features_ = 0;
   /*! \brief Number of total data*/
-  data_size_t num_data_;
+  data_size_t num_data_ = 0;
   /*! \brief Store some label level data*/
   Metadata metadata_;
   /*! \brief index of label column */
@@ -1184,31 +1184,31 @@ class Dataset {
   static const char* serialized_reference_version;
   static const char* binary_file_token;
   static const char* binary_serialized_reference_token;
-  int num_groups_;
+  int num_groups_ = 0;
   std::vector<int> real_feature_idx_;
   std::vector<int> feature2group_;
   std::vector<int> feature2subfeature_;
   std::vector<uint64_t> group_bin_boundaries_;
   std::vector<int> group_feature_start_;
   std::vector<int> group_feature_cnt_;
-  bool is_finish_load_;
-  int max_bin_;
+  bool is_finish_load_ = false;
+  int max_bin_ = 0;
   std::vector<int32_t> max_bin_by_feature_;
   std::vector<std::vector<double>> forced_bin_bounds_;
-  int bin_construct_sample_cnt_;
-  int min_data_in_bin_;
-  bool use_missing_;
-  bool zero_as_missing_;
+  int bin_construct_sample_cnt_ = 0;
+  int min_data_in_bin_ = 0;
+  bool use_missing_ = false;
+  bool zero_as_missing_ = false;
   std::vector<int> feature_need_push_zeros_;
   std::vector<std::vector<float>> raw_data_;
-  bool wait_for_manual_finish_;
+  bool wait_for_manual_finish_ = false;
   int omp_max_threads_ = -1;
-  bool has_raw_;
+  bool has_raw_ = false;
   /*! map feature (inner index) to its index in the list of numeric (non-categorical) features */
   std::vector<int> numeric_feature_map_;
-  int num_numeric_features_;
+  int num_numeric_features_ = 0;
   std::string device_type_;
-  int gpu_device_id_;
+  int gpu_device_id_ = -1;
   /*! \brief dense_rowdata's size rule set by SetDenseRowDataFits (0 no / 1 yes), or -1: decide from this Dataset */
   int dense_rowdata_fits_ = -1;
   /*! \brief mutex for threading safe call */
