@@ -3,6 +3,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
+// POSIX sockets, Linux only (the tests also rely on Linux socket behaviour)
+#if defined(__linux__)
+
 #include <gtest/gtest.h>
 
 #include <Falcata/config.h>
@@ -137,3 +140,5 @@ TEST(LinkersSendRecv, BadHandshakeFailsTheSetup) {
   EXPECT_EQ(setup.get(), "threw");
   close(fd);
 }
+
+#endif  // defined(__linux__)
