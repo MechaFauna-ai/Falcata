@@ -42,7 +42,8 @@ def test_unrelated_reset_still_allowed_cpu():
 @pytest.mark.parametrize(
     ("initial", "reset"),
     [
-        ({"quant_mode": "none"}, {"use_quantized_grad": True}),
+        ({"quant_mode": "none"}, {"quant_mode": "stochastic"}),
+        ({}, {"quant_mode": "auto", "use_quantized_grad": True}),
         ({"quant_mode": "stochastic"}, {"quant_mode": "none"}),
         ({"quant_mode": "stochastic"}, {"quant_mode": "fixedpoint"}),
     ],
