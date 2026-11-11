@@ -631,7 +631,13 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
     std::vector<size_t> tree_sizes = CommonC::StringToArray<size_t>(key_vals["tree_sizes"].c_str(), ' ');
     std::vector<size_t> tree_boundaries(tree_sizes.size() + 1, 0);
     int num_trees = static_cast<int>(tree_sizes.size());
+    const size_t remaining = static_cast<size_t>(end - p);
     for (int i = 0; i < num_trees; ++i) {
+      // Check before adding: corrupt sizes can overflow size_t as well as
+      // advance the parallel parser beyond the supplied model buffer.
+      if (tree_sizes[i] == 0 || tree_sizes[i] > remaining - tree_boundaries[i]) {
+        Log::Fatal("Model format error: invalid tree_sizes entry at tree %d", i);
+      }
       tree_boundaries[i + 1] = tree_boundaries[i] + tree_sizes[i];
       models_.emplace_back(nullptr);
     }
@@ -645,7 +651,7 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
     {
       const size_t consumed = tree_boundaries[num_trees];
       const size_t remaining = static_cast<size_t>(end - p);
-      if (consumed + 5 <= remaining && std::strncmp(p + consumed, "Tree=", 5) == 0) {
+      if (remaining - consumed >= 5 && std::strncmp(p + consumed, "Tree=", 5) == 0) {
         Log::Fatal(
             "Model format error: tree_sizes lists %d tree(s) but the model "
             "text holds more -- loading it would silently drop the rest",
