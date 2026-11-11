@@ -332,7 +332,7 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
     // fails inside allocators whose destructors then fail again during
     // unwinding, and the process terminates instead of raising.
     if (const char* missing_driver = CudaDriverShim::MissingDriverMessage()) {
-      Log::Fatal(missing_driver);
+      Log::Fatal("%s", missing_driver);
     }
 #endif
     FLC_config_::current_device = lgbm_device_cuda;
