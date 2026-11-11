@@ -1077,6 +1077,7 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_device_level_budget.cu
         tests/cpp_tests/test_cuda_gradient_discretizer.cu
         tests/cpp_tests/test_cuda_selective_r3.cu
+        tests/cpp_tests/test_cuda_multiclass_convert.cu
         tests/cpp_tests/test_cuda_nonquant_fixed.cu
         tests/cpp_tests/test_cuda_vector_capacity.cu
         tests/cpp_tests/test_cuda_prefix_sum_exclusive.cu
