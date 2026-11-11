@@ -1388,10 +1388,14 @@ void Dataset::CopySubrowHostPart(const Dataset* fullset, const data_size_t* used
   num_numeric_features_ = fullset->num_numeric_features_;
   if (has_raw_) {
     ResizeRaw(num_used_indices);
+    // feature-major: each thread writes one contiguous column and gathers
+    // from the matching (sorted-index) source column
+    for (int j = 0; j < num_numeric_features_; ++j) {
+      float* dst = raw_data_[j].data();
+      const float* src = fullset->raw_data_[j].data();
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
-    for (int i = 0; i < num_used_indices; ++i) {
-      for (int j = 0; j < num_numeric_features_; ++j) {
-        raw_data_[j][i] = fullset->raw_data_[j][used_indices[i]];
+      for (int i = 0; i < num_used_indices; ++i) {
+        dst[i] = src[used_indices[i]];
       }
     }
   }
@@ -1641,12 +1645,19 @@ void Dataset::SaveBinaryFile(const char* bin_filename) {
 
     // write raw data; use row-major order so we can read row-by-row
     if (has_raw_) {
+      // one Write per row instead of one per value (same bytes, same order)
+      std::vector<float> row;
+      row.reserve(num_features_);
       for (int i = 0; i < num_data_; ++i) {
+        row.clear();
         for (int j = 0; j < num_features_; ++j) {
           int feat_ind = numeric_feature_map_[j];
           if (feat_ind > -1) {
-            writer->Write(&raw_data_[feat_ind][i], sizeof(float));
+            row.push_back(raw_data_[feat_ind][i]);
           }
+        }
+        if (!row.empty()) {
+          writer->Write(row.data(), sizeof(float) * row.size());
         }
       }
     }
@@ -1771,6 +1782,9 @@ void Dataset::DumpTextFile(const char* text_filename) {
 #else
   file = fopen(text_filename, "wt");
 #endif
+  if (file == NULL) {
+    Log::Fatal("Could not open %s to dump the dataset", text_filename);
+  }
   fprintf(file, "num_features: %d\n", num_features_);
   fprintf(file, "num_total_features: %d\n", num_total_features_);
   fprintf(file, "num_groups: %d\n", num_groups_);
