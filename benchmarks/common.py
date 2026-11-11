@@ -148,7 +148,7 @@ ALL_LIBRARIES = LIBRARIES + [x for x in dict.fromkeys(sum(LIBRARIES_BY_REGIME.va
 
 def libraries_for(regime: str):
     """Libraries benchmarked in ``regime``."""
-    return LIBRARIES_BY_REGIME.get(regime, LIBRARIES)
+    return list(LIBRARIES_BY_REGIME.get(regime, LIBRARIES))
 
 
 def library_runs_cell(library: str, dataset: str, regime: str) -> bool:
