@@ -133,7 +133,8 @@ def fail_label(status, error):
 
 def load_sweep():
     rows = [json.loads(line) for line in open(RUNS)]
-    med = {}  # (lib, ds, reg) -> dict of medians over timed ok runs
+    # Timing/memory use medians over timed OK runs; quality uses the first run.
+    med = {}  # (lib, ds, reg) -> aggregated run
     fail = {}  # (lib, ds, reg) -> honest short failure label
     bykey = {}
     for r in rows:
