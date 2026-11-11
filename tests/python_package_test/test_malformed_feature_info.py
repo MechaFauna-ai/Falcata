@@ -8,7 +8,7 @@ import pytest
 import falcata as flc
 
 
-@pytest.mark.parametrize("info", ["[0", "[]", "[0:1:2]", ":"])
+@pytest.mark.parametrize("info", ["[0", "[]", "[0:1:2]", ":", "[:1]", "[0:1"])
 def test_dump_malformed_feature_info(info):
     x = np.arange(40.0).reshape(-1, 1)
     model = flc.train(
