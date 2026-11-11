@@ -1,6 +1,7 @@
 """GPU projections preserve the CPU contract across layouts and special values."""
 
 import os
+import warnings
 
 import numpy as np
 import pytest
@@ -74,3 +75,24 @@ def test_cupy_rejects_inconsistent_projection_metadata(invalid):
         pool.center_ = pool.center_[:-1]
     with pytest.raises(ValueError, match="metadata"):
         pool.transform(cp.asarray(host))
+
+
+@pytest.mark.parametrize("sample_rows", [100_000, 64])
+def test_cupy_fit_draws_the_numpy_pool(sample_rows):
+    # fit() on a CuPy matrix used to call cupy.nanpercentile, which CuPy does not have (AttributeError)
+    rng = np.random.default_rng(11)
+    host = rng.normal(size=(300, 6)).astype(np.float32)
+    host[rng.random(host.shape) < 0.2] = np.nan
+    host[:, 3] = 2.5  # constant: iqr 0, scale 1
+    host[:, 5] = np.nan  # all missing: center 0
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        expected = flc.ObliquePool(num_projections=9, seed=5, sample_rows=sample_rows).fit(host)
+        actual = flc.ObliquePool(num_projections=9, seed=5, sample_rows=sample_rows).fit(cp.asarray(host))
+    np.testing.assert_array_equal(actual.center_, expected.center_)
+    np.testing.assert_array_equal(actual.scale_, expected.scale_)
+    for got, want in zip(actual.feature_idx_ + actual.weights_, expected.feature_idx_ + expected.weights_, strict=True):
+        np.testing.assert_array_equal(got, want)
+    np.testing.assert_allclose(
+        cp.asnumpy(actual.transform(cp.asarray(host))), expected.transform(host), rtol=2e-5, atol=2e-6, equal_nan=True
+    )
