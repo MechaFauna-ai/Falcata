@@ -44,7 +44,7 @@ int main() {
   std::vector<DatasetHandle> datasets;
   {
     BufferProbe learner(&config);
-    for (int rows : {2048, 8192, 1024, 16384, 2048}) {
+    for (int rows : {2048, 8192, 1024, 16384, 300000, 2048}) {
       std::vector<double> features(rows * 8);
       for (size_t i = 0; i < features.size(); ++i) {
         features[i] = static_cast<double>((i * 17 + i / 8) % 101) / 101;
