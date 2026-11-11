@@ -139,7 +139,7 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
       static_cast<size_t>(num_data) * 4 * static_cast<size_t>(num_planes_));
     plane_grad_scale_.Resize(num_planes_);
     plane_hess_scale_.Resize(1);
-    num_reduce_blocks_ = (num_data + CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE - 1) / CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE;
+    num_reduce_blocks_ = CUDABlockCount(num_data, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE);
     grad_min_block_buffer_.Resize(num_reduce_blocks_);
     grad_max_block_buffer_.Resize(num_reduce_blocks_);
     hess_min_block_buffer_.Resize(num_reduce_blocks_);

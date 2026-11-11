@@ -4,12 +4,21 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <gtest/gtest.h>
+#include <Falcata/bin.h>
+#include <Falcata/meta.h>
 #include <Falcata/utils/common.h>
+#include <Falcata/utils/json11.h>
+#include <Falcata/utils/pipeline_reader.h>
+#include <Falcata/utils/text_reader.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <limits>
+#include <string>
 #include <vector>
 
 
@@ -46,6 +55,26 @@ class AtofPreciseTest : public testing::Test {
   }
 };
 
+// CHECK used to expand to a bare `if (...) Fatal(...);`, so with the
+// caller's semicolon `if (a) CHECK(b); else ...` did not compile (or, without
+// that semicolon, bound the else to the macro's if). It is a single
+// statement now.
+namespace Falcata {
+static int CheckInIfElse(bool take_if, bool check_ok) {
+  if (take_if)
+    CHECK(check_ok);
+  else
+    return 2;
+  return 1;
+}
+}  // namespace Falcata
+
+TEST(CheckMacro, IsASingleStatement) {
+  EXPECT_EQ(Falcata::CheckInIfElse(true, true), 1);
+  EXPECT_EQ(Falcata::CheckInIfElse(false, false), 2);
+  EXPECT_THROW(Falcata::CheckInIfElse(true, false), std::exception);
+}
+
 TEST_F(AtofPreciseTest, Basic) {
   AtofTestCase test_cases[] = {
       { "0", 0.0 },
@@ -68,6 +97,25 @@ TEST_F(AtofPreciseTest, Basic) {
   for (auto const& test : test_cases) {
     TestAtofPrecise(test.data, test.expected);
   }
+}
+
+// Join(strs, start, end) tested `end - start <= 0` on size_t, which wraps
+// for end < start, so an empty range still joined one element.
+TEST(CommonJoin, EmptyOrInvertedRangeIsEmpty) {
+  const std::vector<int> v = {1, 2, 3};
+  EXPECT_EQ(Falcata::Common::Join(v, 1, 3, ","), "2,3");
+  EXPECT_EQ(Falcata::Common::Join(v, 2, 2, ","), "");
+  EXPECT_EQ(Falcata::Common::Join(v, 2, 1, ","), "");
+  EXPECT_EQ(Falcata::Common::Join(std::vector<int>(), 0, 1, ","), "");
+}
+
+// SIZE_ALIGNED was not parenthesized as a whole, so inside an expression
+// the trailing "* kAlignedSize" bound to the surrounding operator.
+TEST(SizeAligned, IsASingleOperand) {
+  using Falcata::kAlignedSize;
+  EXPECT_EQ(SIZE_ALIGNED(1), 32);
+  EXPECT_EQ(64 / SIZE_ALIGNED(1), 2);
+  EXPECT_EQ(SIZE_ALIGNED(33) % 32, 0);
 }
 
 TEST_F(AtofPreciseTest, CornerCases) {
@@ -107,6 +155,22 @@ TEST_F(AtofPreciseTest, CornerCases) {
   }
 }
 
+// The bitset helpers computed word indices in int, so a size_t position
+// past 2^36 wrapped onto a low word (the CEGB lazy-feature bitset indexes
+// num_data * feature + row, which can exceed INT_MAX on large data).
+TEST(Bitset, SizeTPositions) {
+  std::vector<uint32_t> bits = Falcata::Common::EmptyBitset(static_cast<size_t>(64));
+  ASSERT_EQ(bits.size(), 2u);
+  Falcata::Common::InsertBitset(&bits, static_cast<size_t>(37));
+  EXPECT_TRUE(Falcata::Common::FindInBitset(bits.data(), bits.size(), static_cast<size_t>(37)));
+  EXPECT_FALSE(Falcata::Common::FindInBitset(bits.data(), bits.size(), static_cast<size_t>(36)));
+  // (2^37 + 37) / 32 == 2^32 + 1 used to be truncated to int word 1
+  const size_t far = (static_cast<size_t>(1) << 37) + 37;
+  EXPECT_FALSE(Falcata::Common::FindInBitset(bits.data(), bits.size(), far));
+  // negative positions (categorical callers pass int) are absent
+  EXPECT_FALSE(Falcata::Common::FindInBitset(bits.data(), bits.size(), -1));
+}
+
 TEST_F(AtofPreciseTest, ErrorInput) {
   double got = 0;
   ASSERT_THROW(Falcata::Common::AtofPrecise("x1", &got),  std::runtime_error);
@@ -138,6 +202,16 @@ TEST_F(AtofPreciseTest, NaN) {
   }
 }
 
+// CommonC::StringToArrayFast (used to parse tree arrays from model text)
+// had no end-of-string check: a short string silently produced 0 for the
+// missing integers and NaN for the missing floats.
+TEST(CommonCStringToArrayFast, ShortStringFails) {
+  EXPECT_EQ(Falcata::CommonC::StringToArrayFast<int>("1 2 3", 3), (std::vector<int>{1, 2, 3}));
+  EXPECT_THROW(Falcata::CommonC::StringToArrayFast<int>("1 2", 3), std::exception);
+  EXPECT_THROW(Falcata::CommonC::StringToArrayFast<double>("0.5 ", 2), std::exception);
+  EXPECT_THROW(Falcata::CommonC::StringToArrayFast<int>("", 1), std::exception);
+}
+
 TEST_F(AtofPreciseTest, Inf) {
   AtofTestCase test_cases[] = {
       { "inf", std::numeric_limits<double>::infinity() },
@@ -156,6 +230,34 @@ TEST_F(AtofPreciseTest, Inf) {
     EXPECT_EQ(memcmp(&got, &test.expected, sizeof(test.expected)), 0)
               << "parsed infinite is not the same for every bit: " << test.data;
   }
+}
+
+// Inputs that end inside a \u escape or a literal used to be read 4 (or
+// len("false")) bytes past the end of the buffer before the length check;
+// under AddressSanitizer that was a heap-buffer-overflow.
+TEST(Json11, TruncatedInputFailsWithoutOverread) {
+  using json11_internal_lightgbm::Json;
+  // padded past the small-string buffer, so each text sits in an exact-size
+  // heap block and an overread is visible to sanitizers
+  const std::string pad(32, ' ');
+  for (const char* text : {"\"\\u12", "\"\\u", "t", "fa", "nul"}) {
+    const std::string padded = pad + text;
+    const std::string in(padded.data(), padded.size());
+    std::string err;
+    Json::parse(in, &err);
+    EXPECT_FALSE(err.empty()) << "accepted truncated input: " << text;
+  }
+}
+
+// int_value() of a number outside int's range was an undefined
+// double-to-int cast (x86 gives INT_MIN for both signs); it saturates now.
+TEST(Json11, IntValueSaturates) {
+  using json11_internal_lightgbm::Json;
+  std::string err;
+  EXPECT_EQ(Json::parse("1e30", &err).int_value(), std::numeric_limits<int>::max());
+  EXPECT_EQ(Json::parse("-1e30", &err).int_value(), std::numeric_limits<int>::min());
+  EXPECT_EQ(Json::parse("-7.9", &err).int_value(), -7);
+  EXPECT_EQ(Json(std::nan("")).int_value(), 0);
 }
 
 TEST(SortForPair, SortsOnlyTheSuffixFromStart) {
@@ -195,5 +297,122 @@ TEST(RoundInt, RoundsHalfAwayFromZeroAndSaturates) {
   // non-negative values round exactly as before: static_cast<int>(x + 0.5f)
   for (double x = 0.0; x < 1000.0; x += 0.0625) {
     EXPECT_EQ(RoundInt(x), static_cast<int>(x + 0.5f)) << x;
+  }
+}
+
+// Softmax read rec[0] / input[0] and ObtainMinMaxSum read w[0] and w[1] (the
+// even-count branch) without checking for an empty input.
+TEST(Softmax, EmptyInputIsANoOp) {
+  std::vector<double> empty;
+  Falcata::Common::Softmax(&empty);
+  EXPECT_TRUE(empty.empty());
+  Falcata::Common::Softmax(empty.data(), empty.data(), 0);
+
+  std::vector<double> rec = {1.0, 2.0, 3.0};
+  Falcata::Common::Softmax(&rec);
+  double out[3];
+  const double in[3] = {1.0, 2.0, 3.0};
+  Falcata::Common::Softmax(in, out, 3);
+  double sum = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_DOUBLE_EQ(rec[i], out[i]);
+    sum += rec[i];
+  }
+  EXPECT_DOUBLE_EQ(sum, 1.0);
+  EXPECT_LT(rec[0], rec[1]);
+}
+
+TEST(ObtainMinMaxSum, EmptyInputGivesZeros) {
+  std::vector<float> empty;
+  float mi = -1.0f, ma = -2.0f;
+  double su = -3.0;
+  Falcata::Common::ObtainMinMaxSum(empty.data(), 0, &mi, &ma, &su);
+  EXPECT_EQ(mi, 0.0f);
+  EXPECT_EQ(ma, 0.0f);
+  EXPECT_EQ(su, 0.0);
+
+  for (int n = 1; n <= 5; ++n) {
+    std::vector<float> w;
+    for (int i = 0; i < n; ++i) {
+      w.push_back(static_cast<float>((i * 7) % 5) - 1.0f);
+    }
+    Falcata::Common::ObtainMinMaxSum(w.data(), n, &mi, &ma, &su);
+    float emi = w[0], ema = w[0];
+    double esu = 0.0;
+    for (float v : w) {
+      emi = std::min(emi, v);
+      ema = std::max(ema, v);
+      esu += v;
+    }
+    EXPECT_EQ(mi, emi) << n;
+    EXPECT_EQ(ma, ema) << n;
+    EXPECT_EQ(su, esu) << n;
+  }
+}
+
+// TextReader's end-of-line skip read buffer_process[i] before checking
+// i < read_cnt, so a line terminator in the last byte of a full 16 MiB block
+// read one byte past the block (visible under AddressSanitizer).
+TEST(TextReader, LineEndAtBlockEndDoesNotOverread) {
+  const std::string path = ::testing::TempDir() + "falcata_text_reader_block_end.txt";
+  const size_t block = 16 * 1024 * 1024;
+  const size_t line_len = 1024;  // 1023 'x' + '\n'; block / line_len lines fill the block exactly
+  {
+    std::ofstream out(path, std::ios::binary);
+    const std::string line = std::string(line_len - 1, 'x') + "\n";
+    for (size_t i = 0; i < block / line_len; ++i) out << line;
+    out << "tail\n";
+  }
+  Falcata::TextReader<int> reader(path.c_str(), false);
+  std::vector<size_t> lengths;
+  const int n = reader.ReadAllAndProcess([&lengths](int, const char*, size_t len) { lengths.push_back(len); });
+  std::remove(path.c_str());
+  ASSERT_EQ(n, static_cast<int>(block / line_len + 1));
+  EXPECT_EQ(lengths.front(), line_len - 1);
+  EXPECT_EQ(lengths.back(), 4u);
+}
+
+// PipelineReader::Read read skip_bytes bytes into its 16 MiB scratch buffer in
+// one call, so skipping more than a block wrote past it (visible under
+// AddressSanitizer).
+TEST(PipelineReader, SkipsMoreThanOneBlock) {
+  const std::string path = ::testing::TempDir() + "falcata_pipeline_reader_skip.bin";
+  const size_t skip = 20 * 1024 * 1024;
+  {
+    std::ofstream out(path, std::ios::binary);
+    const std::string zeros(1024 * 1024, '\0');
+    for (size_t i = 0; i < skip / zeros.size(); ++i) out << zeros;
+    out << "hello";
+  }
+  std::string seen;
+  const size_t cnt = Falcata::PipelineReader::Read(path.c_str(), static_cast<int>(skip),
+                                                   [&seen](const char* buf, size_t len) {
+                                                     seen.append(buf, len);
+                                                     return len;
+                                                   });
+  std::remove(path.c_str());
+  EXPECT_EQ(cnt, 5u);
+  EXPECT_EQ(seen, "hello");
+}
+
+// Categorical ValueToBin used to cast the double to int before any range
+// check, which is undefined for +-inf and values outside int's range (UBSan:
+// "1e+20 is outside the range of representable values of type 'int'").
+// Values must still truncate as before: (-1, 0) is category 0, <= -1 and
+// out-of-range values go to bin 0.
+TEST(BinMapper, CategoricalValueToBinOutOfRange) {
+  std::vector<double> values;
+  for (int i = 0; i < 300; ++i) {
+    values.push_back(i % 3);
+  }
+  Falcata::BinMapper mapper;
+  mapper.FindBin(values.data(), static_cast<int>(values.size()), values.size(), 255, 3, 1, false,
+                 Falcata::BinType::CategoricalBin, true, false, {});
+  const uint32_t bin_of_zero = mapper.ValueToBin(0.0);
+  EXPECT_EQ(mapper.ValueToBin(-0.5), bin_of_zero);
+  EXPECT_EQ(mapper.ValueToBin(2.7), mapper.ValueToBin(2.0));
+  for (double v : {-1.0, -1e20, 1e20, 2147483648.0, std::numeric_limits<double>::infinity(),
+                   -std::numeric_limits<double>::infinity()}) {
+    EXPECT_EQ(mapper.ValueToBin(v), 0u) << v;
   }
 }

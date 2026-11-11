@@ -36,6 +36,15 @@ static constexpr int kCols = 356;               // numerai compact view (ff=0.1)
 static constexpr int kBins = 8;                 // <=8-bin columns (span-7 + pad)
 static constexpr int kColsPerByte = 2;          // 4-bit packing (kernel A input)
 static constexpr int kRowBytes = kCols / kColsPerByte;
+static constexpr int kMaxAbsGrad = 2;            // generated gradients are in [-2, 2]
+static constexpr int kMaxHess = 3;               // generated hessians are in [1, 3]
+static constexpr int kAtomicBlocks = 680;        // HistAtomic grid
+// HistAtomic packs (grad << 16) | hess per (col, bin) in one shared int and reads the hessian back as the low 16
+// bits: a block's rows must keep a bin's hessian sum below 2^16 and its gradient sum within int16, or the fields wrap
+// silently (16 blocks instead of 680 already break the verify).
+static constexpr int kAtomicRowsPerBlock = (kRows + kAtomicBlocks - 1) / kAtomicBlocks;
+static_assert(kAtomicRowsPerBlock * kMaxHess <= 65535, "HistAtomic: a block's hessian sum can overflow 16 bits");
+static_assert(kAtomicRowsPerBlock * kMaxAbsGrad <= 32767, "HistAtomic: a block's gradient sum can overflow int16");
 
 // ---------------------------------------------------------------- kernel A --
 // Baseline: mirrors the shipped discretized construct structure: one thread
@@ -329,8 +338,8 @@ int main(int argc, char** argv) {
       h_colmajor[(size_t)(c + 1) * kRows + r] = (uint8_t)b1;
       h_pairmajor[(size_t)(c / 2) * kRows + r] = (uint8_t)(b0 | (b1 << 4));
     }
-    h_grad[r] = (int8_t)((rand() % 5) - 2);   // [-2,2]
-    h_hess[r] = (int8_t)(1 + rand() % 3);     // [1,3]
+    h_grad[r] = (int8_t)((rand() % (2 * kMaxAbsGrad + 1)) - kMaxAbsGrad);   // [-2,2]
+    h_hess[r] = (int8_t)(1 + rand() % kMaxHess);                         // [1,3]
   }
 
   // CPU reference
@@ -369,22 +378,25 @@ int main(int argc, char** argv) {
   };
   auto bench = [&](const char* name, auto launch) {
     CHECK(cudaMemset(d_hist, 0, kCols * kBins * 2 * sizeof(int)));
-    launch(); CHECK(cudaDeviceSynchronize());
+    launch(); CHECK(cudaGetLastError()); CHECK(cudaDeviceSynchronize());
     if (!verify(name)) return;
-    cudaEvent_t t0, t1; cudaEventCreate(&t0); cudaEventCreate(&t1);
-    cudaEventRecord(t0);
+    cudaEvent_t t0, t1; CHECK(cudaEventCreate(&t0)); CHECK(cudaEventCreate(&t1));
+    CHECK(cudaEventRecord(t0));
     for (int i = 0; i < iters; ++i) {
       CHECK(cudaMemset(d_hist, 0, kCols * kBins * 2 * sizeof(int)));
       launch();
     }
-    cudaEventRecord(t1); CHECK(cudaDeviceSynchronize());
-    float ms; cudaEventElapsedTime(&ms, t0, t1);
+    // a failed launch in the timed loop must not be reported as a timing
+    CHECK(cudaGetLastError());
+    CHECK(cudaEventRecord(t1)); CHECK(cudaDeviceSynchronize());
+    float ms; CHECK(cudaEventElapsedTime(&ms, t0, t1));
+    CHECK(cudaEventDestroy(t0)); CHECK(cudaEventDestroy(t1));
     printf("%-12s %8.3f ms/pass  (%.1f Grows/s cell-updates: %.1f G/s)\n",
            name, ms / iters, kRows / (ms / iters) / 1e6,
            (double)kRows * kCols / (ms / iters) / 1e6);
   };
 
-  bench("atomic", [&]() { HistAtomic<<<680, 384>>>(d_packed, d_grad, d_hess, kRows, d_hist); });
+  bench("atomic", [&]() { HistAtomic<<<kAtomicBlocks, 384>>>(d_packed, d_grad, d_hess, kRows, d_hist); });
 
   // TC: strips sized so total warps ~ fill the GPU; 8 warps/block
   for (int strips : {16, 32, 64}) {

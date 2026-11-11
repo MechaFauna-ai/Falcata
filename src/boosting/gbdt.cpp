@@ -379,7 +379,7 @@ void GBDT::Train(int snapshot_freq, const std::string& model_output_path) {
     auto end_time = std::chrono::steady_clock::now();
     // output used time per iteration
     Log::Info("%f seconds elapsed, finished iteration %d", std::chrono::duration<double,
-              std::milli>(end_time - start_time) * 1e-3, iter + 1);
+              std::milli>(end_time - start_time).count() * 1e-3, iter + 1);
     if (snapshot_freq > 0
         && (iter + 1) % snapshot_freq == 0) {
       std::string snapshot_out = model_output_path + ".snapshot_iter_" + std::to_string(iter + 1);
@@ -402,16 +402,12 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
   int num_iterations = static_cast<int>(models_.size() / num_tree_per_iteration_);
   std::vector<int> leaf_pred(num_data_);
   if (linear_tree_) {
-    std::vector<int> max_leaves_by_thread = std::vector<int>(OMP_NUM_THREADS(), 0);
-    #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
-    for (int i = 0; i < static_cast<int>(nrow); ++i) {
-      int tid = omp_get_thread_num();
-      for (size_t j = 0; j < ncol; ++j) {
-        max_leaves_by_thread[tid] = std::max(max_leaves_by_thread[tid], tree_leaf_prediction[i * ncol + j]);
-      }
+    // Refit visits every model leaf, even leaves reached by no refit rows.
+    // The current training limit and largest predicted leaf can both be smaller.
+    int max_leaves = 0;
+    for (const auto& model : models_) {
+      max_leaves = std::max(max_leaves, model->num_leaves());
     }
-    int max_leaves = *std::max_element(max_leaves_by_thread.begin(), max_leaves_by_thread.end());
-    max_leaves += 1;
     tree_learner_->InitLinear(train_data_, max_leaves);
   }
 
@@ -503,6 +499,22 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
     // use customized objective function
     // the check below fails unless objective=custom is provided in the parameters on Booster creation
     CHECK(objective_function_ == nullptr);
+    if (config_->use_quantized_grad) {
+      // Quantized training packs each hessian into an unsigned bit field (the 16-bit packed histograms and the
+      // (grad << 32) | hess root sums), so a negative one silently corrupts the sums: a contiguous run of them gave
+      // a single-leaf tree where full precision splits. Built-in objectives never produce one; refuse custom ones.
+      const int64_t total_size = static_cast<int64_t>(num_data_) * num_tree_per_iteration_;
+      int64_t num_negative = 0;
+      #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) reduction(+:num_negative)
+      for (int64_t i = 0; i < total_size; ++i) {
+        num_negative += hessians[i] < 0.0f ? 1 : 0;
+      }
+      if (num_negative > 0) {
+        Log::Fatal("The custom objective returned %s negative hessians; quantized gradients (quant_mode=%s) need "
+                   "non-negative hessians. Return non-negative hessians or set quant_mode=none.",
+                   std::to_string(num_negative).c_str(), config_->quant_mode.c_str());
+      }
+    }
     if (data_sample_strategy_->IsHessianChange()) {
       // need to copy customized gradients when using GOSS
       int64_t total_size = static_cast<int64_t>(num_data_) * num_tree_per_iteration_;
@@ -737,20 +749,33 @@ std::vector<double> GBDT::EvalOneMetric(const Metric* metric, const double* scor
     if (total_size > host_score_.size()) {
       host_score_.resize(total_size, 0.0f);
     }
-    CopyFromCUDADeviceToHost<double>(host_score_.data(), score, total_size, __FILE__, __LINE__);
+    if (!metric_transfer_scope_active_ || metric_transferred_source_ != score ||
+        metric_transferred_size_ != total_size) {
+      CopyFromCUDADeviceToHost<double>(host_score_.data(), score, total_size, __FILE__, __LINE__);
+      metric_transferred_source_ = score;
+      metric_transferred_size_ = total_size;
+    }
     return metric->Eval(host_score_.data(), objective_function_);
   } else {
     const size_t total_size = static_cast<size_t>(num_data) * static_cast<size_t>(NumOutputPerIteration());
     if (total_size > cuda_score_.Size()) {
       cuda_score_.Resize(total_size);
     }
-    CopyFromHostToCUDADevice<double>(cuda_score_.RawData(), score, total_size, __FILE__, __LINE__);
+    if (!metric_transfer_scope_active_ || metric_transferred_source_ != score ||
+        metric_transferred_size_ != total_size) {
+      CopyFromHostToCUDADevice<double>(cuda_score_.RawData(), score, total_size, __FILE__, __LINE__);
+      metric_transferred_source_ = score;
+      metric_transferred_size_ = total_size;
+    }
     return metric->Eval(cuda_score_.RawData(), objective_function_);
   }
   #endif  // USE_CUDA
 }
 
 std::string GBDT::OutputMetric(int iter) {
+#ifdef USE_CUDA
+  MetricScoreTransferScope transfer_scope(this);
+#endif  // USE_CUDA
   bool need_output = (iter % config_->metric_freq) == 0;
   std::string ret = "";
   std::stringstream msg_buf;
@@ -816,6 +841,9 @@ std::string GBDT::OutputMetric(int iter) {
 
 /*! \brief Get eval result */
 std::vector<double> GBDT::GetEvalAt(int data_idx) const {
+#ifdef USE_CUDA
+  MetricScoreTransferScope transfer_scope(this);
+#endif  // USE_CUDA
   CHECK(data_idx >= 0 && data_idx <= static_cast<int>(valid_score_updater_.size()));
   std::vector<double> ret;
   if (data_idx == 0) {
@@ -898,13 +926,13 @@ void GBDT::GetPredictAt(int data_idx, double* out_result, int64_t* out_len) {
   #endif  // USE_CUDA
   const int num_score_planes = NumOutputPerIteration();
   if (objective_function_ != nullptr) {
-    #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+    std::vector<double> tree_pred(num_score_planes);
+    std::vector<double> tmp_result(num_class_);
+    #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) firstprivate(tree_pred, tmp_result)
     for (data_size_t i = 0; i < num_data; ++i) {
-      std::vector<double> tree_pred(num_score_planes);
       for (int j = 0; j < num_score_planes; ++j) {
         tree_pred[j] = raw_scores[j * num_data + i];
       }
-      std::vector<double> tmp_result(num_class_);
       objective_function_->ConvertOutput(tree_pred.data(), tmp_result.data());
       for (int j = 0; j < num_class_; ++j) {
         out_result[j * num_data + i] = static_cast<double>(tmp_result[j]);

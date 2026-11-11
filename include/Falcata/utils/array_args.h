@@ -145,21 +145,18 @@ class ArrayArgs {
   }
 
   // Note: k refer to index here. e.g. k=0 means get the max number.
+  // Rearranges [start, end) so that position k holds the value it would have
+  // with the range sorted in descending order, every element before it is
+  // >= that value and every element after it <=, and returns k. Uses
+  // std::nth_element (introselect): the quickselect this replaced always took
+  // the last element as pivot and went quadratic on sorted input.
   inline static int ArgMaxAtK(std::vector<VAL_T>* arr, int start, int end, int k) {
     if (start >= end - 1) {
       return start;
     }
-    int l = start;
-    int r = end - 1;
-    Partition(arr, start, end, &l, &r);
-    // if find or all elements are the same.
-    if ((k > l && k < r) || (l == start - 1 && r == end - 1)) {
-      return k;
-    } else if (k <= l) {
-      return ArgMaxAtK(arr, start, l + 1, k);
-    } else {
-      return ArgMaxAtK(arr, r, end, k);
-    }
+    std::nth_element(arr->begin() + start, arr->begin() + k, arr->begin() + end,
+                     [](const VAL_T& a, const VAL_T& b) { return a > b; });
+    return k;
   }
 
   // Note: k is 1-based here. e.g. k=3 means get the top-3 numbers.

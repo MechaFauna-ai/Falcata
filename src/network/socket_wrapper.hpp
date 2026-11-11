@@ -12,6 +12,7 @@
 #include <string>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <unordered_set>
 
 #if defined(_WIN32)
@@ -94,6 +95,21 @@ const int kMaxReceiveSize = 100 * 1000;
 const int kNoDelay = 1;
 }
 
+/*!
+ * \brief Adds every IPv4 address of a GetAdaptersInfo adapter list to ip_list.
+ *        An adapter keeps its addresses in the IpAddressList linked list, so
+ *        a secondary address is in IpAddressList.Next, not in the first entry.
+ *        A template over the adapter type so the walk is testable off Windows.
+ */
+template <typename AdapterInfo>
+inline void CollectAdapterIps(const AdapterInfo* adapter, std::unordered_set<std::string>* ip_list) {
+  for (; adapter != nullptr; adapter = adapter->Next) {
+    for (auto address = &adapter->IpAddressList; address != nullptr; address = address->Next) {
+      ip_list->insert(address->IpAddress.String);
+    }
+  }
+}
+
 class TcpSocket {
  public:
   TcpSocket() {
@@ -114,11 +130,22 @@ class TcpSocket {
     ConfigSocket();
   }
 
-  TcpSocket(const TcpSocket &object) {
-    sockfd_ = object.sockfd_;
-    ConfigSocket();
+  // owns its descriptor: move-only, and the destructor closes it
+  TcpSocket(const TcpSocket &) = delete;
+  TcpSocket &operator=(const TcpSocket &) = delete;
+  TcpSocket(TcpSocket &&other) noexcept : sockfd_(other.sockfd_) {
+    other.sockfd_ = INVALID_SOCKET;
+  }
+  TcpSocket &operator=(TcpSocket &&other) noexcept {
+    if (this != &other) {
+      Close();
+      sockfd_ = other.sockfd_;
+      other.sockfd_ = INVALID_SOCKET;
+    }
+    return *this;
   }
   ~TcpSocket() {
+    Close();
   }
   inline void SetTimeout(int timeout_ms) {
 #if defined(_WIN32)
@@ -187,7 +214,6 @@ class TcpSocket {
     }
     // push local ip
     PIP_ADAPTER_INFO pAdapterInfo;
-    PIP_ADAPTER_INFO pAdapter = NULL;
     DWORD dwRetVal = 0;
     ULONG ulOutBufLen = sizeof(IP_ADAPTER_INFO);
     pAdapterInfo = reinterpret_cast<IP_ADAPTER_INFO *>(MALLOC(sizeof(IP_ADAPTER_INFO)));
@@ -204,11 +230,7 @@ class TcpSocket {
       }
     }
     if ((dwRetVal = GetAdaptersInfo(pAdapterInfo, &ulOutBufLen)) == NO_ERROR) {
-      pAdapter = pAdapterInfo;
-      while (pAdapter) {
-        ip_list.insert(pAdapter->IpAddressList.IpAddress.String);
-        pAdapter = pAdapter->Next;
-      }
+      CollectAdapterIps(pAdapterInfo, &ip_list);
     } else {
       Log::Fatal("GetAdaptersinfo error: code %d", dwRetVal);
     }
@@ -241,10 +263,18 @@ class TcpSocket {
     return ip_list;
   }
 #endif
+  inline static bool IsIPv4Address(const char* url) {
+    in_addr addr;
+    return inet_pton(AF_INET, url, &addr) == 1;
+  }
+
   inline static sockaddr_in GetAddress(const char* url, int port) {
     sockaddr_in addr = sockaddr_in();
     std::memset(&addr, 0, sizeof(sockaddr_in));
-    inet_pton(AF_INET, url, &addr.sin_addr);
+    if (inet_pton(AF_INET, url, &addr.sin_addr) != 1) {
+      // left unparsed, the zeroed address would silently mean 0.0.0.0
+      Log::Fatal("Invalid IPv4 address '%s' (machine lists take numeric IPv4 addresses)", url);
+    }
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<u_short>(port));
     return addr;
@@ -267,7 +297,14 @@ class TcpSocket {
   }
 
   inline void Listen(int backlog = 128) {
-    listen(sockfd_, backlog);
+    if (listen(sockfd_, backlog) == SOCKET_ERROR) {
+      int err_code = GetLastError();
+#if defined(_WIN32)
+      Log::Fatal("Socket listen error (code: %d)", err_code);
+#else
+      Log::Fatal("Socket listen error, %s (code: %d)", std::strerror(err_code), err_code);
+#endif
+    }
   }
 
   inline TcpSocket Accept() {
@@ -284,6 +321,10 @@ class TcpSocket {
   }
 
   inline int Send(const char *buf_, int len, int flag = 0) {
+#ifdef MSG_NOSIGNAL
+    // a peer that went away is an error to report, not a SIGPIPE that kills the process
+    flag |= MSG_NOSIGNAL;
+#endif
     int cur_cnt = send(sockfd_, buf_, len, flag);
     if (cur_cnt == SOCKET_ERROR) {
       int err_code = GetLastError();
@@ -307,6 +348,18 @@ class TcpSocket {
 #endif
     }
     return cur_cnt;
+  }
+
+  /*! \brief Shut down both directions without closing: a send or receive
+   *  blocked on this socket in another thread returns with an error */
+  inline void Shutdown() {
+    if (!IsClosed()) {
+#if defined(_WIN32)
+      shutdown(sockfd_, SD_BOTH);
+#else
+      shutdown(sockfd_, SHUT_RDWR);
+#endif
+    }
   }
 
   inline bool IsClosed() {

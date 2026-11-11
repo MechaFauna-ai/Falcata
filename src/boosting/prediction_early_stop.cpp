@@ -7,12 +7,11 @@
 
 #include <Falcata/utils/log.h>
 
-#include <algorithm>
+#include <utility>
 #include <cmath>
 #include <functional>
 #include <limits>
 #include <string>
-#include <vector>
 
 namespace Falcata {
 
@@ -35,14 +34,18 @@ PredictionEarlyStopInstance CreateMulticlass(const PredictionEarlyStopConfig& co
       Log::Fatal("Multiclass early stopping needs predictions to be of length two or larger");
     }
 
-    // copy and sort
-    std::vector<double> votes(static_cast<size_t>(sz));
-    for (int i = 0; i < sz; ++i) {
-      votes[i] = pred[i];
+    double largest = pred[0];
+    double second = pred[1];
+    if (second > largest) std::swap(largest, second);
+    for (int i = 2; i < sz; ++i) {
+      if (pred[i] > largest) {
+        second = largest;
+        largest = pred[i];
+      } else if (pred[i] > second) {
+        second = pred[i];
+      }
     }
-    std::partial_sort(votes.begin(), votes.begin() + 2, votes.end(), std::greater<double>());
-
-    const auto margin = votes[0] - votes[1];
+    const auto margin = largest - second;
 
     if (margin > margin_threshold) {
       return true;

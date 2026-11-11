@@ -2,7 +2,9 @@
 
 For each (dataset, regime) cell: run the full plan (baseline), then flip each
 ``cuda_plan`` key away from its default, one at a time, and report what the
-feature buys -- throughput delta AND quality delta.
+feature buys -- throughput delta AND quality delta. The throughput column
+reports baseline throughput relative to the flipped configuration:
+baseline / flip - 1. A positive value means the default is faster.
 
 Two properties make this more than a perf table:
 
@@ -346,9 +348,9 @@ def quality(params, bst, X_te, y_te):
     if obj == "multiclass":
         return float((preds.argmax(axis=1) == y_te).mean()), "acc"
     if obj == "binary":
-        order = np.argsort(preds)
-        ranks = np.empty(len(preds))
-        ranks[order] = np.arange(len(preds))
+        from scipy.stats import rankdata
+
+        ranks = rankdata(preds, method="average") - 1
         pos = y_te == 1
         auc = (ranks[pos].sum() - pos.sum() * (pos.sum() - 1) / 2) / max(1, pos.sum() * (~pos).sum())
         return float(auc), "auc"
@@ -419,7 +421,7 @@ def main():
         with out.open("a") as f:
             f.write(json.dumps({**base, "key": "BASELINE"}) + "\n")
         print(f"\n## {cid}  (baseline {base['trees_per_s']} trees/s, {base['metric_name']}={base['metric']})")
-        print(f"{'key':22s} {'Δ throughput':>13s} {'Δ construct':>12s}  verdict")
+        print(f"{'key':22s} {'base/flip - 1':>13s} {'Δ construct':>12s}  verdict")
         for key in keys:
             r = run_one(cid, data, params, rounds, flip_plan(key))
             with out.open("a") as f:

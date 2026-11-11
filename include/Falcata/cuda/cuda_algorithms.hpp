@@ -72,6 +72,8 @@ __device__ __forceinline__ T ShufflePrefixSumExclusive(T value, T* shared_mem_bu
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
   const uint32_t num_warp = blockDim.x / warpSize;
+  // see ShufflePrefixSum: late readers of a previous call's scratch must finish before this call's first write
+  __syncthreads();
   for (uint32_t offset = 1; offset < warpSize; offset <<= 1) {
     const T other_value = __shfl_up_sync(mask, value, offset);
     if (warpLane >= offset) {
@@ -95,6 +97,9 @@ __device__ __forceinline__ T ShufflePrefixSumExclusive(T value, T* shared_mem_bu
   __syncthreads();
   const T warp_base = warpID == 0 ? 0 : shared_mem_buffer[warpID - 1];
   const T inclusive_result = warp_base + value;
+  // every warp has read its base before any warp overwrites its slot with the hand-off below: warp w + 1 reads
+  // slot w, which warp w rewrites, and for floating types the two values can differ in the last bits
+  __syncthreads();
   // Hand-off of each warp's total to the next warp's lane 0. The buffer must be
   // indexed by warpID: for a last-lane thread warpLane is always warpSize-1, so
   // indexing by warpLane made every warp overwrite one slot, and lane 0's read
@@ -167,6 +172,9 @@ template <typename T>
 __device__ __forceinline__ T ShuffleReduceMax(T value, T* shared_mem_buffer, const size_t len) {
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
+  // As in ShuffleReduceSum: warp 0 of the previous call may still be reading
+  // the scratch slots this call's first writes overwrite.
+  __syncthreads();
   const data_size_t warp_len = min(static_cast<data_size_t>(warpSize), static_cast<data_size_t>(len) - static_cast<data_size_t>(warpID * warpSize));
   value = ShuffleReduceMaxWarp<T>(value, warp_len);
   if (warpLane == 0) {
@@ -205,13 +213,20 @@ __device__ __forceinline__ void GlobalMemoryPrefixSum(T* array, const size_t len
   __syncthreads();
 }
 
+// Every lane of the warp must call this (as for ShuffleReduceSumWarp/ShuffleReduceMaxWarp). The shuffles use the
+// full mask: a mask of only the first len lanes, while all 32 lanes execute the shuffle, is undefined behaviour for
+// the lanes outside it, and lanes inside it would read values from lanes outside it. Lane 0 returns the minimum over
+// lanes [0, len): a value shuffled down from a lane at or past len is ignored.
 template <typename T>
 __device__ __forceinline__ T ShuffleReduceMinWarp(T value, const data_size_t len) {
   if (len > 0) {
-    const uint32_t mask = (0xffffffff >> (warpSize - len));
+    const uint32_t mask = 0xffffffff;
+    const data_size_t lane = static_cast<data_size_t>(threadIdx.x % warpSize);
     for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
       const T other_value = __shfl_down_sync(mask, value, offset);
-      value = (other_value < value) ? other_value : value;
+      if (lane + offset < len) {
+        value = (other_value < value) ? other_value : value;
+      }
     }
   }
   return value;
@@ -222,6 +237,9 @@ template <typename T>
 __device__ __forceinline__ T ShuffleReduceMin(T value, T* shared_mem_buffer, const size_t len) {
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
+  // As in ShuffleReduceSum: warp 0 of the previous call may still be reading
+  // the scratch slots this call's first writes overwrite.
+  __syncthreads();
   const data_size_t warp_len = min(static_cast<data_size_t>(warpSize), static_cast<data_size_t>(len) - static_cast<data_size_t>(warpID * warpSize));
   value = ShuffleReduceMinWarp<T>(value, warp_len);
   if (warpLane == 0) {
@@ -583,18 +601,20 @@ __global__ void PercentileGlobalKernel(const VAL_T* values,
     // segment is not symmetric under reversal -- for y=[2,3,4,5] w=[4,3,2,1] it
     // interpolated between 4 and 3 (3.333) instead of 2 and 3 (2.333).
     const WEIGHT_REDUCE_T threshold = weights_prefix_sum[len - 1] * alpha;
-    __shared__ INDEX_T pos;
+    __shared__ INDEX_T found_pos;
     if (threadIdx.x == 0) {
-      pos = len;
+      found_pos = len;
     }
     __syncthreads();
     for (INDEX_T index = static_cast<INDEX_T>(threadIdx.x); index < len; index += static_cast<INDEX_T>(blockDim.x)) {
       if (weights_prefix_sum[index] > threshold && (index == 0 || weights_prefix_sum[index - 1] <= threshold)) {
-        pos = index;
+        found_pos = index;
       }
     }
     __syncthreads();
-    pos = min(pos, len - 1);
+    // a per-thread copy: every thread writing the shared value back while others read it raced (benign, but
+    // racecheck-visible)
+    const INDEX_T pos = min(found_pos, len - 1);
     if (pos == 0 || pos == len - 1) {
       // Two bugs lived here: the value was read as values[pos], skipping the
       // sort permutation every other access applies, and there was no return,
@@ -669,18 +689,20 @@ __device__ VAL_T PercentileDevice(const VAL_T* values,
     ShuffleSortedPrefixSumDevice<WEIGHT_T, REDUCE_WEIGHT_T, INDEX_T>(weights, indices, weights_prefix_sum, len);
     // see PercentileGlobalKernel: ascending sort, so the CPU threshold applies
     const REDUCE_WEIGHT_T threshold = weights_prefix_sum[len - 1] * alpha;
-    __shared__ INDEX_T pos;
+    __shared__ INDEX_T found_pos;
     if (threadIdx.x == 0) {
-      pos = len;
+      found_pos = len;
     }
     __syncthreads();
     for (INDEX_T index = static_cast<INDEX_T>(threadIdx.x); index < len; index += static_cast<INDEX_T>(blockDim.x)) {
       if (weights_prefix_sum[index] > threshold && (index == 0 || weights_prefix_sum[index - 1] <= threshold)) {
-        pos = index;
+        found_pos = index;
       }
     }
     __syncthreads();
-    pos = min(pos, len - 1);
+    // a per-thread copy: every thread writing the shared value back while others read it raced (benign, but
+    // racecheck-visible)
+    const INDEX_T pos = min(found_pos, len - 1);
     if (pos == 0 || pos == len - 1) {
       // indices[pos], not pos: values is in input order and the sort lives in
       // the permutation, which every other read here applies.
