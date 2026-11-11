@@ -537,9 +537,13 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
   // Histogram construction require parent features.
   std::set<int> force_split_features = FindAllForceFeatures(*forced_split_json_);
   while (!q.empty()) {
-    if (BeforeFindBestSplit(tree, *left_leaf, *right_leaf)) {
-      FindBestSplits(tree, &force_split_features);
+    if (!BeforeFindBestSplit(tree, *left_leaf, *right_leaf)) {
+      // The leaves cannot be split (max_depth reached, or too few rows, e.g. a small bag):
+      // their histograms were not prepared, so no forced split can be evaluated on them.
+      abort_last_forced_split = true;
+      break;
     }
+    FindBestSplits(tree, &force_split_features);
 
     // then, compute own splits
     SplitInfo left_split;

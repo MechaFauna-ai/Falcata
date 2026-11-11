@@ -3785,6 +3785,10 @@ def test_forced_split_reset_rejects_bad_file_and_keeps_training(tmp_path):
     bst = lgb.train({"objective": "regression", "verbose": -1}, lgb.Dataset(X, y), 2, keep_training_booster=True)
     with pytest.raises(lgb.basic.FalcataError, match="Forced splits file includes feature index -3"):
         bst.reset_parameter({"forcedsplits_filename": str(bad)})
+    # a missing file used to fail after the tree learner already pointed at the new config,
+    # which the failure then freed (heap-use-after-free on the next update under ASan)
+    with pytest.raises(lgb.basic.FalcataError, match="Could not open"):
+        bst.reset_parameter({"forcedsplits_filename": str(tmp_path / "missing.json")})
     bst.update()
     assert np.all(np.isfinite(bst.predict(X)))
 
@@ -3814,6 +3818,31 @@ def test_forced_split_on_unused_feature_is_skipped(tmp_path, side):
         np.testing.assert_array_equal(preds, plain.predict(X))
     split_features = bst.trees_to_dataframe()["split_feature"].dropna()
     assert "Column_1" not in set(split_features)
+
+
+@pytest.mark.parametrize("max_depth", [-1, 1])
+def test_forced_split_on_leaves_that_cannot_split(tmp_path, max_depth):
+    # A bag of 5 rows with min_data_in_leaf=5 cannot be split, so
+    # BeforeFindBestSplit prepared no histograms; ForceSplits evaluated the
+    # forced split anyway and read an uninitialized histogram array
+    # (ASan: member call on address 0xbebebebebebec03e; a segfault otherwise).
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((50, 8))
+    y = (X[:, 0] > 0).astype(float)
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps({"feature": 5, "threshold": 0.3}))
+    params = {
+        "objective": "binary",
+        "verbose": -1,
+        "bagging_fraction": 0.1,
+        "bagging_freq": 1,
+        "num_leaves": 3,
+        "max_depth": max_depth,
+        "min_data_in_leaf": 5,
+        "forcedsplits_filename": tmp_split_file,
+    }
+    bst = lgb.train(params, lgb.Dataset(X, y), num_boost_round=10)
+    assert np.all(np.isfinite(bst.predict(X)))
 
 
 def test_forced_split_missing_file(tmp_path):

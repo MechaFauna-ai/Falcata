@@ -1094,6 +1094,24 @@ void GBDT::ResetConfig(const Config* config) {
       (tree_learner_ == nullptr || train_data_ == nullptr)) {
     Log::Fatal("forcedsplits_filename can only be changed for a booster with training data");
   }
+  // Read and validate a changed forced splits file before any state changes: the tree
+  // learner and the sample strategy keep a pointer to new_config, which a failure further
+  // down would free (heap-use-after-free on the next update).
+  const bool forced_splits_changed =
+      config_.get() != nullptr && config_->forcedsplits_filename != new_config->forcedsplits_filename;
+  Json new_forced_splits;
+  if (forced_splits_changed && !new_config->forcedsplits_filename.empty()) {
+    // Forced splits are a training-time tree-learner setting. The C API
+    // rejects enabling them on a loaded model before committing its config.
+    std::ifstream forced_splits_file(new_config->forcedsplits_filename.c_str());
+    if (forced_splits_file.fail()) {
+      Log::Fatal("Could not open %s", new_config->forcedsplits_filename.c_str());
+    }
+    std::stringstream buffer;
+    buffer << forced_splits_file.rdbuf();
+    new_forced_splits = ParseForcedSplits(buffer.str(), new_config->forcedsplits_filename);
+    CheckForcedSplitFeatures(new_forced_splits);
+  }
   // A model-loaded booster (the default return of train()) has no training
   // data and no tree learner; per-feature checks and learner resets only
   // apply when they exist.
@@ -1132,27 +1150,10 @@ void GBDT::ResetConfig(const Config* config) {
       ResetGradientBuffers();
     }
   }
-  if (config_.get() != nullptr && config_->forcedsplits_filename != new_config->forcedsplits_filename) {
-    // Forced splits are a training-time tree-learner setting. The C API
-    // rejects enabling them on a loaded model before committing its config.
-    if (!new_config->forcedsplits_filename.empty()) {
-      std::ifstream forced_splits_file(
-          new_config->forcedsplits_filename.c_str());
-      if (forced_splits_file.fail()) {
-        Log::Fatal("Could not open %s", new_config->forcedsplits_filename.c_str());
-      }
-      std::stringstream buffer;
-      buffer << forced_splits_file.rdbuf();
-      // validate before replacing: the tree learner keeps a pointer to forced_splits_json_
-      Json forced_splits = ParseForcedSplits(buffer.str(), new_config->forcedsplits_filename);
-      CheckForcedSplitFeatures(forced_splits);
-      forced_splits_json_ = std::move(forced_splits);
-      tree_learner_->SetForcedSplit(&forced_splits_json_);
-    } else {
-      forced_splits_json_ = Json();
-      if (tree_learner_ != nullptr) {
-        tree_learner_->SetForcedSplit(nullptr);
-      }
+  if (forced_splits_changed) {
+    forced_splits_json_ = std::move(new_forced_splits);
+    if (tree_learner_ != nullptr) {
+      tree_learner_->SetForcedSplit(forced_splits_json_.is_null() ? nullptr : &forced_splits_json_);
     }
   }
   config_.reset(new_config.release());
