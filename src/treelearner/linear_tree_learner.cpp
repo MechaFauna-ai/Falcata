@@ -167,7 +167,8 @@ Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::FitByExistingTree(const Tree* old_tr
   bool has_nan = false;
   if (any_nan_) {
     for (int i = 0; i < tree->num_leaves() - 1 ; ++i) {
-      if (contains_nan_[this->train_data_->InnerFeatureIndex(tree->split_feature(i))]) {
+      const int inner_feature = this->train_data_->InnerFeatureIndex(tree->split_feature(i));
+      if (inner_feature >= 0 && contains_nan_[inner_feature]) {
         has_nan = true;
         break;
       }
