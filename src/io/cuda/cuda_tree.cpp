@@ -165,6 +165,11 @@ void CUDATree::InitCUDA() {
   cuda_leaf_value_.InitFromHostVector(leaf_value_);
   cuda_leaf_weight_.InitFromHostVector(leaf_weight_);
   cuda_leaf_parent_.InitFromHostVector(leaf_parent_);
+  if (leaf_value_dim_ > 1) {
+    // a vector-leaf tree's outputs (leaf-major, leaf_value_dim_ per leaf): the vector score update and shrinkage
+    // read them from here
+    cuda_leaf_values_vec_.InitFromHostVector(leaf_values_vec_);
+  }
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_stream_));
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }

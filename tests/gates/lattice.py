@@ -27,7 +27,9 @@ Usage:
   python tests/gates/lattice.py --update 'route/*' --only 'route/*'   # ids are fnmatch patterns
   python tests/gates/lattice.py --list               # print the cell matrix
 Cells run sequentially in chunked worker subprocesses (crash isolation: a
-crashing cell fails alone and the runner respawns for the rest).
+crashing cell fails alone and the runner respawns for the rest). Workers
+have a 30-minute deadline (FALCATA_LATTICE_TIMEOUT_SEC overrides it). A timeout
+aborts all later cells with status 125; the GPU job must stop.
 """
 
 import argparse
@@ -44,6 +46,7 @@ GATES_DIR = Path(__file__).resolve().parent
 FINGERPRINT_FILE = GATES_DIR / "md5_lattice.json"
 RESULTS_FILE = Path(os.environ.get("FALCATA_GATES_RESULTS", GATES_DIR / "lattice_results.json"))
 WORKER_CHUNK = 30
+WORKER_TIMEOUT_SEC = 1800
 METRIC_TOLERANCE = 0.02  # relative; only applied to non-fingerprinted (nondeterministic) cells
 
 # --------------------------------------------------------------------------- #
@@ -1834,6 +1837,7 @@ def run_tier_cell(cell):
         capture_output=True,
         text=True,
         check=False,
+        timeout=WORKER_TIMEOUT_SEC,
         env={**os.environ, "FALCATA_DEBUG": ",".join(tokens)},
     )
     recs = [json.loads(line[5:]) for line in proc.stdout.splitlines() if line.startswith("CELL ")]
@@ -1871,6 +1875,7 @@ def run_cells(cells):
             capture_output=True,
             text=True,
             check=False,
+            timeout=WORKER_TIMEOUT_SEC,
         )
         seen = set()
         for line in proc.stdout.splitlines():
@@ -1914,8 +1919,14 @@ def check(cells, results, fingerprints, update_ids=None, write_all=False):
                     f"({r['md5']} != {base['md5']}) -- this plan decision changes the model"
                 )
             continue
+        known = fingerprints.get(c["id"])
+        updating = write_all or (update_ids and c["id"] in update_ids)
+        if known is not None and not updating and r["metric_name"] != known["metric_name"]:
+            failures.append(
+                f"{c['id']}: metric changed from {known['metric_name']} to {r['metric_name']}; re-baseline explicitly"
+            )
+            continue
         if c["fingerprint"]:
-            known = fingerprints.get(c["id"])
             if write_all or (update_ids and c["id"] in update_ids) or known is None:
                 new_fp[c["id"]] = {
                     "md5": r["md5"],
@@ -1932,7 +1943,6 @@ def check(cells, results, fingerprints, update_ids=None, write_all=False):
                 )
         else:
             # nondeterministic cell: metric floor vs recorded baseline
-            known = fingerprints.get(c["id"])
             if write_all or (update_ids and c["id"] in update_ids) or known is None:
                 new_fp[c["id"]] = {
                     "metric": round(r["metric"], 6),
@@ -1953,6 +1963,7 @@ def check(cells, results, fingerprints, update_ids=None, write_all=False):
 
 
 def main():
+    global WORKER_TIMEOUT_SEC
     ap = argparse.ArgumentParser()
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true")
@@ -1997,12 +2008,24 @@ def main():
                 keep.add(c["equal_to"])
         cells = [c for c in cells if c["id"] in keep]
 
+    try:
+        WORKER_TIMEOUT_SEC = int(os.environ.get("FALCATA_LATTICE_TIMEOUT_SEC", "1800"))
+        if WORKER_TIMEOUT_SEC <= 0:
+            raise ValueError
+    except ValueError:
+        ap.error("FALCATA_LATTICE_TIMEOUT_SEC must be a positive integer")
+
     fingerprints = {}
     if FINGERPRINT_FILE.exists():
         fingerprints = json.loads(FINGERPRINT_FILE.read_text())["cells"]
 
     t0 = time.monotonic()
-    results = run_cells(cells)
+    try:
+        results = run_cells(cells)
+    except subprocess.TimeoutExpired as exc:
+        stalled = ", ".join(cell["id"] for cell in json.loads(exc.cmd[-1]))
+        print(f"UNRESOLVED_CUDA_TIMEOUT: worker [{stalled}] exceeded {exc.timeout}s; stop GPU job", file=sys.stderr)
+        return 125
     elapsed = time.monotonic() - t0
 
     failures, new_fp = check(

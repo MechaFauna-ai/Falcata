@@ -87,7 +87,20 @@ CUDAHistogramConstructor::CUDAHistogramConstructor(
 }
 
 CUDAHistogramConstructor::~CUDAHistogramConstructor() {
-  gpuAssert(cudaStreamDestroy(cuda_stream_), __FILE__, __LINE__);
+  // Init created every pipeline's stream and events; pipeline_streams_[0] is the stream it created as cuda_stream_
+  // (cuda_stream_ itself may be on loan to the device levels, see ExchangeHistStream). Nothing to release when Init
+  // never ran.
+  for (int p = 0; p < kNumHistPipelines; ++p) {
+    if (construct_done_events_[p] != nullptr) {
+      gpuAssert(cudaEventDestroy(construct_done_events_[p]), __FILE__, __LINE__);
+    }
+    if (subtract_done_events_[p] != nullptr) {
+      gpuAssert(cudaEventDestroy(subtract_done_events_[p]), __FILE__, __LINE__);
+    }
+    if (pipeline_streams_[p] != nullptr) {
+      gpuAssert(cudaStreamDestroy(pipeline_streams_[p]), __FILE__, __LINE__);
+    }
+  }
   if (prefetch_stream_ != nullptr) {
     gpuAssert(cudaStreamDestroy(prefetch_stream_), __FILE__, __LINE__);
   }
