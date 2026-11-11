@@ -13,6 +13,7 @@
 
 #include <iostream>
 #include <string>
+#include <vector>
 
 using Falcata::ByteBuffer;
 using Falcata::Dataset;
@@ -83,4 +84,31 @@ TEST(Serialization, JustWorks) {
   if (!succeeded) {
     FAIL() << "Test Serialization failed with exception: " << exceptionText;
   }
+}
+
+// LoadFromSerializedReference only length-checked the token: the version,
+// the header and feature-group sizes and the sections themselves were read
+// without checking buffer_size, so a truncated reference was read past its
+// end (and usually "loaded"). Every truncation must now fail cleanly.
+TEST(Serialization, TruncatedReferenceFails) {
+  DatasetHandle dataset_handle = nullptr;
+  int result = TestUtils::LoadDatasetFromExamples("binary_classification/binary.test", "max_bin=15", &dataset_handle);
+  ASSERT_EQ(0, result);
+  ByteBufferHandle buffer_handle = nullptr;
+  int32_t buffer_len = 0;
+  ASSERT_EQ(0, FLC_DatasetSerializeReferenceToBinary(dataset_handle, &buffer_handle, &buffer_len));
+  ByteBuffer* buffer = static_cast<ByteBuffer*>(buffer_handle);
+  const int32_t num_data = static_cast<Dataset*>(dataset_handle)->num_data();
+  for (int32_t keep : {buffer_len - 1, buffer_len / 2, 48, 40, 33}) {
+    // an exact-size copy, so an over-read leaves the allocation
+    std::vector<char> truncated(buffer->Data(), buffer->Data() + keep);
+    DatasetHandle out = nullptr;
+    result = FLC_DatasetCreateFromSerializedReference(truncated.data(), keep, num_data, 0, "max_bin=15", &out);
+    EXPECT_NE(0, result) << "accepted a reference truncated to " << keep << " of " << buffer_len << " bytes";
+    if (result == 0) {
+      FLC_DatasetFree(out);
+    }
+  }
+  FLC_ByteBufferFree(buffer_handle);
+  FLC_DatasetFree(dataset_handle);
 }

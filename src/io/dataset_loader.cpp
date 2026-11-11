@@ -383,16 +383,28 @@ Dataset* DatasetLoader::LoadFromSerializedReference(const char* binary_data, siz
   }
   mem_ptr += size_of_token_in_input;
 
+  // every section below must lie inside the buffer: a truncated or corrupt
+  // reference would otherwise be read past its end
+  const char* const buffer_end = binary_data + buffer_size;
+  auto require = [&mem_ptr, buffer_end](size_t bytes, const char* what) {
+    if (bytes > static_cast<size_t>(buffer_end - mem_ptr)) {
+      Log::Fatal("Serialized reference is truncated or corrupt: %s does not fit in the buffer", what);
+    }
+  };
+
   size_t size_of_version = VirtualFileWriter::AlignedSize(Dataset::kSerializedReferenceVersionLength);
+  require(size_of_version, "version");
   std::string version(mem_ptr, Dataset::kSerializedReferenceVersionLength);
   if (version != std::string(Dataset::serialized_reference_version)) {
     Log::Fatal("Unexpected version of serialized binary data: %s", version.c_str());
   }
   mem_ptr += size_of_version;
 
+  require(sizeof(size_t), "header size");
   size_t size_of_header = *(reinterpret_cast<const size_t*>(mem_ptr));
   mem_ptr += sizeof(size_t);
 
+  require(size_of_header, "header");
   LoadHeaderFromMemory(dataset.get(), mem_ptr);
   dataset->num_data_ = num_data;  // update to the given num_data
   mem_ptr += size_of_header;
@@ -400,8 +412,10 @@ Dataset* DatasetLoader::LoadFromSerializedReference(const char* binary_data, siz
   // read feature group definitions
   for (int i = 0; i < dataset->num_groups_; ++i) {
     // read feature size
+    require(sizeof(size_t), "feature group size");
     const size_t size_of_feature = *(reinterpret_cast<const size_t*>(mem_ptr));
     mem_ptr += sizeof(size_t);
+    require(size_of_feature, "feature group");
     dataset->feature_groups_.emplace_back(std::unique_ptr<FeatureGroup>(new FeatureGroup(mem_ptr, num_data, i)));
     mem_ptr += size_of_feature;
   }
