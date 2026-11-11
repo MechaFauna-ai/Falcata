@@ -77,9 +77,10 @@ class LinearTreeLearner: public TREE_LEARNER_TYPE {
       leaf_const[leaf_num] = tree->LeafConst(leaf_num);
       leaf_offsets[leaf_num] = leaf_coeff.size();
       const auto& coefficients = tree->LeafCoeffs(leaf_num);
-      leaf_coeff.insert(leaf_coeff.end(), coefficients.begin(), coefficients.end());
-      leaf_output[leaf_num] = tree->LeafOutput(leaf_num);
       const auto features = tree->LeafFeaturesInner(leaf_num);
+      CHECK_GE(coefficients.size(), features.size());
+      leaf_coeff.insert(leaf_coeff.end(), coefficients.begin(), coefficients.begin() + features.size());
+      leaf_output[leaf_num] = tree->LeafOutput(leaf_num);
       for (int feat : features) {
         feat_ptr.push_back(this->train_data_->raw_index(feat));
       }
