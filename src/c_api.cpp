@@ -1298,6 +1298,11 @@ int FLC_DatasetCreateByReference(const DatasetHandle reference,
   const Dataset* reference_dataset = reinterpret_cast<const Dataset*>(reference);
   ret->CreateValid(reference_dataset);
   ret->InitByReference(nrows, reference_dataset);
+  if (ret->has_raw()) {
+    // size it once here: the push functions then resize to the same size, a
+    // no-op, so concurrent streaming pushes never reallocate the raw buffer
+    ret->ResizeRaw(nrows);
+  }
   *out = ret.release();
   API_END();
 }
@@ -1332,6 +1337,11 @@ int FLC_DatasetInitStreaming(DatasetHandle dataset,
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto num_data = p_dataset->num_data();
   p_dataset->InitStreaming(num_data, has_weights, has_init_scores, has_queries, nclasses, nthreads, omp_max_threads);
+  if (p_dataset->has_raw()) {
+    // allocate before the (possibly concurrent) pushes, which then only
+    // resize to the same size
+    p_dataset->ResizeRaw(num_data);
+  }
   p_dataset->set_wait_for_manual_finish(true);
   API_END();
 }
@@ -1346,7 +1356,7 @@ int FLC_DatasetPushRows(DatasetHandle dataset,
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromDenseMatrix(data, nrow, ncol, data_type, 1);
   if (p_dataset->has_raw()) {
-    p_dataset->ResizeRaw(p_dataset->num_numeric_features() + nrow);
+    p_dataset->ResizeRaw(p_dataset->num_data());
   }
   OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
@@ -1385,7 +1395,7 @@ int FLC_DatasetPushRowsWithMetadata(DatasetHandle dataset,
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromDenseMatrix(data, nrow, ncol, data_type, 1);
   if (p_dataset->has_raw()) {
-    p_dataset->ResizeRaw(p_dataset->num_numeric_features() + nrow);
+    p_dataset->ResizeRaw(p_dataset->num_data());
   }
 
   const int max_omp_threads = p_dataset->omp_max_threads() > 0 ? p_dataset->omp_max_threads() : OMP_NUM_THREADS();
@@ -1425,7 +1435,7 @@ int FLC_DatasetPushRowsByCSR(DatasetHandle dataset,
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
   int32_t nrow = static_cast<int32_t>(nindptr - 1);
   if (p_dataset->has_raw()) {
-    p_dataset->ResizeRaw(p_dataset->num_numeric_features() + nrow);
+    p_dataset->ResizeRaw(p_dataset->num_data());
   }
   OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
@@ -1468,7 +1478,7 @@ int FLC_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
   int32_t nrow = static_cast<int32_t>(nindptr - 1);
   if (p_dataset->has_raw()) {
-    p_dataset->ResizeRaw(p_dataset->num_numeric_features() + nrow);
+    p_dataset->ResizeRaw(p_dataset->num_data());
   }
 
   const int max_omp_threads = p_dataset->omp_max_threads() > 0 ? p_dataset->omp_max_threads() : OMP_NUM_THREADS();
