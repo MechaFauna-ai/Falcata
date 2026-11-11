@@ -65,8 +65,10 @@ CUDABestSplitFinder::CUDABestSplitFinder(
 }
 
 CUDABestSplitFinder::~CUDABestSplitFinder() {
-  gpuAssert(cudaStreamDestroy(cuda_streams_[0]), __FILE__, __LINE__);
-  gpuAssert(cudaStreamDestroy(cuda_streams_[1]), __FILE__, __LINE__);
+  // Init creates the streams; the vector is empty when it never ran
+  for (cudaStream_t stream : cuda_streams_) {
+    gpuAssert(cudaStreamDestroy(stream), __FILE__, __LINE__);
+  }
   cuda_streams_.clear();
   cuda_streams_.shrink_to_fit();
   if (pinned_leaf_best_split_info_ != nullptr) {

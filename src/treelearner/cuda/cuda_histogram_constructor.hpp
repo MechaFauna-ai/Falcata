@@ -65,6 +65,14 @@ typedef atomic_add_long_t nq_fixed_t;
 #define FIX_HISTOGRAM_SHARED_MEM_SIZE (1024)
 #define FIX_HISTOGRAM_BLOCK_SIZE (512)
 #define USED_HISTOGRAM_BUFFER_NUM (8)
+namespace Falcata {
+/*! \brief elements of the per-leaf histogram slab cuda_hist_: a (grad, hess) pair per bin, per leaf, per plane. In
+ *  64 bits: num_total_bin * 2 * num_leaves overflows int for wide data (2.2M total bins at 1023 leaves wrapped to an
+ *  allocation 22x too small instead of an out-of-memory error). */
+inline constexpr size_t CUDAHistSlabElements(const int num_total_bin, const int num_leaves, const int num_planes) {
+  return static_cast<size_t>(num_total_bin) * 2 * static_cast<size_t>(num_leaves) * static_cast<size_t>(num_planes);
+}
+}  // namespace Falcata
 // Deterministic float-mode sparse construct (see
 // CUDAConstructHistogramSparseDeterministicKernel): dynamic-shared budget for
 // the per-row-group slot rows, the row-tile partial cap beyond which rows per
@@ -1180,10 +1188,12 @@ class CUDAHistogramConstructor {
   /*! \brief minimum sum value of hessians allowed per leaf */
   double min_sum_hessian_in_leaf_;
   /*! \brief cuda stream for histogram construction */
-  cudaStream_t cuda_stream_;
-  cudaStream_t pipeline_streams_[kNumHistPipelines];
-  cudaEvent_t construct_done_events_[kNumHistPipelines];
-  cudaEvent_t subtract_done_events_[kNumHistPipelines];
+  cudaStream_t cuda_stream_ = nullptr;
+  /*! \brief the streams and events Init creates (pipeline_streams_[0] is the stream it created as cuda_stream_);
+   *  null until then, and released by the destructor */
+  cudaStream_t pipeline_streams_[kNumHistPipelines] = {};
+  cudaEvent_t construct_done_events_[kNumHistPipelines] = {};
+  cudaEvent_t subtract_done_events_[kNumHistPipelines] = {};
   int active_pipeline_ = 0;
   /*! \brief indices of feature whose histograms need to be fixed */
   std::vector<int> need_fix_histogram_features_;

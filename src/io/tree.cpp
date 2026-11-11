@@ -174,6 +174,10 @@ void Tree::AddPredictionToScore(const Dataset* data, data_size_t num_data, doubl
     }
     return;
   }
+  if (split_feature_inner_.size() < static_cast<size_t>(num_leaves_ - 1) ||
+      threshold_in_bin_.size() < static_cast<size_t>(num_leaves_ - 1)) {
+    Log::Fatal("Dataset scoring requires a tree with training bin metadata; use raw prediction for loaded models");
+  }
   std::vector<uint32_t> default_bins(num_leaves_ - 1);
   std::vector<uint32_t> max_bins(num_leaves_ - 1);
   for (int i = 0; i < num_leaves_ - 1; ++i) {
@@ -254,6 +258,10 @@ void Tree::AddPredictionToScore(const Dataset* data,
       }
     }
     return;
+  }
+  if (split_feature_inner_.size() < static_cast<size_t>(num_leaves_ - 1) ||
+      threshold_in_bin_.size() < static_cast<size_t>(num_leaves_ - 1)) {
+    Log::Fatal("Dataset scoring requires a tree with training bin metadata; use raw prediction for loaded models");
   }
   std::vector<uint32_t> default_bins(num_leaves_ - 1);
   std::vector<uint32_t> max_bins(num_leaves_ - 1);
@@ -592,7 +600,9 @@ std::string Tree::CategoricalDecisionIfElse(int node) const {
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
   int cat_idx = static_cast<int>(threshold_[node]);
-  str_buf << "if (std::isnan(fval)) { int_fval = -1; } else { int_fval = static_cast<int>(fval); }";
+  str_buf << "if (!(fval >= std::numeric_limits<int>::min() && "
+             "fval <= std::numeric_limits<int>::max())) { int_fval = -1; } "
+             "else { int_fval = static_cast<int>(fval); }";
   str_buf << "if (int_fval >= 0 && int_fval < 32 * (";
   str_buf << cat_boundaries_[cat_idx + 1] - cat_boundaries_[cat_idx];
   str_buf << ") && (((cat_threshold[" << cat_boundaries_[cat_idx];
@@ -609,6 +619,7 @@ std::string Tree::ToIfElse(int index, bool predict_leaf_index) const {
   }
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
+  str_buf << std::setprecision(std::numeric_limits<double>::digits10 + 2);
   str_buf << "double PredictTree" << index;
   if (predict_leaf_index) {
     str_buf << "Leaf";
