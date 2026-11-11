@@ -410,6 +410,12 @@ class Booster {
     if (param.count("device_type") == 0 && train_data_ != nullptr) {
       param["device_type"] = config_.device_type;
     }
+    // Likewise the resolved quant_mode: deterministic=true maps an unset quant_mode to fixedpoint, so a reset map
+    // without the key flipped a quant_mode=none booster to quantized training and its CUDA learner, which has no
+    // gradient discretizer, crashed in BeforeTrain (Booster.update with a custom objective resets objective=none).
+    if (param.count("quant_mode") == 0 && param.count("use_quantized_grad") == 0 && train_data_ != nullptr) {
+      param["quant_mode"] = config_.quant_mode;
+    }
     Config new_config;
     new_config.Set(param);
     if (train_data_ == nullptr && !new_config.forcedsplits_filename.empty()) {
