@@ -12,6 +12,6 @@ def test_unknown_freeze_selection(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "FIXTURE_DIR", tmp_path)
-    with pytest.raises(ValueError, match="regresion"):
-        module.freeze(["regresion"])
+    with pytest.raises(ValueError, match="not-a-fixture"):
+        module.freeze(["not-a-fixture"])
     assert list(tmp_path.iterdir()) == []

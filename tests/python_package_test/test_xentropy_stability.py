@@ -1,8 +1,9 @@
 """Softplus must remain finite before applying small observation weights."""
 
-import falcata as flc
 import numpy as np
 import pytest
+
+import falcata as flc
 
 
 @pytest.mark.parametrize("objective", ["none", "cross_entropy_lambda"])
