@@ -814,7 +814,7 @@ class HistogramPool {
         bin_cnt_over_features +=
             static_cast<uint64_t>(feature_metas_[i].num_bin);
       }
-      Log::Info("Total Bins %d", bin_cnt_over_features);
+      Log::Info("Total Bins %zu", static_cast<size_t>(bin_cnt_over_features));
     }
     int old_cache_size = static_cast<int>(pool_.size());
     Reset(cache_size, total_size);

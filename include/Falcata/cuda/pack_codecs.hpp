@@ -31,6 +31,8 @@
  *                   per byte, <=5 bins. Extraction = umulhi magic division.
  *   PackRadix6x32 -- 12 base-6 digits per uint32 (6^12 < 2^32): 3.0 values
  *                   per byte, <=6 bins. Extraction = umulhi magic division.
+ *   PackRadix7x32 -- 11 base-7 digits per uint32 (7^11 < 2^32): 2.75 values
+ *                   per byte, <=7 bins. Extraction = umulhi magic division.
  *
  * Magic-division scheme (radix codecs): for each digit position i we store a
  * 64-bit magic M_i and shift s_i with  floor(w / R^i) == (w * M_i) >> s_i  for

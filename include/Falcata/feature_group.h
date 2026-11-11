@@ -146,7 +146,8 @@ class FeatureGroup {
   /*!
    * \brief Constructor from definition in memory (without data)
    * \param memory Pointer of memory
-   * \param local_used_indices Local used indices, empty means using all data
+   * \param num_data Number of data
+   * \param group_id Id of group
    */
   FeatureGroup(const void* memory, data_size_t num_data, int group_id) {
     LoadDefinitionFromMemory(memory, group_id);
@@ -208,7 +209,7 @@ class FeatureGroup {
 
   /*!
    * \brief Allocate the bins
-   * \param num_all_data Number of global data
+   * \param num_data Number of data
    */
   inline void AllocateBins(data_size_t num_data) {
     if (is_multi_val_) {

@@ -30,7 +30,7 @@ class CUDAMetricInterface: public HOST_METRIC {
     if (metadata.cuda_metadata() == nullptr) {
       Log::Fatal(
           "CUDA metric requires a Dataset constructed with device_type=\"cuda\". "
-          "Pass device=\"cuda\" in the Dataset's params (e.g. lgb.Dataset(X, y, params={\"device\": \"cuda\"})).");
+          "Pass device=\"cuda\" in the Dataset's params (e.g. flc.Dataset(X, y, params={\"device\": \"cuda\"})).");
     }
     cuda_labels_ = metadata.cuda_metadata()->cuda_label();
     cuda_weights_ = metadata.cuda_metadata()->cuda_weights();

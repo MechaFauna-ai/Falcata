@@ -521,10 +521,10 @@ def _validate_eval_set_Xy(
         raise ValueError("You must specify eval_X and eval_y, not just one of them.")
     if eval_set is None and eval_X is not None:
         if isinstance(eval_X, tuple) != isinstance(eval_y, tuple):
-            raise ValueError("If eval_X is a tuple, y_val must be a tuple of same length, and vice versa.")
+            raise ValueError("If eval_X is a tuple, eval_y must be a tuple of same length, and vice versa.")
         if isinstance(eval_X, tuple) and isinstance(eval_y, tuple):
             if len(eval_X) != len(eval_y):
-                raise ValueError("If eval_X is a tuple, y_val must be a tuple of same length, and vice versa.")
+                raise ValueError("If eval_X is a tuple, eval_y must be a tuple of same length, and vice versa.")
         if isinstance(eval_X, tuple) and isinstance(eval_y, tuple):
             eval_set = list(zip(eval_X, eval_y, strict=True))
         else:
