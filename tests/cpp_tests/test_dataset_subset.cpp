@@ -9,6 +9,11 @@
 #include <Falcata/dataset.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <fstream>
+#include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 using Falcata::Dataset;
@@ -86,4 +91,29 @@ TEST(DatasetSubset, KeptQueriesGetQueryWeights) {
 
   EXPECT_EQ(0, FLC_DatasetFree(subset));
   EXPECT_EQ(0, FLC_DatasetFree(full));
+}
+
+// TSVParser and LibSVMParser only wrote *out_label when the line had a label
+// column, so with label_idx = -1 the caller kept the previous line's label;
+// CSVParser already reset it to 0 per line.
+TEST(Parser, NoLabelColumnResetsLabel) {
+  const std::pair<const char*, const char*> cases[] = {
+      {"tsv", "1\t2\t3\n4\t5\t6\n"},
+      {"svm", "0:1 1:2\n0:3 2:4\n"},
+  };
+  for (const auto& c : cases) {
+    const std::string path = ::testing::TempDir() + "parser_no_label." + c.first;
+    {
+      std::ofstream f(path);
+      f << c.second;
+    }
+    std::unique_ptr<Falcata::Parser> parser(Falcata::Parser::CreateParser(path.c_str(), false, 0, -1, false));
+    ASSERT_NE(parser, nullptr) << c.first;
+    std::vector<std::pair<int, double>> features;
+    double label = 42.0;
+    parser->ParseOneLine(std::string(c.second).substr(0, std::string(c.second).find('\n')).c_str(), &features,
+                         &label);
+    EXPECT_EQ(label, 0.0) << c.first;
+    std::remove(path.c_str());
+  }
 }
