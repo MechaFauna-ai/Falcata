@@ -1914,8 +1914,14 @@ def check(cells, results, fingerprints, update_ids=None, write_all=False):
                     f"({r['md5']} != {base['md5']}) -- this plan decision changes the model"
                 )
             continue
+        known = fingerprints.get(c["id"])
+        updating = write_all or (update_ids and c["id"] in update_ids)
+        if known is not None and not updating and r["metric_name"] != known["metric_name"]:
+            failures.append(
+                f"{c['id']}: metric changed from {known['metric_name']} to {r['metric_name']}; re-baseline explicitly"
+            )
+            continue
         if c["fingerprint"]:
-            known = fingerprints.get(c["id"])
             if write_all or (update_ids and c["id"] in update_ids) or known is None:
                 new_fp[c["id"]] = {
                     "md5": r["md5"],
@@ -1932,7 +1938,6 @@ def check(cells, results, fingerprints, update_ids=None, write_all=False):
                 )
         else:
             # nondeterministic cell: metric floor vs recorded baseline
-            known = fingerprints.get(c["id"])
             if write_all or (update_ids and c["id"] in update_ids) or known is None:
                 new_fp[c["id"]] = {
                     "metric": round(r["metric"], 6),
