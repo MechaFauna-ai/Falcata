@@ -873,6 +873,7 @@ const void* SparseBin<uint8_t>::GetColWiseData(
   const int num_threads) const {
   *is_sparse = true;
   *bit_type = 8;
+  bin_iterator->clear();
   for (int thread_index = 0; thread_index < num_threads; ++thread_index) {
     bin_iterator->emplace_back(new SparseBinIterator<uint8_t>(this, 0));
   }
@@ -887,6 +888,7 @@ const void* SparseBin<uint16_t>::GetColWiseData(
   const int num_threads) const {
   *is_sparse = true;
   *bit_type = 16;
+  bin_iterator->clear();
   for (int thread_index = 0; thread_index < num_threads; ++thread_index) {
     bin_iterator->emplace_back(new SparseBinIterator<uint16_t>(this, 0));
   }
@@ -901,6 +903,7 @@ const void* SparseBin<uint32_t>::GetColWiseData(
   const int num_threads) const {
   *is_sparse = true;
   *bit_type = 32;
+  bin_iterator->clear();
   for (int thread_index = 0; thread_index < num_threads; ++thread_index) {
     bin_iterator->emplace_back(new SparseBinIterator<uint32_t>(this, 0));
   }

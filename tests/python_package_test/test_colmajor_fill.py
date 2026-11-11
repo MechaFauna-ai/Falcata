@@ -14,10 +14,12 @@ Every run pins colmajor_direct:off: by default the device holds the store built 
 full view) and no row-major matrix, so there is no copy to decide on (test_colmajor_direct.py).
 """
 
+import ast
 import os
 import re
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -66,6 +68,11 @@ ROWS, FEATS = 200_000, 400
 
 def _run(params, debug="diag", rounds=12, reset_rounds=0):
     """(decisions, model md5) of one training run in a fresh process; decisions are (kind, copy, reserve, free)."""
+    params = dict(params)
+    plan = params.get("cuda_plan", "auto")
+    params["cuda_plan"] = ",".join(
+        [token for token in plan.split(",") if not token.startswith("colmajor_direct:")] + ["colmajor_direct:off"]
+    )
     code = _CHILD.format(params=params, rows=ROWS, feats=FEATS, rounds=rounds, reset_rounds=reset_rounds)
     env = {**os.environ, "FALCATA_DEBUG": debug}
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True).stdout
@@ -148,3 +155,23 @@ def test_colmajor_fill_follows_reset_training_data_cuda(quant):
     assert [d[0] for d in decisions] == ["engaged", "engaged"], decisions
     _, md5_off = _run({**params, "cuda_plan": "auto,colmajor_fill:off"}, rounds=4, reset_rounds=6)
     assert md5_on == md5_off
+
+
+@pytest.mark.parametrize("plan", [None, "auto,colmajor_fill:off"])
+def test_colmajor_fill_child_always_pins_row_store(monkeypatch, plan):
+    """Check child configuration without starting a CUDA process."""
+
+    def capture_run(args, **kwargs):
+        tree = ast.parse(args[2])
+        assignment = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "params" for t in node.targets)
+        )
+        namespace = {}
+        exec(compile(ast.Module(body=[assignment], type_ignores=[]), "child", "exec"), namespace)
+        assert "colmajor_direct:off" in namespace["params"]["cuda_plan"].split(",")
+        return SimpleNamespace(stdout="MODEL_MD5 1234\n")
+
+    monkeypatch.setattr(subprocess, "run", capture_run)
+    _run({} if plan is None else {"cuda_plan": plan})

@@ -67,19 +67,18 @@ def get_parameter_infos(config_hpp: Path) -> Tuple[List[Tuple[str, int]], List[L
                     else:
                         cur_info[key].append(val)
                 elif line:
-                    has_eqsgn = False
-                    tokens = line.split("=")
-                    if len(tokens) == 2:
-                        if "default" not in cur_info:
-                            cur_info["default"] = [tokens[1][:-1].strip()]
-                        has_eqsgn = True
-                    tokens = line.split()
-                    cur_info["inner_type"] = [tokens[0].strip()]
+                    declaration = re.fullmatch(
+                        r"(?P<type>\S+)\s+(?P<name>\w+)\s*(?:=\s*(?P<default>.*?))?;\s*(?://.*)?",
+                        line,
+                    )
+                    if declaration is None:
+                        raise ValueError(f"Invalid parameter declaration: {line}")
+                    default = declaration.group("default")
+                    if default is not None and "default" not in cur_info:
+                        cur_info["default"] = [default.strip()]
+                    cur_info["inner_type"] = [declaration.group("type")]
                     if "name" not in cur_info:
-                        if has_eqsgn:
-                            cur_info["name"] = [tokens[1].strip()]
-                        else:
-                            cur_info["name"] = [tokens[1][:-1].strip()]
+                        cur_info["name"] = [declaration.group("name")]
                     member_infos[-1].append(cur_info)
                     cur_info = {}
 
@@ -219,7 +218,12 @@ def gen_parameter_description(
             name = param_desc["name"][0]
             default_raw = param_desc["default"][0]
             default = default_raw.strip('"') if len(default_raw.strip('"')) > 0 else default_raw
-            param_type = param_desc.get("type", param_desc["inner_type"])[0].split(":")[-1].split("<")[-1].strip(">")
+            param_type = param_desc.get("type", param_desc["inner_type"])[0].replace("std::", "")
+            containers = ""
+            while param_type.startswith("vector<") and param_type.endswith(">"):
+                containers += "multi-"
+                param_type = param_type[len("vector<") : -1]
+            param_type = containers + param_type
             options = param_desc.get("options", [])
             if len(options) > 0:
                 opts = "``, ``".join([x.strip() for x in options[0].split(",")])
@@ -251,6 +255,8 @@ def gen_parameter_description(
         all_lines = original_params_file.read()
         before, start_sep, _ = all_lines.partition(".. start params list\n\n")
         _, end_sep, after = all_lines.partition("\n\n.. end params list")
+        if not start_sep or not end_sep or all_lines.find("\n\n.. end params list") < len(before):
+            raise ValueError("Parameter documentation must contain ordered start and end markers")
 
     with open(params_rst, "w") as new_params_file:
         new_params_file.write(before)
