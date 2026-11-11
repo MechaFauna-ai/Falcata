@@ -1163,7 +1163,8 @@ void CUDADataPartition::LaunchSplitInnerKernel(
       cuda_leaf_num_data_.RawData(), cuda_data_indices_.RawData(),
       grid_dim_);
   }
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // AggregateBlockOffsetKernel, the NCCL reduces and SplitInnerKernel below all run on cuda_streams_[0], so they are
+  // ordered without host round trips; the copy below waits for the split tree structure kernel.
   global_timer.Stop("CUDADataPartition::AggregateBlockOffsetKernel");
 
   if (nccl_communicator_ != nullptr) {
@@ -1180,12 +1181,11 @@ void CUDADataPartition::LaunchSplitInnerKernel(
   }
 
   global_timer.Start("CUDADataPartition::SplitInnerKernel");
-  SplitInnerKernel<<<grid_dim_, block_dim_, 0, cuda_streams_[1]>>>(
+  SplitInnerKernel<<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(
     left_leaf_index, right_leaf_index, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(), cuda_data_indices_.RawData(),
     cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
     cuda_out_data_indices_in_leaf_.RawData());
   global_timer.Stop("CUDADataPartition::SplitInnerKernel");
-  SynchronizeCUDADevice(__FILE__, __LINE__);
 
   global_timer.Start("CUDADataPartition::SplitTreeStructureKernel");
 
