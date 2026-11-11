@@ -634,8 +634,8 @@ struct FalcataPlan {
   // and the same [in-bag ascending | out-of-bag from the tail] index layout: bit-identical.
   bool bagging_fused_scan = true;  // key: bagging_fused_scan
   // multiclass softmax gradients (CUDAMulticlassSoftmax, num_class <= 32): the row's class scores stay in registers
-  // (a class capacity of 8, 16 or 32, the runtime class count guarding every unrolled step) instead of the row-major
-  // global scratch the kernel staged them in (num_class doubles per thread, uncoalesced, six passes). The same max,
+  // (a class capacity of 8, 16 or 32, the runtime class count guarding every unrolled step) instead of the class-major
+  // global scratch the kernel staged them in (num_class doubles per thread, six passes). The same max,
   // the same exponentials summed in class order, one division per class: bit-identical.
   bool softmax_registers = true;  // key: softmax_registers
   // binary logloss gradients (with or without sample and label weights): the response and hessian evaluated with ~16 FP64 operations per row (the
