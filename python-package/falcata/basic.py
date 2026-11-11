@@ -1266,8 +1266,14 @@ class _InnerPredictor:
         if pred_leaf:
             preds = preds.astype(np.int32)
         is_sparse = isinstance(preds, (list, scipy.sparse.spmatrix))
-        if not is_sparse and (preds.size != nrow or pred_leaf or pred_contrib):
-            if preds.size % nrow == 0:
+        if not is_sparse and (nrow == 0 or preds.size != nrow or pred_leaf or pred_contrib):
+            if nrow == 0:
+                width = self.__get_num_preds(
+                    start_iteration=start_iteration, num_iteration=num_iteration, nrow=1, predict_type=predict_type
+                )
+                if width != 1 or pred_leaf or pred_contrib:
+                    preds = preds.reshape(0, width)
+            elif preds.size % nrow == 0:
                 preds = preds.reshape(nrow, -1)
             else:
                 raise ValueError(f"Length of predict result ({preds.size}) cannot be divide nrow ({nrow})")
@@ -1568,6 +1574,15 @@ class _InnerPredictor:
         predict_type: int,
     ) -> Tuple[_FALCATA_PredictSparseReturnType, int]:
         """Predict for a CSR data."""
+        if csr.shape[0] == 0 and predict_type == _C_API_PREDICT_CONTRIB:
+            width = (
+                self.__get_num_preds(
+                    start_iteration=start_iteration, num_iteration=num_iteration, nrow=1, predict_type=predict_type
+                )
+                // self.num_class
+            )
+            matrices = [scipy.sparse.csr_matrix((0, width), dtype=np.float64) for _ in range(self.num_class)]
+            return (matrices[0] if self.num_class == 1 else matrices), 0
         if predict_type == _C_API_PREDICT_CONTRIB:
             return self.__inner_predict_csr_sparse(
                 csr=csr,
@@ -3787,6 +3802,8 @@ def _fil_run_host_slabs(model: Any, data: np.ndarray) -> Optional[np.ndarray]:
     multi-minute predict into seconds.
     """
     n_rows = data.shape[0]
+    if n_rows == 0:
+        return None
     slab_rows = max(1, min(n_rows, _FIL_HOST_SLAB_ELEMENTS // max(1, data.shape[1])))
     out = []
     for start in range(0, n_rows, slab_rows):
