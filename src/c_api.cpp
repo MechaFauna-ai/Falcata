@@ -2496,6 +2496,9 @@ int FLC_DatasetCreateFromCSC(const void* col_ptr,
     ret.reset(new Dataset(nrow));
     ret->CreateValid(
       reinterpret_cast<const Dataset*>(reference));
+    if (ret->has_raw()) {
+      ret->ResizeRaw(nrow);
+    }
   }
   OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
