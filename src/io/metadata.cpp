@@ -375,9 +375,9 @@ void Metadata::SetInitScoresFromIterator(It first, It last) {
   if (((last - first) % num_data_) != 0) {
     Log::Fatal("Initial score size doesn't match data size");
   }
-  if (init_score_.empty()) {
-    init_score_.resize(last - first);
-  }
+  // resize unconditionally: a previous call may have stored a different
+  // number of classes, and a smaller buffer would be overrun below
+  init_score_.resize(last - first);
   num_init_score_ = last - first;
 
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 512) if (num_init_score_ >= 1024)
