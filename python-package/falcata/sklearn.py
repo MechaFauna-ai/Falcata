@@ -1034,11 +1034,11 @@ class FalcataModel(_FalcataModelBase):
                 # raise an error on 0-row and 1-row inputs
                 ensure_min_samples=2,
             )
-            if sample_weight is not None:
-                if SKLEARN_CHECK_SAMPLE_WEIGHT_HAS_ALLOW_ZERO_WEIGHTS_ARG:
-                    sample_weight = _FalcataCheckSampleWeight(sample_weight, _X, allow_all_zero_weights=True)
-                else:
-                    sample_weight = _FalcataCheckSampleWeight(sample_weight, _X)
+        if sample_weight is not None:
+            if SKLEARN_CHECK_SAMPLE_WEIGHT_HAS_ALLOW_ZERO_WEIGHTS_ARG:
+                sample_weight = _FalcataCheckSampleWeight(sample_weight, _X, allow_all_zero_weights=True)
+            else:
+                sample_weight = _FalcataCheckSampleWeight(sample_weight, _X)
 
         if self._class_weight is None:
             self._class_weight = self.class_weight
