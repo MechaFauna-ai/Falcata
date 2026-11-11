@@ -9,7 +9,16 @@
 #include <Falcata/dataset.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <memory>
+#include <new>
+#include <string>
+#include <utility>
 #include <vector>
+
+#include "../../src/io/sparse_bin.hpp"
 
 using Falcata::Dataset;
 using Falcata::TestUtils;
@@ -86,4 +95,60 @@ TEST(DatasetSubset, KeptQueriesGetQueryWeights) {
 
   EXPECT_EQ(0, FLC_DatasetFree(subset));
   EXPECT_EQ(0, FLC_DatasetFree(full));
+}
+
+// TSVParser and LibSVMParser only wrote *out_label when the line had a label
+// column, so with label_idx = -1 the caller kept the previous line's label;
+// CSVParser already reset it to 0 per line.
+TEST(Parser, NoLabelColumnResetsLabel) {
+  const std::pair<const char*, const char*> cases[] = {
+      {"tsv", "1\t2\t3\n4\t5\t6\n"},
+      {"svm", "0:1 1:2\n0:3 2:4\n"},
+  };
+  for (const auto& c : cases) {
+    const std::string path = ::testing::TempDir() + "parser_no_label." + c.first;
+    {
+      std::ofstream f(path);
+      f << c.second;
+    }
+    std::unique_ptr<Falcata::Parser> parser(Falcata::Parser::CreateParser(path.c_str(), false, 0, -1, false));
+    ASSERT_NE(parser, nullptr) << c.first;
+    std::vector<std::pair<int, double>> features;
+    double label = 42.0;
+    parser->ParseOneLine(std::string(c.second).substr(0, std::string(c.second).find('\n')).c_str(), &features,
+                         &label);
+    EXPECT_EQ(label, 0.0) << c.first;
+    std::remove(path.c_str());
+  }
+}
+
+// SparseBinIterator's raw-access constructor (bin, start_idx) left min_bin_,
+// max_bin_, most_freq_bin_ and offset_ uninitialized, and Get() reads them.
+// Build the iterator over storage pre-filled with two different byte patterns:
+// with defined members, Get() cannot depend on what the storage held before.
+TEST(SparseBinIterator, RawConstructorGivesDefinedGet) {
+  using Iter = Falcata::SparseBinIterator<uint8_t>;
+  const Falcata::data_size_t num_data = 64;
+  Falcata::SparseBin<uint8_t> bin(num_data);
+  for (Falcata::data_size_t i = 0; i < num_data; i += 3) {
+    bin.Push(0, i, static_cast<uint32_t>(1 + i % 7));
+  }
+  bin.FinishLoad();
+
+  std::vector<uint32_t> raw;
+  {
+    Iter it(&bin, 0);
+    for (Falcata::data_size_t i = 0; i < num_data; ++i) raw.push_back(it.RawGet(i));
+  }
+  ASSERT_NE(raw[3], 0u);  // the bin really holds nonzero values
+
+  for (const unsigned char fill : {0x00, 0xA5, 0xFF}) {
+    alignas(Iter) unsigned char storage[sizeof(Iter)];
+    std::memset(storage, fill, sizeof(storage));
+    Iter* it = new (storage) Iter(&bin, 0);
+    for (Falcata::data_size_t i = 0; i < num_data; ++i) {
+      EXPECT_EQ(it->Get(i), raw[i]) << "row " << i << ", storage pre-filled with 0x" << std::hex << int(fill);
+    }
+    it->~Iter();
+  }
 }

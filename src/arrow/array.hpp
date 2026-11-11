@@ -169,6 +169,9 @@ class ArrowChunkedArray {
 
    public:
     explicit View(std::vector<View> views) {
+      if (views.empty()) {
+        Log::Fatal("Cannot concatenate an empty list of Arrow views");
+      }
       type_ = views[0].type_;
       schema_ = views[0].schema_;
       for (auto it = views.begin(), end = views.end(); it != end; ++it) {
@@ -192,9 +195,18 @@ class ArrowChunkedArray {
         Log::Fatal("Expected struct type for array, got %s", ArrowTypeString(type_));
       }
 
+      if (field_idx < 0 || field_idx >= schema_->n_children) {
+        Log::Fatal("Field index %s is out of range for a struct with %s fields",
+                   std::to_string(field_idx).c_str(), std::to_string(schema_->n_children).c_str());
+      }
+
       std::vector<const struct ArrowArray*> chunk_ptrs;
       chunk_ptrs.reserve(chunks_.size());
       for (const auto& chunk : chunks_) {
+        if (field_idx >= chunk->n_children) {
+          Log::Fatal("Arrow chunk has %s children, fewer than its schema's %s",
+                     std::to_string(chunk->n_children).c_str(), std::to_string(schema_->n_children).c_str());
+        }
         chunk_ptrs.push_back(chunk->children[field_idx]);
       }
 
