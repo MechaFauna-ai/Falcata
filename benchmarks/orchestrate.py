@@ -78,6 +78,9 @@ def load_done(results):
                     r = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                fields = ("library", "dataset", "regime", "kind", "status")
+                if not isinstance(r, dict) or not all(isinstance(r.get(field), str) for field in fields):
+                    continue
                 done[(r["library"], r["dataset"], r["regime"], r["kind"])] = r["status"]
     return done
 
