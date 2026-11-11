@@ -1996,7 +1996,7 @@ class Dataset:
         num_per_col_ptr, _, _ = _c_int_array(num_per_col)
 
         self._handle = ctypes.c_void_p()
-        params_str = _param_dict_to_str(self.get_params())
+        params_str = _param_dict_to_str(self.params)
         _safe_call(
             _LIB.FLC_DatasetCreateFromSampledColumn(
                 ctypes.cast(sample_col_ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_double))),
@@ -2026,7 +2026,7 @@ class Dataset:
             Dataset object.
         """
         nrow, ncol = data.shape
-        data = data.reshape(data.size)
+        data, _ = _np2d_to_np1d(np.ascontiguousarray(data))
         data_ptr, data_type, _ = _c_float_array(data)
 
         _safe_call(
@@ -2319,7 +2319,8 @@ class Dataset:
 
         # Select sampled rows, transpose to column order.
         sampled = np.array(list(self._yield_row_from_seqlist(seqs, indices)))
-        sampled = sampled.T
+        sampled_1d, _ = _np2d_to_np1d(sampled)
+        sampled = sampled_1d.astype(np.float64).reshape(sampled.shape).T
 
         filtered = []
         filtered_idx = []
