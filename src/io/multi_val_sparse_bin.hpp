@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace Falcata {
@@ -26,7 +27,7 @@ class MultiValSparseBin : public MultiValBin {
         num_bin_(num_bin),
         estimate_element_per_row_(estimate_element_per_row) {
     row_ptr_.resize(num_data_ + 1, 0);
-    INDEX_T estimate_num_data = static_cast<INDEX_T>(estimate_element_per_row_ * 1.1 * num_data_);
+    INDEX_T estimate_num_data = EstimateEntries(estimate_element_per_row_, num_data_);
     int num_threads = OMP_NUM_THREADS();
     if (num_threads > 1) {
       t_data_.resize(num_threads - 1);
@@ -53,6 +54,10 @@ class MultiValSparseBin : public MultiValBin {
   void PushOneRow(int tid, data_size_t idx,
                   const std::vector<uint32_t>& values) override {
     const int pre_alloc_size = 50;
+    if (values.size() > static_cast<size_t>(std::numeric_limits<INDEX_T>::max())) {
+      Log::Fatal("Sparse multi-value bin: row %d has %zu entries, more than its %zu-byte row index can count",
+                 idx, values.size(), sizeof(INDEX_T));
+    }
     row_ptr_[idx + 1] = static_cast<INDEX_T>(values.size());
     if (tid == 0) {
       if (t_size_[tid] + row_ptr_[idx + 1] >
@@ -76,6 +81,18 @@ class MultiValSparseBin : public MultiValBin {
 
   void MergeData(const INDEX_T* sizes) {
     Common::FunctionTimer fun_time("MultiValSparseBin::MergeData", global_timer);
+    // The index type was picked from an estimate of the entry count; rows that
+    // hold more entries than it can count would wrap the offsets below.
+    uint64_t total_entries = 0;
+    for (data_size_t i = 0; i < num_data_; ++i) {
+      total_entries += static_cast<uint64_t>(row_ptr_[i + 1]);
+    }
+    if (total_entries > static_cast<uint64_t>(std::numeric_limits<INDEX_T>::max())) {
+      Log::Fatal("Sparse multi-value bin holds %llu entries, more than its %zu-byte row index can count "
+                 "(the index type was chosen from an estimated %.4f entries per row over %d rows)",
+                 static_cast<unsigned long long>(total_entries), sizeof(INDEX_T), estimate_element_per_row_,
+                 num_data_);
+    }
     for (data_size_t i = 0; i < num_data_; ++i) {
       row_ptr_[i + 1] += row_ptr_[i];
     }
@@ -311,8 +328,7 @@ class MultiValSparseBin : public MultiValBin {
     num_data_ = num_data;
     num_bin_ = num_bin;
     estimate_element_per_row_ = estimate_element_per_row;
-    INDEX_T estimate_num_data =
-        static_cast<INDEX_T>(estimate_element_per_row_ * 1.1 * num_data_);
+    INDEX_T estimate_num_data = EstimateEntries(estimate_element_per_row_, num_data_);
     size_t npart = 1 + t_data_.size();
     INDEX_T avg_num_data = static_cast<INDEX_T>(estimate_num_data / npart);
     if (static_cast<INDEX_T>(data_.size()) < avg_num_data) {
@@ -420,6 +436,17 @@ class MultiValSparseBin : public MultiValBin {
   #endif  // USE_CUDA
 
  private:
+  // estimate * 1.1 * num_data as INDEX_T, clamped to its range (the cast of a
+  // larger double is undefined); the buffers grow as rows are pushed anyway
+  static INDEX_T EstimateEntries(double estimate_element_per_row, data_size_t num_data) {
+    const double estimate = estimate_element_per_row * 1.1 * num_data;
+    const double max_index = static_cast<double>(std::numeric_limits<INDEX_T>::max());
+    if (!(estimate > 0.0)) {
+      return 0;
+    }
+    return estimate >= max_index ? std::numeric_limits<INDEX_T>::max() : static_cast<INDEX_T>(estimate);
+  }
+
   data_size_t num_data_;
   int num_bin_;
   double estimate_element_per_row_;
