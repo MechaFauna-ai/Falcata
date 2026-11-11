@@ -299,6 +299,14 @@ Tree* SerialTreeLearner::FitByExistingTree(const Tree* old_tree, const score_t* 
     OMP_LOOP_EX_END();
   }
   OMP_THROW_EX();
+  SetRefitLeafOutputs(tree.get(), leaf_sum_grad, leaf_sum_hess, leaf_cnt);
+  return tree.release();
+}
+
+void SerialTreeLearner::SetRefitLeafOutputs(Tree* tree, const std::vector<double>& leaf_sum_grad,
+                                            const std::vector<double>& leaf_sum_hess,
+                                            const std::vector<data_size_t>& leaf_cnt) const {
+  const int num_leaves = tree->num_leaves();
   // With path smoothing, training shrinks each leaf toward its parent node's output
   // (the root's output is unsmoothed, every deeper node is smoothed toward its own
   // parent). Rebuild those node outputs from the refit data, top-down. The tree's
@@ -377,7 +385,6 @@ Tree* SerialTreeLearner::FitByExistingTree(const Tree* old_tree, const score_t* 
     auto new_leaf_output = output * tree->shrinkage();
     tree->SetLeafOutput(i, config_->refit_decay_rate * old_leaf_output + (1.0 - config_->refit_decay_rate) * new_leaf_output);
   }
-  return tree.release();
 }
 
 Tree* SerialTreeLearner::FitByExistingTree(const Tree* old_tree, const std::vector<int>& leaf_pred,
