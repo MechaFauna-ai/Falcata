@@ -1112,6 +1112,7 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_block_count.cu
         tests/cpp_tests/test_cuda_tree_from_host.cu
         tests/cpp_tests/test_cuda_vector_capacity.cu
+        tests/cpp_tests/test_cuda_hist_slab_size.cu
         tests/cpp_tests/test_cuda_learner_destructors.cu
         tests/cpp_tests/test_cuda_multi_target_index.cu
         tests/cpp_tests/test_cuda_prefix_sum_exclusive.cu
