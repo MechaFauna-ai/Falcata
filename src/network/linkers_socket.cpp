@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <string>
 #include <thread>
@@ -155,6 +156,9 @@ void Linkers::ListenThread(int incoming_cnt) {
     int size_of_int = static_cast<int>(sizeof(int));
     while (read_cnt < size_of_int) {
       int cur_read_cnt = handler.Recv(buffer + read_cnt, size_of_int - read_cnt);
+      if (cur_read_cnt == 0) {
+        Log::Fatal("A connecting machine closed the connection before sending its rank");
+      }
       read_cnt += cur_read_cnt;
     }
     int* ptr_in_rank = reinterpret_cast<int*>(buffer);
@@ -187,7 +191,32 @@ void Linkers::Construct() {
   // start listener
   listener_->SetTimeout(socket_timeout_ * 1000 * 60);
   listener_->Listen(incoming_cnt);
-  std::thread listen_thread(&Linkers::ListenThread, this, incoming_cnt);
+  // a failure in the listening thread is carried out of it and rethrown here once it has finished
+  std::exception_ptr listen_error;
+  std::thread listen_thread([this, incoming_cnt, &listen_error]() {
+    try {
+      ListenThread(incoming_cnt);
+    } catch (...) {
+      listen_error = std::current_exception();
+    }
+  });
+  try {
+    ConnectToHigherRanks(need_connect);
+  } catch (...) {
+    listener_->Shutdown();  // makes a blocked accept return, so the thread finishes
+    listen_thread.join();
+    throw;
+  }
+  // wait for listener
+  listen_thread.join();
+  if (listen_error) {
+    std::rethrow_exception(listen_error);
+  }
+  // print connected linkers
+  PrintLinkers();
+}
+
+void Linkers::ConnectToHigherRanks(const std::unordered_map<int, int>& need_connect) {
   const int connect_fail_constant_factor = 20;
   const int connect_fail_retries_scale_factor = static_cast<int>(num_machines_ / connect_fail_constant_factor);
   const int connect_fail_retry_cnt = std::max(connect_fail_constant_factor, connect_fail_retries_scale_factor);
@@ -215,10 +244,6 @@ void Linkers::Construct() {
       }
     }
   }
-  // wait for listener
-  listen_thread.join();
-  // print connected linkers
-  PrintLinkers();
 }
 
 bool Linkers::CheckLinker(int rank) {
