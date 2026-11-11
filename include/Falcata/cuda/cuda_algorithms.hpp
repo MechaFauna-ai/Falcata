@@ -72,6 +72,8 @@ __device__ __forceinline__ T ShufflePrefixSumExclusive(T value, T* shared_mem_bu
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
   const uint32_t num_warp = blockDim.x / warpSize;
+  // see ShufflePrefixSum: late readers of a previous call's scratch must finish before this call's first write
+  __syncthreads();
   for (uint32_t offset = 1; offset < warpSize; offset <<= 1) {
     const T other_value = __shfl_up_sync(mask, value, offset);
     if (warpLane >= offset) {
@@ -95,6 +97,9 @@ __device__ __forceinline__ T ShufflePrefixSumExclusive(T value, T* shared_mem_bu
   __syncthreads();
   const T warp_base = warpID == 0 ? 0 : shared_mem_buffer[warpID - 1];
   const T inclusive_result = warp_base + value;
+  // every warp has read its base before any warp overwrites its slot with the hand-off below: warp w + 1 reads
+  // slot w, which warp w rewrites, and for floating types the two values can differ in the last bits
+  __syncthreads();
   // Hand-off of each warp's total to the next warp's lane 0. The buffer must be
   // indexed by warpID: for a last-lane thread warpLane is always warpSize-1, so
   // indexing by warpLane made every warp overwrite one slot, and lane 0's read
@@ -167,6 +172,9 @@ template <typename T>
 __device__ __forceinline__ T ShuffleReduceMax(T value, T* shared_mem_buffer, const size_t len) {
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
+  // As in ShuffleReduceSum: warp 0 of the previous call may still be reading
+  // the scratch slots this call's first writes overwrite.
+  __syncthreads();
   const data_size_t warp_len = min(static_cast<data_size_t>(warpSize), static_cast<data_size_t>(len) - static_cast<data_size_t>(warpID * warpSize));
   value = ShuffleReduceMaxWarp<T>(value, warp_len);
   if (warpLane == 0) {
@@ -205,13 +213,20 @@ __device__ __forceinline__ void GlobalMemoryPrefixSum(T* array, const size_t len
   __syncthreads();
 }
 
+// Every lane of the warp must call this (as for ShuffleReduceSumWarp/ShuffleReduceMaxWarp). The shuffles use the
+// full mask: a mask of only the first len lanes, while all 32 lanes execute the shuffle, is undefined behaviour for
+// the lanes outside it, and lanes inside it would read values from lanes outside it. Lane 0 returns the minimum over
+// lanes [0, len): a value shuffled down from a lane at or past len is ignored.
 template <typename T>
 __device__ __forceinline__ T ShuffleReduceMinWarp(T value, const data_size_t len) {
   if (len > 0) {
-    const uint32_t mask = (0xffffffff >> (warpSize - len));
+    const uint32_t mask = 0xffffffff;
+    const data_size_t lane = static_cast<data_size_t>(threadIdx.x % warpSize);
     for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
       const T other_value = __shfl_down_sync(mask, value, offset);
-      value = (other_value < value) ? other_value : value;
+      if (lane + offset < len) {
+        value = (other_value < value) ? other_value : value;
+      }
     }
   }
   return value;
@@ -222,6 +237,9 @@ template <typename T>
 __device__ __forceinline__ T ShuffleReduceMin(T value, T* shared_mem_buffer, const size_t len) {
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
+  // As in ShuffleReduceSum: warp 0 of the previous call may still be reading
+  // the scratch slots this call's first writes overwrite.
+  __syncthreads();
   const data_size_t warp_len = min(static_cast<data_size_t>(warpSize), static_cast<data_size_t>(len) - static_cast<data_size_t>(warpID * warpSize));
   value = ShuffleReduceMinWarp<T>(value, warp_len);
   if (warpLane == 0) {
@@ -239,7 +257,19 @@ __device__ __forceinline__ T ShuffleReduceMin(T value, T* shared_mem_buffer, con
 template <typename VAL_T, typename REDUCE_T>
 void ShuffleReduceMinGlobal(const VAL_T* values, size_t n, REDUCE_T* block_buffer);
 
-template <typename VAL_T, typename INDEX_T, bool ASCENDING>
+// Whether data index a precedes data index b in the total order the bitonic arg sorts build when STABLE: by value
+// in the final direction (ASCENDING), ties by ascending data index -- the order std::stable_sort produces. Without
+// STABLE it is the plain value comparison the sorts always used.
+template <typename VAL_T, typename INDEX_T, bool ASCENDING, bool STABLE>
+__device__ __forceinline__ bool BitonicArgSortGreater(const VAL_T* scores, const INDEX_T a, const INDEX_T b) {
+  // "greater" in the order of a descending sort: a larger value, or (STABLE) an equal value at the data index the
+  // final order puts first
+  return scores[a] > scores[b] || (STABLE && scores[a] == scores[b] && (ASCENDING ? a > b : a < b));
+}
+
+// STABLE: break ties by ascending data index in the final order (see BitonicArgSortGreater), as std::stable_sort
+// does. Off, tied values are never swapped, which keeps an all-tied input in place but is not a stable sort.
+template <typename VAL_T, typename INDEX_T, bool ASCENDING, bool STABLE = false>
 __device__ __forceinline__ void BitonicArgSort_1024(const VAL_T* scores, INDEX_T* indices, const INDEX_T num_items) {
   INDEX_T depth = 1;
   INDEX_T num_items_aligend = 1;
@@ -271,8 +301,8 @@ __device__ __forceinline__ void BitonicArgSort_1024(const VAL_T* scores, INDEX_T
           // the bitonic merge still pulls a bitonic sequence into a monotone
           // one for inputs with non-tied values.
           const bool need_swap = ascending
-              ? (scores[indices[threadIdx.x]] > scores[indices[index_to_compare]])
-              : (scores[indices[threadIdx.x]] < scores[indices[index_to_compare]]);
+              ? BitonicArgSortGreater<VAL_T, INDEX_T, ASCENDING, STABLE>(scores, indices[threadIdx.x], indices[index_to_compare])
+              : BitonicArgSortGreater<VAL_T, INDEX_T, ASCENDING, STABLE>(scores, indices[index_to_compare], indices[threadIdx.x]);
           if (need_swap) {
             const INDEX_T index = indices[threadIdx.x];
             indices[threadIdx.x] = indices[index_to_compare];
@@ -285,7 +315,7 @@ __device__ __forceinline__ void BitonicArgSort_1024(const VAL_T* scores, INDEX_T
   }
 }
 
-template <typename VAL_T, typename INDEX_T, bool ASCENDING>
+template <typename VAL_T, typename INDEX_T, bool ASCENDING, bool STABLE = false>
 __device__ __forceinline__ void BitonicArgSort_2048(const VAL_T* scores, INDEX_T* indices) {
   for (INDEX_T base = 0; base < 2048; base += 1024) {
     for (INDEX_T outer_depth = 10; outer_depth >= 1; --outer_depth) {
@@ -300,8 +330,8 @@ __device__ __forceinline__ void BitonicArgSort_2048(const VAL_T* scores, INDEX_T
           const INDEX_T index_to_compare = threadIdx.x + half_segment_length + base;
           // Strict comparison so ties are not swapped (see BitonicArgSort_1024).
           const bool need_swap = ascending
-              ? (scores[indices[threadIdx.x + base]] > scores[indices[index_to_compare]])
-              : (scores[indices[threadIdx.x + base]] < scores[indices[index_to_compare]]);
+              ? BitonicArgSortGreater<VAL_T, INDEX_T, ASCENDING, STABLE>(scores, indices[threadIdx.x + base], indices[index_to_compare])
+              : BitonicArgSortGreater<VAL_T, INDEX_T, ASCENDING, STABLE>(scores, indices[index_to_compare], indices[threadIdx.x + base]);
           if (need_swap) {
             const INDEX_T index = indices[threadIdx.x + base];
             indices[threadIdx.x + base] = indices[index_to_compare];
@@ -313,7 +343,7 @@ __device__ __forceinline__ void BitonicArgSort_2048(const VAL_T* scores, INDEX_T
     }
   }
   const unsigned int index_to_compare = threadIdx.x + 1024;
-  if (scores[indices[index_to_compare]] > scores[indices[threadIdx.x]]) {
+  if (BitonicArgSortGreater<VAL_T, INDEX_T, ASCENDING, STABLE>(scores, indices[index_to_compare], indices[threadIdx.x])) {
     const INDEX_T temp_index = indices[index_to_compare];
     indices[index_to_compare] = indices[threadIdx.x];
     indices[threadIdx.x] = temp_index;
@@ -326,7 +356,7 @@ __device__ __forceinline__ void BitonicArgSort_2048(const VAL_T* scores, INDEX_T
       const INDEX_T half_segment_index = threadIdx.x / half_segment_length;
       if (half_segment_index % 2 == 0) {
         const INDEX_T index_to_compare = threadIdx.x + half_segment_length + base;
-        if (scores[indices[threadIdx.x + base]] < scores[indices[index_to_compare]]) {
+        if (BitonicArgSortGreater<VAL_T, INDEX_T, ASCENDING, STABLE>(scores, indices[index_to_compare], indices[threadIdx.x + base])) {
           const INDEX_T index = indices[threadIdx.x + base];
           indices[threadIdx.x + base] = indices[index_to_compare];
           indices[index_to_compare] = index;
@@ -338,7 +368,7 @@ __device__ __forceinline__ void BitonicArgSort_2048(const VAL_T* scores, INDEX_T
 }
 
 // STABLE: when true, ties (equal values) are broken by ascending original data
-// index, reproducing std::stable_sort. Callers that must match a CPU stable_sort
+// index in the final order (for an ascending or a descending sort alike), reproducing std::stable_sort. Callers that must match a CPU stable_sort
 // (e.g. the categorical split finder, which sorts categories by gradient/hessian
 // ratio and where tied ratios otherwise get an arbitrary, non-CPU order) pass true.
 // It is compile-time, so non-stable callers are unaffected.
@@ -380,7 +410,7 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
             const INDEX_T other_data_index = shared_indices[other_index];
             const VAL_T this_value = shared_values[threadIdx.x];
             const VAL_T other_value = shared_values[other_index];
-            if (other_data_index < len && (this_value > other_value || (STABLE && this_value == other_value && this_data_index > other_data_index)) == ascending) {
+            if (other_data_index < len && (this_value > other_value || (STABLE && this_value == other_value && (ASCENDING ? this_data_index > other_data_index : this_data_index < other_data_index))) == ascending) {
               shared_indices[threadIdx.x] = other_data_index;
               shared_indices[other_index] = this_data_index;
               shared_values[threadIdx.x] = other_value;
@@ -399,7 +429,7 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
           const INDEX_T other_data_index = shared_indices[other_index];
           const VAL_T this_value = shared_values[threadIdx.x];
           const VAL_T other_value = shared_values[other_index];
-          if (other_data_index < len && (this_value > other_value || (STABLE && this_value == other_value && this_data_index > other_data_index)) == ascending) {
+          if (other_data_index < len && (this_value > other_value || (STABLE && this_value == other_value && (ASCENDING ? this_data_index > other_data_index : this_data_index < other_data_index))) == ascending) {
             shared_indices[threadIdx.x] = other_data_index;
             shared_indices[other_index] = this_data_index;
             shared_values[threadIdx.x] = other_value;
@@ -442,7 +472,7 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
               const INDEX_T other_data_index = indices[other_index];
               const VAL_T this_value = values[this_data_index];
               const VAL_T other_value = values[other_data_index];
-              if ((this_value > other_value || (STABLE && this_value == other_value && this_data_index > other_data_index)) == ascending) {
+              if ((this_value > other_value || (STABLE && this_value == other_value && (ASCENDING ? this_data_index > other_data_index : this_data_index < other_data_index))) == ascending) {
                 indices[this_index] = other_data_index;
                 indices[other_index] = this_data_index;
               }
@@ -466,7 +496,7 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
             const INDEX_T other_data_index = indices[other_index];
             const VAL_T this_value = values[this_data_index];
             const VAL_T other_value = values[other_data_index];
-            if ((this_value > other_value || (STABLE && this_value == other_value && this_data_index > other_data_index)) == ascending) {
+            if ((this_value > other_value || (STABLE && this_value == other_value && (ASCENDING ? this_data_index > other_data_index : this_data_index < other_data_index))) == ascending) {
               indices[this_index] = other_data_index;
               indices[other_index] = this_data_index;
             }
@@ -496,7 +526,7 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
           const INDEX_T other_data_index = shared_indices[other_index];
           const VAL_T this_value = shared_values[threadIdx.x];
           const VAL_T other_value = shared_values[other_index];
-          if (other_data_index < len && (this_value > other_value || (STABLE && this_value == other_value && this_data_index > other_data_index)) == ascending) {
+          if (other_data_index < len && (this_value > other_value || (STABLE && this_value == other_value && (ASCENDING ? this_data_index > other_data_index : this_data_index < other_data_index))) == ascending) {
             shared_indices[threadIdx.x] = other_data_index;
             shared_indices[other_index] = this_data_index;
             shared_values[threadIdx.x] = other_value;
@@ -583,18 +613,20 @@ __global__ void PercentileGlobalKernel(const VAL_T* values,
     // segment is not symmetric under reversal -- for y=[2,3,4,5] w=[4,3,2,1] it
     // interpolated between 4 and 3 (3.333) instead of 2 and 3 (2.333).
     const WEIGHT_REDUCE_T threshold = weights_prefix_sum[len - 1] * alpha;
-    __shared__ INDEX_T pos;
+    __shared__ INDEX_T found_pos;
     if (threadIdx.x == 0) {
-      pos = len;
+      found_pos = len;
     }
     __syncthreads();
     for (INDEX_T index = static_cast<INDEX_T>(threadIdx.x); index < len; index += static_cast<INDEX_T>(blockDim.x)) {
       if (weights_prefix_sum[index] > threshold && (index == 0 || weights_prefix_sum[index - 1] <= threshold)) {
-        pos = index;
+        found_pos = index;
       }
     }
     __syncthreads();
-    pos = min(pos, len - 1);
+    // a per-thread copy: every thread writing the shared value back while others read it raced (benign, but
+    // racecheck-visible)
+    const INDEX_T pos = min(found_pos, len - 1);
     if (pos == 0 || pos == len - 1) {
       // Two bugs lived here: the value was read as values[pos], skipping the
       // sort permutation every other access applies, and there was no return,
@@ -669,18 +701,20 @@ __device__ VAL_T PercentileDevice(const VAL_T* values,
     ShuffleSortedPrefixSumDevice<WEIGHT_T, REDUCE_WEIGHT_T, INDEX_T>(weights, indices, weights_prefix_sum, len);
     // see PercentileGlobalKernel: ascending sort, so the CPU threshold applies
     const REDUCE_WEIGHT_T threshold = weights_prefix_sum[len - 1] * alpha;
-    __shared__ INDEX_T pos;
+    __shared__ INDEX_T found_pos;
     if (threadIdx.x == 0) {
-      pos = len;
+      found_pos = len;
     }
     __syncthreads();
     for (INDEX_T index = static_cast<INDEX_T>(threadIdx.x); index < len; index += static_cast<INDEX_T>(blockDim.x)) {
       if (weights_prefix_sum[index] > threshold && (index == 0 || weights_prefix_sum[index - 1] <= threshold)) {
-        pos = index;
+        found_pos = index;
       }
     }
     __syncthreads();
-    pos = min(pos, len - 1);
+    // a per-thread copy: every thread writing the shared value back while others read it raced (benign, but
+    // racecheck-visible)
+    const INDEX_T pos = min(found_pos, len - 1);
     if (pos == 0 || pos == len - 1) {
       // indices[pos], not pos: values is in input order and the sort lives in
       // the permutation, which every other read here applies.

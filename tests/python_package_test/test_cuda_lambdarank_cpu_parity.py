@@ -1,11 +1,15 @@
 # coding: utf-8
-"""CUDA lambdarank must compute the CPU objective's gradients.
+"""CUDA lambdarank must train the CPU objective's models.
 
-The CPU objective weights a pair by |discount(high_rank) - discount(low_rank)| with DCGCalculator::GetDiscount,
-1 / log2(2 + rank), the same discount behind the inverse max DCG it normalizes by. Every CUDA lambdarank kernel used
-log2(2 + rank) instead, so CUDA trained a different objective. With deterministic=True the CUDA kernels accumulate in
-the CPU's pair order; the models must match the CPU's for queries handled by each kernel family (up to 1024 items,
-up to 2048, and the globally sorted kernel beyond).
+The CUDA objective computes each pair's lambda exactly as LambdarankNDCG does: the discount 1 / log2(2 + rank)
+from DCGCalculator's table, p_lambda from the CPU's precomputed sigmoid table (GetSigmoid), item weights, and the
+item order of the CPU's stable sort of the double scores. With deterministic=True it also adds every sum in the CPU's
+order, so the gradients are the CPU's bit for bit (see tests/cpp_tests/test_cuda_lambdarank_cpu_parity.cu), and
+with the same gradients the two tree learners grow the same trees.
+
+quant_mode is pinned to none: on device_type=cuda, deterministic=True resolves quant_mode=auto to fixedpoint
+(quantized gradients), which the CPU learner does not have, so the trees would differ for a reason unrelated to
+the objective.
 """
 
 import os
@@ -38,6 +42,7 @@ def _train(device, group, extra):
         "learning_rate": 0.1,
         "seed": 0,
         "num_threads": 8,
+        "quant_mode": "none",
         "verbose": -1,
         **extra,
     }
@@ -53,4 +58,5 @@ def _train(device, group, extra):
 )
 @pytest.mark.parametrize("extra", [{}, {"lambdarank_norm": False}, {"lambdarank_truncation_level": 10}])
 def test_lambdarank_matches_cpu_cuda(group, extra):
-    np.testing.assert_allclose(_train("cuda", group, extra), _train("cpu", group, extra), rtol=1e-4, atol=1e-4)
+    # the same trees: identical predictions up to the order of the float additions in prediction itself
+    np.testing.assert_allclose(_train("cuda", group, extra), _train("cpu", group, extra), rtol=0, atol=1e-12)
