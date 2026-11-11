@@ -31,3 +31,4 @@ def test_invalid_constant_recipe_preserves_fixture(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="constant trees"):
         module.freeze([name])
     assert model_file.read_text() == "original fixture"
+    assert sorted(item.name for item in directory.iterdir()) == ["model.txt"]

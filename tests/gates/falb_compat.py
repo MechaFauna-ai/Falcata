@@ -72,7 +72,6 @@ def freeze(only=None):
         if only and name not in only:
             continue
         d = FIXTURE_DIR / name
-        d.mkdir(parents=True, exist_ok=True)
         x, y, cats = make_data(name, **knobs)
         p = dict(params, verbose=-1, seed=42, num_threads=1, deterministic=True)
         ds = flc.Dataset(x, label=y, params=p, categorical_feature=cats or "auto")
@@ -83,6 +82,7 @@ def freeze(only=None):
                 f"{name}: this fixture exists to carry constant trees next to grown ones, "
                 f"but the recipe produced leaf counts {sorted(set(leaves))}"
             )
+        d.mkdir(parents=True, exist_ok=True)
         np.save(d / "X.npy", x.astype(np.float64))
         np.save(d / "preds.npy", bst.predict(x))
         bst.save_model(str(d / "model.falb"), format="falb")
