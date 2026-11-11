@@ -74,13 +74,18 @@ class MapMetric:public Metric {
 
   void CalMapAtK(std::vector<int> ks, data_size_t npos, const label_t* label,
                  const double* score, data_size_t num_data, std::vector<double>* out) const {
+    if (ks.empty()) return;
     // get sorted indices by score
     std::vector<data_size_t> sorted_idx;
     for (data_size_t i = 0; i < num_data; ++i) {
       sorted_idx.emplace_back(i);
     }
-    std::stable_sort(sorted_idx.begin(), sorted_idx.end(),
-                     [score](data_size_t a, data_size_t b) {return score[a] > score[b]; });
+    const size_t count = std::min(static_cast<size_t>(std::max(0, *std::max_element(ks.begin(), ks.end()))),
+                                  sorted_idx.size());
+    std::partial_sort(sorted_idx.begin(), sorted_idx.begin() + count, sorted_idx.end(),
+                      [score](data_size_t a, data_size_t b) {
+                        return score[a] > score[b] || (score[a] == score[b] && a < b);
+                      });
 
     int num_hit = 0;
     double sum_ap = 0.0f;

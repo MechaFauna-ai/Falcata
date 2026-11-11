@@ -801,21 +801,21 @@ inline static void ObtainMinMaxSum(const T1 *w, int nw, T1 *mi, T1 *ma, T2 *su) 
   }
 }
 
-inline static std::vector<uint32_t> EmptyBitset(int n) {
-  int size = n / 32;
-  if (n % 32 != 0) ++size;
-  return std::vector<uint32_t>(size);
+// Bit counts and positions are size_t-capable: the CEGB lazy-feature bitset
+// holds num_features * num_data bits, which can exceed INT_MAX.
+inline static std::vector<uint32_t> EmptyBitset(size_t n) {
+  return std::vector<uint32_t>(n / 32 + (n % 32 != 0 ? 1 : 0));
 }
 
 template<typename T>
 inline static void InsertBitset(std::vector<uint32_t>* vec, const T val) {
   auto& ref_v = *vec;
-  int i1 = val / 32;
-  int i2 = val % 32;
-  if (static_cast<int>(vec->size()) < i1 + 1) {
+  const size_t i1 = static_cast<size_t>(val / 32);
+  const int i2 = static_cast<int>(val % 32);
+  if (vec->size() < i1 + 1) {
     vec->resize(i1 + 1, 0);
   }
-  ref_v[i1] |= (1 << i2);
+  ref_v[i1] |= (1u << i2);
 }
 
 template<typename T>
@@ -832,13 +832,20 @@ inline static std::vector<uint32_t> ConstructBitset(const T* vals, int n) {
   return ret;
 }
 
+// n is the number of 32-bit words in bits; a negative pos is absent.
 template<typename T>
-inline static bool FindInBitset(const uint32_t* bits, int n, T pos) {
-  int i1 = pos / 32;
+inline static bool FindInBitset(const uint32_t* bits, size_t n, T pos) {
+  if constexpr (std::is_signed<T>::value) {
+    // -k / 32 is 0 for small k and -k % 32 a negative shift: test first
+    if (pos < 0) {
+      return false;
+    }
+  }
+  const size_t i1 = static_cast<size_t>(pos / 32);
   if (i1 >= n) {
     return false;
   }
-  int i2 = pos % 32;
+  const int i2 = static_cast<int>(pos % 32);
   return (bits[i1] >> i2) & 1;
 }
 
@@ -1144,9 +1151,16 @@ inline static std::vector<T> StringToArrayFast(const std::string& str, int n) {
     return std::vector<T>();
   }
   auto p_str = str.c_str();
+  auto p_end = p_str + str.size();
   __StringToTHelperFast<T, std::is_floating_point<T>::value> helper;
   std::vector<T> ret(n);
   for (int i = 0; i < n; ++i) {
+    // like Common::StringToArrayFast: a short string must not silently
+    // yield 0 (integers) or NaN (floats) for the missing values
+    p_str = Common::SkipSpaceAndTab(p_str);
+    if (p_str >= p_end) {
+      Log::Fatal("Malformed model file: not enough values in string for array of size %d", n);
+    }
     p_str = helper(p_str, &ret[i]);
   }
   return ret;

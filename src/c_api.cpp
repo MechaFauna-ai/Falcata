@@ -44,6 +44,7 @@
 #endif  // USE_CUDA
 
 #include "application/predictor.hpp"
+#include "c_api_csc_row_iterator.hpp"
 #ifndef LGB_R_BUILD
 #include "arrow/array.hpp"
 #endif  // LGB_R_BUILD
@@ -200,6 +201,7 @@ class Booster {
     boosting_.reset(Boosting::CreateBoosting(config_.boosting, nullptr, config_.device_type, config_.num_gpu));
 
     train_data_ = train_data;
+    train_data_num_total_features_ = train_data_->num_total_features();
     CreateObjectiveAndMetrics();
     // initialize the boosting
     // tree_learner=feature doubles as the CUDA multi-GPU feature-parallel
@@ -265,6 +267,7 @@ class Booster {
     if (train_data != train_data_) {
       UNIQUE_LOCK(mutex_)
       train_data_ = train_data;
+      train_data_num_total_features_ = train_data_->num_total_features();
       CreateObjectiveAndMetrics();
       // reset the boosting
       boosting_->ResetTrainingData(train_data_,
@@ -374,7 +377,8 @@ class Booster {
       Log::Fatal(
           "Cannot change ignore_column after constructed Dataset handle.");
     }
-    if (new_param.count("forcedbins_filename")) {
+    if (new_param.count("forcedbins_filename") &&
+        new_config.forcedbins_filename != old_config.forcedbins_filename) {
       Log::Fatal("Cannot change forced bins after constructed Dataset handle.");
     }
     if (new_param.count("min_data_in_leaf") &&
@@ -410,6 +414,12 @@ class Booster {
     if (param.count("device_type") == 0 && train_data_ != nullptr) {
       param["device_type"] = config_.device_type;
     }
+    // Likewise the resolved quant_mode: deterministic=true maps an unset quant_mode to fixedpoint, so a reset map
+    // without the key flipped a quant_mode=none booster to quantized training and its CUDA learner, which has no
+    // gradient discretizer, crashed in BeforeTrain (Booster.update with a custom objective resets objective=none).
+    if (param.count("quant_mode") == 0 && param.count("use_quantized_grad") == 0 && train_data_ != nullptr) {
+      param["quant_mode"] = config_.quant_mode;
+    }
     Config new_config;
     new_config.Set(param);
     if (train_data_ == nullptr && !new_config.forcedsplits_filename.empty()) {
@@ -435,6 +445,22 @@ class Booster {
       Log::Fatal("Cannot change data_sample_strategy during training");
     }
     CheckDatasetResetConfig(config_, param);
+    if (train_data_ != nullptr) {
+      // The tree learners pick the quantized or float histogram storage, the
+      // gradient discretizer and their split-search functions once, at Init:
+      // ResetConfig rebuilds none of them, so a reset may not switch
+      // quantization on, off, or between modes. Compare the config this reset
+      // would produce (quant flags can also follow from e.g. deterministic).
+      Config reset_config(config_);
+      reset_config.Set(param);
+      if (reset_config.use_quantized_grad != config_.use_quantized_grad ||
+          (config_.use_quantized_grad && reset_config.ResolvedQuantMode() != config_.ResolvedQuantMode())) {
+        Log::Fatal("Cannot change quantized training (use_quantized_grad/quant_mode: %s/%s -> %s/%s) "
+                   "by resetting parameters; construct a new Booster instead",
+                   config_.use_quantized_grad ? "true" : "false", config_.quant_mode.c_str(),
+                   reset_config.use_quantized_grad ? "true" : "false", reset_config.quant_mode.c_str());
+      }
+    }
 
     config_.Set(param);
 
@@ -486,6 +512,7 @@ class Booster {
 
   bool TrainOneIter() {
     UNIQUE_LOCK(mutex_)
+    CheckTrainDataUnchanged();
     return boosting_->TrainOneIter(nullptr, nullptr);
   }
 
@@ -496,7 +523,18 @@ class Booster {
 
   bool TrainOneIter(const score_t* gradients, const score_t* hessians) {
     UNIQUE_LOCK(mutex_)
+    CheckTrainDataUnchanged();
     return boosting_->TrainOneIter(gradients, hessians);
+  }
+
+  // The tree learner sized itself for the training Dataset's features when it was set up; features added to that
+  // Dataset afterwards (FLC_DatasetAddFeaturesFrom) would be read through those stale sizes.
+  void CheckTrainDataUnchanged() const {
+    if (train_data_ != nullptr && train_data_->num_total_features() != train_data_num_total_features_) {
+      Log::Fatal("The training Dataset gained features (%d, was %d) after this Booster was created on it; "
+                 "create a new Booster to train on the extended Dataset",
+                 train_data_->num_total_features(), train_data_num_total_features_);
+    }
   }
 
   void RollbackOneIter() {
@@ -613,7 +651,7 @@ class Booster {
     // calculate the nonzero data and indices size
     int64_t elements_size = 0;
     for (int64_t i = 0; i < static_cast<int64_t>(agg.size()); ++i) {
-      auto row_vector = agg[i];
+      const auto& row_vector = agg[i];
       for (int j = 0; j < static_cast<int>(row_vector.size()); ++j) {
         elements_size += static_cast<int64_t>(row_vector[j].size());
       }
@@ -664,7 +702,7 @@ class Booster {
     int64_t row_vector_cnt = 0;
     for (int m = 0; m < num_matrices; ++m) {
       for (int64_t i = 0; i < static_cast<int64_t>(agg.size()); ++i) {
-        auto row_vector = agg[i];
+        const auto& row_vector = agg[i];
         auto row_vector_size = row_vector[m].size();
         // keep track of the row_vector sizes for parallelization
         row_sizes[row_vector_cnt] = static_cast<int>(row_vector_size);
@@ -696,7 +734,7 @@ class Booster {
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
       for (int64_t i = 0; i < static_cast<int64_t>(agg.size()); ++i) {
         OMP_LOOP_EX_BEGIN();
-        auto row_vector = agg[i];
+        const auto& row_vector = agg[i];
         int64_t row_start_index = matrix_start_index + i;
         int64_t element_index = row_matrix_offsets[row_start_index] + matrix_offsets[m];
         int64_t indptr_loop_index = indptr_index + i;
@@ -758,7 +796,7 @@ class Booster {
     for (int m = 0; m < num_matrices; ++m) {
       column_sizes[m] = std::vector<int64_t>(num_output_cols, 0);
       for (int64_t i = 0; i < static_cast<int64_t>(agg.size()); ++i) {
-        auto row_vector = agg[i];
+        const auto& row_vector = agg[i];
         for (auto it = row_vector[m].begin(); it != row_vector[m].end(); ++it) {
           column_sizes[m][it->first] += 1;
         }
@@ -809,7 +847,7 @@ class Booster {
     for (int m = 0; m < num_matrices; ++m) {
       OMP_LOOP_EX_BEGIN();
       for (int64_t i = 0; i < static_cast<int64_t>(agg.size()); ++i) {
-        auto row_vector = agg[i];
+        const auto& row_vector = agg[i];
         for (auto it = row_vector[m].begin(); it != row_vector[m].end(); ++it) {
           int64_t col_idx = it->first;
           int64_t element_index = column_start_indices[m][col_idx] +
@@ -939,7 +977,8 @@ class Booster {
     int idx = 0;
     for (const auto& metric : train_metric_) {
       for (const auto& name : metric->GetName()) {
-        if (idx < len) {
+        // buffer_len == 0 is a size query: nothing may be written
+        if (idx < len && buffer_len > 0) {
           std::memcpy(out_strs[idx], name.c_str(), std::min(name.size() + 1, buffer_len));
           out_strs[idx][buffer_len - 1] = '\0';
         }
@@ -955,7 +994,8 @@ class Booster {
     *out_buffer_len = 0;
     int idx = 0;
     for (const auto& name : boosting_->FeatureNames()) {
-      if (idx < len) {
+      // buffer_len == 0 is a size query: nothing may be written
+      if (idx < len && buffer_len > 0) {
         std::memcpy(out_strs[idx], name.c_str(), std::min(name.size() + 1, buffer_len));
         out_strs[idx][buffer_len - 1] = '\0';
       }
@@ -971,6 +1011,8 @@ class Booster {
   // nullptr for a model-loaded Booster: the filename constructor never
   // attaches training data
   const Dataset* train_data_ = nullptr;
+  /*! \brief train_data_->num_total_features() when the boosting was set up on it */
+  int train_data_num_total_features_ = 0;
   std::unique_ptr<Boosting> boosting_;
   std::unique_ptr<SingleRowPredictorInner> single_row_predictor_[PREDICTOR_TYPES];
 
@@ -1045,29 +1087,51 @@ std::function<std::vector<std::pair<int, double>>(T idx)>
 RowFunctionFromCSR(const void* indptr, int indptr_type, const int32_t* indices,
                    const void* data, int data_type, int64_t nindptr, int64_t nelem);
 
-// Row iterator of on column for CSC matrix
-class CSC_RowIterator {
- public:
-  CSC_RowIterator(const void* col_ptr, int col_ptr_type, const int32_t* indices,
-                  const void* data, int data_type, int64_t ncol_ptr, int64_t nelem, int col_idx);
-  ~CSC_RowIterator() {}
-  // return value at idx, only can access by ascent order
-  double Get(int idx);
-  // return next non-zero pair, if index < 0, means no more data
-  std::pair<int, double> NextNonZero();
+// CSC_RowIterator: row iterator of one column of a CSC matrix, in c_api_csc_row_iterator.hpp
 
- private:
-  int nonzero_idx_ = 0;
-  int cur_idx_ = -1;
-  double cur_val_ = 0.0f;
-  bool is_end_ = false;
-  std::function<std::pair<int, double>(int idx)> iter_fun_;
-};
+// Dataset rows and the prediction row loops are 32-bit (data_size_t / int):
+// reject larger counts instead of letting them wrap.
+static int32_t CheckedRowCount(int64_t nrow, const char* what) {
+  if (nrow < 0 || nrow > static_cast<int64_t>(INT32_MAX)) {
+    Log::Fatal("%s: %s rows is outside the supported range [0, INT32_MAX]", what,
+               std::to_string(nrow).c_str());
+  }
+  return static_cast<int32_t>(nrow);
+}
+
+// One iterator per column of a CSC matrix, built by a prediction thread on its first row; out of line so the
+// per-row check in the prediction loop stays a single compare.
+#if defined(__GNUC__)
+__attribute__((noinline, cold))
+#endif
+static void BuildCSCColumnIterators(std::vector<CSC_RowIterator>* iterators, const void* col_ptr, int col_ptr_type,
+                             const int32_t* indices, const void* data, int data_type, int64_t ncol_ptr,
+                             int64_t nelem) {
+  const int ncol = static_cast<int>(ncol_ptr - 1);
+  iterators->reserve(ncol);
+  for (int j = 0; j < ncol; ++j) {
+    iterators->emplace_back(col_ptr, col_ptr_type, indices, data, data_type, ncol_ptr, nelem, j);
+  }
+}
 
 // start of c_api functions
 
+namespace {
+// One buffer per thread for the whole library: FLC_SetLastError and FLC_GetLastError are both defined here, so a
+// caller in another translation unit or library (the SWIG wrapper) sets the message FLC_GetLastError returns.
+constexpr size_t kLastErrorBufferSize = 512;
+char* LastErrorMsg() {
+  static THREAD_LOCAL char err_msg[kLastErrorBufferSize] = "Everything is fine";
+  return err_msg;
+}
+}  // namespace
+
 const char* FLC_GetLastError() {
   return LastErrorMsg();
+}
+
+void FLC_SetLastError(const char* msg) {
+  snprintf(LastErrorMsg(), kLastErrorBufferSize, "%s", msg);
 }
 
 int FLC_DumpParamAliases(int64_t buffer_len,
@@ -1298,6 +1362,11 @@ int FLC_DatasetCreateByReference(const DatasetHandle reference,
   const Dataset* reference_dataset = reinterpret_cast<const Dataset*>(reference);
   ret->CreateValid(reference_dataset);
   ret->InitByReference(nrows, reference_dataset);
+  if (ret->has_raw()) {
+    // size it once here: the push functions then resize to the same size, a
+    // no-op, so concurrent streaming pushes never reallocate the raw buffer
+    ret->ResizeRaw(nrows);
+  }
   *out = ret.release();
   API_END();
 }
@@ -1332,6 +1401,11 @@ int FLC_DatasetInitStreaming(DatasetHandle dataset,
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto num_data = p_dataset->num_data();
   p_dataset->InitStreaming(num_data, has_weights, has_init_scores, has_queries, nclasses, nthreads, omp_max_threads);
+  if (p_dataset->has_raw()) {
+    // allocate before the (possibly concurrent) pushes, which then only
+    // resize to the same size
+    p_dataset->ResizeRaw(num_data);
+  }
   p_dataset->set_wait_for_manual_finish(true);
   API_END();
 }
@@ -1346,7 +1420,7 @@ int FLC_DatasetPushRows(DatasetHandle dataset,
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromDenseMatrix(data, nrow, ncol, data_type, 1);
   if (p_dataset->has_raw()) {
-    p_dataset->ResizeRaw(p_dataset->num_numeric_features() + nrow);
+    p_dataset->ResizeRaw(p_dataset->num_data());
   }
   OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
@@ -1385,7 +1459,7 @@ int FLC_DatasetPushRowsWithMetadata(DatasetHandle dataset,
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromDenseMatrix(data, nrow, ncol, data_type, 1);
   if (p_dataset->has_raw()) {
-    p_dataset->ResizeRaw(p_dataset->num_numeric_features() + nrow);
+    p_dataset->ResizeRaw(p_dataset->num_data());
   }
 
   const int max_omp_threads = p_dataset->omp_max_threads() > 0 ? p_dataset->omp_max_threads() : OMP_NUM_THREADS();
@@ -1423,9 +1497,9 @@ int FLC_DatasetPushRowsByCSR(DatasetHandle dataset,
   API_BEGIN();
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
-  int32_t nrow = static_cast<int32_t>(nindptr - 1);
+  int32_t nrow = CheckedRowCount(nindptr - 1, "CSR rows to push");
   if (p_dataset->has_raw()) {
-    p_dataset->ResizeRaw(p_dataset->num_numeric_features() + nrow);
+    p_dataset->ResizeRaw(p_dataset->num_data());
   }
   OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
@@ -1466,9 +1540,9 @@ int FLC_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
   }
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
-  int32_t nrow = static_cast<int32_t>(nindptr - 1);
+  int32_t nrow = CheckedRowCount(nindptr - 1, "CSR rows to push");
   if (p_dataset->has_raw()) {
-    p_dataset->ResizeRaw(p_dataset->num_numeric_features() + nrow);
+    p_dataset->ResizeRaw(p_dataset->num_data());
   }
 
   const int max_omp_threads = p_dataset->omp_max_threads() > 0 ? p_dataset->omp_max_threads() : OMP_NUM_THREADS();
@@ -1545,10 +1619,11 @@ int FLC_DatasetCreateFromMats(int32_t nmat,
 #endif  // USE_CUDA
   const double missing_sentinel = DenseMissingSentinel(config, data_type);
   std::unique_ptr<Dataset> ret;
-  int32_t total_nrow = 0;
+  int64_t total_nrow64 = 0;
   for (int j = 0; j < nmat; ++j) {
-    total_nrow += nrow[j];
+    total_nrow64 += CheckedRowCount(nrow[j], "FLC_DatasetCreateFromMats matrix");
   }
+  const int32_t total_nrow = CheckedRowCount(total_nrow64, "FLC_DatasetCreateFromMats total");
 
   std::vector<std::function<std::vector<double>(int row_idx)>> get_row_fun;
   for (int j = 0; j < nmat; ++j) {
@@ -1700,59 +1775,134 @@ int64_t DenseMatDTypeSize(int data_type) {
   }
 }
 
+// pushes rows rows of a host chunk (row major, or column major with a
+// leading dimension of rows) through the normal host push loops
+void PushHostChunk(Dataset* ret, const void* chunk, int data_type, int32_t rows, int32_t ncol,
+                   int is_row_major, data_size_t dst_row, double missing_sentinel) {
+  if (data_type == C_API_DTYPE_INT8) {
+    ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
+  } else if (data_type == C_API_DTYPE_INT16) {
+    ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
+  } else if (data_type == C_API_DTYPE_UINT8) {
+    ret->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
+  } else if (data_type == C_API_DTYPE_UINT16) {
+    ret->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
+  } else if (data_type == C_API_DTYPE_FLOAT16) {
+    ret->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
+  } else {
+    auto get_row_fun = RowFunctionFromDenseMatrix(chunk, rows, ncol, data_type, is_row_major);
+    OMP_INIT_EX();
+    #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+    for (int i = 0; i < rows; ++i) {
+      OMP_LOOP_EX_BEGIN();
+      const int tid = omp_get_thread_num();
+      auto one_row = get_row_fun(i);
+      ret->PushOneRow(tid, dst_row + i, one_row);
+      OMP_LOOP_EX_END();
+    }
+    OMP_THROW_EX();
+  }
+}
+
 // fallback for device matrices the GPU binner cannot handle: stream row
 // chunks to the host and feed them through the normal host push loops.
 // base_row offsets the pushed rows so the matrix may be one chunk of a
-// larger dataset build.
+// larger dataset build. The copies go through two pinned buffers on their
+// own stream, so the copy of the next chunk overlaps the push of this one;
+// if pinned memory is not available it copies each chunk synchronously.
 void PushDeviceMatrixViaHost(Dataset* ret, const void* data, int data_type,
                              int64_t elem_size, int32_t nrow, int32_t ncol,
                              int is_row_major, data_size_t base_row,
                              double missing_sentinel) {
   const int64_t row_bytes = static_cast<int64_t>(ncol) * elem_size;
   const int32_t chunk_rows = static_cast<int32_t>(std::max<int64_t>(
-      1, std::min<int64_t>(nrow, (256LL << 20) / std::max<int64_t>(row_bytes, 1))));
-  std::vector<uint8_t> host_chunk(static_cast<size_t>(chunk_rows) * row_bytes);
+      1, std::min<int64_t>(nrow, (32LL << 20) / std::max<int64_t>(row_bytes, 1))));
+  const size_t chunk_bytes = static_cast<size_t>(chunk_rows) * row_bytes;
   const uint8_t* base = static_cast<const uint8_t*>(data);
-  for (int32_t start_row = 0; start_row < nrow; start_row += chunk_rows) {
-    const int32_t rows = std::min(chunk_rows, nrow - start_row);
+  // copies rows [start_row, start_row + rows) into dst (on stream, or synchronously when stream is null)
+  const auto copy_rows = [&](void* dst, int32_t start_row, int32_t rows, cudaStream_t stream) {
     if (is_row_major) {
-      CUDASUCCESS_OR_FATAL(cudaMemcpy(
-          host_chunk.data(), base + static_cast<int64_t>(start_row) * row_bytes,
-          static_cast<size_t>(rows) * row_bytes, cudaMemcpyDeviceToHost));
-    } else {
-      CUDASUCCESS_OR_FATAL(cudaMemcpy2D(
-          host_chunk.data(), static_cast<size_t>(rows) * elem_size,
-          base + static_cast<int64_t>(start_row) * elem_size,
-          static_cast<size_t>(nrow) * elem_size,
-          static_cast<size_t>(rows) * elem_size, static_cast<size_t>(ncol),
-          cudaMemcpyDeviceToHost));
-    }
-    const void* chunk = host_chunk.data();
-    const data_size_t dst_row = base_row + start_row;
-    if (data_type == C_API_DTYPE_INT8) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
-    } else if (data_type == C_API_DTYPE_INT16) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
-    } else if (data_type == C_API_DTYPE_UINT8) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
-    } else if (data_type == C_API_DTYPE_UINT16) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
-    } else if (data_type == C_API_DTYPE_FLOAT16) {
-      ret->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
-    } else {
-      auto get_row_fun = RowFunctionFromDenseMatrix(chunk, rows, ncol, data_type, is_row_major);
-      OMP_INIT_EX();
-      #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
-      for (int i = 0; i < rows; ++i) {
-        OMP_LOOP_EX_BEGIN();
-        const int tid = omp_get_thread_num();
-        auto one_row = get_row_fun(i);
-        ret->PushOneRow(tid, dst_row + i, one_row);
-        OMP_LOOP_EX_END();
+      const void* src = base + static_cast<int64_t>(start_row) * row_bytes;
+      const size_t bytes = static_cast<size_t>(rows) * row_bytes;
+      if (stream != nullptr) {
+        CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToHost, stream));
+      } else {
+        CUDASUCCESS_OR_FATAL(cudaMemcpy(dst, src, bytes, cudaMemcpyDeviceToHost));
       }
-      OMP_THROW_EX();
+    } else {
+      const void* src = base + static_cast<int64_t>(start_row) * elem_size;
+      const size_t dpitch = static_cast<size_t>(rows) * elem_size;
+      const size_t spitch = static_cast<size_t>(nrow) * elem_size;
+      if (stream != nullptr) {
+        CUDASUCCESS_OR_FATAL(cudaMemcpy2DAsync(dst, dpitch, src, spitch, dpitch, static_cast<size_t>(ncol),
+                                               cudaMemcpyDeviceToHost, stream));
+      } else {
+        CUDASUCCESS_OR_FATAL(cudaMemcpy2D(dst, dpitch, src, spitch, dpitch, static_cast<size_t>(ncol),
+                                          cudaMemcpyDeviceToHost));
+      }
+    }
+  };
+  void* pinned[2] = {nullptr, nullptr};
+  cudaStream_t stream = nullptr;
+  cudaEvent_t copied[2] = {nullptr, nullptr};
+  bool overlap = nrow > chunk_rows;
+  if (overlap) {
+    overlap = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess &&
+              cudaHostAlloc(&pinned[0], chunk_bytes, cudaHostAllocDefault) == cudaSuccess &&
+              cudaHostAlloc(&pinned[1], chunk_bytes, cudaHostAllocDefault) == cudaSuccess &&
+              cudaEventCreateWithFlags(&copied[0], cudaEventDisableTiming) == cudaSuccess &&
+              cudaEventCreateWithFlags(&copied[1], cudaEventDisableTiming) == cudaSuccess;
+    if (!overlap) {
+      cudaGetLastError();  // clear the failed allocation; fall back to synchronous copies
     }
   }
+  const auto release = [&]() {
+    if (stream != nullptr) {
+      cudaStreamSynchronize(stream);
+    }
+    for (int b = 0; b < 2; ++b) {
+      if (copied[b] != nullptr) {
+        cudaEventDestroy(copied[b]);
+      }
+      if (pinned[b] != nullptr) {
+        cudaFreeHost(pinned[b]);
+      }
+    }
+    if (stream != nullptr) {
+      cudaStreamDestroy(stream);
+    }
+  };
+  try {
+    if (overlap) {
+      copy_rows(pinned[0], 0, chunk_rows, stream);
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(copied[0], stream));
+      int buffer = 0;
+      for (int32_t start_row = 0; start_row < nrow; start_row += chunk_rows, buffer ^= 1) {
+        const int32_t rows = std::min(chunk_rows, nrow - start_row);
+        const int32_t next_row = start_row + chunk_rows;
+        if (next_row < nrow) {
+          // the other buffer's chunk was pushed in the previous iteration
+          copy_rows(pinned[buffer ^ 1], next_row, std::min(chunk_rows, nrow - next_row), stream);
+          CUDASUCCESS_OR_FATAL(cudaEventRecord(copied[buffer ^ 1], stream));
+        }
+        CUDASUCCESS_OR_FATAL(cudaEventSynchronize(copied[buffer]));
+        PushHostChunk(ret, pinned[buffer], data_type, rows, ncol, is_row_major, base_row + start_row,
+                      missing_sentinel);
+      }
+    } else {
+      std::vector<uint8_t> host_chunk(chunk_bytes);
+      for (int32_t start_row = 0; start_row < nrow; start_row += chunk_rows) {
+        const int32_t rows = std::min(chunk_rows, nrow - start_row);
+        copy_rows(host_chunk.data(), start_row, rows, nullptr);
+        PushHostChunk(ret, host_chunk.data(), data_type, rows, ncol, is_row_major, base_row + start_row,
+                      missing_sentinel);
+      }
+    }
+  } catch (...) {
+    release();
+    throw;
+  }
+  release();
 }
 
 }  // anonymous namespace
@@ -2321,7 +2471,7 @@ int FLC_DatasetCreateFromCSR(const void* indptr,
   CheckNoMissingSentinel(config, "CSR");
   std::unique_ptr<Dataset> ret;
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
-  int32_t nrow = static_cast<int32_t>(nindptr - 1);
+  int32_t nrow = CheckedRowCount(nindptr - 1, "FLC_DatasetCreateFromCSR");
   if (reference == nullptr) {
     // sample data first
     auto sample_indices = CreateSampleIndices(nrow, config);
@@ -2332,7 +2482,9 @@ int FLC_DatasetCreateFromCSR(const void* indptr,
       auto idx = sample_indices[i];
       auto row = get_row_fun(static_cast<int>(idx));
       for (std::pair<int, double>& inner_data : row) {
-        CHECK_LT(inner_data.first, num_col);
+        if (inner_data.first < 0 || inner_data.first >= num_col) {
+          Log::Fatal("CSR column index %d is outside [0, %d)", inner_data.first, static_cast<int>(num_col));
+        }
         if (std::fabs(inner_data.second) > kZeroThreshold || std::isnan(inner_data.second)) {
           sample_values[inner_data.first].emplace_back(inner_data.second);
           sample_idx[inner_data.first].emplace_back(static_cast<int>(i));
@@ -2402,7 +2554,9 @@ int FLC_DatasetCreateFromCSRFunc(void* get_row_funptr,
       auto idx = sample_indices[i];
       get_row_fun(static_cast<int>(idx), buffer);
       for (std::pair<int, double>& inner_data : buffer) {
-        CHECK_LT(inner_data.first, num_col);
+        if (inner_data.first < 0 || inner_data.first >= num_col) {
+          Log::Fatal("CSR column index %d is outside [0, %d)", inner_data.first, static_cast<int>(num_col));
+        }
         if (std::fabs(inner_data.second) > kZeroThreshold || std::isnan(inner_data.second)) {
           sample_values[inner_data.first].emplace_back(inner_data.second);
           sample_idx[inner_data.first].emplace_back(static_cast<int>(i));
@@ -2462,7 +2616,7 @@ int FLC_DatasetCreateFromCSC(const void* col_ptr,
   OMP_SET_NUM_THREADS(config.num_threads);
   CheckNoMissingSentinel(config, "CSC");
   std::unique_ptr<Dataset> ret;
-  int32_t nrow = static_cast<int32_t>(num_row);
+  int32_t nrow = CheckedRowCount(num_row, "FLC_DatasetCreateFromCSC");
   if (reference == nullptr) {
     // sample data first
     auto sample_indices = CreateSampleIndices(nrow, config);
@@ -2496,6 +2650,9 @@ int FLC_DatasetCreateFromCSC(const void* col_ptr,
     ret.reset(new Dataset(nrow));
     ret->CreateValid(
       reinterpret_cast<const Dataset*>(reference));
+    if (ret->has_raw()) {
+      ret->ResizeRaw(nrow);
+    }
   }
   OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
@@ -2703,7 +2860,8 @@ int FLC_DatasetGetFeatureNames(
   auto inside_feature_name = dataset->feature_names();
   *num_feature_names = static_cast<int>(inside_feature_name.size());
   for (int i = 0; i < *num_feature_names; ++i) {
-    if (i < len) {
+    // buffer_len == 0 is a size query: nothing may be written
+    if (i < len && buffer_len > 0) {
       std::memcpy(feature_names[i], inside_feature_name[i].c_str(), std::min(inside_feature_name[i].size() + 1, buffer_len));
       feature_names[i][buffer_len - 1] = '\0';
     }
@@ -3224,7 +3382,7 @@ int FLC_BoosterPredictForCSR(BoosterHandle handle,
   OMP_SET_NUM_THREADS(config.num_threads);
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
-  int nrow = static_cast<int>(nindptr - 1);
+  int nrow = CheckedRowCount(nindptr - 1, "FLC_BoosterPredictForCSR");
   ref_booster->Predict(start_iteration, num_iteration, predict_type, nrow, static_cast<int>(num_col), get_row_fun,
                        config, out_result, out_len);
   API_END();
@@ -3267,17 +3425,17 @@ int FLC_BoosterPredictSparseOutput(BoosterHandle handle,
   } else if (matrix_type == C_API_MATRIX_TYPE_CSC) {
     int num_threads = OMP_NUM_THREADS();
     int ncol = static_cast<int>(nindptr - 1);
+    // one iterator per column for each thread, built by the thread on its first row (in parallel, and only
+    // for the threads that get rows)
     std::vector<std::vector<CSC_RowIterator>> iterators(num_threads, std::vector<CSC_RowIterator>());
-    for (int i = 0; i < num_threads; ++i) {
-      for (int j = 0; j < ncol; ++j) {
-        iterators[i].emplace_back(indptr, indptr_type, indices, data, data_type, nindptr, nelem, j);
-      }
-    }
     std::function<std::vector<std::pair<int, double>>(int64_t row_idx)> get_row_fun =
-      [&iterators, ncol](int64_t i) {
+      [&iterators, ncol, indptr, indptr_type, indices, data, data_type, nindptr, nelem](int64_t i) {
       std::vector<std::pair<int, double>> one_row;
       one_row.reserve(ncol);
       const int tid = omp_get_thread_num();
+      if (iterators[tid].empty()) {
+        BuildCSCColumnIterators(&iterators[tid], indptr, indptr_type, indices, data, data_type, nindptr, nelem);
+      }
       for (int j = 0; j < ncol; ++j) {
         auto val = iterators[tid][j].Get(static_cast<int>(i));
         if (std::fabs(val) > kZeroThreshold || std::isnan(val)) {
@@ -3412,17 +3570,17 @@ int FLC_BoosterPredictForCSC(BoosterHandle handle,
   OMP_SET_NUM_THREADS(config.num_threads);
   int num_threads = OMP_NUM_THREADS();
   int ncol = static_cast<int>(ncol_ptr - 1);
+  // one iterator per column for each thread, built by the thread on its first row (in parallel, and only for
+  // the threads that get rows)
   std::vector<std::vector<CSC_RowIterator>> iterators(num_threads, std::vector<CSC_RowIterator>());
-  for (int i = 0; i < num_threads; ++i) {
-    for (int j = 0; j < ncol; ++j) {
-      iterators[i].emplace_back(col_ptr, col_ptr_type, indices, data, data_type, ncol_ptr, nelem, j);
-    }
-  }
   std::function<std::vector<std::pair<int, double>>(int row_idx)> get_row_fun =
-      [&iterators, ncol](int i) {
+      [&iterators, ncol, col_ptr, col_ptr_type, indices, data, data_type, ncol_ptr, nelem](int i) {
         std::vector<std::pair<int, double>> one_row;
         one_row.reserve(ncol);
         const int tid = omp_get_thread_num();
+        if (iterators[tid].empty()) {
+          BuildCSCColumnIterators(&iterators[tid], col_ptr, col_ptr_type, indices, data, data_type, ncol_ptr, nelem);
+        }
         for (int j = 0; j < ncol; ++j) {
           auto val = iterators[tid][j].Get(i);
           if (std::fabs(val) > kZeroThreshold || std::isnan(val)) {
@@ -3431,7 +3589,7 @@ int FLC_BoosterPredictForCSC(BoosterHandle handle,
         }
         return one_row;
       };
-  ref_booster->Predict(start_iteration, num_iteration, predict_type, static_cast<int>(num_row), ncol, get_row_fun, config,
+  ref_booster->Predict(start_iteration, num_iteration, predict_type, CheckedRowCount(num_row, "FLC_BoosterPredictForCSC"), ncol, get_row_fun, config,
                        out_result, out_len);
   API_END();
 }
@@ -3440,15 +3598,21 @@ int FLC_BoosterValidateFeatureNames(BoosterHandle handle,
                                      const char** data_names,
                                      int data_num_features) {
   API_BEGIN();
-  int booster_num_features;
-  size_t out_buffer_len;
-  FLC_BoosterGetFeatureNames(handle, 0, &booster_num_features, 0, &out_buffer_len, nullptr);
+  int booster_num_features = 0;
+  size_t out_buffer_len = 0;
+  // the nested calls record their own error message; pass the failure on
+  if (FLC_BoosterGetFeatureNames(handle, 0, &booster_num_features, 0, &out_buffer_len, nullptr) != 0) {
+    return -1;
+  }
   if (booster_num_features != data_num_features) {
     Log::Fatal("Model was trained on %d features, but got %d input features to predict.", booster_num_features, data_num_features);
   }
   std::vector<std::vector<char>> tmp_names(booster_num_features, std::vector<char>(out_buffer_len));
   std::vector<char*> booster_names = Vector2Ptr(&tmp_names);
-  FLC_BoosterGetFeatureNames(handle, data_num_features, &booster_num_features, out_buffer_len, &out_buffer_len, booster_names.data());
+  if (FLC_BoosterGetFeatureNames(handle, data_num_features, &booster_num_features, out_buffer_len, &out_buffer_len,
+                                 booster_names.data()) != 0) {
+    return -1;
+  }
   for (int i = 0; i < booster_num_features; ++i) {
     if (strcmp(data_names[i], booster_names[i]) != 0) {
       Log::Fatal("Expected '%s' at position %d but found '%s'", booster_names[i], i, data_names[i]);
@@ -3958,7 +4122,9 @@ void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_i
                   sizeof(T) * ncol);
     }
   }
-  // contiguous column stripes per block, sample-index outer loop for locality;
+  // contiguous column stripes per block, sample-index outer loop: local for
+  // row-major (gathered) sources; column-major sources are read with stride
+  // nrow per sample, so the loop order favours them less;
   // block-indexed (not omp_get_num_threads()-based) so no-OpenMP builds and
   // smaller-than-requested teams stay correct
   const int num_col_blocks = OMP_NUM_THREADS();
@@ -4188,7 +4354,8 @@ std::function<std::pair<int, double>(int idx)> IterateFunctionFromCSC_helper(con
 
 std::function<std::pair<int, double>(int idx)>
 IterateFunctionFromCSC(const void* col_ptr, int col_ptr_type, const int32_t* indices, const void* data, int data_type, int64_t ncol_ptr, int64_t , int col_idx) {
-  CHECK(col_idx < ncol_ptr && col_idx >= 0);
+  // ptr[col_idx + 1] is read below, so col_idx must leave room for it
+  CHECK(col_idx >= 0 && col_idx < ncol_ptr - 1);
   if (data_type == C_API_DTYPE_FLOAT32) {
     if (col_ptr_type == C_API_DTYPE_INT32) {
       return IterateFunctionFromCSC_helper<float, int32_t>(col_ptr, indices, data, col_idx);
@@ -4209,24 +4376,6 @@ IterateFunctionFromCSC(const void* col_ptr, int col_ptr_type, const int32_t* ind
 CSC_RowIterator::CSC_RowIterator(const void* col_ptr, int col_ptr_type, const int32_t* indices,
                                  const void* data, int data_type, int64_t ncol_ptr, int64_t nelem, int col_idx) {
   iter_fun_ = IterateFunctionFromCSC(col_ptr, col_ptr_type, indices, data, data_type, ncol_ptr, nelem, col_idx);
-}
-
-double CSC_RowIterator::Get(int idx) {
-  while (idx > cur_idx_ && !is_end_) {
-    auto ret = iter_fun_(nonzero_idx_);
-    if (ret.first < 0) {
-      is_end_ = true;
-      break;
-    }
-    cur_idx_ = ret.first;
-    cur_val_ = ret.second;
-    ++nonzero_idx_;
-  }
-  if (idx == cur_idx_) {
-    return cur_val_;
-  } else {
-    return 0.0f;
-  }
 }
 
 std::pair<int, double> CSC_RowIterator::NextNonZero() {

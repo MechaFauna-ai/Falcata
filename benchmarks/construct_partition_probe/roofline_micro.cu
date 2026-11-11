@@ -2,7 +2,12 @@
 // Measures sustained streaming read+write (copy) and pure read (reduce) GB/s.
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <cuda_runtime.h>
+
+// a failed allocation or launch must stop the probe rather than print bandwidth from invalid pointers
+#define CHECK(x) do { cudaError_t check_err = (x); if (check_err != cudaSuccess) { \
+  std::printf("CUDA error %s at line %d\n", cudaGetErrorString(check_err), __LINE__); std::exit(1); } } while (0)
 
 __global__ void copy_kernel(const float4* __restrict__ in, float4* __restrict__ out, size_t n) {
   size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -22,28 +27,28 @@ int main() {
   size_t bytes = (size_t)2 * 1024 * 1024 * 1024;  // 2 GiB per buffer
   size_t n = bytes / sizeof(float4);
   float4 *in, *out;
-  cudaMalloc(&in, bytes); cudaMalloc(&out, bytes);
-  cudaMemset(in, 1, bytes); cudaMemset(out, 0, bytes);
+  CHECK(cudaMalloc(&in, bytes)); CHECK(cudaMalloc(&out, bytes));
+  CHECK(cudaMemset(in, 1, bytes)); CHECK(cudaMemset(out, 0, bytes));
   int block = 256; int grid = 0;
-  cudaDeviceProp p; cudaGetDeviceProperties(&p, 0);
+  cudaDeviceProp p; CHECK(cudaGetDeviceProperties(&p, 0));
   grid = p.multiProcessorCount * 32;
-  cudaEvent_t s, e; cudaEventCreate(&s); cudaEventCreate(&e);
+  cudaEvent_t s, e; CHECK(cudaEventCreate(&s)); CHECK(cudaEventCreate(&e));
   const int iters = 50;
   // warmup
   for (int i=0;i<5;i++) copy_kernel<<<grid,block>>>(in,out,n);
-  cudaDeviceSynchronize();
-  cudaEventRecord(s);
+  CHECK(cudaGetLastError()); CHECK(cudaDeviceSynchronize());
+  CHECK(cudaEventRecord(s));
   for (int i=0;i<iters;i++) copy_kernel<<<grid,block>>>(in,out,n);
-  cudaEventRecord(e); cudaEventSynchronize(e);
-  float ms=0; cudaEventElapsedTime(&ms,s,e);
+  CHECK(cudaGetLastError()); CHECK(cudaEventRecord(e)); CHECK(cudaEventSynchronize(e));
+  float ms=0; CHECK(cudaEventElapsedTime(&ms,s,e));
   double gbps_copy = (double)bytes*2*iters / (ms*1e-3) / 1e9;  // read+write
   // read-only
   for (int i=0;i<5;i++) read_kernel<<<grid,block>>>(in,n,out);
-  cudaDeviceSynchronize();
-  cudaEventRecord(s);
+  CHECK(cudaGetLastError()); CHECK(cudaDeviceSynchronize());
+  CHECK(cudaEventRecord(s));
   for (int i=0;i<iters;i++) read_kernel<<<grid,block>>>(in,n,out);
-  cudaEventRecord(e); cudaEventSynchronize(e);
-  cudaEventElapsedTime(&ms,s,e);
+  CHECK(cudaGetLastError()); CHECK(cudaEventRecord(e)); CHECK(cudaEventSynchronize(e));
+  CHECK(cudaEventElapsedTime(&ms,s,e));
   double gbps_read = (double)bytes*iters / (ms*1e-3) / 1e9;
   printf("SM count=%d\n", p.multiProcessorCount);
   printf("COPY (r+w) sustained: %.1f GB/s\n", gbps_copy);

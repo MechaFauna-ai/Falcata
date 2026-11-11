@@ -62,17 +62,11 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::InitLinear(const Dataset* train_data,
       break;
     }
   }
-  // preallocate the matrix used to calculate linear model coefficients
-  int max_num_feat = std::min(max_leaves, this->train_data_->num_numeric_features());
-  XTHX_.clear();
-  XTg_.clear();
-  for (int i = 0; i < max_leaves; ++i) {
-    // store only upper triangular half of matrix as an array, in row-major order
-    // this requires (max_num_feat + 1) * (max_num_feat + 2) / 2 entries (including the constant terms of the regression)
-    // we add another 8 to ensure cache lines are not shared among processors
-    XTHX_.push_back(std::vector<double>((max_num_feat + 1) * (max_num_feat + 2) / 2 + 8, 0));
-    XTg_.push_back(std::vector<double>(max_num_feat + 9, 0.0));
-  }
+  // Allocate matrix storage lazily from each leaf's actual feature count.
+  // Reserving num_leaves squared coefficients for every leaf and thread can
+  // otherwise dominate memory even when tree paths use only a few features.
+  XTHX_.assign(max_leaves, {});
+  XTg_.assign(max_leaves, {});
   // Prediction can temporarily lower the process-wide thread count. Retain
   // every previously allocated thread when refreshing data or leaf capacity.
   const int max_threads = std::max(OMP_NUM_THREADS(), static_cast<int>(XTHX_by_thread_.size()));
@@ -167,7 +161,8 @@ Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::FitByExistingTree(const Tree* old_tr
   bool has_nan = false;
   if (any_nan_) {
     for (int i = 0; i < tree->num_leaves() - 1 ; ++i) {
-      if (contains_nan_[this->train_data_->InnerFeatureIndex(tree->split_feature(i))]) {
+      const int inner_feature = this->train_data_->InnerFeatureIndex(tree->split_feature(i));
+      if (inner_feature >= 0 && contains_nan_[inner_feature]) {
         has_nan = true;
         break;
       }
@@ -191,7 +186,10 @@ Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::FitByExistingTree(const Tree* old_tr
 
 template <typename TREE_LEARNER_TYPE>
 void LinearTreeLearner<TREE_LEARNER_TYPE>::GetLeafMap(Tree* tree) const {
-  std::fill(leaf_map_.begin(), leaf_map_.end(), -1);
+#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) if (this->num_data_ >= 65536)
+  for (data_size_t i = 0; i < this->num_data_; ++i) {
+    leaf_map_[i] = -1;
+  }
   // map data to leaf number
   const data_size_t* ind = this->data_partition_->indices();
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(dynamic)
@@ -272,15 +270,15 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
   for (int i = 0; i < num_threads; ++i) {
     for (int leaf_num = 0; leaf_num < num_leaves; ++leaf_num) {
       size_t num_feat = leaf_features[leaf_num].size();
-      std::fill(XTHX_by_thread_[i][leaf_num].begin(), XTHX_by_thread_[i][leaf_num].begin() + (num_feat + 1) * (num_feat + 2) / 2, 0.0f);
-      std::fill(XTg_by_thread_[i][leaf_num].begin(), XTg_by_thread_[i][leaf_num].begin() + num_feat + 1, 0.0f);
+      XTHX_by_thread_[i][leaf_num].assign((num_feat + 1) * (num_feat + 2) / 2 + 8, 0.0);
+      XTg_by_thread_[i][leaf_num].assign(num_feat + 9, 0.0);
     }
   }
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int leaf_num = 0; leaf_num < num_leaves; ++leaf_num) {
     size_t num_feat = leaf_features[leaf_num].size();
-    std::fill(XTHX_[leaf_num].begin(), XTHX_[leaf_num].begin() + (num_feat + 1) * (num_feat + 2) / 2, 0.0f);
-    std::fill(XTg_[leaf_num].begin(), XTg_[leaf_num].begin() + num_feat + 1, 0.0f);
+    XTHX_[leaf_num].assign((num_feat + 1) * (num_feat + 2) / 2 + 8, 0.0);
+    XTg_[leaf_num].assign(num_feat + 9, 0.0);
   }
   std::vector<std::vector<int>> num_nonzero;
   for (int i = 0; i < num_threads; ++i) {
@@ -309,7 +307,6 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
             nan_found = true;
             break;
           }
-          num_nonzero[tid][leaf_num] += 1;
           curr_row[feat] = val;
         } else {
           curr_row[feat] = raw_data_ptr[leaf_num][feat][i];
@@ -319,6 +316,7 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
         if (nan_found) {
           continue;
         }
+        num_nonzero[tid][leaf_num] += 1;
       }
       curr_row[num_feat] = 1.0;
       float h = static_cast<float>(hessians[i]);

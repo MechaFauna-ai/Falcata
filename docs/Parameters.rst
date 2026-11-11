@@ -204,7 +204,7 @@ Core Parameters
 
    -  **Note**: can be used only in CLI version
 
--  ``valid`` :raw-html:`<a id="valid" title="Permalink to this parameter" href="#valid">&#x1F517;&#xFE0E;</a>`, default = ``""``, type = string, aliases: ``test``, ``valid_data``, ``valid_data_file``, ``test_data``, ``test_data_file``, ``valid_filenames``
+-  ``valid`` :raw-html:`<a id="valid" title="Permalink to this parameter" href="#valid">&#x1F517;&#xFE0E;</a>`, default = ``""``, type = multi-string, aliases: ``test``, ``valid_data``, ``valid_data_file``, ``test_data``, ``test_data_file``, ``valid_filenames``
 
    -  path(s) of validation/test data, Falcata will output metrics for these data
 
