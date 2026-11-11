@@ -59,6 +59,7 @@ void Application::LoadParameters(int argc, char** argv) {
   }
   // read parameters from config file
   bool config_file_ok = true;
+  bool config_file_exists = true;
   if (all_params.count("config") > 0) {
     TextReader<size_t> config_reader(all_params["config"][0].c_str(), false);
     config_reader.ReadAllLines();
@@ -76,13 +77,18 @@ void Application::LoadParameters(int argc, char** argv) {
       }
     } else {
       config_file_ok = false;
+      config_file_exists = VirtualFileWriter::Exists(all_params["config"][0]);
     }
   }
   Config::SetVerbosity(all_params);
   // de-duplicate params
   Config::KeepFirstValues(all_params, &params);
   if (!config_file_ok) {
-    Log::Warning("Config file %s doesn't exist, will ignore", params["config"].c_str());
+    if (config_file_exists) {
+      Log::Warning("Config file %s is empty, will ignore", params["config"].c_str());
+    } else {
+      Log::Warning("Config file %s doesn't exist, will ignore", params["config"].c_str());
+    }
   }
   ParameterAlias::KeyAliasTransform(&params);
   config_.Set(params);
@@ -169,8 +175,9 @@ void Application::LoadData() {
   }
   auto end_time = std::chrono::high_resolution_clock::now();
   // output used time on each iteration
+  // pass a double, not a duration object, through the printf-style varargs
   Log::Info("Finished loading data in %f seconds",
-            std::chrono::duration<double, std::milli>(end_time - start_time) * 1e-3);
+            std::chrono::duration<double>(end_time - start_time).count());
 }
 
 void Application::InitTrain() {
