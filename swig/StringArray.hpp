@@ -9,6 +9,7 @@
 #define FALCATA_SWIG_STRINGARRAY_HPP_
 
 #include <algorithm>
+#include <cstring>
 #include <new>
 #include <string>
 #include <vector>
@@ -33,6 +34,9 @@ class StringArray {
         _array(num_elements + 1, nullptr) {
         _allocate_strings(num_elements, string_size);
     }
+
+    StringArray(const StringArray&) = delete;
+    StringArray& operator=(const StringArray&) = delete;
 
     ~StringArray() {
         _release_strings();
