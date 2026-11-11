@@ -139,6 +139,14 @@ TEST(LinkersSendRecv, BadHandshakeFailsTheSetup) {
   ASSERT_EQ(setup.wait_for(std::chrono::seconds(30)), std::future_status::ready);
   EXPECT_EQ(setup.get(), "threw");
   close(fd);
+  // the failed setup closed its listener: nothing accepts connections on the port any more
+  const int again = socket(AF_INET, SOCK_STREAM, 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = htons(static_cast<uint16_t>(p1));
+  EXPECT_NE(connect(again, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
+  close(again);
 }
 
 #endif  // defined(__linux__) && defined(USE_SOCKET)

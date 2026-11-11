@@ -52,18 +52,29 @@ Linkers::Linkers(Config config) {
   }
   // construct listener
   listener_ = std::unique_ptr<TcpSocket>(new TcpSocket());
-  TryBind(local_listen_port_);
+  try {
+    TryBind(local_listen_port_);
 
-  for (int i = 0; i < num_machines_; ++i) {
-    linkers_.push_back(nullptr);
+    for (int i = 0; i < num_machines_; ++i) {
+      linkers_.push_back(nullptr);
+    }
+
+    // construct communication topo
+    bruck_map_ = BruckMap::Construct(rank_, num_machines_);
+    recursive_halving_map_ = RecursiveHalvingMap::Construct(rank_, num_machines_);
+
+    // construct linkers
+    Construct();
+  } catch (...) {
+    // the destructor does not run for a constructor that throws: close what was opened, so a retry can bind again
+    listener_->Close();
+    for (auto& link : linkers_) {
+      if (link != nullptr) {
+        link->Close();
+      }
+    }
+    throw;
   }
-
-  // construct communication topo
-  bruck_map_ = BruckMap::Construct(rank_, num_machines_);
-  recursive_halving_map_ = RecursiveHalvingMap::Construct(rank_, num_machines_);
-
-  // construct linkers
-  Construct();
   // free listener
   listener_->Close();
   is_init_ = true;
@@ -157,6 +168,7 @@ void Linkers::ListenThread(int incoming_cnt) {
     while (read_cnt < size_of_int) {
       int cur_read_cnt = handler.Recv(buffer + read_cnt, size_of_int - read_cnt);
       if (cur_read_cnt == 0) {
+        handler.Close();
         Log::Fatal("A connecting machine closed the connection before sending its rank");
       }
       read_cnt += cur_read_cnt;
@@ -164,6 +176,7 @@ void Linkers::ListenThread(int incoming_cnt) {
     int* ptr_in_rank = reinterpret_cast<int*>(buffer);
     int in_rank = *ptr_in_rank;
     if (in_rank < 0 || in_rank >= num_machines_) {
+      handler.Close();
       Log::Fatal("Invalid rank %d found during initialization of linkers. The world size is %d.", in_rank, num_machines_);
     }
     // add new socket
