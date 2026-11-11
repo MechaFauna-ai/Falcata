@@ -1066,6 +1066,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_int_histogram.cpp
       tests/cpp_tests/test_leaf_splits.cpp
       tests/cpp_tests/test_linear_prediction_extra_coefficients.cpp
+      tests/cpp_tests/test_linkers.cpp
       tests/cpp_tests/test_linkers_sendrecv.cpp
       tests/cpp_tests/test_loaded_binary_objective.cpp
       tests/cpp_tests/test_loaded_tree_dataset_score.cpp
