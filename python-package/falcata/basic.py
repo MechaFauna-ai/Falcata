@@ -904,7 +904,8 @@ def _dump_pandas_categorical(
 
 
 def _falb_payload_end(file: Any, header: bytes, size: int) -> Optional[int]:
-    # FALB v1: 32-byte header followed by 40-byte section entries.
+    # FALB v1 (FALB::kVersion in src/boosting/falb.h): 32-byte header
+    # followed by 40-byte section entries.
     # Categories are appended after all stored section payloads.
     if len(header) != 32 or int.from_bytes(header[4:8], "little") != 1:
         return None
