@@ -1960,27 +1960,11 @@ FALCATA_C_EXPORT int FLC_GetMaxThreads(int* out);
 #endif
 
 /*!
- * \brief Handle of error message.
- * \return Error message
- */
-static char* LastErrorMsg() { static THREAD_LOCAL char err_msg[512] = "Everything is fine"; return err_msg; }
-
-#ifdef _MSC_VER
-  #pragma warning(disable : 4996)
-#endif
-/*!
- * \brief Set string message of the last error.
+ * \brief Set string message of the last error, as returned by ``FLC_GetLastError`` on the same thread.
  * \note
- * This will call unsafe ``sprintf`` when compiled using C standards before C99.
+ * The message is kept per thread and truncated to 511 characters.
  * \param msg Error message
  */
-INLINE_FUNCTION void FLC_SetLastError(const char* msg) {
-#if !defined(__cplusplus) && (!defined(__STDC__) || (__STDC_VERSION__ < 199901L))
-  sprintf(LastErrorMsg(), "%s", msg);  /* NOLINT(runtime/printf) */
-#else
-  const int err_buf_len = 512;
-  snprintf(LastErrorMsg(), err_buf_len, "%s", msg);
-#endif
-}
+FALCATA_C_EXPORT void FLC_SetLastError(const char* msg);
 
 #endif  /* FALCATA_INCLUDE_FALCATA_C_API_H_ */

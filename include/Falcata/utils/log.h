@@ -40,10 +40,14 @@ namespace Falcata {
 #endif
 
 #ifndef CHECK
-#define CHECK(condition)                                                    \
-  if (!(condition))                                                         \
-    Log::Fatal("Check failed: " #condition " at %s, line %d .\n", __FILE__, \
-               __LINE__);
+// do/while(0) makes the macro a single statement, so CHECK(x); is safe as the
+// body of an unbraced if/else (the old bare if bound a following else to it)
+#define CHECK(condition)                                                        \
+  do {                                                                          \
+    if (!(condition))                                                           \
+      Log::Fatal("Check failed: " #condition " at %s, line %d .\n", __FILE__,   \
+                 __LINE__);                                                     \
+  } while (0)
 #endif
 
 #ifndef CHECK_EQ
@@ -71,10 +75,12 @@ namespace Falcata {
 #endif
 
 #ifndef CHECK_NOTNULL
-#define CHECK_NOTNULL(pointer)                                         \
-  if ((pointer) == nullptr)                                            \
-    Falcata::Log::Fatal(#pointer " Can't be NULL at %s, line %d .\n", \
-                         __FILE__, __LINE__);
+#define CHECK_NOTNULL(pointer)                                           \
+  do {                                                                   \
+    if ((pointer) == nullptr)                                            \
+      Falcata::Log::Fatal(#pointer " Can't be NULL at %s, line %d .\n", \
+                           __FILE__, __LINE__);                          \
+  } while (0)
 #endif
 
 enum class LogLevel : int {

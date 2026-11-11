@@ -61,7 +61,11 @@ def check():
         return 1
     golden = json.loads(GOLDEN_PATH.read_text())
     bad = 0
-    for d in fixture_dirs():
+    fixtures = fixture_dirs()
+    for name in sorted(set(golden) - {d.name for d in fixtures}):
+        print(f"  FAIL  {name}: golden entry has no fixture directory")
+        bad += 1
+    for d in fixtures:
         want = golden.get(d.name)
         if want is None:
             print(f"  FAIL  {d.name}: fixture has no golden entry -- run --lock and review")
