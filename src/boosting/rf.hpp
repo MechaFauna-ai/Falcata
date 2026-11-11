@@ -9,6 +9,7 @@
 #include <Falcata/boosting.h>
 #include <Falcata/falcata_plan.h>
 #include <Falcata/metric.h>
+#include <Falcata/network.h>
 
 #include <algorithm>
 #include <string>
@@ -177,6 +178,10 @@ class RF : public GBDT {
     // the device buffers under the device objective (rf_device_objective), else gradients_ and hessians_
     gradients = gradients_pointer_;
     hessians = hessians_pointer_;
+    // Distributed learners exchange histograms inside Train: every machine must make the same
+    // grow-or-skip decision, so an empty bag counts only when it is empty on all of them.
+    const data_size_t global_bag_data_cnt =
+        Network::num_machines() > 1 ? Network::GlobalSyncUpBySum(bag_data_cnt) : bag_data_cnt;
     for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
       std::unique_ptr<Tree> new_tree(new Tree(2, false, false));
       size_t offset = static_cast<size_t>(cur_tree_id)* num_data_;
@@ -199,7 +204,7 @@ class RF : public GBDT {
         // small dataset can get an empty bag: a grown root would be 0/0 = NaN) or when the
         // dataset has no usable feature (the learner has no histograms; GBDT has the same
         // guard). The tree then keeps output 0 and carries the class bias alone.
-        grown = bag_data_cnt > 0 && train_data_->num_features() > 0;
+        grown = global_bag_data_cnt > 0 && train_data_->num_features() > 0;
         if (grown) {
           new_tree.reset(tree_learner_->Train(grad, hess, false));
         }
