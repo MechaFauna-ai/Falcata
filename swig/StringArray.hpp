@@ -35,6 +35,9 @@ class StringArray {
         _allocate_strings(num_elements, string_size);
     }
 
+    StringArray(const StringArray&) = delete;
+    StringArray& operator=(const StringArray&) = delete;
+
     ~StringArray() {
         _release_strings();
     }
