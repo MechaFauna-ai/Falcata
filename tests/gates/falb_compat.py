@@ -20,6 +20,7 @@ saved model outlives the library version that wrote it.
 import json
 import sys
 from pathlib import Path
+from zlib import crc32
 
 import numpy as np
 
@@ -46,7 +47,7 @@ SHAPES = {
 
 
 def make_data(name, nan_frac=0.0, cat_cols=0, n=3000, m=8):
-    rng = np.random.default_rng(abs(hash(name)) % 100_000)
+    rng = np.random.default_rng(crc32(name.encode("utf-8")) % 100_000)
     x = rng.standard_normal((n, m))
     for j in range(cat_cols):
         x[:, j] = rng.integers(0, 40, size=n)

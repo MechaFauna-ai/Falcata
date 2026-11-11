@@ -11,6 +11,7 @@ grow policies) REFUSE rather than silently converting to something else.
 """
 
 import sys
+from zlib import crc32
 
 import catboost as cb
 import numpy as np
@@ -19,7 +20,7 @@ from falcata.importers import from_catboost
 
 
 def case(name, loss, depth=4, iters=25, n=3000, m=6, nan_frac=0.0, cls=False):
-    rng = np.random.default_rng(abs(hash(name)) % 10_000)
+    rng = np.random.default_rng(crc32(name.encode("utf-8")) % 10_000)
     X = rng.standard_normal((n, m))
     if nan_frac:
         X[rng.random((n, m)) < nan_frac] = np.nan
