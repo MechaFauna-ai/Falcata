@@ -10,7 +10,10 @@ Timing semantics (reported separately, because they differ per library):
 - ``construct_s``: building the library's training data structure —
   ``lgb.Dataset`` (binning happens here), ``xgb.QuantileDMatrix`` (quantile
   sketch), ``catboost.Pool`` (thin wrapper; CatBoost quantizes inside fit).
-- ``train_s``: the boosting loop, including any remaining device transfer.
+- ``train_s``: model setup and the boosting loop, including any remaining
+  device transfer. For LightGBM-family curve runs it also includes validation
+  Dataset creation and registration; for CatBoost curve runs it includes
+  test Pool conversion and creation (quantization occurs inside fit).
 - ``curve`` runs additionally evaluate the held-out set every
   ``eval_every`` iterations; their timings are NOT comparable to plain runs
   (CatBoost's curve time axis is linearly approximated — no per-iteration
@@ -27,7 +30,7 @@ import time
 import traceback
 
 import numpy as np
-from common import ALL_LIBRARIES, CACHE_DIR, DATASETS, REGIMES, RUNS_JSONL, SEED
+from common import ALL_LIBRARIES, CACHE_DIR, DATASETS, REGIMES, RUNS_JSONL, SEED, valid_run_record
 
 NUM_THREADS = int(os.environ.get("FALCATA_BENCH_THREADS", "0")) or os.cpu_count()
 
@@ -48,14 +51,63 @@ except Exception:
 
 
 class ResourceMonitor:
-    """Polls peak GPU memory (nvidia-smi) and host RSS in a thread."""
+    """Poll peak GPU memory and host RSS.
+
+    Multi-GPU hosts require FALCATA_BENCH_GPU_ID (nvidia-smi index or UUID),
+    or a GPU UUID in CUDA_VISIBLE_DEVICES, to avoid ambiguous ordinal maps.
+    """
 
     def __init__(self, interval=0.25):
         self.interval = interval
+        self._gpu_id = os.environ.get("FALCATA_BENCH_GPU_ID") or None
+        self._gpu_uuid_resolved = False
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if (visible or "").split(",")[0].strip().startswith("MIG-") or (self._gpu_id or "").startswith("MIG-"):
+            raise ValueError("MIG per-instance GPU memory telemetry is unsupported by this benchmark")
+        if self._gpu_id is None and visible is not None:
+            first = visible.split(",")[0].strip()
+            if first.startswith("GPU-"):
+                self._gpu_id = first
+            elif not first or first == "-1":
+                self._gpu_id = ""  # CUDA is disabled: monitor only host RSS.
+            elif first != "0":
+                raise ValueError("Select a GPU UUID or set FALCATA_BENCH_GPU_ID to its nvidia-smi ID")
         self.gpu_peak_mb = 0
         self.rss_peak_mb = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _gpu_memory_mb(self):
+        if self._gpu_id == "":
+            return 0
+        if self._gpu_id and self._gpu_id.startswith("GPU-") and not self._gpu_uuid_resolved:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return None
+            matches = [row.strip() for row in result.stdout.splitlines() if row.strip().startswith(self._gpu_id)]
+            if len(matches) != 1:
+                raise ValueError("GPU UUID must match exactly one device")
+            self._gpu_id = matches[0]
+            self._gpu_uuid_resolved = True
+        command = ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"]
+        if self._gpu_id is not None:
+            command.append(f"--id={self._gpu_id}")
+        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            return None
+        rows = result.stdout.strip().splitlines()
+        if len(rows) > 1:
+            raise ValueError("Multiple GPUs: select a GPU UUID or set FALCATA_BENCH_GPU_ID")
+        try:
+            return int(rows[0]) if rows else None
+        except ValueError:
+            return None  # Optional memory telemetry can be unavailable (e.g. [N/A]).
 
     def _run(self):
         import psutil
@@ -63,18 +115,9 @@ class ResourceMonitor:
         proc = psutil.Process()
         while not self._stop.is_set():
             try:
-                out = subprocess.run(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=memory.used",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                ).stdout.strip()
-                self.gpu_peak_mb = max(self.gpu_peak_mb, int(out.splitlines()[0]))
+                memory = self._gpu_memory_mb()
+                if memory is not None:
+                    self.gpu_peak_mb = max(self.gpu_peak_mb, memory)
             except Exception:
                 pass
             try:
@@ -90,6 +133,13 @@ class ResourceMonitor:
             self._stop.wait(self.interval)
 
     def __enter__(self):
+        # Validate ambiguous multi-GPU selection before any timed work starts.
+        try:
+            memory = self._gpu_memory_mb()
+        except (FileNotFoundError, subprocess.SubprocessError):
+            memory = None
+        if memory is not None:
+            self.gpu_peak_mb = max(self.gpu_peak_mb, memory)
         self._thread.start()
         return self
 
@@ -223,8 +273,9 @@ def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
 
     ``backend`` is "fil" when cuML's Forest Inference Library served the
     predictions and "cpu" otherwise. Falcata falls back to the CPU predictor
-    silently (FIL off, cuML missing, or a conversion failure), so the first
-    slab is sent through the FIL entry point directly to learn which one ran.
+    when FIL is off, missing, or unusable. Check its cached model before
+    staging; the first slab still probes the FIL entry point to confirm the
+    backend, and a failed probe reuses the original host slab for CPU scoring.
     """
     try:
         import cupy as cp  # noqa: PLC0415
@@ -236,27 +287,41 @@ def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
         to_device = to_host = None
     n = x_te.shape[0]
 
+    def host_slab(start):
+        return np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
+
     def slab(start):
-        host = np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
+        host = host_slab(start)
         return to_device(host) if cp is not None else host
 
     def as_numpy(preds):
         return to_host(preds) if cp is not None and not isinstance(preds, np.ndarray) else preds
 
-    first = slab(0)
+    fil_predict = getattr(bst, "_fil_predict", None)
+    best_iteration = getattr(bst, "best_iteration", -1)
+    num_iteration = best_iteration if best_iteration > 0 else -1
+    if cp is not None:
+        params = getattr(bst, "params", None) or {}
+        device = str(params.get("device_type", params.get("device", ""))).lower()
+        fil_model = getattr(bst, "_fil_model", None)
+        if fil_predict is None or os.environ.get("FALCATA_FIL", "1") == "0" or device not in ("cuda", "gpu"):
+            cp = None
+        elif fil_model is not None and fil_model(0, num_iteration, False) is None:
+            cp = None
+    first_host = host_slab(0)
+    first = to_device(first_host) if cp is not None else first_host
     backend = "cpu"
     out = []
-    fil_predict = getattr(bst, "_fil_predict", None)
     if fil_predict is not None:
-        num_iteration = bst.best_iteration if bst.best_iteration > 0 else -1
         probe = fil_predict(data=first, start_iteration=0, num_iteration=num_iteration, raw_score=False)
         if probe is not None:
             backend = "fil"
             out.append(as_numpy(probe))
     if not out:
         # the CPU predictor reads host memory; a device slab would be a round trip
-        out.append(bst.predict(as_numpy(first) if cp is not None else first))
+        out.append(bst.predict(first_host))
         cp = None
+    del first_host, first
     for start in range(chunk_rows, n, chunk_rows):
         out.append(as_numpy(bst.predict(slab(start))))
     return (out[0] if len(out) == 1 else np.concatenate(out), backend)
@@ -613,7 +678,7 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=None):
                 "regression": "RMSE",
                 "numerai": "RMSE",
             }[task]
-            series = vals.get(want, vals[next(iter(vals))])
+            series = vals[want]
             n = len(series)
             # metric_period=eval_every already makes catboost record ONLY every
             # eval_every-th iteration, so `series` IS the subsampled curve --
@@ -669,7 +734,7 @@ def recorded_cells(path, library, dataset):
                     r = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if r.get("library") == library and r.get("dataset") == dataset:
+                if valid_run_record(r) and r["library"] == library and r["dataset"] == dataset:
                     done[(r["regime"], r["kind"])] = r["status"]
     return done
 

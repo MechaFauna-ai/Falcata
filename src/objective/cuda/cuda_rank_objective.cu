@@ -11,6 +11,7 @@
 #include "cuda_rank_objective.hpp"
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_random.hpp>
 #include <cub/block/block_reduce.cuh>
 #include <random>
 #include <algorithm>
@@ -667,56 +668,71 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Sorted_Deterministic(
     const double sum_lambdas = shared_sum_lambdas;
     const double norm_factor = (norm && sum_lambdas > 0) ? (log2(1.0 + sum_lambdas) / sum_lambdas) : 1.0;
 
-    // Phase B: parallelize over output slots, iterate (i, j) in CPU order.
-    for (data_size_t slot = static_cast<data_size_t>(threadIdx.x);
-         slot < query_item_count; slot += static_cast<data_size_t>(blockDim.x)) {
+    // Phase B: one output slot per thread, the slot's pairs accumulated in CPU order. The slot at sorted rank r
+    // takes part in the pairs (i, r) for i < min(r, num_items_i) and, when r < num_items_i, (r, j) for j > r; the CPU
+    // loop (i ascending, then j ascending) reaches them in exactly that order, so visiting only those O(T + n) pairs
+    // gives the same sums as scanning all O(T * n) pairs of the query for each slot.
+    const auto pair_contribution = [&](const data_size_t i, const data_size_t j, const data_size_t slot,
+                                       score_t* sum_lambda, score_t* sum_hessian) {
+      if (cuda_label_pointer[cuda_item_indices_buffer_pointer[i]] == cuda_label_pointer[cuda_item_indices_buffer_pointer[j]]) {
+        return;
+      }
+      data_size_t high_rank, low_rank;
+      if (cuda_label_pointer[cuda_item_indices_buffer_pointer[i]] > cuda_label_pointer[cuda_item_indices_buffer_pointer[j]]) {
+        high_rank = i;
+        low_rank = j;
+      } else {
+        high_rank = j;
+        low_rank = i;
+      }
+      const data_size_t high = cuda_item_indices_buffer_pointer[high_rank];
+      const data_size_t low = cuda_item_indices_buffer_pointer[low_rank];
+      const double high_score = cuda_scores_pointer[high];
+      const double high_label_gain = label_gain_ptr[static_cast<int>(cuda_label_pointer[high])];
+      const double high_discount = log2(2.0f + high_rank);
+      const double low_score = cuda_scores_pointer[low];
+      const double low_label_gain = label_gain_ptr[static_cast<int>(cuda_label_pointer[low])];
+      const double low_discount = log2(2.0f + low_rank);
+      const double delta_score = high_score - low_score;
+      const double dcg_gap = high_label_gain - low_label_gain;
+      const double paired_discount = fabs(high_discount - low_discount);
+      double delta_pair_NDCG = dcg_gap * paired_discount * inverse_max_dcg;
+      if (norm && best_score != worst_score) {
+        delta_pair_NDCG /= (0.01f + fabs(delta_score));
+      }
+      double p_lambda = 1.0f / (1.0f + exp(sigmoid * delta_score));
+      double p_hessian = p_lambda * (1.0f - p_lambda);
+      p_lambda *= -sigmoid * delta_pair_NDCG;
+      p_hessian *= sigmoid * sigmoid * delta_pair_NDCG;
+      if (slot == low) {
+        *sum_lambda -= static_cast<score_t>(p_lambda);
+        *sum_hessian += static_cast<score_t>(p_hessian);
+      } else {
+        *sum_lambda += static_cast<score_t>(p_lambda);
+        *sum_hessian += static_cast<score_t>(p_hessian);
+      }
+    };
+    for (data_size_t r = static_cast<data_size_t>(threadIdx.x);
+         r < query_item_count; r += static_cast<data_size_t>(blockDim.x)) {
+      const data_size_t slot = cuda_item_indices_buffer_pointer[r];
       score_t sum_lambda = 0.0f;
       score_t sum_hessian = 0.0f;
-      for (data_size_t i = 0; i < num_items_i; ++i) {
-        if (cuda_scores_pointer[cuda_item_indices_buffer_pointer[i]] == kMinScore) {
-          continue;
+      if (cuda_scores_pointer[slot] != kMinScore) {
+        // (i, r): the slot as the pair's second item
+        const data_size_t i_end = min(r, num_items_i);
+        for (data_size_t i = 0; i < i_end; ++i) {
+          if (cuda_scores_pointer[cuda_item_indices_buffer_pointer[i]] == kMinScore) {
+            continue;
+          }
+          pair_contribution(i, r, slot, &sum_lambda, &sum_hessian);
         }
-        for (data_size_t j = i + 1; j < query_item_count; ++j) {
-          if (cuda_scores_pointer[cuda_item_indices_buffer_pointer[j]] == kMinScore) {
-            continue;
-          }
-          if (cuda_label_pointer[cuda_item_indices_buffer_pointer[i]] == cuda_label_pointer[cuda_item_indices_buffer_pointer[j]]) {
-            continue;
-          }
-          data_size_t high_rank, low_rank;
-          if (cuda_label_pointer[cuda_item_indices_buffer_pointer[i]] > cuda_label_pointer[cuda_item_indices_buffer_pointer[j]]) {
-            high_rank = i;
-            low_rank = j;
-          } else {
-            high_rank = j;
-            low_rank = i;
-          }
-          const data_size_t high = cuda_item_indices_buffer_pointer[high_rank];
-          const data_size_t low = cuda_item_indices_buffer_pointer[low_rank];
-          if (slot != high && slot != low) continue;
-          const double high_score = cuda_scores_pointer[high];
-          const double high_label_gain = label_gain_ptr[static_cast<int>(cuda_label_pointer[high])];
-          const double high_discount = log2(2.0f + high_rank);
-          const double low_score = cuda_scores_pointer[low];
-          const double low_label_gain = label_gain_ptr[static_cast<int>(cuda_label_pointer[low])];
-          const double low_discount = log2(2.0f + low_rank);
-          const double delta_score = high_score - low_score;
-          const double dcg_gap = high_label_gain - low_label_gain;
-          const double paired_discount = fabs(high_discount - low_discount);
-          double delta_pair_NDCG = dcg_gap * paired_discount * inverse_max_dcg;
-          if (norm && best_score != worst_score) {
-            delta_pair_NDCG /= (0.01f + fabs(delta_score));
-          }
-          double p_lambda = 1.0f / (1.0f + exp(sigmoid * delta_score));
-          double p_hessian = p_lambda * (1.0f - p_lambda);
-          p_lambda *= -sigmoid * delta_pair_NDCG;
-          p_hessian *= sigmoid * sigmoid * delta_pair_NDCG;
-          if (slot == low) {
-            sum_lambda -= static_cast<score_t>(p_lambda);
-            sum_hessian += static_cast<score_t>(p_hessian);
-          } else {
-            sum_lambda += static_cast<score_t>(p_lambda);
-            sum_hessian += static_cast<score_t>(p_hessian);
+        // (r, j): the slot as the pair's first item
+        if (r < num_items_i) {
+          for (data_size_t j = r + 1; j < query_item_count; ++j) {
+            if (cuda_scores_pointer[cuda_item_indices_buffer_pointer[j]] == kMinScore) {
+              continue;
+            }
+            pair_contribution(r, j, slot, &sum_lambda, &sum_hessian);
           }
         }
       }
@@ -1094,9 +1110,35 @@ __global__ void GetGradientsKernel_RankXENDCG_GlobalMemory(
   }
 }
 
+// one block per query: item t gets Random::NextFloat's value after t + 1 steps of the query's generator (RandInt16
+// takes bits 16-30 of the new state); thread 0 then moves the state past the query's items, as the CPU loop does
+__global__ void GenerateItemRandsKernel_RankXENDCG(const data_size_t* cuda_query_boundaries, uint32_t* query_rand_states,
+                                                   double* item_rands) {
+  const data_size_t query_index = static_cast<data_size_t>(blockIdx.x);
+  const data_size_t item_start = cuda_query_boundaries[query_index];
+  const data_size_t item_count = cuda_query_boundaries[query_index + 1] - item_start;
+  const uint32_t state = query_rand_states[query_index];
+  // every thread holds the state before thread 0 advances it below
+  __syncthreads();
+  for (data_size_t t = static_cast<data_size_t>(threadIdx.x); t < item_count; t += static_cast<data_size_t>(blockDim.x)) {
+    const uint32_t x = CUDARandom::AdvanceState(state, static_cast<uint32_t>(t) + 1u);
+    item_rands[item_start + t] = static_cast<double>(CUDARandom::FloatFromState(x));
+  }
+  if (threadIdx.x == 0) {
+    query_rand_states[query_index] = CUDARandom::AdvanceState(state, static_cast<uint32_t>(item_count));
+  }
+}
+
+void CUDARankXENDCG::LaunchGenerateItemRandsKernel() const {
+  if (num_queries_ <= 0) {
+    return;
+  }
+  GenerateItemRandsKernel_RankXENDCG<<<num_queries_, 256>>>(cuda_query_boundaries_, cuda_query_rand_states_.RawData(),
+                                                            cuda_item_rands_.RawData());
+}
+
 void CUDARankXENDCG::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
-  GenerateItemRands();
-  CopyFromHostToCUDADevice<double>(cuda_item_rands_.RawData(), item_rands_.data(), item_rands_.size(), __FILE__, __LINE__);
+  LaunchGenerateItemRandsKernel();
 
   const int num_blocks = (num_queries_ + NUM_QUERY_PER_BLOCK - 1) / NUM_QUERY_PER_BLOCK;
   if (max_items_in_query_aligned_ <= 1024) {

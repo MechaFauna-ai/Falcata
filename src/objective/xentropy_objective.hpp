@@ -274,7 +274,7 @@ class CrossEntropyLambda: public ObjectiveFunction {
   //
 
   void ConvertOutput(const double* input, double* output) const override {
-    output[0] = std::log1p(std::exp(input[0]));
+    output[0] = std::max(input[0], 0.0) + std::log1p(std::exp(-std::fabs(input[0])));
   }
 
   std::string ToString() const override {

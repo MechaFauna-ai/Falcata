@@ -99,6 +99,9 @@ class GPUTreeLearner: public SerialTreeLearner {
   */
   void AllocateGPUMemory();
 
+  /*! \brief Unmap and release buffers before changing their host storage */
+  void ReleasePinnedMemory();
+
   /*!
   * \brief Compile OpenCL GPU source code to kernel binaries
   */
