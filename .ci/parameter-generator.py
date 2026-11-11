@@ -219,7 +219,12 @@ def gen_parameter_description(
             name = param_desc["name"][0]
             default_raw = param_desc["default"][0]
             default = default_raw.strip('"') if len(default_raw.strip('"')) > 0 else default_raw
-            param_type = param_desc.get("type", param_desc["inner_type"])[0].split(":")[-1].split("<")[-1].strip(">")
+            param_type = param_desc.get("type", param_desc["inner_type"])[0].replace("std::", "")
+            containers = ""
+            while param_type.startswith("vector<") and param_type.endswith(">"):
+                containers += "multi-"
+                param_type = param_type[len("vector<") : -1]
+            param_type = containers + param_type
             options = param_desc.get("options", [])
             if len(options) > 0:
                 opts = "``, ``".join([x.strip() for x in options[0].split(",")])
