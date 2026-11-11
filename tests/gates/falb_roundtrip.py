@@ -9,6 +9,7 @@ import datetime
 import os
 import struct
 import sys
+from zlib import crc32
 
 import numpy as np
 
@@ -206,7 +207,7 @@ def leaf_counts(text):
 
 fails = 0
 for name, kw, params in CASES:
-    X, y = make_data(seed=abs(hash(name)) % 1000, **kw)
+    X, y = make_data(seed=crc32(name.encode("utf-8")) % 1000, **kw)
     if "binary" in params:
         y = (y > np.median(y)).astype(np.float64)
     n_out = 1

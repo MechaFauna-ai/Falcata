@@ -11,6 +11,7 @@ than the conversion (see falcata/importers.py).
 """
 
 import sys
+from zlib import crc32
 
 import numpy as np
 import xgboost as xgb
@@ -19,7 +20,7 @@ from falcata.importers import from_xgboost
 
 
 def case(name, objective, num_class=0, nan_frac=0.0, depth=5, rounds=25, n=4000, m=8, parallel=1):
-    rng = np.random.default_rng(abs(hash(name)) % 10_000)
+    rng = np.random.default_rng(crc32(name.encode("utf-8")) % 10_000)
     # XGBoost consumes float32 (DMatrix truncates); feed both engines the
     # SAME values so the comparison is apples to apples
     X = rng.standard_normal((n, m)).astype(np.float32)
