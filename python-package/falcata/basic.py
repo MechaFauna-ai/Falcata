@@ -4138,7 +4138,11 @@ class Booster:
             # FALB by default: same model, ~10x less to write and read. Opt out
             # with set_pickle_format("text") or FALCATA_PICKLE_FORMAT=text when
             # the pickle must be readable by stock LightGBM or older Falcata.
-            if _PICKLE_FORMAT == "falb":
+            out_is_linear = ctypes.c_int(0)
+            _safe_call(_LIB.FLC_BoosterGetLinear(handle, ctypes.byref(out_is_linear)))
+            # FALB v1 cannot store linear trees, so they always take the text
+            # payload; unpickling accepts both.
+            if _PICKLE_FORMAT == "falb" and not out_is_linear.value:
                 # stats and diagnostics are not optional here: the text format
                 # carries them, so leaving them out would make the choice of
                 # pickle format change results. Without them split_gain comes
