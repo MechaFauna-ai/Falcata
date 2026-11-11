@@ -107,6 +107,22 @@ TEST_F(AtofPreciseTest, CornerCases) {
   }
 }
 
+// The bitset helpers computed word indices in int, so a size_t position
+// past 2^36 wrapped onto a low word (the CEGB lazy-feature bitset indexes
+// num_data * feature + row, which can exceed INT_MAX on large data).
+TEST(Bitset, SizeTPositions) {
+  std::vector<uint32_t> bits = Falcata::Common::EmptyBitset(static_cast<size_t>(64));
+  ASSERT_EQ(bits.size(), 2u);
+  Falcata::Common::InsertBitset(&bits, static_cast<size_t>(37));
+  EXPECT_TRUE(Falcata::Common::FindInBitset(bits.data(), bits.size(), static_cast<size_t>(37)));
+  EXPECT_FALSE(Falcata::Common::FindInBitset(bits.data(), bits.size(), static_cast<size_t>(36)));
+  // (2^37 + 37) / 32 == 2^32 + 1 used to be truncated to int word 1
+  const size_t far = (static_cast<size_t>(1) << 37) + 37;
+  EXPECT_FALSE(Falcata::Common::FindInBitset(bits.data(), bits.size(), far));
+  // negative positions (categorical callers pass int) are absent
+  EXPECT_FALSE(Falcata::Common::FindInBitset(bits.data(), bits.size(), -1));
+}
+
 TEST_F(AtofPreciseTest, ErrorInput) {
   double got = 0;
   ASSERT_THROW(Falcata::Common::AtofPrecise("x1", &got),  std::runtime_error);

@@ -799,21 +799,21 @@ inline static void ObtainMinMaxSum(const T1 *w, int nw, T1 *mi, T1 *ma, T2 *su) 
   }
 }
 
-inline static std::vector<uint32_t> EmptyBitset(int n) {
-  int size = n / 32;
-  if (n % 32 != 0) ++size;
-  return std::vector<uint32_t>(size);
+// Bit counts and positions are size_t-capable: the CEGB lazy-feature bitset
+// holds num_features * num_data bits, which can exceed INT_MAX.
+inline static std::vector<uint32_t> EmptyBitset(size_t n) {
+  return std::vector<uint32_t>(n / 32 + (n % 32 != 0 ? 1 : 0));
 }
 
 template<typename T>
 inline static void InsertBitset(std::vector<uint32_t>* vec, const T val) {
   auto& ref_v = *vec;
-  int i1 = val / 32;
-  int i2 = val % 32;
-  if (static_cast<int>(vec->size()) < i1 + 1) {
+  const size_t i1 = static_cast<size_t>(val / 32);
+  const int i2 = static_cast<int>(val % 32);
+  if (vec->size() < i1 + 1) {
     vec->resize(i1 + 1, 0);
   }
-  ref_v[i1] |= (1 << i2);
+  ref_v[i1] |= (1u << i2);
 }
 
 template<typename T>
@@ -830,13 +830,15 @@ inline static std::vector<uint32_t> ConstructBitset(const T* vals, int n) {
   return ret;
 }
 
+// n is the number of 32-bit words in bits. A negative pos converts to a huge
+// word index and is reported as absent.
 template<typename T>
-inline static bool FindInBitset(const uint32_t* bits, int n, T pos) {
-  int i1 = pos / 32;
+inline static bool FindInBitset(const uint32_t* bits, size_t n, T pos) {
+  const size_t i1 = static_cast<size_t>(pos / 32);
   if (i1 >= n) {
     return false;
   }
-  int i2 = pos % 32;
+  const int i2 = static_cast<int>(pos % 32);
   return (bits[i1] >> i2) & 1;
 }
 
