@@ -613,7 +613,7 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=None):
                 "regression": "RMSE",
                 "numerai": "RMSE",
             }[task]
-            series = vals.get(want, vals[next(iter(vals))])
+            series = vals[want]
             n = len(series)
             # metric_period=eval_every already makes catboost record ONLY every
             # eval_every-th iteration, so `series` IS the subsampled curve --
