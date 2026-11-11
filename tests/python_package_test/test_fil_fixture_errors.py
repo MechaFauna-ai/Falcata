@@ -9,7 +9,13 @@ from .test_basic import fil_cuda_booster
 
 @pytest.mark.parametrize(
     ("message", "skip"),
-    [("CUDA Tree Learner was not enabled in this build.", True), ("CUDA kernel regression", False)],
+    [
+        ("CUDA Tree Learner was not enabled in this build.", True),
+        ("device_type=cuda needs the NVIDIA driver, and its library libcuda.so.1 was not found", True),
+        ("[CUDA] no CUDA-capable device is detected", True),
+        ("CUDA driver version is insufficient for CUDA runtime version", True),
+        ("CUDA kernel regression", False),
+    ],
 )
 def test_fil_fixture_classifies_training_errors(monkeypatch, message, skip):
     monkeypatch.setattr(pytest, "importorskip", lambda *args, **kwargs: None)

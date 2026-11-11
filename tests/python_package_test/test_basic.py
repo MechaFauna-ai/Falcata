@@ -1423,6 +1423,7 @@ def fil_cuda_booster():
             "cuda tree learner was not enabled",
             "no cuda-capable device",
             "cuda driver version is insufficient",
+            "needs the nvidia driver",
         )
         if any(message in str(error).lower() for message in unavailable):
             pytest.skip(f"no CUDA device / CUDA build available: {error}")
