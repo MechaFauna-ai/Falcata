@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -13,8 +14,14 @@ from falcata.basic import _LIB
 
 
 def test_linear_missing_feature(tmp_path):
-    if os.getenv("FALCATA_RUN_CPU_CPP_REGRESSIONS") != "1":
-        pytest.skip("Internal C++ test requires an explicitly selected CPU-only library")
+    if sys.platform != "linux" or os.getenv("TASK") in {"cuda", "gpu", "mpi"}:
+        pytest.skip("Native bounds-check harness requires a Linux CPU build")
+    # Deleting a null device builder is a no-op on CUDA builds; CPU builds reject
+    # this API before touching the handle. Probe the loaded library without GPU work.
+    if _LIB.FLC_DatasetDeviceBuilderFree(None) == 0:
+        pytest.skip("Private-header harness does not support CUDA library layouts")
+    if b"requires a CUDA build" not in _LIB.FLC_GetLastError():
+        pytest.skip("Cannot identify the loaded library as a CPU build")
     compiler = shutil.which("c++")
     if compiler is None:
         pytest.skip("C++ compiler unavailable")
