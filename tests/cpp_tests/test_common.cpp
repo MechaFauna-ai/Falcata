@@ -6,11 +6,16 @@
 #include <gtest/gtest.h>
 #include <Falcata/meta.h>
 #include <Falcata/utils/common.h>
+#include <Falcata/utils/pipeline_reader.h>
+#include <Falcata/utils/text_reader.h>
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <limits>
+#include <string>
 #include <vector>
 
 
@@ -188,4 +193,49 @@ TEST(SortForPair, SortsOnlyTheSuffixFromStart) {
   Falcata::Common::SortForPair<int, int>(&keys, &values, 1, true);
   EXPECT_EQ(keys, (std::vector<int>{9, 8, 3, 2, 1}));
   EXPECT_EQ(values, (std::vector<int>{90, 80, 30, 20, 10}));
+}
+
+// TextReader's end-of-line skip read buffer_process[i] before checking
+// i < read_cnt, so a line terminator in the last byte of a full 16 MiB block
+// read one byte past the block (visible under AddressSanitizer).
+TEST(TextReader, LineEndAtBlockEndDoesNotOverread) {
+  const std::string path = ::testing::TempDir() + "falcata_text_reader_block_end.txt";
+  const size_t block = 16 * 1024 * 1024;
+  const size_t line_len = 1024;  // 1023 'x' + '\n'; block / line_len lines fill the block exactly
+  {
+    std::ofstream out(path, std::ios::binary);
+    const std::string line = std::string(line_len - 1, 'x') + "\n";
+    for (size_t i = 0; i < block / line_len; ++i) out << line;
+    out << "tail\n";
+  }
+  Falcata::TextReader<int> reader(path.c_str(), false);
+  std::vector<size_t> lengths;
+  const int n = reader.ReadAllAndProcess([&lengths](int, const char*, size_t len) { lengths.push_back(len); });
+  std::remove(path.c_str());
+  ASSERT_EQ(n, static_cast<int>(block / line_len + 1));
+  EXPECT_EQ(lengths.front(), line_len - 1);
+  EXPECT_EQ(lengths.back(), 4u);
+}
+
+// PipelineReader::Read read skip_bytes bytes into its 16 MiB scratch buffer in
+// one call, so skipping more than a block wrote past it (visible under
+// AddressSanitizer).
+TEST(PipelineReader, SkipsMoreThanOneBlock) {
+  const std::string path = ::testing::TempDir() + "falcata_pipeline_reader_skip.bin";
+  const size_t skip = 20 * 1024 * 1024;
+  {
+    std::ofstream out(path, std::ios::binary);
+    const std::string zeros(1024 * 1024, '\0');
+    for (size_t i = 0; i < skip / zeros.size(); ++i) out << zeros;
+    out << "hello";
+  }
+  std::string seen;
+  const size_t cnt = Falcata::PipelineReader::Read(path.c_str(), static_cast<int>(skip),
+                                                   [&seen](const char* buf, size_t len) {
+                                                     seen.append(buf, len);
+                                                     return len;
+                                                   });
+  std::remove(path.c_str());
+  EXPECT_EQ(cnt, 5u);
+  EXPECT_EQ(seen, "hello");
 }
