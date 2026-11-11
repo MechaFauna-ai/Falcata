@@ -58,12 +58,68 @@ def _data(seed=0):
     return X, y
 
 
+# inode of the initial (host) PID namespace, PROC_PID_INIT_INO in include/linux/proc_ns.h
+_PROC_PID_INIT_INO = 0xEFFFFFFC
+
+
+def _read_proc_status():
+    """Text of /proc/self/status, or None where there is none (not Linux)."""
+    try:
+        with open("/proc/self/status", "rt") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _pid_namespace_inode():
+    """Inode of this process's PID namespace, or None when it cannot be read."""
+    try:
+        return os.stat("/proc/self/ns/pid").st_ino
+    except OSError:
+        return None
+
+
+def _nvidia_smi_pid():
+    """This process's PID as nvidia-smi reports it, or None when it cannot be known.
+
+    nvidia-smi lists processes by their PID in the host's PID namespace. In a
+    container with its own PID namespace os.getpid() is the container's PID.
+    /proc/self/status NSpid lists the PID in every namespace from the one of
+    the mounted /proc down to ours, so with more than one entry the first is
+    the outer (host) PID. With a single entry inside a nested namespace (the
+    container mounts its own /proc), the host PID is not visible at all.
+    """
+    status = _read_proc_status()
+    if status is None:
+        return os.getpid()
+    for line in status.splitlines():
+        if line.startswith("NSpid:"):
+            pids = [int(v) for v in line.split()[1:]]
+            if len(pids) > 1:
+                return pids[0]
+            break
+    inode = _pid_namespace_inode()
+    if inode is not None and inode != _PROC_PID_INIT_INO:
+        return None
+    return os.getpid()
+
+
+_HOST_PID_UNKNOWN = pytest.mark.skipif(
+    _nvidia_smi_pid() is None,
+    reason="per-process GPU memory needs this process's host PID, which a nested PID namespace hides",
+)
+
+
 def _gpu_used_bytes():
     """Device memory used by THIS process, or None when unavailable.
 
     Per-process rather than whole-card: anything else sharing the GPU
-    would otherwise make these thresholds flaky.
+    would otherwise make these thresholds flaky. Unavailable also when the
+    process's host PID cannot be known (see _nvidia_smi_pid).
     """
+    mine = _nvidia_smi_pid()
+    if mine is None:
+        return None
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
@@ -76,7 +132,6 @@ def _gpu_used_bytes():
         return None
     if out.returncode != 0:
         return None
-    mine = os.getpid()
     for line in out.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
         if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) == mine:
@@ -111,6 +166,41 @@ def test_gpu_memory_query_distinguishes_unavailable_from_zero(monkeypatch):
     assert _gpu_used_bytes() == 0
     with pytest.raises(AssertionError, match="live CUDA process"):
         _resident_gpu_used_bytes()
+
+
+def _fake_nvidia_smi(monkeypatch, rows):
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, rows, ""))
+
+
+def test_gpu_memory_is_found_by_host_pid_inside_a_pid_namespace(monkeypatch):
+    """In a container, nvidia-smi lists the host PID; NSpid maps ours to it."""
+    monkeypatch.setattr(os, "getpid", lambda: 1)
+    monkeypatch.setattr(sys.modules[__name__], "_read_proc_status", lambda: "Name:\tpython\nNSpid:\t98765\t1\n")
+    monkeypatch.setattr(sys.modules[__name__], "_pid_namespace_inode", lambda: 4026532999)
+    _fake_nvidia_smi(monkeypatch, "98765, 64\n1, 7\n")
+    assert _nvidia_smi_pid() == 98765
+    assert _gpu_used_bytes() == 64 * 1024 * 1024
+
+
+def test_gpu_memory_is_unavailable_when_the_host_pid_is_hidden(monkeypatch):
+    """A nested PID namespace with its own /proc shows no host PID: unavailable, not zero."""
+    monkeypatch.setattr(os, "getpid", lambda: 1)
+    monkeypatch.setattr(sys.modules[__name__], "_read_proc_status", lambda: "Name:\tpython\nNSpid:\t1\n")
+    monkeypatch.setattr(sys.modules[__name__], "_pid_namespace_inode", lambda: 4026532999)
+    _fake_nvidia_smi(monkeypatch, "98765, 64\n")
+    assert _nvidia_smi_pid() is None
+    assert _gpu_used_bytes() is None
+
+
+def test_gpu_memory_uses_our_pid_in_the_host_namespace(monkeypatch):
+    """Bare metal: the process's own PID, as before."""
+    monkeypatch.setattr(os, "getpid", lambda: 4242)
+    monkeypatch.setattr(sys.modules[__name__], "_read_proc_status", lambda: "Name:\tpython\nNSpid:\t4242\n")
+    monkeypatch.setattr(sys.modules[__name__], "_pid_namespace_inode", lambda: _PROC_PID_INIT_INO)
+    _fake_nvidia_smi(monkeypatch, "4242, 12\n98765, 64\n")
+    assert _gpu_used_bytes() == 12 * 1024 * 1024
+    _fake_nvidia_smi(monkeypatch, "98765, 64\n")
+    assert _gpu_used_bytes() == 0
 
 
 def test_free_device_data_is_a_noop_on_cpu_datasets():
@@ -174,6 +264,7 @@ def test_subset_matches_training_on_the_filtered_rows_cuda():
 
 
 @_REQUIRES_CUDA
+@_HOST_PID_UNKNOWN
 def test_loading_a_dataset_does_not_upload_it():
     """Constructing is not using: columns reach the card only once
     something trains."""
@@ -197,6 +288,7 @@ print(dm._resident_gpu_used_bytes() - before)
 
 
 @_REQUIRES_CUDA
+@_HOST_PID_UNKNOWN
 def test_subset_of_a_host_only_parent_holds_one_copy():
     """Training a 99% subset costs one resident dataset, not two.
 
@@ -342,6 +434,7 @@ def _feature_view_mib(max_bin):
 
 
 @_REQUIRES_CUDA
+@_HOST_PID_UNKNOWN
 def test_feature_view_costs_no_more_than_one_byte_per_value():
     """An 8-bit dataset's feature view must stay at one byte per value.
 
@@ -359,6 +452,7 @@ def test_feature_view_costs_no_more_than_one_byte_per_value():
 
 
 @_REQUIRES_CUDA
+@_HOST_PID_UNKNOWN
 def test_four_bit_bins_stay_packed_in_the_feature_view():
     """A 4-bit dataset should cost about half of an 8-bit one, not more.
 
