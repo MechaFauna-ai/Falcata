@@ -174,7 +174,9 @@ def run_h60_cell(cid, params, rounds):
         t1 = time.monotonic()
         bst = lgb.train(p, ds, num_boost_round=rounds)
         t2 = time.monotonic()
-        assert bst.num_trees() == rounds
+        actual_trees = bst.num_trees()
+        if actual_trees != rounds:
+            raise RuntimeError(f"Expected {rounds} trees, got {actual_trees}")
         cs.append(t1 - t0)
         ts.append(t2 - t1)
         del bst, ds
@@ -204,7 +206,10 @@ def run_cell(cid, dataset, params, rounds):
         t1 = time.monotonic()
         bst = lgb.train(p, ds, num_boost_round=rounds)
         t2 = time.monotonic()
-        assert bst.num_trees() == rounds * p.get("num_class", 1)
+        expected_trees = rounds * p.get("num_class", 1)
+        actual_trees = bst.num_trees()
+        if actual_trees != expected_trees:
+            raise RuntimeError(f"Expected {expected_trees} trees, got {actual_trees}")
         cs.append(t1 - t0)
         ts.append(t2 - t1)
         del bst, ds
