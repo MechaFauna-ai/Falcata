@@ -1,6 +1,7 @@
 """Ownership of the process-global native network across boosters."""
 
 import gc
+import pickle
 
 import numpy as np
 import pytest
@@ -80,3 +81,34 @@ def test_network_reinitialization_and_failed_calls(monkeypatch):
         original.free_network()
         if other is not None:
             other.free_network()
+
+
+@pytest.mark.parametrize("legacy_state", [False, True])
+def test_pickle_does_not_copy_network_ownership(monkeypatch, legacy_state):
+    calls = []
+    monkeypatch.setattr(basic._LIB, "FLC_NetworkInit", lambda *args: calls.append("init") or 0)
+    monkeypatch.setattr(basic._LIB, "FLC_NetworkFree", lambda: calls.append("free") or 0)
+    data = np.arange(60).reshape(20, 3)
+    original = lgb.train({"verbosity": -1, "num_threads": 1}, lgb.Dataset(data, label=data[:, 0]), 1)
+    original.set_network("localhost:12400")
+    restored = None
+    try:
+        if legacy_state:
+            state = original.__getstate__()
+            state["_network"] = True
+            restored = lgb.Booster.__new__(lgb.Booster)
+            restored.__setstate__(state)
+        else:
+            restored = pickle.loads(pickle.dumps(original))
+        assert not restored._network
+        restored = None
+        gc.collect()
+        assert original._network
+        assert calls == ["init"]
+        original.free_network()
+        assert calls == ["init", "free"]
+    finally:
+        # A failing ownership assertion must not release an unregistered owner.
+        if restored is not None:
+            restored._network = False
+        original.free_network()

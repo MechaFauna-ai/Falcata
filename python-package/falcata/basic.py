@@ -4033,6 +4033,8 @@ class Booster:
 
     def __getstate__(self) -> Dict[str, Any]:
         this = self.__dict__.copy()
+        # A serialized model does not own this process's native network.
+        this["_network"] = False
         handle = this["_handle"]
         this.pop("train_set", None)
         this.pop("valid_sets", None)
@@ -4081,6 +4083,8 @@ class Booster:
                 )
             state["_handle"] = handle
         self.__dict__.update(state)
+        # Also discard ownership flags from pickles written by older versions.
+        self._network = False
 
     def _get_loaded_param(self) -> Dict[str, Any]:
         buffer_len = 1 << 20
