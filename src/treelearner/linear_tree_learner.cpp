@@ -309,7 +309,6 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
             nan_found = true;
             break;
           }
-          num_nonzero[tid][leaf_num] += 1;
           curr_row[feat] = val;
         } else {
           curr_row[feat] = raw_data_ptr[leaf_num][feat][i];
@@ -319,6 +318,7 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
         if (nan_found) {
           continue;
         }
+        num_nonzero[tid][leaf_num] += 1;
       }
       curr_row[num_feat] = 1.0;
       float h = static_cast<float>(hessians[i]);
