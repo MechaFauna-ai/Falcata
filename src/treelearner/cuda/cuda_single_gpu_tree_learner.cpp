@@ -6710,6 +6710,10 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
   SyncHistFP32();
   cuda_smaller_leaf_splits_->Resize(num_data_);
   cuda_larger_leaf_splits_->Resize(num_data_);
+  if (config_->linear_tree) {
+    // the leaf models fit the new rows' raw values, whose NaN flags pick the complete-row rule
+    InitLinearTreeCUDA(train_data_);
+  }
   CHECK_EQ(is_constant_hessian, share_state_->is_constant_hessian);
   if (!boosting_on_cuda_) {
     const size_t grad_planes = static_cast<size_t>(std::max(1, vec_num_targets_));

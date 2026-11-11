@@ -53,3 +53,30 @@ def test_cuda_linear_leaf_without_features_keeps_constant_with_nan_splits():
     assert any(leaf.get("leaf_features") for leaf in leaves), "and leaves with a linear feature that has NaN"
     for leaf in no_features:
         assert leaf["leaf_const"] == leaf["leaf_value"]
+
+
+def test_cuda_linear_tree_fits_the_reset_training_data():
+    """After update(train_set=...), CUDA linear leaves fit the new rows' raw values (and NaN flags), as the CPU."""
+    rng = np.random.default_rng(5)
+    n = 3000
+    x = rng.normal(size=(n, 2))
+    x_new = rng.normal(size=(n, 2))
+    x_new[rng.random(n) < 0.1, 1] = np.nan
+    models = {}
+    for device in ["cpu", "cuda"]:
+        params = {
+            "objective": "regression",
+            "linear_tree": True,
+            "num_leaves": 4,
+            "device_type": device,
+            "deterministic": True,
+            "num_threads": 2,
+            "verbosity": -1,
+        }
+        data = flc.Dataset(x, label=x[:, 0] + x[:, 1], params=params, free_raw_data=False)
+        booster = flc.train(params, data, num_boost_round=2, keep_training_booster=True)
+        new = flc.Dataset(x_new, label=3 * x_new[:, 0] - np.nan_to_num(x_new[:, 1]), reference=data, params=params)
+        for _ in range(2):
+            booster.update(train_set=new)
+        models[device] = booster
+    np.testing.assert_allclose(models["cuda"].predict(x_new), models["cpu"].predict(x_new), rtol=1e-4, atol=1e-4)
