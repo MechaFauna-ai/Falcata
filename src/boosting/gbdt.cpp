@@ -499,6 +499,22 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
     // use customized objective function
     // the check below fails unless objective=custom is provided in the parameters on Booster creation
     CHECK(objective_function_ == nullptr);
+    if (config_->use_quantized_grad) {
+      // Quantized training packs each hessian into an unsigned bit field (the 16-bit packed histograms and the
+      // (grad << 32) | hess root sums), so a negative one silently corrupts the sums: a contiguous run of them gave
+      // a single-leaf tree where full precision splits. Built-in objectives never produce one; refuse custom ones.
+      const int64_t total_size = static_cast<int64_t>(num_data_) * num_tree_per_iteration_;
+      int64_t num_negative = 0;
+      #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) reduction(+:num_negative)
+      for (int64_t i = 0; i < total_size; ++i) {
+        num_negative += hessians[i] < 0.0f ? 1 : 0;
+      }
+      if (num_negative > 0) {
+        Log::Fatal("The custom objective returned %s negative hessians; quantized gradients (quant_mode=%s) need "
+                   "non-negative hessians. Return non-negative hessians or set quant_mode=none.",
+                   std::to_string(num_negative).c_str(), config_->quant_mode.c_str());
+      }
+    }
     if (data_sample_strategy_->IsHessianChange()) {
       // need to copy customized gradients when using GOSS
       int64_t total_size = static_cast<int64_t>(num_data_) * num_tree_per_iteration_;
