@@ -831,7 +831,9 @@ Tree::Tree(const char* str, size_t* used_len) {
     Log::Fatal("Vector leaves do not support linear tree models");
   }
 
-  if (key_vals.count("leaf_count")) {
+  // LightGBM 3.x writes a constant (1-leaf) tree with EMPTY leaf_count= and
+  // leaf_weight= lines; read an empty value as "absent" like leaf_weight below
+  if (key_vals.count("leaf_count") && !(num_leaves_ <= 1 && key_vals["leaf_count"].empty())) {
     leaf_count_ = CommonC::StringToArrayFast<int>(key_vals["leaf_count"], num_leaves_);
   } else {
     leaf_count_.resize(num_leaves_);
