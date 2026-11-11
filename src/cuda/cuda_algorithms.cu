@@ -28,7 +28,9 @@ __global__ void ShufflePrefixSumGlobalKernel(T* values, size_t len, T* block_pre
     value = values[index];
   }
   const T prefix_sum_value = ShufflePrefixSum<T>(value, shared_mem_buffer);
-  values[index] = prefix_sum_value;
+  if (index < len) {
+    values[index] = prefix_sum_value;
+  }
   if (threadIdx.x == blockDim.x - 1) {
     block_prefix_sum_buffer[blockIdx.x] = prefix_sum_value;
   }
@@ -417,27 +419,26 @@ void BitonicArgSortGlobalHelper(const VAL_T* values, INDEX_T* indices, const siz
     len_to_shift >>= 1;
   }
   const int num_blocks = (static_cast<int>(len) + BITONIC_SORT_NUM_ELEMENTS - 1) / BITONIC_SORT_NUM_ELEMENTS;
+  // Every pass is ordered after the previous one on the default stream; one
+  // synchronize at the end surfaces errors instead of one per pass.
   BitonicArgSortGlobalKernel<VAL_T, INDEX_T, ASCENDING><<<num_blocks, BITONIC_SORT_NUM_ELEMENTS>>>(values, indices, static_cast<int>(len));
-  SynchronizeCUDADevice(__FILE__, __LINE__);
   for (int depth = max_depth - 11; depth >= 1; --depth) {
     const int segment_length = (1 << (max_depth - depth));
     int half_segment_length = (segment_length >> 1);
     {
       BitonicArgCompareKernel<VAL_T, INDEX_T, ASCENDING, true><<<num_blocks, BITONIC_SORT_NUM_ELEMENTS>>>(
         values, indices, half_segment_length, segment_length, static_cast<int>(len));
-      SynchronizeCUDADevice(__FILE__, __LINE__);
       half_segment_length >>= 1;
     }
     for (int inner_depth = depth + 1; inner_depth <= max_depth - 11; ++inner_depth) {
       BitonicArgCompareKernel<VAL_T, INDEX_T, ASCENDING, false><<<num_blocks, BITONIC_SORT_NUM_ELEMENTS>>>(
         values, indices, half_segment_length, segment_length, static_cast<int>(len));
-      SynchronizeCUDADevice(__FILE__, __LINE__);
       half_segment_length >>= 1;
     }
     BitonicArgSortMergeKernel<VAL_T, INDEX_T, ASCENDING><<<num_blocks, BITONIC_SORT_NUM_ELEMENTS>>>(
       values, indices, segment_length, static_cast<int>(len));
-    SynchronizeCUDADevice(__FILE__, __LINE__);
   }
+  SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
 template <>
@@ -567,14 +568,20 @@ std::string CompiledArchNames() {
 // nothing could run. A device accepted on PTX alone can still fail in
 // CheckCUDADeviceSupportsThisBuild (driver too old for the PTX, JIT disabled),
 // whose message names device_type=cpu as the way out.
-bool CUDADeviceUsableByDefault() {
+bool CUDADeviceUsableByDefault(const int device_id) {
   int count = 0;
   if (cudaGetDeviceCount(&count) != cudaSuccess || count < 1) {
     return false;
   }
+  // judge the GPU training will run on: gpu_device_id, or device 0 when it is negative (the tree learner's
+  // resolution in CUDASingleGPUTreeLearner::Init); a device that does not exist cannot run anything
+  const int device = device_id >= 0 ? device_id : 0;
+  if (device >= count) {
+    return false;
+  }
 #ifdef __CUDA_ARCH_LIST__
   cudaDeviceProp prop{};
-  if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
+  if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) {
     return false;
   }
   return HasCubinFor(prop) || HasPtxFor(prop);

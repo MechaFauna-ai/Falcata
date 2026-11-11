@@ -89,6 +89,8 @@ class ColSampler {
         int inner_feature_index = train_data_->InnerFeatureIndex(used_feature);
         is_feature_used_[inner_feature_index] = 1;
       }
+    } else {
+      std::fill(is_feature_used_.begin(), is_feature_used_.end(), 1);
     }
   }
 
@@ -121,7 +123,7 @@ class ColSampler {
     if (!interaction_constraints_.empty()) {
       std::vector<int> branch_features = tree->branch_features(leaf);
       allowed_features.insert(branch_features.begin(), branch_features.end());
-      for (auto constraint : interaction_constraints_) {
+      for (const auto& constraint : interaction_constraints_) {
         int num_feat_found = 0;
         if (branch_features.size() == 0) {
           allowed_features.insert(constraint.begin(), constraint.end());
