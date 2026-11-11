@@ -32,12 +32,25 @@ namespace Falcata {
 // min_data_in_leaf / cat_smooth validity for non-constant-hessian objectives and
 // causing CPU/CUDA split divergence. (L2 is unaffected: cnt_factor == 1 so the
 // product is an exact integer.)
+//
+// Negative values round half away from zero like Common::RoundInt (https://github.com/MechaFauna-ai/Falcata/pull/322):
+// x + 0.5 truncated toward zero gave -2.5 -> -2 and -0.75 -> 0 where the CPU gives -3 and -1, so a negative hessian
+// sum (custom objectives) estimated different counts on the two devices. The device float-to-int conversion saturates
+// out-of-range values as the CPU version does explicitly; NaN gives 0 on both (the double conversion would give
+// INT_MIN). Non-negative values are unchanged. Sign and NaN go through bit operations (copysign, an integer test of
+// the bits) rather than floating compares: this runs on every scan position of the fp64-bound find kernels.
 __device__ __forceinline__ int CUDARoundInt(double x) {
-  return static_cast<int>(x + 0.5);
+  if ((__double_as_longlong(x) & 0x7fffffffffffffffLL) > 0x7ff0000000000000LL) {
+    return 0;
+  }
+  return static_cast<int>(x + copysign(0.5, x));
 }
 
 __device__ __forceinline__ int CUDARoundInt(float x) {
-  return static_cast<int>(x + 0.5f);
+  if ((__float_as_int(x) & 0x7fffffff) > 0x7f800000) {
+    return 0;
+  }
+  return static_cast<int>(x + copysignf(0.5f, x));
 }
 
 /*! \brief histogram entry read of the non-quantized find kernels: the storage

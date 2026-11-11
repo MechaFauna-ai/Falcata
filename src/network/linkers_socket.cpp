@@ -19,6 +19,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "linkers.h"
@@ -158,8 +159,8 @@ void Linkers::TryBind(int port) {
   }
 }
 
-void Linkers::SetLinker(int rank, const TcpSocket& socket) {
-  linkers_[rank].reset(new TcpSocket(socket));
+void Linkers::SetLinker(int rank, TcpSocket socket) {
+  linkers_[rank].reset(new TcpSocket(std::move(socket)));
   // set timeout
   linkers_[rank]->SetTimeout(socket_timeout_ * 1000 * 60);
 }
@@ -234,7 +235,7 @@ void Linkers::ListenThread(int incoming_cnt) {
       continue;
     }
     // add new socket
-    SetLinker(in_rank, handler);
+    SetLinker(in_rank, std::move(handler));
     ++connected_cnt;
   }
 }
@@ -303,7 +304,7 @@ void Linkers::ConnectToHigherRanks(const std::unordered_map<int, int>& need_conn
           // so treat it like a failed connect and retry
           const int sent = cur_socket.Send(reinterpret_cast<const char*>(&rank_), sizeof(rank_));
           if (sent == static_cast<int>(sizeof(rank_))) {
-            SetLinker(out_rank, cur_socket);
+            SetLinker(out_rank, std::move(cur_socket));
             break;
           }
         }

@@ -16,9 +16,22 @@ Linkers::Linkers(Config) {
   int argc = 0;
   char**argv = nullptr;
   int flag = 0;
+  int provided = MPI_THREAD_SINGLE;
   MPI_SAFE_CALL(MPI_Initialized(&flag));  // test if MPI has been initialized
   if (!flag) {  // if MPI not started, start it
-    MPI_SAFE_CALL(MPI_Init_thread(&argc, &argv, MPI_THREAD_SERIALIZED, &flag));
+    MPI_SAFE_CALL(MPI_Init_thread(&argc, &argv, MPI_THREAD_SERIALIZED, &provided));
+  } else {
+    MPI_SAFE_CALL(MPI_Query_thread(&provided));
+  }
+  // Falcata calls MPI from whichever thread trains, one call at a time (MPI_THREAD_SERIALIZED). A library granting
+  // less may not be called from any thread other than the one that initialized it, or (single) at all while other
+  // threads, such as OpenMP's, exist.
+  if (provided < MPI_THREAD_FUNNELED) {
+    Log::Fatal("MPI provides thread support level %d (MPI_THREAD_SINGLE); Falcata needs MPI_THREAD_SERIALIZED (%d)",
+               provided, MPI_THREAD_SERIALIZED);
+  } else if (provided < MPI_THREAD_SERIALIZED) {
+    Log::Warning("MPI provides only MPI_THREAD_FUNNELED (%d): train from the thread that initialized MPI "
+                 "(Falcata asks for MPI_THREAD_SERIALIZED, %d)", provided, MPI_THREAD_SERIALIZED);
   }
   MPI_SAFE_CALL(MPI_Comm_size(MPI_COMM_WORLD, &num_machines_));
   MPI_SAFE_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &rank_));

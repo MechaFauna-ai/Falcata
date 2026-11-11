@@ -1041,6 +1041,7 @@ if(BUILD_CPP_TEST)
 
   set(
     CPP_TEST_SOURCES
+      tests/cpp_tests/test_adapter_ips.cpp
       tests/cpp_tests/test_add_features_booster.cpp
       tests/cpp_tests/test_array_args.cpp
       tests/cpp_tests/test_arrow.cpp
@@ -1065,11 +1066,14 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_init_score_layout.cpp
       tests/cpp_tests/test_int_histogram.cpp
       tests/cpp_tests/test_leaf_splits.cpp
+      tests/cpp_tests/test_linear_prediction_extra_coefficients.cpp
+      tests/cpp_tests/test_linkers.cpp
       tests/cpp_tests/test_linkers_sendrecv.cpp
       tests/cpp_tests/test_loaded_binary_objective.cpp
       tests/cpp_tests/test_loaded_tree_dataset_score.cpp
       tests/cpp_tests/test_log.cpp
       tests/cpp_tests/test_main.cpp
+      tests/cpp_tests/test_metric_score_transfer_scope.cpp
       tests/cpp_tests/test_multi_val_sparse_bin.cpp
       tests/cpp_tests/test_multi_val_sparse_bin_index.cpp
       tests/cpp_tests/test_multiclass_early_stop.cpp
@@ -1085,6 +1089,8 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_split_info.cpp
       tests/cpp_tests/test_stream.cpp
       tests/cpp_tests/test_swig_string_array.cpp
+      tests/cpp_tests/test_tcp_socket.cpp
+      tests/cpp_tests/test_text_reader.cpp
       tests/cpp_tests/test_threshold_dictionary_bounds.cpp
       tests/cpp_tests/test_xentropy_lambda.cpp
       tests/cpp_tests/testutils.cpp
@@ -1109,11 +1115,14 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_multiclass_convert.cu
         tests/cpp_tests/test_cuda_nonquant_fixed.cu
         tests/cpp_tests/test_cuda_block_count.cu
+        tests/cpp_tests/test_cuda_round_int.cu
         tests/cpp_tests/test_cuda_tree_from_host.cu
         tests/cpp_tests/test_cuda_vector_capacity.cu
+        tests/cpp_tests/test_cuda_hist_slab_size.cu
         tests/cpp_tests/test_cuda_learner_destructors.cu
         tests/cpp_tests/test_cuda_multi_target_index.cu
         tests/cpp_tests/test_cuda_prefix_sum_exclusive.cu
+        tests/cpp_tests/test_cuda_random_advance.cu
         tests/cpp_tests/test_cuda_shuffle_reduce.cu
     )
     set_target_properties(

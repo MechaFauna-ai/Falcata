@@ -151,6 +151,46 @@ class Predictor {
     if (!writer->Init()) {
       Log::Fatal("Prediction results file %s cannot be created", result_filename);
     }
+    const int num_pred = num_pred_one_row_;
+    PredictFileInBatches(data_filename, header, disable_shape_check, precise_float_parser,
+                         [&writer, num_pred](data_size_t num_rows, const double* results) {
+      std::vector<std::string> result_to_write(num_rows);
+      #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+      for (data_size_t i = 0; i < num_rows; ++i) {
+        const double* row = results + static_cast<size_t>(i) * num_pred;
+        result_to_write[i] = Common::Join<double>(std::vector<double>(row, row + num_pred), "\t");
+      }
+      for (data_size_t i = 0; i < num_rows; ++i) {
+        writer->Write(result_to_write[i].c_str(), result_to_write[i].size());
+        writer->Write("\n", 1);
+      }
+    });
+  }
+
+  /*!
+  * \brief predicting on data into memory: the values Predict writes, row-major, at full precision
+  * \param data_filename Filename of data
+  * \param[out] out_result predictions, num_pred_one_row_ per row
+  * \param[out] out_num_row number of rows predicted
+  */
+  void PredictToArray(const char* data_filename, bool header, bool disable_shape_check, bool precise_float_parser,
+                      std::vector<double>* out_result, int64_t* out_num_row) {
+    out_result->clear();
+    *out_num_row = 0;
+    PredictFileInBatches(data_filename, header, disable_shape_check, precise_float_parser,
+                         [out_result, out_num_row, this](data_size_t num_rows, const double* results) {
+      out_result->insert(out_result->end(), results, results + static_cast<size_t>(num_rows) * num_pred_one_row_);
+      *out_num_row += num_rows;
+    });
+  }
+
+ private:
+  /*!
+  * \brief parses and predicts data_filename a batch of lines at a time, in file order; sink receives each batch's
+  *        row count and its predictions (num_pred_one_row_ per row, row-major)
+  */
+  void PredictFileInBatches(const char* data_filename, bool header, bool disable_shape_check, bool precise_float_parser,
+                            const std::function<void(data_size_t, const double*)>& sink) {
     auto label_idx = header ? -1 : boosting_->LabelIdx();
     auto parser = std::unique_ptr<Parser>(Parser::CreateParser(data_filename, header, boosting_->MaxFeatureIdx() + 1, label_idx,
                                                                precise_float_parser, boosting_->ParserConfigStr()));
@@ -214,35 +254,31 @@ class Predictor {
       }
     };
 
+    std::vector<double> results;
     std::function<void(data_size_t, const std::vector<std::string>&)>
-        process_fun = [&parser_fun, &writer, this](
+        process_fun = [&parser_fun, &sink, &results, this](
                           data_size_t, const std::vector<std::string>& lines) {
       std::vector<std::pair<int, double>> oneline_features;
-      std::vector<std::string> result_to_write(lines.size());
+      const data_size_t num_rows = static_cast<data_size_t>(lines.size());
+      // zeroed: contributions accumulate into the output
+      results.assign(static_cast<size_t>(num_rows) * num_pred_one_row_, 0.0);
       OMP_INIT_EX();
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) firstprivate(oneline_features)
-      for (data_size_t i = 0; i < static_cast<data_size_t>(lines.size()); ++i) {
+      for (data_size_t i = 0; i < num_rows; ++i) {
         OMP_LOOP_EX_BEGIN();
         oneline_features.clear();
         // parser
         parser_fun(lines[i].c_str(), &oneline_features);
         // predict
-        std::vector<double> result(num_pred_one_row_);
-        predict_fun_(oneline_features, result.data());
-        auto str_result = Common::Join<double>(result, "\t");
-        result_to_write[i] = str_result;
+        predict_fun_(oneline_features, results.data() + static_cast<size_t>(i) * num_pred_one_row_);
         OMP_LOOP_EX_END();
       }
       OMP_THROW_EX();
-      for (data_size_t i = 0; i < static_cast<data_size_t>(result_to_write.size()); ++i) {
-        writer->Write(result_to_write[i].c_str(), result_to_write[i].size());
-        writer->Write("\n", 1);
-      }
+      sink(num_rows, results.data());
     };
     predict_data_reader.ReadAllAndProcessParallel(process_fun);
   }
 
- private:
   /*!
   * \brief Calls fun with a num_feature_-long dense buffer holding features (zero elsewhere).
   *        The buffers are per OpenMP thread, sized with OMP_NUM_THREADS() at construction; a call

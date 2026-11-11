@@ -10,7 +10,10 @@ Timing semantics (reported separately, because they differ per library):
 - ``construct_s``: building the library's training data structure —
   ``lgb.Dataset`` (binning happens here), ``xgb.QuantileDMatrix`` (quantile
   sketch), ``catboost.Pool`` (thin wrapper; CatBoost quantizes inside fit).
-- ``train_s``: the boosting loop, including any remaining device transfer.
+- ``train_s``: model setup and the boosting loop, including any remaining
+  device transfer. For LightGBM-family curve runs it also includes validation
+  Dataset creation and registration; for CatBoost curve runs it includes
+  test Pool conversion and creation (quantization occurs inside fit).
 - ``curve`` runs additionally evaluate the held-out set every
   ``eval_every`` iterations; their timings are NOT comparable to plain runs
   (CatBoost's curve time axis is linearly approximated — no per-iteration

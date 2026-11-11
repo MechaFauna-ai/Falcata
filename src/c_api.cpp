@@ -894,6 +894,17 @@ class Booster {
                       config.precise_float_parser);
   }
 
+  void PredictToArray(int start_iteration, int num_iteration, int predict_type, const char* data_filename,
+                      int data_has_header, const Config& config, std::vector<double>* out_result,
+                      int64_t* out_num_row) const {
+    SHARED_LOCK(mutex_)
+    Predictor predictor(boosting_.get(), start_iteration, num_iteration, predict_type == C_API_PREDICT_RAW_SCORE,
+                        predict_type == C_API_PREDICT_LEAF_INDEX, predict_type == C_API_PREDICT_CONTRIB,
+                        config.pred_early_stop, config.pred_early_stop_freq, config.pred_early_stop_margin);
+    predictor.PredictToArray(data_filename, data_has_header > 0, config.predict_disable_shape_check,
+                             config.precise_float_parser, out_result, out_num_row);
+  }
+
   void GetPredictAt(int data_idx, double* out_result, int64_t* out_len) const {
     boosting_->GetPredictAt(data_idx, out_result, out_len);
   }
@@ -3327,6 +3338,45 @@ int FLC_BoosterPredictForFile(BoosterHandle handle,
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   ref_booster->Predict(start_iteration, num_iteration, predict_type, data_filename, data_has_header,
                        config, result_filename);
+  API_END();
+}
+
+int FLC_BoosterPredictForFileToArray(BoosterHandle handle,
+                                      const char* data_filename,
+                                      int data_has_header,
+                                      int predict_type,
+                                      int start_iteration,
+                                      int num_iteration,
+                                      const char* parameter,
+                                      int64_t* out_num_row,
+                                      int64_t* out_len,
+                                      double** out_result) {
+  API_BEGIN();
+  *out_num_row = 0;
+  *out_len = 0;
+  *out_result = nullptr;
+  auto param = Config::Str2Map(parameter);
+  Config config;
+  config.Set(param);
+  OMP_SET_NUM_THREADS(config.num_threads);
+  Booster* ref_booster = reinterpret_cast<Booster*>(handle);
+  std::vector<double> result;
+  int64_t num_row = 0;
+  ref_booster->PredictToArray(start_iteration, num_iteration, predict_type, data_filename, data_has_header, config,
+                              &result, &num_row);
+  if (!result.empty()) {
+    std::unique_ptr<double[]> array(new double[result.size()]);
+    std::copy(result.begin(), result.end(), array.get());
+    *out_result = array.release();
+  }
+  *out_num_row = num_row;
+  *out_len = static_cast<int64_t>(result.size());
+  API_END();
+}
+
+int FLC_BoosterFreePredictForFileResult(double* result) {
+  API_BEGIN();
+  delete[] result;
   API_END();
 }
 
