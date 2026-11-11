@@ -748,11 +748,9 @@ def _train(
     # data artifacts may not be populated depending on worker returning final estimator.
     if eval_set:
         for worker in worker_map:
-            has_eval_set = False
-            for part in worker_map[worker]:
-                if "eval_set" in part.result():  # type: ignore[attr-defined]
-                    has_eval_set = True
-                    break
+            has_eval_set = any(
+                client.gather([client.submit(operator.contains, part, "eval_set") for part in worker_map[worker]])
+            )
 
             if not has_eval_set:
                 _log_warning(
