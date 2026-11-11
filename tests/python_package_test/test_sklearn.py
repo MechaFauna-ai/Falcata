@@ -798,14 +798,23 @@ def test_random_state_object(rng_constructor):
     assert df1 != df3
 
 
-def test_feature_importances_single_leaf():
+@pytest.mark.parametrize("force_single_leaf", [False, True])
+def test_feature_importances_single_leaf(force_single_leaf):
     data = load_iris(return_X_y=False)
-    clf = lgb.FalcataClassifier(n_estimators=10, min_child_samples=len(data.target), n_jobs=2)
+    params = {"n_estimators": 10, "n_jobs": 2}
+    if force_single_leaf:
+        params.update(min_child_samples=len(data.target), feature_pre_filter=False)
+    clf = lgb.FalcataClassifier(**params)
     clf.fit(data.data, data.target)
     importances = clf.feature_importances_
     assert len(importances) == 4
-    np.testing.assert_array_equal(importances, np.zeros(4))
-    assert all(tree["num_leaves"] == 1 for tree in clf.booster_.dump_model()["tree_info"])
+    if force_single_leaf:
+        np.testing.assert_array_equal(importances, np.zeros(4))
+        trees = clf.booster_.dump_model()["tree_info"]
+        assert len(trees) == 3
+        assert all(tree["num_leaves"] == 1 for tree in trees)
+    else:
+        assert importances.sum() > 0
 
 
 def test_feature_importances_type():
