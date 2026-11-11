@@ -443,6 +443,8 @@ class CVBooster:
 
     def __getattr__(self, name: str) -> Callable[[Any, Any], List[Any]]:
         """Redirect methods call of CVBooster."""
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
 
         def handler_function(*args: Any, **kwargs: Any) -> List[Any]:
             """Call methods with each booster, and concatenate their results."""
