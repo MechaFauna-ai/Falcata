@@ -120,6 +120,11 @@ class ParallelPartitionRunner {
       INDEX_T cnt,
       const std::function<INDEX_T(int, INDEX_T, INDEX_T, INDEX_T*, INDEX_T*)>& func,
       INDEX_T* out) {
+    if (cnt <= 0) {
+      // BlockInfo yields zero blocks for an empty range, and the prefix sums
+      // below would then read left_write_pos_[-1]: nothing goes left
+      return 0;
+    }
     int nblock = 1;
     INDEX_T inner_size = cnt;
     if (FORCE_SIZE) {

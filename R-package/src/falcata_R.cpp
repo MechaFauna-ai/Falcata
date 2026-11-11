@@ -24,11 +24,13 @@
 
 #include <R_ext/Error.h>
 
+#include <cmath>
 #include <string>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <utility>
 #include <vector>
 #include <algorithm>
@@ -210,6 +212,28 @@ void FLC_R_save_exception_msg(const std::string &err) {
   std::snprintf(R_errmsg_buffer, MAX_LENGTH_ERR_MSG, "%s\n", err.c_str());
 }
 
+// A count argument of a sparse-matrix entry point: a whole number in [0, INT32_MAX] (the C API takes int32 index
+// pointers, so a valid sparse input never needs more). Rf_asInteger would turn a larger value into NA (INT_MIN) with
+// only a warning, and the library then reported an unrelated error or, for a Dataset, accepted it.
+int64_t SparseCountArg(SEXP value, const char* name) {
+  const double v = Rf_asReal(value);
+  if (!(v >= 0.0 && v <= static_cast<double>(std::numeric_limits<int32_t>::max())) || v != std::floor(v)) {
+    Falcata::Log::Fatal("%s must be a whole number in [0, %d], got %g", name, std::numeric_limits<int32_t>::max(), v);
+  }
+  return static_cast<int64_t>(v);
+}
+
+// The element count of one sparse row, checked before the narrowing to the C API's int32 and before the data
+// vector is touched (an ALTREP sequence would otherwise be materialized first).
+int SparseRowNnz(SEXP data) {
+  const R_xlen_t nnz = Rf_xlength(data);
+  if (nnz > std::numeric_limits<int32_t>::max()) {
+    Falcata::Log::Fatal("A sparse row cannot hold more than %d values, got %.0f", std::numeric_limits<int32_t>::max(),
+               static_cast<double>(nnz));
+  }
+  return static_cast<int>(nnz);
+}
+
 SEXP wrapped_R_string(void *len) {
   return Rf_allocVector(STRSXP, *(reinterpret_cast<R_xlen_t*>(len)));
 }
@@ -308,9 +332,9 @@ SEXP FLC_DatasetCreateFromCSC_R(SEXP indptr,
   const int* p_indptr = INTEGER(indptr);
   const int* p_indices = INTEGER(indices);
   const double* p_data = REAL(data);
-  int64_t nindptr = static_cast<int64_t>(Rf_asInteger(num_indptr));
-  int64_t ndata = static_cast<int64_t>(Rf_asInteger(nelem));
-  int64_t nrow = static_cast<int64_t>(Rf_asInteger(num_row));
+  int64_t nindptr = SparseCountArg(num_indptr, "num_indptr");
+  int64_t ndata = SparseCountArg(nelem, "nelem");
+  int64_t nrow = SparseCountArg(num_row, "num_row");
   const char* parameters_ptr = CHAR(Rf_protect(Rf_asChar(parameters)));
   DatasetHandle handle = nullptr;
   DatasetHandle ref = nullptr;
@@ -636,9 +660,11 @@ SEXP FLC_BoosterLoadModelFromString_R(SEXP model_str) {
   int n_protected = 1;
   int out_num_iterations = 0;
   const char* model_str_ptr = nullptr;
+  std::string raw_model;
   switch (TYPEOF(model_str)) {
     case RAWSXP: {
-      model_str_ptr = reinterpret_cast<const char*>(RAW(model_str));
+      raw_model.assign(reinterpret_cast<const char*>(RAW(model_str)), Rf_xlength(model_str));
+      model_str_ptr = raw_model.c_str();
       break;
     }
     case CHARSXP: {
@@ -646,10 +672,16 @@ SEXP FLC_BoosterLoadModelFromString_R(SEXP model_str) {
       break;
     }
     case STRSXP: {
+      if (Rf_xlength(model_str) != 1) {
+        Log::Fatal("model_str must contain exactly one string");
+      }
       temp = Rf_protect(STRING_ELT(model_str, 0));
       n_protected++;
       model_str_ptr = reinterpret_cast<const char*>(CHAR(temp));
+      break;
     }
+    default:
+      Log::Fatal("model_str must be a raw vector or a string");
   }
   BoosterHandle handle = nullptr;
   CHECK_CALL(FLC_BoosterLoadModelFromString(model_str_ptr, &out_num_iterations, &handle));
@@ -861,6 +893,11 @@ SEXP FLC_BoosterGetEval_R(SEXP handle,
   _AssertBoosterHandleNotNull(handle);
   int len;
   CHECK_CALL(FLC_BoosterGetEvalCounts(R_ExternalPtrAddr(handle), &len));
+  // the library writes len values: refuse a smaller buffer before it does
+  if (Rf_xlength(out_result) < len) {
+    Log::Fatal("out_result holds %.0f values, but the booster has %d evaluation results",
+               static_cast<double>(Rf_xlength(out_result)), len);
+  }
   double* ptr_ret = REAL(out_result);
   int out_len;
   CHECK_CALL(FLC_BoosterGetEval(R_ExternalPtrAddr(handle), Rf_asInteger(data_idx), &out_len, ptr_ret));
@@ -876,6 +913,9 @@ SEXP FLC_BoosterGetNumPredict_R(SEXP handle,
   _AssertBoosterHandleNotNull(handle);
   int64_t len;
   CHECK_CALL(FLC_BoosterGetNumPredict(R_ExternalPtrAddr(handle), Rf_asInteger(data_idx), &len));
+  if (len > std::numeric_limits<int>::max()) {
+    Log::Fatal("Prediction length exceeds the R integer limit");
+  }
   INTEGER(out)[0] = static_cast<int>(len);
   return R_NilValue;
   R_API_END();
@@ -945,6 +985,9 @@ SEXP FLC_BoosterCalcNumPredict_R(SEXP handle,
   int64_t len = 0;
   CHECK_CALL(FLC_BoosterCalcNumPredict(R_ExternalPtrAddr(handle), Rf_asInteger(num_row),
     pred_type, Rf_asInteger(start_iteration), Rf_asInteger(num_iteration), &len));
+  if (len > std::numeric_limits<int>::max()) {
+    Log::Fatal("Prediction length exceeds the R integer limit");
+  }
   INTEGER(out_len)[0] = static_cast<int>(len);
   return R_NilValue;
   R_API_END();
@@ -970,9 +1013,9 @@ SEXP FLC_BoosterPredictForCSC_R(SEXP handle,
   const int* p_indptr = INTEGER(indptr);
   const int32_t* p_indices = reinterpret_cast<const int32_t*>(INTEGER(indices));
   const double* p_data = REAL(data);
-  int64_t nindptr = static_cast<int64_t>(Rf_asInteger(num_indptr));
-  int64_t ndata = static_cast<int64_t>(Rf_asInteger(nelem));
-  int64_t nrow = static_cast<int64_t>(Rf_asInteger(num_row));
+  int64_t nindptr = SparseCountArg(num_indptr, "num_indptr");
+  int64_t ndata = SparseCountArg(nelem, "nelem");
+  int64_t nrow = SparseCountArg(num_row, "num_row");
   double* ptr_ret = REAL(out_result);
   int64_t out_len;
   const char* parameter_ptr = CHAR(Rf_protect(Rf_asChar(parameter)));
@@ -1028,7 +1071,7 @@ SEXP FLC_BoosterPredictForCSRSingleRow_R(SEXP handle,
   _AssertBoosterHandleNotNull(handle);
   int pred_type = GetPredictType(is_rawscore, is_leafidx, is_predcontrib);
   const char* parameter_ptr = CHAR(Rf_protect(Rf_asChar(parameter)));
-  int nnz = static_cast<int>(Rf_xlength(data));
+  int nnz = SparseRowNnz(data);
   const int indptr[] = {0, nnz};
   int64_t out_len;
   CHECK_CALL(FLC_BoosterPredictForCSRSingleRow(R_ExternalPtrAddr(handle),
@@ -1076,7 +1119,10 @@ SEXP FLC_BoosterPredictForCSRSingleRowFast_R(SEXP handle_fastConfig,
   SEXP data,
   SEXP out_result) {
   R_API_BEGIN();
-  int nnz = static_cast<int>(Rf_xlength(data));
+  if (Rf_isNull(handle_fastConfig) || R_ExternalPtrAddr(handle_fastConfig) == nullptr) {
+    Log::Fatal("FastConfig handle is null; initialize fast prediction before predicting");
+  }
+  int nnz = SparseRowNnz(data);
   const int indptr[] = {0, nnz};
   int64_t out_len;
   CHECK_CALL(FLC_BoosterPredictForCSRSingleRowFast(R_ExternalPtrAddr(handle_fastConfig),
@@ -1248,6 +1294,9 @@ SEXP FLC_BoosterPredictForMatSingleRowFast_R(SEXP handle_fastConfig,
   SEXP data,
   SEXP out_result) {
   R_API_BEGIN();
+  if (Rf_isNull(handle_fastConfig) || R_ExternalPtrAddr(handle_fastConfig) == nullptr) {
+    Log::Fatal("FastConfig handle is null; initialize fast prediction before predicting");
+  }
   int64_t out_len;
   CHECK_CALL(FLC_BoosterPredictForMatSingleRowFast(R_ExternalPtrAddr(handle_fastConfig),
     REAL(data), &out_len, REAL(out_result)));
