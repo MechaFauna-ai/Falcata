@@ -252,9 +252,6 @@ def plot_cross_library():
                 note = "*"
             if m and base:
                 ratios[c][dr] = (m["train_s"] / base["train_s"], note)
-    import math
-
-    {c: math.exp(sum(math.log(v[0]) for v in ratios[c].values()) / len(ratios[c])) for c in comps}
     fig, ax = plt.subplots(figsize=(11.5, 3.9))
     x = range(len(DS_REGS))
     w = 0.21
@@ -972,7 +969,7 @@ def plot_memory():
                 ax.text(
                     xx,
                     0.4,
-                    "✗ OOM",
+                    "✗ " + FAIL.get(("lightgbm-ocl" if note else lib, ds, reg), "n/a"),
                     rotation=90,
                     ha="center",
                     va="bottom",
