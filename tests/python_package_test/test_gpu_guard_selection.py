@@ -17,10 +17,13 @@ def guard():
 
 
 def test_guard_checks_visible_uuid(guard, monkeypatch):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-selected")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-bbbbbbbb")
 
     def query(command, **kwargs):
-        rows = "9000, 0\n" if "--id=GPU-selected" in command else "100, 100\n9000, 0\n"
+        if "--query-gpu=uuid" in command:
+            rows = "GPU-aaaaaaaa-1111-2222-3333-444444444444\nGPU-bbbbbbbb-1111-2222-3333-444444444444\n"
+        else:
+            rows = "9000, 0\n" if "--id=GPU-bbbbbbbb-1111-2222-3333-444444444444" in command else "100, 100\n9000, 0\n"
         return subprocess.CompletedProcess(command, 0, rows, "")
 
     monkeypatch.setattr(guard.subprocess, "run", query)
@@ -75,4 +78,13 @@ def test_guard_explicit_hardware_id(guard, monkeypatch):
 def test_guard_rejects_unsupported_selection(guard, monkeypatch, visible):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
     with pytest.raises(ValueError, match="MIG|UUID"):
+        guard.gpu_state()
+
+
+def test_guard_rejects_ambiguous_uuid_prefix(guard, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-")
+    monkeypatch.setattr(
+        guard.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess([], 0, "GPU-one\nGPU-two\n", "")
+    )
+    with pytest.raises(ValueError, match="exactly one"):
         guard.gpu_state()

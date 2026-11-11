@@ -31,6 +31,17 @@ def gpu_state(device=None):
             device = first
         elif first != "0":
             raise ValueError("Select a GPU UUID or pass --gpu-id with its nvidia-smi ID")
+    if device is not None and str(device).startswith("GPU-"):
+        uuids = subprocess.run(
+            ["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        matches = [uuid.strip() for uuid in uuids if uuid.strip().startswith(device)]
+        if len(matches) != 1:
+            raise ValueError("GPU UUID must match exactly one device")
+        device = matches[0]
     command = ["nvidia-smi", "--query-gpu=memory.free,utilization.gpu", "--format=csv,noheader,nounits"]
     if device is not None:
         command.append(f"--id={device}")
