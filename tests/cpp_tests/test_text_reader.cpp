@@ -31,6 +31,10 @@ TEST(TextReader, ReadContentReturnsTheWholeFile) {
     ASSERT_EQ(len, size);
     ASSERT_EQ(got.size(), size);
     EXPECT_TRUE(std::string(got.begin(), got.end()) == content) << size;
+    if (size >= size_t{16} * 1024 * 1024) {
+      // reaching the end does not grow the result by another chunk
+      EXPECT_LT(got.capacity(), 2 * size) << size;
+    }
   }
   std::remove(path.c_str());
 }
