@@ -249,8 +249,10 @@ def gen_parameter_description(
 
     with open(params_rst) as original_params_file:
         all_lines = original_params_file.read()
-        before, start_sep, _ = all_lines.partition(".. start params list\n\n")
-        _, end_sep, after = all_lines.partition("\n\n.. end params list")
+        before, start_sep, remainder = all_lines.partition(".. start params list\n\n")
+        _, end_sep, after = remainder.partition("\n\n.. end params list")
+        if not start_sep or not end_sep:
+            raise ValueError("Parameter documentation must contain ordered start and end markers")
 
     with open(params_rst, "w") as new_params_file:
         new_params_file.write(before)
