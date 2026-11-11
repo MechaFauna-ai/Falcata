@@ -3958,7 +3958,9 @@ void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_i
                   sizeof(T) * ncol);
     }
   }
-  // contiguous column stripes per block, sample-index outer loop for locality;
+  // contiguous column stripes per block, sample-index outer loop: local for
+  // row-major (gathered) sources; column-major sources are read with stride
+  // nrow per sample, so the loop order favours them less;
   // block-indexed (not omp_get_num_threads()-based) so no-OpenMP builds and
   // smaller-than-requested teams stay correct
   const int num_col_blocks = OMP_NUM_THREADS();
