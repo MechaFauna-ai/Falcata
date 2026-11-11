@@ -89,7 +89,7 @@ fb = os.path.join(d, "cb.falb")
 from_catboost(mdl).save_model(fb)
 chk(
     "imported -> FALB -> load",
-    np.allclose(np.asarray(flc.Booster(model_file=fb).predict(Xs)), base, atol=0),
+    np.array_equal(np.asarray(flc.Booster(model_file=fb).predict(Xs)), base),
     f"({os.path.getsize(jp):,}B json vs {os.path.getsize(fb):,}B falb)",
 )
 
