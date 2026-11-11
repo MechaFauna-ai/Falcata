@@ -12,6 +12,7 @@
 
 using Falcata::data_size_t;
 using Falcata::NCCLAnyEmptyRank;
+using Falcata::NCCLClassMajorOffset;
 using Falcata::NCCLMaxNumDataPerRank;
 using Falcata::NCCLRankRowRange;
 using Falcata::NCCLRowRange;
@@ -128,4 +129,21 @@ TEST(NCCLRowSplit, LargeRowCountsDoNotOverflow) {
   const data_size_t n = 2147483000;
   CheckedSplit(n, 8);
   CheckedSplit(n, 7);
+}
+
+// NCCLGBDT addresses class `k`'s rows of its class-major gradient, hessian and score buffers through
+// NCCLClassMajorOffset. With num_class * num_data past INT32_MAX (100M rows x 22 classes) the old int products
+// wrapped and copied to and from wrong host offsets.
+TEST(NCCLRowSplit, ClassMajorOffsetsDoNotWrap) {
+  const data_size_t num_data = 100000000;
+  const int num_class = 22;
+  EXPECT_EQ(NCCLClassMajorOffset(0, num_data), 0u);
+  EXPECT_EQ(NCCLClassMajorOffset(1, num_data, 7), 100000007u);
+  EXPECT_EQ(NCCLClassMajorOffset(num_class - 1, num_data), 2100000000u);
+  // rank 3 of 4 starts at row 75M of each class
+  const NCCLRowRange r = NCCLRankRowRange(num_data, 4, 3);
+  EXPECT_EQ(NCCLClassMajorOffset(num_class - 1, num_data, r.start), 2175000000u);
+  // the last element of the whole buffer
+  EXPECT_EQ(NCCLClassMajorOffset(num_class - 1, num_data, num_data - 1) + 1,
+            static_cast<size_t>(num_class) * static_cast<size_t>(num_data));
 }

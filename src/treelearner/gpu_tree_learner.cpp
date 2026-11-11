@@ -31,18 +31,37 @@ GPUTreeLearner::GPUTreeLearner(const Config* config)
 }
 
 GPUTreeLearner::~GPUTreeLearner() {
+  ReleasePinnedMemory();
+}
+
+void GPUTreeLearner::ReleasePinnedMemory() {
+  bool was_mapped = false;
   if (ptr_pinned_gradients_) {
     queue_.enqueue_unmap_buffer(pinned_gradients_, ptr_pinned_gradients_);
+    ptr_pinned_gradients_ = nullptr;
+    was_mapped = true;
   }
   if (ptr_pinned_hessians_) {
     queue_.enqueue_unmap_buffer(pinned_hessians_, ptr_pinned_hessians_);
+    ptr_pinned_hessians_ = nullptr;
+    was_mapped = true;
   }
   if (ptr_pinned_feature_masks_) {
     queue_.enqueue_unmap_buffer(pinned_feature_masks_, ptr_pinned_feature_masks_);
+    ptr_pinned_feature_masks_ = nullptr;
+    was_mapped = true;
   }
+  // Unmapping is asynchronous: host storage must remain alive until it completes.
+  if (was_mapped) {
+    queue_.finish();
+  }
+  pinned_gradients_ = boost::compute::buffer();
+  pinned_hessians_ = boost::compute::buffer();
+  pinned_feature_masks_ = boost::compute::buffer();
 }
 
 void GPUTreeLearner::Init(const Dataset* train_data, bool is_constant_hessian) {
+  ReleasePinnedMemory();
   // initialize SerialTreeLearner
   SerialTreeLearner::Init(train_data, is_constant_hessian);
   // some additional variables needed for GPU trainer
@@ -252,19 +271,11 @@ void GPUTreeLearner::AllocateGPUMemory() {
   // allocate memory for all features (FIXME: 4 GB barrier on some devices, need to split to multiple buffers)
   device_features_.reset();
   device_features_ = std::unique_ptr<boost::compute::vector<Feature4>>(new boost::compute::vector<Feature4>(static_cast<uint64_t>(num_dense_feature4_) * num_data_, ctx_));
-  // unpin old buffer if necessary before destructing them
-  if (ptr_pinned_gradients_) {
-    queue_.enqueue_unmap_buffer(pinned_gradients_, ptr_pinned_gradients_);
-  }
-  if (ptr_pinned_hessians_) {
-    queue_.enqueue_unmap_buffer(pinned_hessians_, ptr_pinned_hessians_);
-  }
-  if (ptr_pinned_feature_masks_) {
-    queue_.enqueue_unmap_buffer(pinned_feature_masks_, ptr_pinned_feature_masks_);
-  }
-  // make ordered_gradients and Hessians larger (including extra room for prefetching), and pin them
-  ordered_gradients_.reserve(allocated_num_data_);
-  ordered_hessians_.reserve(allocated_num_data_);
+  // Release OpenCL references before resizing their host storage.
+  ReleasePinnedMemory();
+  // Include live elements for the entire pinned buffer, including prefetch padding.
+  ordered_gradients_.resize(allocated_num_data_);
+  ordered_hessians_.resize(allocated_num_data_);
   pinned_gradients_ = boost::compute::buffer();  // deallocate
   pinned_gradients_ = boost::compute::buffer(ctx_, allocated_num_data_ * sizeof(score_t),
                                              boost::compute::memory_object::read_write | boost::compute::memory_object::use_host_ptr,
@@ -765,6 +776,8 @@ Tree* GPUTreeLearner::Train(const score_t* gradients, const score_t *hessians, b
 }
 
 void GPUTreeLearner::ResetTrainingDataInner(const Dataset* train_data, bool is_constant_hessian, bool reset_multi_val_bin) {
+  // The base learner resizes the ordered vectors, possibly reallocating them.
+  ReleasePinnedMemory();
   SerialTreeLearner::ResetTrainingDataInner(train_data, is_constant_hessian, reset_multi_val_bin);
   num_feature_groups_ = train_data_->num_feature_groups();
   // GPU memory has to been reallocated because data may have been changed

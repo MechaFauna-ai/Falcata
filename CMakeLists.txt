@@ -1041,22 +1041,54 @@ if(BUILD_CPP_TEST)
 
   set(
     CPP_TEST_SOURCES
+      tests/cpp_tests/test_add_features_booster.cpp
       tests/cpp_tests/test_array_args.cpp
       tests/cpp_tests/test_arrow.cpp
       tests/cpp_tests/test_arrow_deprecated.cpp
+      tests/cpp_tests/test_binary_default_predicate.cpp
       tests/cpp_tests/test_byte_buffer.cpp
+      tests/cpp_tests/test_c_api_error.cpp
       tests/cpp_tests/test_chunked_array.cpp
+      tests/cpp_tests/test_colwise_iterators.cpp
       tests/cpp_tests/test_common.cpp
+      tests/cpp_tests/test_csc_row_iterator.cpp
       tests/cpp_tests/test_dataset_subset.cpp
+      tests/cpp_tests/test_dense_bin.cpp
+      tests/cpp_tests/test_discretizer_zero_scale.cpp
+      tests/cpp_tests/test_empty_binary_ranking_metrics.cpp
+      tests/cpp_tests/test_empty_global_leaf.cpp
+      tests/cpp_tests/test_falb_unaligned_view.cpp
+      tests/cpp_tests/test_falb_writer_alignment.cpp
+      tests/cpp_tests/test_find_groups.cpp
+      tests/cpp_tests/test_histogram_pool_move.cpp
       tests/cpp_tests/test_host_quantization.cpp
+      tests/cpp_tests/test_init_score_layout.cpp
+      tests/cpp_tests/test_int_histogram.cpp
       tests/cpp_tests/test_leaf_splits.cpp
+      tests/cpp_tests/test_linear_prediction_extra_coefficients.cpp
+      tests/cpp_tests/test_linkers.cpp
+      tests/cpp_tests/test_linkers_sendrecv.cpp
+      tests/cpp_tests/test_loaded_binary_objective.cpp
+      tests/cpp_tests/test_loaded_tree_dataset_score.cpp
+      tests/cpp_tests/test_log.cpp
       tests/cpp_tests/test_main.cpp
+      tests/cpp_tests/test_multi_val_sparse_bin.cpp
+      tests/cpp_tests/test_multi_val_sparse_bin_index.cpp
+      tests/cpp_tests/test_multiclass_early_stop.cpp
       tests/cpp_tests/test_nccl_row_split.cpp
+      tests/cpp_tests/test_ndcg_reinitialization.cpp
+      tests/cpp_tests/test_opencl_host_buffers.cpp
+      tests/cpp_tests/test_partition_leaf_predictions.cpp
+      tests/cpp_tests/test_predictor_threads.cpp
+      tests/cpp_tests/test_quantized_index.cpp
+      tests/cpp_tests/test_random.cpp
       tests/cpp_tests/test_serialize.cpp
       tests/cpp_tests/test_single_row.cpp
       tests/cpp_tests/test_split_info.cpp
       tests/cpp_tests/test_stream.cpp
       tests/cpp_tests/test_tcp_socket.cpp
+      tests/cpp_tests/test_text_reader.cpp
+      tests/cpp_tests/test_threshold_dictionary_bounds.cpp
       tests/cpp_tests/test_xentropy_lambda.cpp
       tests/cpp_tests/testutils.cpp
     )
@@ -1071,12 +1103,23 @@ if(BUILD_CPP_TEST)
       PRIVATE
         tests/cpp_tests/test_cuda_shuffle_reduce_min.cu
         tests/cpp_tests/test_cuda_algorithms.cu
+        tests/cpp_tests/test_cuda_prefix_sum_bounds.cu
         tests/cpp_tests/test_cuda_metadata.cu
+        tests/cpp_tests/test_cuda_copy_subrow.cu
         tests/cpp_tests/test_cuda_device_level_budget.cu
         tests/cpp_tests/test_cuda_gradient_discretizer.cu
         tests/cpp_tests/test_cuda_selective_r3.cu
+        tests/cpp_tests/test_cuda_multiclass_convert.cu
         tests/cpp_tests/test_cuda_nonquant_fixed.cu
+        tests/cpp_tests/test_cuda_block_count.cu
+        tests/cpp_tests/test_cuda_tree_from_host.cu
         tests/cpp_tests/test_cuda_vector_capacity.cu
+        tests/cpp_tests/test_cuda_hist_slab_size.cu
+        tests/cpp_tests/test_cuda_learner_destructors.cu
+        tests/cpp_tests/test_cuda_multi_target_index.cu
+        tests/cpp_tests/test_cuda_prefix_sum_exclusive.cu
+        tests/cpp_tests/test_cuda_random_advance.cu
+        tests/cpp_tests/test_cuda_shuffle_reduce.cu
     )
     set_target_properties(
       testfalcata

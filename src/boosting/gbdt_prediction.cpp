@@ -73,7 +73,7 @@ void GBDT::PredictRawByMap(const std::unordered_map<int, double>& features, doub
 
 void GBDT::Predict(const double* features, double* output, const PredictionEarlyStopInstance* early_stop) const {
   PredictRaw(features, output, early_stop);
-  if (average_output_) {
+  if (average_output_ && num_iteration_for_pred_ > 0) {
     for (int k = 0; k < NumOutputPerIteration(); ++k) {
       output[k] /= num_iteration_for_pred_;
     }
@@ -85,7 +85,7 @@ void GBDT::Predict(const double* features, double* output, const PredictionEarly
 
 void GBDT::PredictByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {
   PredictRawByMap(features, output, early_stop);
-  if (average_output_) {
+  if (average_output_ && num_iteration_for_pred_ > 0) {
     for (int k = 0; k < NumOutputPerIteration(); ++k) {
       output[k] /= num_iteration_for_pred_;
     }

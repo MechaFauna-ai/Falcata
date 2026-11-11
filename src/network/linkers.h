@@ -13,10 +13,17 @@
 
 #include <string>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <ctime>
+#include <exception>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #ifdef USE_SOCKET
@@ -31,15 +38,87 @@
 namespace Falcata {
 
 /*!
+* \brief One long-lived thread that runs a job at a time for Linkers::SendRecv, so a large exchange does not
+*        create and join a thread per call. A job's exception is kept and handed back by Wait.
+*/
+class SendWorker {
+ public:
+  SendWorker() : thread_([this]() { Loop(); }) {}
+
+  ~SendWorker() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    thread_.join();
+  }
+
+  SendWorker(const SendWorker&) = delete;
+  SendWorker& operator=(const SendWorker&) = delete;
+
+  /*! \brief Start job on the worker thread; the job must stay valid until Wait returns */
+  void Start(std::function<void()> job) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      job_ = std::move(job);
+      has_job_ = true;
+      done_ = false;
+      error_ = nullptr;
+    }
+    cv_.notify_all();
+  }
+
+  /*! \brief Wait for the job Start gave; returns what it threw, if anything */
+  std::exception_ptr Wait() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [this]() { return done_; });
+    return error_;
+  }
+
+ private:
+  void Loop() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (;;) {
+      cv_.wait(lock, [this]() { return has_job_ || stop_; });
+      if (!has_job_) {
+        return;  // stop
+      }
+      std::function<void()> job = std::move(job_);
+      has_job_ = false;
+      lock.unlock();
+      std::exception_ptr error;
+      try {
+        job();
+      } catch (...) {
+        error = std::current_exception();
+      }
+      lock.lock();
+      error_ = error;
+      done_ = true;
+      cv_.notify_all();
+    }
+  }
+
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::function<void()> job_;
+  bool has_job_ = false;
+  bool done_ = false;
+  bool stop_ = false;
+  std::exception_ptr error_;
+  std::thread thread_;  // last: starts once the members above exist
+};
+
+/*!
 * \brief A network basic communication wrapper.
 * Will wrap low level communication methods, e.g. mpi, socket and so on.
 * This class will wrap all linkers to other machines if needs
 */
 class Linkers {
  public:
-  Linkers() {
-    is_init_ = false;
-  }
+  /*! \brief A placeholder for no network (Network::Dispose): one machine, rank 0 */
+  Linkers() {}
   /*!
   * \brief Constructor
   * \param config Config of network settings
@@ -82,6 +161,16 @@ class Linkers {
 
   inline void SendRecv(int send_rank, char* send_data, int64_t send_len,
                        int recv_rank, char* recv_data, int64_t recv_len);
+
+  /*!
+  * \brief Runs send() on the send worker thread while recv() runs on this one. A failure on either side is
+  *        rethrown here once the send has finished (a failure on one side first unblocks the other, see AbortLink)
+  */
+  template <typename SendFun, typename RecvFun>
+  inline void SendWhileReceiving(int send_rank, int recv_rank, const SendFun& send, const RecvFun& recv);
+
+  /*! \brief Makes a send to or receive from rank blocked in another thread return (sockets: shut the link down) */
+  inline void AbortLink(int rank);
   /*!
   * \brief Get rank of local machine
   */
@@ -120,6 +209,13 @@ class Linkers {
   * \brief Construct network topo
   */
   void Construct();
+  /*!
+  * \brief Connect to every rank above this one (part of Construct)
+  * \param need_connect ranks to link with
+  */
+  void ConnectToHigherRanks(const std::unordered_map<int, int>& need_connect);
+  /*! \brief Interrupt the handshake read ListenThread may be blocked in, and refuse further ones */
+  void AbortHandshake();
   /*!
   * \brief Parser machines information from file
   * \param machines
@@ -160,17 +256,17 @@ class Linkers {
 
  private:
   /*! \brief Rank of local machine */
-  int rank_;
+  int rank_ = 0;
   /*! \brief Total number machines */
-  int num_machines_;
+  int num_machines_ = 1;
   /*! \brief Bruck map */
   BruckMap bruck_map_;
   /*! \brief Recursive Halving map */
   RecursiveHalvingMap recursive_halving_map_;
 
-  std::chrono::duration<double, std::milli> network_time_;
+  std::chrono::duration<double, std::milli> network_time_{0};
 
-  bool is_init_;
+  bool is_init_ = false;
 
   #ifdef USE_SOCKET
   /*! \brief use to store client ips */
@@ -178,14 +274,22 @@ class Linkers {
   /*! \brief use to store client ports */
   std::vector<int> client_ports_;
   /*! \brief time out for sockets, in minutes */
-  int socket_timeout_;
+  int socket_timeout_ = 0;
   /*! \brief Local listen ports */
-  int local_listen_port_;
+  int local_listen_port_ = 0;
   /*! \brief Linkers */
   std::vector<std::unique_ptr<TcpSocket>> linkers_;
   /*! \brief Local socket listener */
   std::unique_ptr<TcpSocket> listener_;
+  /*! \brief Guards the two members below, shared by ListenThread and AbortHandshake */
+  std::mutex handshake_mutex_;
+  /*! \brief The accepted socket ListenThread is reading a rank from, if any */
+  TcpSocket* handshake_socket_ = nullptr;
+  /*! \brief Set by AbortHandshake: ListenThread takes no further connection */
+  bool handshake_aborted_ = false;
   #endif  // USE_SOCKET
+  /*! \brief Runs the sending half of SendWhileReceiving; started on first use */
+  std::unique_ptr<SendWorker> send_worker_;
 };
 
 
@@ -223,15 +327,50 @@ inline void Linkers::Send(int rank, char* data, int64_t len) const {
   } while (used < len);
 }
 
+template <typename SendFun, typename RecvFun>
+inline void Linkers::SendWhileReceiving(int send_rank, int recv_rank, const SendFun& send, const RecvFun& recv) {
+  if (send_worker_ == nullptr) {
+    send_worker_.reset(new SendWorker());
+  }
+  // which side failed first (0: neither, 1: send, 2: receive): its error is the cause, the other side's is the
+  // shutdown that interrupted it
+  std::atomic<int> first_failure(0);
+  send_worker_->Start([this, recv_rank, &send, &first_failure]() {
+    try {
+      send();
+    } catch (...) {
+      int none = 0;
+      if (first_failure.compare_exchange_strong(none, 1)) {
+        AbortLink(recv_rank);  // the receive may wait on another, still connected rank: make it return
+      }
+      throw;
+    }
+  });
+  try {
+    recv();
+  } catch (...) {
+    int none = 0;
+    const bool recv_first = first_failure.compare_exchange_strong(none, 2);
+    if (recv_first) {
+      AbortLink(send_rank);
+    }
+    const std::exception_ptr send_error = send_worker_->Wait();
+    if (!recv_first && send_error) {
+      std::rethrow_exception(send_error);
+    }
+    throw;
+  }
+  const std::exception_ptr send_error = send_worker_->Wait();
+  if (send_error) {
+    std::rethrow_exception(send_error);
+  }
+}
+
 inline void Linkers::SendRecv(int send_rank, char* send_data, int64_t send_len,
                               int recv_rank, char* recv_data, int64_t recv_len) {
   auto start_time = std::chrono::high_resolution_clock::now();
-  std::thread send_worker(
-    [this, send_rank, send_data, send_len]() {
-    Send(send_rank, send_data, send_len);
-  });
-  Recv(recv_rank, recv_data, recv_len);
-  send_worker.join();
+  SendWhileReceiving(send_rank, recv_rank, [&]() { Send(send_rank, send_data, send_len); },
+                     [&]() { Recv(recv_rank, recv_data, recv_len); });
   // wait for send complete
   auto end_time = std::chrono::high_resolution_clock::now();
   // output used time on each iteration
@@ -243,9 +382,20 @@ inline void Linkers::SendRecv(int send_rank, char* send_data, int64_t send_len,
 inline void Linkers::Recv(int rank, char* data, int len) const {
   int recv_cnt = 0;
   while (recv_cnt < len) {
-    recv_cnt += linkers_[rank]->Recv(data + recv_cnt,
+    const int cur_cnt = linkers_[rank]->Recv(data + recv_cnt,
       // len - recv_cnt
       std::min(len - recv_cnt, SocketConfig::kMaxReceiveSize));
+    if (cur_cnt == 0) {
+      // recv() returns 0 only at the end of the stream: the peer closed the connection
+      Log::Fatal("Socket recv error: rank %d closed the connection", rank);
+    }
+    recv_cnt += cur_cnt;
+  }
+}
+
+inline void Linkers::AbortLink(int rank) {
+  if (rank >= 0 && rank < static_cast<int>(linkers_.size()) && linkers_[rank] != nullptr) {
+    linkers_[rank]->Shutdown();
   }
 }
 
@@ -268,12 +418,8 @@ inline void Linkers::SendRecv(int send_rank, char* send_data, int send_len,
     Recv(recv_rank, recv_data, recv_len);
   } else {
     // if buffer is not enough, use another thread to send, since send will be blocking
-    std::thread send_worker(
-      [this, send_rank, send_data, send_len]() {
-      Send(send_rank, send_data, send_len);
-    });
-    Recv(recv_rank, recv_data, recv_len);
-    send_worker.join();
+    SendWhileReceiving(send_rank, recv_rank, [&]() { Send(send_rank, send_data, send_len); },
+                       [&]() { Recv(recv_rank, recv_data, recv_len); });
   }
   // wait for send complete
   auto end_time = std::chrono::high_resolution_clock::now();
@@ -284,6 +430,9 @@ inline void Linkers::SendRecv(int send_rank, char* send_data, int send_len,
 #endif  // USE_SOCKET
 
 #ifdef USE_MPI
+
+// an MPI send cannot be interrupted from another thread; MPI reports the failure itself
+inline void Linkers::AbortLink(int) {}
 
 inline void Linkers::Recv(int rank, char* data, int len) const {
   MPI_Status status;

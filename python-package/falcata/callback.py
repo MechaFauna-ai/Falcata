@@ -445,6 +445,7 @@ class _EarlyStoppingCallback:
             # first evaluation below, because it reads the metric names out of
             # the results and train(eval_freq=N) may not produce any here.
             self._initialized = False
+            self.enabled = _should_enable_early_stopping(self.stopping_rounds)
         if not env.evaluation_result_list:
             # train(eval_freq=N) skipped evaluation on this iteration. Return
             # rather than treating it as "no improvement", which is what makes

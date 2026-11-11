@@ -56,10 +56,10 @@ CUDADataPartition::CUDADataPartition(
 }
 
 CUDADataPartition::~CUDADataPartition() {
-  CUDASUCCESS_OR_FATAL(cudaStreamDestroy(cuda_streams_[0]));
-  CUDASUCCESS_OR_FATAL(cudaStreamDestroy(cuda_streams_[1]));
-  CUDASUCCESS_OR_FATAL(cudaStreamDestroy(cuda_streams_[2]));
-  CUDASUCCESS_OR_FATAL(cudaStreamDestroy(cuda_streams_[3]));
+  // Init creates the streams; the vector is empty when it never ran
+  for (cudaStream_t stream : cuda_streams_) {
+    CUDASUCCESS_OR_FATAL(cudaStreamDestroy(stream));
+  }
   cuda_streams_.clear();
   cuda_streams_.shrink_to_fit();
   if (indices_copy_done_event_ != nullptr) {
