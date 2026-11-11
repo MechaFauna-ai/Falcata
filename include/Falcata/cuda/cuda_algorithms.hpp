@@ -205,13 +205,20 @@ __device__ __forceinline__ void GlobalMemoryPrefixSum(T* array, const size_t len
   __syncthreads();
 }
 
+// Every lane of the warp must call this (as for ShuffleReduceSumWarp/ShuffleReduceMaxWarp). The shuffles use the
+// full mask: a mask of only the first len lanes, while all 32 lanes execute the shuffle, is undefined behaviour for
+// the lanes outside it, and lanes inside it would read values from lanes outside it. Lane 0 returns the minimum over
+// lanes [0, len): a value shuffled down from a lane at or past len is ignored.
 template <typename T>
 __device__ __forceinline__ T ShuffleReduceMinWarp(T value, const data_size_t len) {
   if (len > 0) {
-    const uint32_t mask = (0xffffffff >> (warpSize - len));
+    const uint32_t mask = 0xffffffff;
+    const data_size_t lane = static_cast<data_size_t>(threadIdx.x % warpSize);
     for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
       const T other_value = __shfl_down_sync(mask, value, offset);
-      value = (other_value < value) ? other_value : value;
+      if (lane + offset < len) {
+        value = (other_value < value) ? other_value : value;
+      }
     }
   }
   return value;
