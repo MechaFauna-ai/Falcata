@@ -1088,6 +1088,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_single_row.cpp
       tests/cpp_tests/test_split_info.cpp
       tests/cpp_tests/test_stream.cpp
+      tests/cpp_tests/test_swig_string_array.cpp
       tests/cpp_tests/test_tcp_socket.cpp
       tests/cpp_tests/test_text_reader.cpp
       tests/cpp_tests/test_threshold_dictionary_bounds.cpp
