@@ -27,6 +27,16 @@ void GatherIdenticalWorkers(char* input, Falcata::comm_size_t size,
   std::memcpy(output, input, size);
   std::memcpy(output + size, input, size);
 }
+
+// Network::Init needs both external collectives; with identical workers the
+// reduced block of this rank is its own block reduced with itself.
+void ReduceScatterIdenticalWorkers(char* input, Falcata::comm_size_t, int type_size,
+                                   const Falcata::comm_size_t* block_start, const Falcata::comm_size_t* block_len,
+                                   int, char* output, Falcata::comm_size_t,
+                                   const Falcata::ReduceFunction& reducer) {
+  std::memcpy(output, input + block_start[0], block_len[0]);
+  reducer(input + block_start[0], output, type_size, block_len[0]);
+}
 }  // namespace
 
 TEST(LeafRenewal, GloballyEmptyLeafStaysFinite) {
@@ -40,7 +50,7 @@ TEST(LeafRenewal, GloballyEmptyLeafStaysFinite) {
   objective.Init(metadata, 2);
   Falcata::Tree tree(2, false, false);
   tree.Split(0, 0, 0, 1, 0.5, -1, 1, 2, 0, 1, 0, 1, Falcata::MissingType::None, true);
-  Falcata::Network::Init(2, 0, nullptr, GatherIdenticalWorkers);
+  Falcata::Network::Init(2, 0, ReduceScatterIdenticalWorkers, GatherIdenticalWorkers);
   learner.RenewTreeOutput(&tree, &objective, [](const Falcata::label_t*, int) { return 1.0; },
                           2, nullptr, 0, nullptr);
   Falcata::Network::Dispose();
