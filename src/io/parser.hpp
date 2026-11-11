@@ -11,11 +11,48 @@
 #include <Falcata/utils/log.h>
 
 #include <cmath>
+#include <cstdint>
+#include <limits>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace Falcata {
+
+/*!
+ * \brief parses the feature index of a LibSVM "index:value" token; a negative
+ *        index or one past the int range is a format error (both used to index
+ *        the per-feature arrays out of bounds)
+ */
+inline const char* AtoiLibSVMIndex(const char* p, int* out) {
+  while (*p == ' ') {
+    ++p;
+  }
+  const char* start = p;
+  bool negative = false;
+  if (*p == '-') {
+    negative = true;
+    ++p;
+  } else if (*p == '+') {
+    ++p;
+  }
+  int64_t value = 0;
+  for (; *p >= '0' && *p <= '9'; ++p) {
+    value = value * 10 + (*p - '0');
+    if (value >= std::numeric_limits<int>::max()) {
+      Log::Fatal("LibSVM feature index %s is too large", std::string(start, p - start + 1).c_str());
+    }
+  }
+  if (negative && value != 0) {
+    Log::Fatal("LibSVM feature index -%s is negative", std::to_string(value).c_str());
+  }
+  *out = static_cast<int>(value);
+  while (*p == ' ') {
+    ++p;
+  }
+  return p;
+}
 
 class CSVParser: public Parser {
  public:
@@ -114,7 +151,7 @@ class LibSVMParser: public Parser {
       str = Common::SkipSpaceAndTab(str);
     }
     while (*str != '\0') {
-      str = Common::Atoi(str, &idx);
+      str = AtoiLibSVMIndex(str, &idx);
       str = Common::SkipSpaceAndTab(str);
       if (*str == ':') {
         ++str;
