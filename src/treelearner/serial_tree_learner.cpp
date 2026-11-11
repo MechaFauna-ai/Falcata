@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <queue>
 #include <set>
@@ -275,9 +276,13 @@ Tree* SerialTreeLearner::Train(const score_t* gradients, const score_t *hessians
 Tree* SerialTreeLearner::FitByExistingTree(const Tree* old_tree, const score_t* gradients, const score_t *hessians) const {
   auto tree = std::unique_ptr<Tree>(new Tree(*old_tree));
   CHECK_GE(data_partition_->num_leaves(), tree->num_leaves());
+  const int num_leaves = tree->num_leaves();
+  std::vector<double> leaf_sum_grad(num_leaves, 0.0);
+  std::vector<double> leaf_sum_hess(num_leaves, kEpsilon);
+  std::vector<data_size_t> leaf_cnt(num_leaves, 0);
   OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
-  for (int i = 0; i < tree->num_leaves(); ++i) {
+  for (int i = 0; i < num_leaves; ++i) {
     OMP_LOOP_EX_BEGIN();
     data_size_t cnt_leaf_data = 0;
     auto tmp_idx = data_partition_->GetIndexOnLeaf(i, &cnt_leaf_data);
@@ -288,22 +293,90 @@ Tree* SerialTreeLearner::FitByExistingTree(const Tree* old_tree, const score_t* 
       sum_grad += gradients[idx];
       sum_hess += hessians[idx];
     }
+    leaf_sum_grad[i] = sum_grad;
+    leaf_sum_hess[i] = sum_hess;
+    leaf_cnt[i] = cnt_leaf_data;
+    OMP_LOOP_EX_END();
+  }
+  OMP_THROW_EX();
+  // With path smoothing, training shrinks each leaf toward its parent node's output
+  // (the root's output is unsmoothed, every deeper node is smoothed toward its own
+  // parent). Rebuild those node outputs from the refit data, top-down. The tree's
+  // leaf_parent_ is not used: a tree loaded from model text or FALB does not carry it.
+  const bool use_smoothing = config_->path_smooth > kEpsilon && num_leaves > 1;
+  std::vector<int> leaf_parent;
+  std::vector<double> node_output;
+  if (use_smoothing) {
+    const int num_nodes = num_leaves - 1;
+    leaf_parent.assign(num_leaves, -1);
+    std::vector<int> node_parent(num_nodes, -1);
+    for (int node = 0; node < num_nodes; ++node) {
+      for (const int child : {tree->left_child(node), tree->right_child(node)}) {
+        if (child >= num_nodes || ~child >= num_leaves) {
+          Log::Fatal("Refit: tree node %d has an out-of-range child %d", node, child);
+        }
+        if (child < 0) {
+          leaf_parent[~child] = node;
+        } else {
+          node_parent[child] = node;
+        }
+      }
+    }
+    std::vector<double> node_sum_grad(num_nodes, 0.0);
+    std::vector<double> node_sum_hess(num_nodes, 0.0);
+    std::vector<data_size_t> node_cnt(num_nodes, 0);
+    std::function<void(int)> accumulate = [&](int node) {
+      for (const int child : {tree->left_child(node), tree->right_child(node)}) {
+        if (child < 0) {
+          node_sum_grad[node] += leaf_sum_grad[~child];
+          node_sum_hess[node] += leaf_sum_hess[~child];
+          node_cnt[node] += leaf_cnt[~child];
+        } else {
+          accumulate(child);
+          node_sum_grad[node] += node_sum_grad[child];
+          node_sum_hess[node] += node_sum_hess[child];
+          node_cnt[node] += node_cnt[child];
+        }
+      }
+    };
+    accumulate(0);
+    // node ids are not ordered root-first, so resolve each node's output through its parents
+    node_output.assign(num_nodes, 0.0);
+    std::vector<bool> resolved(num_nodes, false);
+    std::function<double(int)> output_of = [&](int node) -> double {
+      if (!resolved[node]) {
+        if (node_parent[node] < 0) {
+          node_output[node] = FeatureHistogram::CalculateSplittedLeafOutput<true, true, false>(
+              node_sum_grad[node], node_sum_hess[node], config_->lambda_l1, config_->lambda_l2,
+              config_->max_delta_step, config_->path_smooth, node_cnt[node], 0);
+        } else {
+          node_output[node] = FeatureHistogram::CalculateSplittedLeafOutput<true, true, true>(
+              node_sum_grad[node], node_sum_hess[node], config_->lambda_l1, config_->lambda_l2,
+              config_->max_delta_step, config_->path_smooth, node_cnt[node], output_of(node_parent[node]));
+        }
+        resolved[node] = true;
+      }
+      return node_output[node];
+    };
+    for (int node = 0; node < num_nodes; ++node) {
+      output_of(node);
+    }
+  }
+  for (int i = 0; i < num_leaves; ++i) {
     double output;
-    if ((config_->path_smooth > kEpsilon) & (i > 0)) {
+    if (use_smoothing) {
       output = FeatureHistogram::CalculateSplittedLeafOutput<true, true, true>(
-          sum_grad, sum_hess, config_->lambda_l1, config_->lambda_l2,
-          config_->max_delta_step, config_->path_smooth, cnt_leaf_data, tree->leaf_parent(i));
+          leaf_sum_grad[i], leaf_sum_hess[i], config_->lambda_l1, config_->lambda_l2,
+          config_->max_delta_step, config_->path_smooth, leaf_cnt[i], node_output[leaf_parent[i]]);
     } else {
       output = FeatureHistogram::CalculateSplittedLeafOutput<true, true, false>(
-          sum_grad, sum_hess, config_->lambda_l1, config_->lambda_l2,
-          config_->max_delta_step, config_->path_smooth, cnt_leaf_data, 0);
+          leaf_sum_grad[i], leaf_sum_hess[i], config_->lambda_l1, config_->lambda_l2,
+          config_->max_delta_step, config_->path_smooth, leaf_cnt[i], 0);
     }
     auto old_leaf_output = tree->LeafOutput(i);
     auto new_leaf_output = output * tree->shrinkage();
     tree->SetLeafOutput(i, config_->refit_decay_rate * old_leaf_output + (1.0 - config_->refit_decay_rate) * new_leaf_output);
-    OMP_LOOP_EX_END();
   }
-  OMP_THROW_EX();
   return tree.release();
 }
 
