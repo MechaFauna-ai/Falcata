@@ -269,7 +269,8 @@ def r_docs_fingerprint() -> str:
     """Hash everything the generated R documentation is built from.
 
     The R package sources (minus the roxygen/pkgdown outputs ``man/``, ``docs/`` and ``NAMESPACE``), the library
-    sources it compiles and whose output its examples print, and the build scripts.
+    sources it compiles and whose output its examples print, the external headers the CRAN build vendors, the
+    package version and the build scripts.
 
     Returns
     -------
@@ -278,8 +279,10 @@ def r_docs_fingerprint() -> str:
     """
     root = CURR_PATH.parent
     generated = [root / "R-package" / "docs", root / "R-package" / "man"]
-    files = [root / "build-cran-package.sh", root / ".ci" / "build-docs.R"]
-    for top in ("R-package", "src", "include"):
+    files = [root / "build-cran-package.sh", root / ".ci" / "build-docs.R", root / "VERSION.txt"]
+    # build-cran-package.sh also vendors these external headers into the package
+    vendored = ("external_libs/fast_double_parser/include", "external_libs/fmt/include", "external_libs/eigen/Eigen")
+    for top in ("R-package", "src", "include", *vendored):
         files.extend(path for path in (root / top).rglob("*") if path.is_file())
     digest = hashlib.sha256()
     for path in sorted(files):
