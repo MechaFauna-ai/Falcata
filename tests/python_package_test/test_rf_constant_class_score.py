@@ -94,3 +94,22 @@ def test_rf_empty_bag_keeps_predictions_finite(objective):
         }
         bst = flc.train(params, flc.Dataset(X, y), num_boost_round=10)
         assert np.all(np.isfinite(bst.predict(X))), seed
+
+
+@pytest.mark.parametrize("bagging_fraction", [0.3, 0.8])
+def test_rf_without_usable_features(bagging_fraction):
+    # RF called the tree learner without GBDT's num_features() > 0 guard; with
+    # no usable feature (constant columns) the learner has no histograms
+    # (ASan: heap-buffer-overflow in FeatureHistogram::RawData). Handoff from
+    # the fz-model fuzzer (repro rf_hbo.py).
+    X = np.full((200, 1), 3.0)
+    y = np.arange(200, dtype=float)
+    params = {
+        "objective": "regression",
+        "boosting": "rf",
+        "bagging_fraction": bagging_fraction,
+        "bagging_freq": 1,
+        "verbose": -1,
+    }
+    bst = flc.train(params, flc.Dataset(X, y), num_boost_round=5)
+    np.testing.assert_allclose(bst.predict(X), y.mean())

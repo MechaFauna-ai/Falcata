@@ -180,6 +180,8 @@ class RF : public GBDT {
     for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
       std::unique_ptr<Tree> new_tree(new Tree(2, false, false));
       size_t offset = static_cast<size_t>(cur_tree_id)* num_data_;
+      // whether the tree learner grows this tree (and so partitioned the bag for renewing it)
+      bool grown = false;
       if (class_need_train_[cur_tree_id]) {
         auto grad = gradients + offset;
         auto hess = hessians + offset;
@@ -193,12 +195,14 @@ class RF : public GBDT {
           hess = tmp_hess_.data();
         }
 
-        if (bag_data_cnt > 0) {
+        // Nothing to grow when the bag drew no rows (bagging draws each row independently, so a
+        // small dataset can get an empty bag: a grown root would be 0/0 = NaN) or when the
+        // dataset has no usable feature (the learner has no histograms; GBDT has the same
+        // guard). The tree then keeps output 0 and carries the class bias alone.
+        grown = bag_data_cnt > 0 && train_data_->num_features() > 0;
+        if (grown) {
           new_tree.reset(tree_learner_->Train(grad, hess, false));
         }
-        // else: the bag drew no rows (bagging draws each row independently, so a small dataset
-        // can get an empty bag). A grown root would be 0/0 = NaN; the tree keeps output 0 and
-        // carries the class bias alone.
       }
 
       if (class_need_train_[cur_tree_id]) {
@@ -215,7 +219,7 @@ class RF : public GBDT {
           renew_score = cuda_init_score_.RawData() + offset;
         }
         #endif  // USE_CUDA
-        if (bag_data_cnt > 0) {
+        if (grown) {
           tree_learner_->RenewTreeOutput(new_tree.get(), objective_function_, residual_getter,
             num_data_, bag_data_indices.data(), bag_data_cnt, renew_score);
         }
