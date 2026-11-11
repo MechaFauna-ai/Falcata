@@ -41,8 +41,11 @@ class SparseBinIterator : public BinIterator {
     }
     Reset(0);
   }
+  // raw-access iterator (RawGet/InnerRawGet): Get() is not meant to be used,
+  // but give its members defined values rather than leave them uninitialized
   SparseBinIterator(const SparseBin<VAL_T>* bin_data, data_size_t start_idx)
-      : bin_data_(bin_data) {
+      : bin_data_(bin_data), min_bin_(0), max_bin_(std::numeric_limits<VAL_T>::max()), most_freq_bin_(0),
+        offset_(0) {
     Reset(start_idx);
   }
 
@@ -232,7 +235,8 @@ class SparseBin : public Bin {
       }
       while (cur_pos < end && i_delta < num_vals_) {
         const uint32_t ti = static_cast<uint32_t>(vals_[i_delta]) << 1;
-        grad[ti] += gradients_and_hessians_ptr[cur_pos];
+        // int8 (gradient, hessian) pairs: the gradient of row cur_pos is byte 2 * cur_pos
+        grad[ti] += gradients_and_hessians_ptr[cur_pos << 1];
         ++cnt[ti];
         cur_pos += deltas_[++i_delta];
       }

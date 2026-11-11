@@ -37,6 +37,7 @@ def gpu_state(device=None):
             capture_output=True,
             text=True,
             check=True,
+            timeout=10,
         ).stdout.splitlines()
         matches = [uuid.strip() for uuid in uuids if uuid.strip().startswith(device)]
         if len(matches) != 1:
@@ -45,7 +46,7 @@ def gpu_state(device=None):
     command = ["nvidia-smi", "--query-gpu=memory.free,utilization.gpu", "--format=csv,noheader,nounits"]
     if device is not None:
         command.append(f"--id={device}")
-    out = subprocess.run(command, capture_output=True, text=True, check=True).stdout.strip()
+    out = subprocess.run(command, capture_output=True, text=True, check=True, timeout=10).stdout.strip()
     rows = out.splitlines()
     if len(rows) != 1:
         raise ValueError("Select exactly one GPU with a visible UUID or --gpu-id")
@@ -71,7 +72,7 @@ def main():
         except ValueError as e:
             print(f"gpu_guard: invalid GPU selection or telemetry ({e})", flush=True)
             sys.exit(2)
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
             print(f"gpu_guard: cannot query nvidia-smi ({e})", flush=True)
             sys.exit(2)
         ok = free_mb >= args.require_free_mb and util <= args.max_util

@@ -41,9 +41,14 @@ class PipelineReader {
     // buffer used for the file reading
     auto buffer_read = std::vector<char>(buffer_size);
     size_t read_cnt = 0;
-    if (skip_bytes > 0) {
-      // skip first k bytes
-      read_cnt = reader->Read(buffer_process.data(), skip_bytes);
+    // skip first k bytes, at most one buffer at a time (the scratch buffer
+    // holds buffer_size bytes)
+    for (size_t to_skip = skip_bytes > 0 ? static_cast<size_t>(skip_bytes) : 0; to_skip > 0;) {
+      const size_t skipped = reader->Read(buffer_process.data(), std::min(to_skip, buffer_size));
+      if (skipped == 0) {
+        break;
+      }
+      to_skip -= skipped;
     }
     // read first block
     read_cnt = reader->Read(buffer_process.data(), buffer_size);
@@ -55,8 +60,15 @@ class PipelineReader {
         [=, &last_read_cnt, &reader, &buffer_read] {
         last_read_cnt = reader->Read(buffer_read.data(), buffer_size);
       });
-      // start process
-      cnt += process_fun(buffer_process.data(), read_cnt);
+      // start process; if it throws (e.g. Log::Fatal on a malformed line),
+      // join the reader before unwinding: destroying a joinable std::thread
+      // calls std::terminate, and the reader still uses this frame's buffers
+      try {
+        cnt += process_fun(buffer_process.data(), read_cnt);
+      } catch (...) {
+        read_worker.join();
+        throw;
+      }
       // wait for read thread
       read_worker.join();
       // exchange the buffer
