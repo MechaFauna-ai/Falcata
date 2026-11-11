@@ -346,9 +346,9 @@ def quality(params, bst, X_te, y_te):
     if obj == "multiclass":
         return float((preds.argmax(axis=1) == y_te).mean()), "acc"
     if obj == "binary":
-        order = np.argsort(preds)
-        ranks = np.empty(len(preds))
-        ranks[order] = np.arange(len(preds))
+        from scipy.stats import rankdata
+
+        ranks = rankdata(preds, method="average") - 1
         pos = y_te == 1
         auc = (ranks[pos].sum() - pos.sum() * (pos.sum() - 1) / 2) / max(1, pos.sum() * (~pos).sum())
         return float(auc), "auc"
