@@ -316,7 +316,12 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
         if (nan_found) {
           continue;
         }
-        num_nonzero[tid][leaf_num] += 1;
+        // complete rows of a leaf with linear features; a leaf without any (only categorical
+        // features on its path) keeps a count of 0 and so the constant fallback below, as
+        // before complete rows were counted (and as LightGBM, which counts feature values)
+        if (num_feat > 0) {
+          num_nonzero[tid][leaf_num] += 1;
+        }
       }
       curr_row[num_feat] = 1.0;
       float h = static_cast<float>(hessians[i]);
