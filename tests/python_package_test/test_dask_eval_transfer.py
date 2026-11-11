@@ -1,9 +1,17 @@
 """Checking eval-set placement must not gather training partitions."""
 
+import os
+import sys
+
 import numpy as np
 import pytest
 
 import falcata as flc
+
+pytestmark = pytest.mark.skipif(
+    sys.platform in {"win32", "cygwin"} or os.environ.get("TASK", "") in {"cuda", "gpu", "mpi"},
+    reason="Dask distributed training requires a supported CPU build",
+)
 
 
 def test_dask_eval_placement_gathers_only_metadata(monkeypatch):
