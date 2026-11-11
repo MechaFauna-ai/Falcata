@@ -19,6 +19,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "linkers.h"
@@ -125,6 +126,17 @@ void Linkers::ParseMachineList(const std::string& machines, const std::string& f
     }
     str_after_split[0] = Common::Trim(str_after_split[0]);
     str_after_split[1] = Common::Trim(str_after_split[1]);
+    // checked here, before Construct starts its listener thread: connecting
+    // is the only use, and it needs a numeric address (no name resolution).
+    // "localhost" used to reach the local host only because the unparsed
+    // address stayed 0.0.0.0; keep it working explicitly
+    if (str_after_split[0] == "localhost") {
+      str_after_split[0] = "127.0.0.1";
+    }
+    if (!TcpSocket::IsIPv4Address(str_after_split[0].c_str())) {
+      Log::Fatal("Invalid machine address '%s': machine lists take numeric IPv4 addresses",
+                 str_after_split[0].c_str());
+    }
     client_ips_.push_back(str_after_split[0]);
     client_ports_.push_back(atoi(str_after_split[1].c_str()));
   }
@@ -147,8 +159,8 @@ void Linkers::TryBind(int port) {
   }
 }
 
-void Linkers::SetLinker(int rank, const TcpSocket& socket) {
-  linkers_[rank].reset(new TcpSocket(socket));
+void Linkers::SetLinker(int rank, TcpSocket socket) {
+  linkers_[rank].reset(new TcpSocket(std::move(socket)));
   // set timeout
   linkers_[rank]->SetTimeout(socket_timeout_ * 1000 * 60);
 }
@@ -174,22 +186,28 @@ void Linkers::ListenThread(int incoming_cnt) {
       handshake_socket_ = &handler;
     }
     int in_rank = -1;
+    bool closed_early = false;
     try {
       // receive rank
       int read_cnt = 0;
       int size_of_int = static_cast<int>(sizeof(int));
       while (read_cnt < size_of_int) {
         int cur_read_cnt = handler.Recv(buffer + read_cnt, size_of_int - read_cnt);
-        if (cur_read_cnt == 0) {
-          Log::Fatal("A connecting machine closed the connection before sending its rank");
+        if (cur_read_cnt <= 0) {
+          // orderly shutdown before the rank arrived: retrying recv would spin
+          // forever, so drop this connection and wait for the next one
+          closed_early = true;
+          break;
         }
         read_cnt += cur_read_cnt;
       }
-      int* ptr_in_rank = reinterpret_cast<int*>(buffer);
-      in_rank = *ptr_in_rank;
-      if (in_rank < 0 || in_rank >= num_machines_) {
-        Log::Fatal("Invalid rank %d found during initialization of linkers. The world size is %d.", in_rank,
-                   num_machines_);
+      if (!closed_early) {
+        int* ptr_in_rank = reinterpret_cast<int*>(buffer);
+        in_rank = *ptr_in_rank;
+        if (in_rank < 0 || in_rank >= num_machines_) {
+          Log::Fatal("Invalid rank %d found during initialization of linkers. The world size is %d.", in_rank,
+                     num_machines_);
+        }
       }
     } catch (...) {
       {
@@ -203,8 +221,21 @@ void Linkers::ListenThread(int incoming_cnt) {
       std::lock_guard<std::mutex> lock(handshake_mutex_);
       handshake_socket_ = nullptr;
     }
+    if (closed_early) {
+      Log::Warning("A peer closed its connection before sending its rank; waiting for another connection.");
+      handler.Close();
+      continue;
+    }
+    // only lower ranks connect in (see Construct), each exactly once: a
+    // duplicate or higher rank must not replace a linker or be counted
+    if (in_rank >= rank_ || linkers_[in_rank] != nullptr) {
+      Log::Warning("Ignoring unexpected connection from rank %d to rank %d during initialization of linkers.",
+                   in_rank, rank_);
+      handler.Close();
+      continue;
+    }
     // add new socket
-    SetLinker(in_rank, handler);
+    SetLinker(in_rank, std::move(handler));
     ++connected_cnt;
   }
 }
@@ -269,16 +300,18 @@ void Linkers::ConnectToHigherRanks(const std::unordered_map<int, int>& need_conn
       for (int i = 0; i < connect_fail_retry_cnt; ++i) {
         TcpSocket cur_socket;
         if (cur_socket.Connect(client_ips_[out_rank].c_str(), client_ports_[out_rank])) {
-          // send local rank
-          cur_socket.Send(reinterpret_cast<const char*>(&rank_), sizeof(rank_));
-          SetLinker(out_rank, cur_socket);
-          break;
-        } else {
-          Log::Warning("Connecting to rank %d failed, waiting for %d milliseconds", out_rank, connect_fail_delay_time);
-          cur_socket.Close();
-          std::this_thread::sleep_for(std::chrono::milliseconds(connect_fail_delay_time));
-          connect_fail_delay_time = static_cast<int>(connect_fail_delay_time * connect_fail_retry_delay_factor);
+          // send local rank; a short send leaves the peer without our rank,
+          // so treat it like a failed connect and retry
+          const int sent = cur_socket.Send(reinterpret_cast<const char*>(&rank_), sizeof(rank_));
+          if (sent == static_cast<int>(sizeof(rank_))) {
+            SetLinker(out_rank, std::move(cur_socket));
+            break;
+          }
         }
+        Log::Warning("Connecting to rank %d failed, waiting for %d milliseconds", out_rank, connect_fail_delay_time);
+        cur_socket.Close();
+        std::this_thread::sleep_for(std::chrono::milliseconds(connect_fail_delay_time));
+        connect_fail_delay_time = static_cast<int>(connect_fail_delay_time * connect_fail_retry_delay_factor);
       }
     }
   }

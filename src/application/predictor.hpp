@@ -64,26 +64,21 @@ class Predictor {
     num_pred_one_row_ = boosting_->NumPredictOneRow(start_iteration,
         num_iteration, predict_leaf_index, predict_contrib);
     num_feature_ = boosting_->MaxFeatureIdx() + 1;
-    predict_buf_.resize(
-        OMP_NUM_THREADS(),
-        std::vector<double, Common::AlignmentAllocator<double, kAlignedSize>>(
-            num_feature_, 0.0f));
+    // one dense buffer per thread, allocated on the thread's first dense row
+    // (rows of a wide sparse model go through the map path and need none)
+    predict_buf_.resize(OMP_NUM_THREADS());
     const int kFeatureThreshold = 100000;
     const size_t KSparseThreshold = static_cast<size_t>(0.01 * num_feature_);
     if (predict_leaf_index) {
       predict_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                          double* output) {
-        int tid = omp_get_thread_num();
         if (num_feature_ > kFeatureThreshold &&
             features.size() < KSparseThreshold) {
           auto buf = CopyToPredictMap(features);
           boosting_->PredictLeafIndexByMap(buf, output);
         } else {
-          CopyToPredictBuffer(predict_buf_[tid].data(), features);
           // get result for leaf index
-          boosting_->PredictLeafIndex(predict_buf_[tid].data(), output);
-          ClearPredictBuffer(predict_buf_[tid].data(), predict_buf_[tid].size(),
-                             features);
+          WithPredictBuffer(features, [&](const double* buf) { boosting_->PredictLeafIndex(buf, output); });
         }
       };
     } else if (predict_contrib) {
@@ -92,12 +87,8 @@ class Predictor {
       }
       predict_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                          double* output) {
-        int tid = omp_get_thread_num();
-        CopyToPredictBuffer(predict_buf_[tid].data(), features);
         // get feature importances
-        boosting_->PredictContrib(predict_buf_[tid].data(), output);
-        ClearPredictBuffer(predict_buf_[tid].data(), predict_buf_[tid].size(),
-                           features);
+        WithPredictBuffer(features, [&](const double* buf) { boosting_->PredictContrib(buf, output); });
       };
       predict_sparse_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                                 std::vector<std::unordered_map<int, double>>* output) {
@@ -110,32 +101,25 @@ class Predictor {
       if (is_raw_score) {
         predict_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                            double* output) {
-          int tid = omp_get_thread_num();
           if (num_feature_ > kFeatureThreshold &&
               features.size() < KSparseThreshold) {
             auto buf = CopyToPredictMap(features);
             boosting_->PredictRawByMap(buf, output, &early_stop_);
           } else {
-            CopyToPredictBuffer(predict_buf_[tid].data(), features);
-            boosting_->PredictRaw(predict_buf_[tid].data(), output,
-                                  &early_stop_);
-            ClearPredictBuffer(predict_buf_[tid].data(),
-                               predict_buf_[tid].size(), features);
+            WithPredictBuffer(features,
+                              [&](const double* buf) { boosting_->PredictRaw(buf, output, &early_stop_); });
           }
         };
       } else {
         predict_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                            double* output) {
-          int tid = omp_get_thread_num();
           if (num_feature_ > kFeatureThreshold &&
               features.size() < KSparseThreshold) {
             auto buf = CopyToPredictMap(features);
             boosting_->PredictByMap(buf, output, &early_stop_);
           } else {
-            CopyToPredictBuffer(predict_buf_[tid].data(), features);
-            boosting_->Predict(predict_buf_[tid].data(), output, &early_stop_);
-            ClearPredictBuffer(predict_buf_[tid].data(),
-                               predict_buf_[tid].size(), features);
+            WithPredictBuffer(features,
+                              [&](const double* buf) { boosting_->Predict(buf, output, &early_stop_); });
           }
         };
       }
@@ -167,6 +151,46 @@ class Predictor {
     if (!writer->Init()) {
       Log::Fatal("Prediction results file %s cannot be created", result_filename);
     }
+    const int num_pred = num_pred_one_row_;
+    PredictFileInBatches(data_filename, header, disable_shape_check, precise_float_parser,
+                         [&writer, num_pred](data_size_t num_rows, const double* results) {
+      std::vector<std::string> result_to_write(num_rows);
+      #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+      for (data_size_t i = 0; i < num_rows; ++i) {
+        const double* row = results + static_cast<size_t>(i) * num_pred;
+        result_to_write[i] = Common::Join<double>(std::vector<double>(row, row + num_pred), "\t");
+      }
+      for (data_size_t i = 0; i < num_rows; ++i) {
+        writer->Write(result_to_write[i].c_str(), result_to_write[i].size());
+        writer->Write("\n", 1);
+      }
+    });
+  }
+
+  /*!
+  * \brief predicting on data into memory: the values Predict writes, row-major, at full precision
+  * \param data_filename Filename of data
+  * \param[out] out_result predictions, num_pred_one_row_ per row
+  * \param[out] out_num_row number of rows predicted
+  */
+  void PredictToArray(const char* data_filename, bool header, bool disable_shape_check, bool precise_float_parser,
+                      std::vector<double>* out_result, int64_t* out_num_row) {
+    out_result->clear();
+    *out_num_row = 0;
+    PredictFileInBatches(data_filename, header, disable_shape_check, precise_float_parser,
+                         [out_result, out_num_row, this](data_size_t num_rows, const double* results) {
+      out_result->insert(out_result->end(), results, results + static_cast<size_t>(num_rows) * num_pred_one_row_);
+      *out_num_row += num_rows;
+    });
+  }
+
+ private:
+  /*!
+  * \brief parses and predicts data_filename a batch of lines at a time, in file order; sink receives each batch's
+  *        row count and its predictions (num_pred_one_row_ per row, row-major)
+  */
+  void PredictFileInBatches(const char* data_filename, bool header, bool disable_shape_check, bool precise_float_parser,
+                            const std::function<void(data_size_t, const double*)>& sink) {
     auto label_idx = header ? -1 : boosting_->LabelIdx();
     auto parser = std::unique_ptr<Parser>(Parser::CreateParser(data_filename, header, boosting_->MaxFeatureIdx() + 1, label_idx,
                                                                precise_float_parser, boosting_->ParserConfigStr()));
@@ -209,9 +233,11 @@ class Predictor {
     }
     // function for parse data
     std::function<void(const char*, std::vector<std::pair<int, double>>*)> parser_fun;
-    double tmp_label;
-    parser_fun = [&parser, &feature_remapper, &tmp_label, need_adjust]
+    parser_fun = [&parser, &feature_remapper, need_adjust]
     (const char* buffer, std::vector<std::pair<int, double>>* feature) {
+      // per call: parser_fun runs on every OpenMP thread, so a shared label
+      // would be a data race (the label is not used for prediction)
+      double tmp_label = 0.0;
       parser->ParseOneLine(buffer, feature, &tmp_label);
       if (need_adjust) {
         int i = 0, j = static_cast<int>(feature->size());
@@ -228,38 +254,71 @@ class Predictor {
       }
     };
 
+    std::vector<double> results;
     std::function<void(data_size_t, const std::vector<std::string>&)>
-        process_fun = [&parser_fun, &writer, this](
+        process_fun = [&parser_fun, &sink, &results, this](
                           data_size_t, const std::vector<std::string>& lines) {
       std::vector<std::pair<int, double>> oneline_features;
-      std::vector<std::string> result_to_write(lines.size());
+      const data_size_t num_rows = static_cast<data_size_t>(lines.size());
+      // zeroed: contributions accumulate into the output
+      results.assign(static_cast<size_t>(num_rows) * num_pred_one_row_, 0.0);
       OMP_INIT_EX();
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) firstprivate(oneline_features)
-      for (data_size_t i = 0; i < static_cast<data_size_t>(lines.size()); ++i) {
+      for (data_size_t i = 0; i < num_rows; ++i) {
         OMP_LOOP_EX_BEGIN();
         oneline_features.clear();
         // parser
         parser_fun(lines[i].c_str(), &oneline_features);
         // predict
-        std::vector<double> result(num_pred_one_row_);
-        predict_fun_(oneline_features, result.data());
-        auto str_result = Common::Join<double>(result, "\t");
-        result_to_write[i] = str_result;
+        predict_fun_(oneline_features, results.data() + static_cast<size_t>(i) * num_pred_one_row_);
         OMP_LOOP_EX_END();
       }
       OMP_THROW_EX();
-      for (data_size_t i = 0; i < static_cast<data_size_t>(result_to_write.size()); ++i) {
-        writer->Write(result_to_write[i].c_str(), result_to_write[i].size());
-        writer->Write("\n", 1);
-      }
+      sink(num_rows, results.data());
     };
     predict_data_reader.ReadAllAndProcessParallel(process_fun);
   }
 
- private:
+  /*!
+  * \brief Calls fun with a num_feature_-long dense buffer holding features (zero elsewhere).
+  *        The buffers are per OpenMP thread, sized with OMP_NUM_THREADS() at construction; a call
+  *        from a thread number beyond that (a caller's own parallel region, a later larger thread
+  *        count) uses a temporary buffer instead of indexing past them.
+  */
+  template <typename Fun>
+  void WithPredictBuffer(const std::vector<std::pair<int, double>>& features, const Fun& fun) {
+    const int tid = omp_get_thread_num();
+    if (tid >= 0 && tid < static_cast<int>(predict_buf_.size())) {
+      EnsurePredictBuffer(tid);
+      auto& buf = predict_buf_[tid];
+      CopyToPredictBuffer(buf.data(), features);
+      fun(buf.data());
+      ClearPredictBuffer(buf.data(), buf.size(), features);
+    } else {
+      std::vector<double> buf(num_feature_, 0.0);
+      CopyToPredictBuffer(buf.data(), features);
+      fun(buf.data());
+    }
+  }
+
+  // the calling thread's dense buffer is allocated on its first dense row; the
+  // allocation is out of line so the per-row check stays a single compare
+  void EnsurePredictBuffer(int tid) {
+    if (predict_buf_[tid].empty()) {
+      AllocatePredictBuffer(tid);
+    }
+  }
+
+#if defined(__GNUC__)
+  __attribute__((noinline, cold))
+#endif
+  void AllocatePredictBuffer(int tid) {
+    predict_buf_[tid].assign(num_feature_, 0.0);
+  }
+
   void CopyToPredictBuffer(double* pred_buf, const std::vector<std::pair<int, double>>& features) {
     for (const auto &feature : features) {
-      if (feature.first < num_feature_) {
+      if (feature.first >= 0 && feature.first < num_feature_) {
         pred_buf[feature.first] = feature.second;
       }
     }
@@ -270,7 +329,7 @@ class Predictor {
       std::memset(pred_buf, 0, sizeof(double)*(buf_size));
     } else {
       for (const auto &feature : features) {
-        if (feature.first < num_feature_) {
+        if (feature.first >= 0 && feature.first < num_feature_) {
           pred_buf[feature.first] = 0.0f;
         }
       }

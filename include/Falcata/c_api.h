@@ -1191,6 +1191,41 @@ FALCATA_C_EXPORT int FLC_BoosterPredictForFile(BoosterHandle handle,
                                                  const char* result_filename);
 
 /*!
+ * \brief Make prediction for file, returning the predictions in memory instead of writing a result file.
+ * \note
+ * The result array is allocated by Falcata; release it with ``FLC_BoosterFreePredictForFileResult``.
+ * The values are those ``FLC_BoosterPredictForFile`` writes (in the same row order), at full double precision.
+ * \param handle Handle of booster
+ * \param data_filename Filename of file with data
+ * \param data_has_header Whether file has header or not
+ * \param predict_type What should be predicted, as for ``FLC_BoosterPredictForFile``
+ * \param start_iteration Start index of the iteration to predict
+ * \param num_iteration Number of iterations for prediction, <= 0 means no limit
+ * \param parameter Other parameters for prediction, e.g. early stopping for prediction
+ * \param[out] out_num_row Number of rows predicted
+ * \param[out] out_len Length of the result array (``out_num_row`` times the number of values per row)
+ * \param[out] out_result Row-major predictions; nullptr when there are none
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_BoosterPredictForFileToArray(BoosterHandle handle,
+                                                        const char* data_filename,
+                                                        int data_has_header,
+                                                        int predict_type,
+                                                        int start_iteration,
+                                                        int num_iteration,
+                                                        const char* parameter,
+                                                        int64_t* out_num_row,
+                                                        int64_t* out_len,
+                                                        double** out_result);
+
+/*!
+ * \brief Release the result of ``FLC_BoosterPredictForFileToArray``.
+ * \param result The ``out_result`` it returned (nullptr is allowed)
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_BoosterFreePredictForFileResult(double* result);
+
+/*!
  * \brief Get number of predictions.
  * \param handle Handle of booster
  * \param num_row Number of rows
@@ -1960,27 +1995,11 @@ FALCATA_C_EXPORT int FLC_GetMaxThreads(int* out);
 #endif
 
 /*!
- * \brief Handle of error message.
- * \return Error message
- */
-static char* LastErrorMsg() { static THREAD_LOCAL char err_msg[512] = "Everything is fine"; return err_msg; }
-
-#ifdef _MSC_VER
-  #pragma warning(disable : 4996)
-#endif
-/*!
- * \brief Set string message of the last error.
+ * \brief Set string message of the last error, as returned by ``FLC_GetLastError`` on the same thread.
  * \note
- * This will call unsafe ``sprintf`` when compiled using C standards before C99.
+ * The message is kept per thread and truncated to 511 characters.
  * \param msg Error message
  */
-INLINE_FUNCTION void FLC_SetLastError(const char* msg) {
-#if !defined(__cplusplus) && (!defined(__STDC__) || (__STDC_VERSION__ < 199901L))
-  sprintf(LastErrorMsg(), "%s", msg);  /* NOLINT(runtime/printf) */
-#else
-  const int err_buf_len = 512;
-  snprintf(LastErrorMsg(), err_buf_len, "%s", msg);
-#endif
-}
+FALCATA_C_EXPORT void FLC_SetLastError(const char* msg);
 
 #endif  /* FALCATA_INCLUDE_FALCATA_C_API_H_ */

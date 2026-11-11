@@ -633,7 +633,7 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
       ef_inbag_mask_.Resize(static_cast<size_t>(num_data));
     }
     SetCUDAMemory<uint8_t>(ef_inbag_mask_.RawData(), 0, static_cast<size_t>(num_data), __FILE__, __LINE__);
-    const int mask_blocks = (ef_inbag_count_ + CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE - 1) / CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE;
+    const int mask_blocks = CUDABlockCount(ef_inbag_count_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE);
     BuildInbagMaskKernel<<<mask_blocks, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(
       ef_inbag_count_, ef_inbag_indices_, ef_inbag_mask_.RawData());
     ef_mask = ef_inbag_mask_.RawData();

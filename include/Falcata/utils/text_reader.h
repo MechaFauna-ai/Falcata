@@ -13,6 +13,7 @@
 #include <string>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -125,7 +126,7 @@ class TextReader {
           ++i;
           ++total_cnt;
           // skip end of line
-          while ((buffer_process[i] == '\n' || buffer_process[i] == '\r') && i < read_cnt) {
+          while (i < read_cnt && (buffer_process[i] == '\n' || buffer_process[i] == '\r')) {
             ++i;
           }
           last_i = i;
@@ -173,18 +174,33 @@ class TextReader {
     if (!reader->Init()) {
       return ret;
     }
+    // read straight into the result, a chunk at a time (no staging copy)
     const size_t buffer_size = 16 * 1024 * 1024;
-    auto buffer_read = std::vector<char>(buffer_size);
-    size_t read_cnt = 0;
-    do {
-      read_cnt = reader->Read(buffer_read.data(), buffer_size);
-      ret.insert(ret.end(), buffer_read.begin(), buffer_read.begin() + read_cnt);
-      *out_len += read_cnt;
-    } while (read_cnt > 0);
+    while (true) {
+      if (ret.capacity() - ret.size() < buffer_size) {
+        // the next chunk would grow the result: check for more data first, so
+        // a file ending at the current capacity does not grow it for nothing
+        char probe;
+        if (reader->Read(&probe, 1) == 0) {
+          break;
+        }
+        ret.push_back(probe);
+      }
+      const size_t old_size = ret.size();
+      ret.resize(old_size + buffer_size);
+      const size_t read_cnt = reader->Read(ret.data() + old_size, buffer_size);
+      ret.resize(old_size + read_cnt);
+      if (read_cnt == 0) {
+        break;
+      }
+    }
+    *out_len = ret.size();
     return ret;
   }
 
   INDEX_T SampleFromFile(Random* random, INDEX_T sample_cnt, std::vector<std::string>* out_sampled_data) {
+    static_assert(std::numeric_limits<INDEX_T>::max() <= std::numeric_limits<int>::max(),
+                  "reservoir sampling draws line indices with Random::NextInt, which takes an int range");
     INDEX_T cur_sample_cnt = 0;
     return ReadAllAndProcess([=, &random, &cur_sample_cnt,
                               &out_sampled_data]
@@ -222,6 +238,8 @@ class TextReader {
 
   INDEX_T SampleAndFilterFromFile(const std::function<bool(INDEX_T)>& filter_fun, std::vector<INDEX_T>* out_used_data_indices,
     Random* random, INDEX_T sample_cnt, std::vector<std::string>* out_sampled_data) {
+    static_assert(std::numeric_limits<INDEX_T>::max() <= std::numeric_limits<int>::max(),
+                  "reservoir sampling draws line indices with Random::NextInt, which takes an int range");
     INDEX_T cur_sample_cnt = 0;
     out_used_data_indices->clear();
     INDEX_T total_cnt = ReadAllAndProcess(
@@ -287,7 +305,7 @@ class TextReader {
           ++i;
           ++total_cnt;
           // skip end of line
-          while ((buffer_process[i] == '\n' || buffer_process[i] == '\r') && i < read_cnt) {
+          while (i < read_cnt && (buffer_process[i] == '\n' || buffer_process[i] == '\r')) {
             ++i;
           }
           last_i = i;

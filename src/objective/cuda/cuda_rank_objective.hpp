@@ -113,9 +113,13 @@ class CUDARankXENDCG : public CUDALambdaRankObjectiveInterface<RankXENDCG> {
  protected:
   void LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const;
 
-  void GenerateItemRands() const;
+  /*! \brief draws this iteration's uniform for every item into cuda_item_rands_, on the device: item t of query q
+   *  gets the (t + 1)-th NextFloat of query q's generator, the same draws RankXENDCG makes from rands_[q] on the CPU */
+  void LaunchGenerateItemRandsKernel() const;
 
-  mutable std::vector<double> item_rands_;
+  /*! \brief the per-query generator states (the x of CPU Random), seeded seed_ + q like RankXENDCG's rands_ and
+   *  advanced by the query size every iteration */
+  CUDAVector<uint32_t> cuda_query_rand_states_;
   CUDAVector<double> cuda_item_rands_;
   CUDAVector<double> cuda_params_buffer_;
 };
