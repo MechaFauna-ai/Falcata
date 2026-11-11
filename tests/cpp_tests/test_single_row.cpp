@@ -9,9 +9,14 @@
 #include <Falcata/c_api.h>
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <vector>
+
+#include <Falcata/utils/yamc/alternate_shared_mutex.hpp>
+#include <Falcata/utils/yamc/yamc_shared_lock.hpp>
 
 using Falcata::TestUtils;
 
@@ -417,4 +422,58 @@ TEST(SingleRow, CSRFastLeafIndex) {
 
 TEST(SingleRow, CSRFastContribIterationWindow) {
     test_csr_fast_matches_mat(C_API_PREDICT_CONTRIB, 3, 7);
+}
+
+// The vendored yamc mutexes only compiled for the members c_api.cpp happens
+// to use: try_lock/try_lock_shared and the timed waits passed the policy
+// state by value to functions taking a pointer, the WriterPrefer policy's
+// before/after_wait_wlock took a pointer every caller passed by value, and
+// shared_lock's defer/try/adopt/timed constructors stored &m of a const
+// reference in a non-const pointer. Instantiate all of them.
+namespace {
+template <class Mutex>
+void ExerciseSharedMutex() {
+  Mutex m;
+  m.lock();
+  EXPECT_FALSE(m.try_lock_shared());
+  m.unlock();
+  ASSERT_TRUE(m.try_lock());
+  m.unlock();
+  ASSERT_TRUE(m.try_lock_shared());
+  EXPECT_FALSE(m.try_lock());
+  m.unlock_shared();
+  {
+    yamc::shared_lock<Mutex> lock(m, std::defer_lock);
+    EXPECT_FALSE(lock.owns_lock());
+    lock.lock();
+    EXPECT_TRUE(lock.owns_lock());
+  }
+  {
+    yamc::shared_lock<Mutex> lock(m, std::try_to_lock);
+    EXPECT_TRUE(lock.owns_lock());
+  }
+  m.lock_shared();
+  yamc::shared_lock<Mutex> adopted(m, std::adopt_lock);
+  EXPECT_TRUE(adopted.owns_lock());
+}
+
+template <class Mutex>
+void ExerciseSharedTimedMutex() {
+  ExerciseSharedMutex<Mutex>();
+  Mutex m;
+  ASSERT_TRUE(m.try_lock_for(std::chrono::milliseconds(1)));
+  m.unlock();
+  ASSERT_TRUE(m.try_lock_shared_until(std::chrono::steady_clock::now() + std::chrono::milliseconds(1)));
+  m.unlock_shared();
+  yamc::shared_lock<Mutex> lock(m, std::chrono::milliseconds(1));
+  EXPECT_TRUE(lock.owns_lock());
+}
+}  // namespace
+
+TEST(YamcSharedMutex, AllMembersInstantiate) {
+  ExerciseSharedMutex<yamc::alternate::shared_mutex>();
+  ExerciseSharedMutex<yamc::alternate::basic_shared_mutex<yamc::rwlock::ReaderPrefer>>();
+  ExerciseSharedMutex<yamc::alternate::basic_shared_mutex<yamc::rwlock::WriterPrefer>>();
+  ExerciseSharedTimedMutex<yamc::alternate::basic_shared_timed_mutex<yamc::rwlock::ReaderPrefer>>();
+  ExerciseSharedTimedMutex<yamc::alternate::basic_shared_timed_mutex<yamc::rwlock::WriterPrefer>>();
 }
