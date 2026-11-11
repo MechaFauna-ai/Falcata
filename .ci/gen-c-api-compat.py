@@ -72,7 +72,9 @@ def arg_names(args):
             continue
         a = re.sub(r"\[[^\]]*\]", "", a)
         idents = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", a)
-        qualifiers = {"const", "volatile", "restrict"}
+        if "(" in a or ")" in a:
+            raise ValueError(f"Compatibility forwarders require named parameters: {a}")
+        qualifiers = {"const", "volatile", "restrict", "struct", "enum", "union"}
         type_keywords = {"void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "bool"}
         unqualified = [token for token in idents if token not in qualifiers]
         if len(unqualified) < 2 or unqualified[-1] in type_keywords:

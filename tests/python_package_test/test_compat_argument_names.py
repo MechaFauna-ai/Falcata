@@ -18,7 +18,19 @@ def test_sized_array_argument_names():
     assert generator().arg_names("int n[N], const double values[8]") == ["n", "values"]
 
 
-@pytest.mark.parametrize("declaration", ["int", "const char*", "DatasetHandle", "const DatasetHandle"])
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "int",
+        "const char*",
+        "DatasetHandle",
+        "const DatasetHandle",
+        "struct ArrowArray*",
+        "enum Foo",
+        "union U",
+        "void (*)(DatasetHandle)",
+    ],
+)
 def test_unnamed_arguments_are_rejected(declaration):
     with pytest.raises(ValueError, match="named"):
         generator().arg_names(declaration)
