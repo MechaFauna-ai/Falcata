@@ -28,7 +28,9 @@ __global__ void ShufflePrefixSumGlobalKernel(T* values, size_t len, T* block_pre
     value = values[index];
   }
   const T prefix_sum_value = ShufflePrefixSum<T>(value, shared_mem_buffer);
-  values[index] = prefix_sum_value;
+  if (index < len) {
+    values[index] = prefix_sum_value;
+  }
   if (threadIdx.x == blockDim.x - 1) {
     block_prefix_sum_buffer[blockIdx.x] = prefix_sum_value;
   }
