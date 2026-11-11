@@ -30,6 +30,7 @@ _PLANS = {
 def _data(bundled):
     rng = np.random.default_rng(0)
     rows = 20000
+    # (only the bundled column reads the feature through an out-of-range bin window; the single column is a control)
     # mostly 5.0, with some zeros (missing under zero_as_missing) and a spread of other values: the most frequent bin
     # is neither the zero bin nor bin 0
     x = np.full(rows, 5.0, dtype=np.float32)
@@ -67,7 +68,7 @@ def _train(X, y, device, plan=None):
         params["cuda_plan"] = plan
     booster = flc.train(params, flc.Dataset(X, label=y, params=params), num_boost_round=10, keep_training_booster=True)
     trees = booster.trees_to_dataframe()
-    structure = trees[["tree_index", "node_depth", "split_feature", "count"]].fillna(-1).to_numpy().tolist()
+    structure = trees[["tree_index", "node_depth", "split_feature", "count"]].astype(str).to_numpy().tolist()
     return structure, booster.predict(X), np.array(booster._Booster__inner_predict(data_idx=0))
 
 
