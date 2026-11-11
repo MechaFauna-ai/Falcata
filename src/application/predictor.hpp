@@ -261,7 +261,7 @@ class Predictor {
  private:
   void CopyToPredictBuffer(double* pred_buf, const std::vector<std::pair<int, double>>& features) {
     for (const auto &feature : features) {
-      if (feature.first < num_feature_) {
+      if (feature.first >= 0 && feature.first < num_feature_) {
         pred_buf[feature.first] = feature.second;
       }
     }
@@ -272,7 +272,7 @@ class Predictor {
       std::memset(pred_buf, 0, sizeof(double)*(buf_size));
     } else {
       for (const auto &feature : features) {
-        if (feature.first < num_feature_) {
+        if (feature.first >= 0 && feature.first < num_feature_) {
           pred_buf[feature.first] = 0.0f;
         }
       }

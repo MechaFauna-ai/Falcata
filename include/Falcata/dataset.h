@@ -678,7 +678,9 @@ class Dataset {
     }
     std::vector<bool> is_feature_added(num_features_, false);
     for (auto& inner_data : feature_values) {
-      if (inner_data.first >= num_total_features_) {
+      // out-of-range columns are ignored (negative ones would index
+      // used_feature_map_[-1])
+      if (inner_data.first < 0 || inner_data.first >= num_total_features_) {
         continue;
       }
       int feature_idx = used_feature_map_[inner_data.first];
