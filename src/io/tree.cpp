@@ -174,6 +174,10 @@ void Tree::AddPredictionToScore(const Dataset* data, data_size_t num_data, doubl
     }
     return;
   }
+  if (split_feature_inner_.size() < static_cast<size_t>(num_leaves_ - 1) ||
+      threshold_in_bin_.size() < static_cast<size_t>(num_leaves_ - 1)) {
+    Log::Fatal("Dataset scoring requires a tree with training bin metadata; use raw prediction for loaded models");
+  }
   std::vector<uint32_t> default_bins(num_leaves_ - 1);
   std::vector<uint32_t> max_bins(num_leaves_ - 1);
   for (int i = 0; i < num_leaves_ - 1; ++i) {
@@ -254,6 +258,10 @@ void Tree::AddPredictionToScore(const Dataset* data,
       }
     }
     return;
+  }
+  if (split_feature_inner_.size() < static_cast<size_t>(num_leaves_ - 1) ||
+      threshold_in_bin_.size() < static_cast<size_t>(num_leaves_ - 1)) {
+    Log::Fatal("Dataset scoring requires a tree with training bin metadata; use raw prediction for loaded models");
   }
   std::vector<uint32_t> default_bins(num_leaves_ - 1);
   std::vector<uint32_t> max_bins(num_leaves_ - 1);
