@@ -189,7 +189,14 @@ def prep_airline_cat():
     beyond the top 254 is collapsed into a single rare bucket. Ranking on the
     train split only keeps the test split from informing the encoding.
     """
-    x_tr, y_tr, x_te, y_te = _airline_split()
+    cached = [
+        os.path.join(CACHE_DIR, "airline", name) for name in ("X_train.npy", "y_train.npy", "X_test.npy", "y_test.npy")
+    ]
+    if all(os.path.exists(path) for path in cached):
+        # Recoding must never modify the numeric airline cache's backing files.
+        x_tr, y_tr, x_te, y_te = (np.load(path, mmap_mode="c") for path in cached)
+    else:
+        x_tr, y_tr, x_te, y_te = _airline_split()
     for col in AIRLINE_CAT_COLS:
         codes, counts = np.unique(x_tr[:, col], return_counts=True)
         # descending frequency; ties broken by code for a deterministic map
