@@ -125,7 +125,7 @@ __global__ void GetGradientsKernel_MultiRegressionL2(const double* cuda_scores, 
   // per-row weights broadcast over the column-major target dimension
   const score_t weight = USE_WEIGHT ? static_cast<score_t>(cuda_weights[row]) : 1.0f;
   for (int k = static_cast<int>(blockIdx.y); k < num_target; k += static_cast<int>(gridDim.y)) {
-    const size_t index = static_cast<size_t>(k) * static_cast<size_t>(num_data) + static_cast<size_t>(row);
+    const size_t index = MultiTargetElementIndex(k, num_data, row);
     if (!USE_WEIGHT) {
       cuda_out_gradients[index] = static_cast<score_t>(cuda_scores[index] - cuda_labels[index]);
       cuda_out_hessians[index] = 1.0f;
@@ -140,7 +140,7 @@ void CUDAMultiRegressionL2::LaunchGetGradientsKernel(const double* score, score_
   if (num_data_ <= 0 || num_target_ <= 0) {
     return;
   }
-  const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const int num_blocks = MultiTargetRowBlocks(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   const dim3 grid(static_cast<unsigned int>(num_blocks), static_cast<unsigned int>(std::min(num_target_, 65535)));
   if (cuda_weights_ == nullptr) {
     GetGradientsKernel_MultiRegressionL2<false><<<grid, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
