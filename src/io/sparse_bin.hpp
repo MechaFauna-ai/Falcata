@@ -232,7 +232,8 @@ class SparseBin : public Bin {
       }
       while (cur_pos < end && i_delta < num_vals_) {
         const uint32_t ti = static_cast<uint32_t>(vals_[i_delta]) << 1;
-        grad[ti] += gradients_and_hessians_ptr[cur_pos];
+        // int8 (gradient, hessian) pairs: the gradient of row cur_pos is byte 2 * cur_pos
+        grad[ti] += gradients_and_hessians_ptr[cur_pos << 1];
         ++cnt[ti];
         cur_pos += deltas_[++i_delta];
       }
