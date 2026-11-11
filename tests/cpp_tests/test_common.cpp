@@ -4,6 +4,7 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <gtest/gtest.h>
+#include <Falcata/meta.h>
 #include <Falcata/utils/common.h>
 
 #include <cmath>
@@ -68,6 +69,25 @@ TEST_F(AtofPreciseTest, Basic) {
   for (auto const& test : test_cases) {
     TestAtofPrecise(test.data, test.expected);
   }
+}
+
+// Join(strs, start, end) tested `end - start <= 0` on size_t, which wraps
+// for end < start, so an empty range still joined one element.
+TEST(CommonJoin, EmptyOrInvertedRangeIsEmpty) {
+  const std::vector<int> v = {1, 2, 3};
+  EXPECT_EQ(Falcata::Common::Join(v, 1, 3, ","), "2,3");
+  EXPECT_EQ(Falcata::Common::Join(v, 2, 2, ","), "");
+  EXPECT_EQ(Falcata::Common::Join(v, 2, 1, ","), "");
+  EXPECT_EQ(Falcata::Common::Join(std::vector<int>(), 0, 1, ","), "");
+}
+
+// SIZE_ALIGNED was not parenthesized as a whole, so inside an expression
+// the trailing "* kAlignedSize" bound to the surrounding operator.
+TEST(SizeAligned, IsASingleOperand) {
+  using Falcata::kAlignedSize;
+  EXPECT_EQ(SIZE_ALIGNED(1), 32);
+  EXPECT_EQ(64 / SIZE_ALIGNED(1), 2);
+  EXPECT_EQ(SIZE_ALIGNED(33) % 32, 0);
 }
 
 TEST_F(AtofPreciseTest, CornerCases) {

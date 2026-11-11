@@ -10,7 +10,9 @@
 #include <Falcata/utils/common.h>
 #include <Falcata/utils/file_io.h>
 
+#include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <limits>
 #include <string>
 #include <functional>
