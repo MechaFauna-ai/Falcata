@@ -1072,6 +1072,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_loaded_tree_dataset_score.cpp
       tests/cpp_tests/test_log.cpp
       tests/cpp_tests/test_main.cpp
+      tests/cpp_tests/test_metric_score_transfer_scope.cpp
       tests/cpp_tests/test_multi_val_sparse_bin.cpp
       tests/cpp_tests/test_multi_val_sparse_bin_index.cpp
       tests/cpp_tests/test_multiclass_early_stop.cpp
