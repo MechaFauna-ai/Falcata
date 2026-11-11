@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 from common import (
@@ -80,6 +81,28 @@ def load_done(results):
                     continue
                 done[(r["library"], r["dataset"], r["regime"], r["kind"])] = r["status"]
     return done
+
+
+def run_child(cmd, timeout):
+    """Stream child stderr to disk and retain at most its last 2000 characters."""
+    with tempfile.TemporaryFile() as stderr:
+        try:
+            proc = subprocess.run(
+                cmd,
+                check=False,
+                timeout=timeout,
+                env={**os.environ, "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", "0")},
+                stderr=stderr,
+                text=True,
+            )
+            status = "ok" if proc.returncode == 0 else "failed"
+        except subprocess.TimeoutExpired:
+            status = "timeout"
+        stderr.seek(0, os.SEEK_END)
+        # UTF-8 needs at most four bytes per character. Trim after decoding.
+        stderr.seek(max(0, stderr.tell() - 8000))
+        tail = stderr.read().decode(errors="replace")[-2000:]
+    return status, tail
 
 
 def summarize(statuses):
@@ -184,24 +207,7 @@ def main():
             flush=True,
         )
         n_run += len(pending)
-        try:
-            # the child prints one JSON line per finished cell straight to this log
-            p = subprocess.run(
-                cmd,
-                check=False,
-                timeout=timeout,
-                env={
-                    **os.environ,
-                    "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", "0"),
-                },
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            status = "ok" if p.returncode == 0 else "failed"
-            stderr_tail = p.stderr[-2000:]
-        except subprocess.TimeoutExpired as e:
-            status = "timeout"
-            stderr_tail = (e.stderr or b"")[-2000:] if isinstance(e.stderr, bytes) else str(e.stderr or "")[-2000:]
+        status, stderr_tail = run_child(cmd, timeout)
         done = load_done(results)
         missing = [(reg, kind) for reg, kind in pending if (lib, ds, reg, kind) not in done]
         if missing:
