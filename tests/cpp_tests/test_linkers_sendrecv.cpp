@@ -43,21 +43,38 @@ int FreePort() {
   return ntohs(addr.sin_port);
 }
 
-// two ranks of one job in this process, connected over loopback
-void MakePair(std::unique_ptr<Falcata::Linkers>* rank0, std::unique_ptr<Falcata::Linkers>* rank1) {
-  const int p0 = FreePort(), p1 = FreePort();
-  const std::string machines = "127.0.0.1 " + std::to_string(p0) + ",127.0.0.1 " + std::to_string(p1);
-  auto make = [&machines](int port) {
+// n ranks of one job in this process, connected over loopback
+std::vector<std::unique_ptr<Falcata::Linkers>> MakeRanks(int n) {
+  std::vector<int> ports;
+  std::string machines;
+  for (int i = 0; i < n; ++i) {
+    ports.push_back(FreePort());
+    machines += (i ? ",127.0.0.1 " : "127.0.0.1 ") + std::to_string(ports.back());
+  }
+  auto make = [&machines, n](int port) {
     Falcata::Config config;
-    config.num_machines = 2;
+    config.num_machines = n;
     config.machines = machines;
     config.local_listen_port = port;
     config.time_out = 1;
     return std::unique_ptr<Falcata::Linkers>(new Falcata::Linkers(config));
   };
-  auto f1 = std::async(std::launch::async, make, p1);
-  *rank0 = make(p0);
-  *rank1 = f1.get();
+  std::vector<std::future<std::unique_ptr<Falcata::Linkers>>> pending;
+  for (int i = 1; i < n; ++i) {
+    pending.push_back(std::async(std::launch::async, make, ports[i]));
+  }
+  std::vector<std::unique_ptr<Falcata::Linkers>> ranks;
+  ranks.push_back(make(ports[0]));
+  for (auto& f : pending) {
+    ranks.push_back(f.get());
+  }
+  return ranks;
+}
+
+void MakePair(std::unique_ptr<Falcata::Linkers>* rank0, std::unique_ptr<Falcata::Linkers>* rank1) {
+  auto ranks = MakeRanks(2);
+  *rank0 = std::move(ranks[0]);
+  *rank1 = std::move(ranks[1]);
 }
 
 // Runs f on a detached thread and returns its result, or "timeout" if it has not finished after the given time.
@@ -100,6 +117,29 @@ TEST(LinkersSendRecv, PeerGoneIsAnErrorNotAnAbortOrAHang) {
     }, 30);
     EXPECT_EQ(result, "threw") << "(\"timeout\": SendRecv hangs)";
   }
+}
+
+// A send to a dead rank while receiving from another, live but silent rank:
+// the failed send also aborts the receive, so the error comes back at once
+// rather than after the receive timeout.
+TEST(LinkersSendRecv, FailedSendAbortsAReceiveFromAnotherRank) {
+  signal(SIGPIPE, SIG_IGN);
+  auto ranks = MakeRanks(3);
+  ranks[1].reset();  // the send peer dies; rank 2 stays up and sends nothing
+  std::shared_ptr<Falcata::Linkers> rank0(std::move(ranks[0]));
+  const int len = 4 << 20;
+  auto send = std::make_shared<std::vector<char>>(len, 1);
+  auto recv = std::make_shared<std::vector<char>>(len);
+  const std::string result = RunWithTimeout([rank0, send, recv, len]() {
+    try {
+      rank0->SendRecv(1, send->data(), len, 2, recv->data(), len);
+      return std::string("returned");
+    } catch (const std::runtime_error& e) {
+      return std::string(e.what()).find("send") != std::string::npos ? std::string("threw the send error")
+                                                                      : std::string("threw ") + e.what();
+    }
+  }, 30);
+  EXPECT_EQ(result, "threw the send error");
 }
 
 // A healthy exchange still works, from the thread and the direct path.

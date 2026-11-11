@@ -87,14 +87,14 @@ class Linkers {
 
   /*!
   * \brief Runs send() on a second thread while recv() runs on this one. A failure on either side is rethrown here
-  *        once the sending thread has finished (a failed receive first unblocks the send, see AbortSend), so no
+  *        once the sending thread has finished (a failure on one side first unblocks the other, see AbortLink), so no
   *        exception escapes the thread and no joinable thread is destroyed
   */
   template <typename SendFun, typename RecvFun>
-  inline void SendWhileReceiving(int send_rank, const SendFun& send, const RecvFun& recv);
+  inline void SendWhileReceiving(int send_rank, int recv_rank, const SendFun& send, const RecvFun& recv);
 
-  /*! \brief Makes a send to rank blocked in another thread return (sockets: shut the link down) */
-  inline void AbortSend(int rank);
+  /*! \brief Makes a send to or receive from rank blocked in another thread return (sockets: shut the link down) */
+  inline void AbortLink(int rank);
   /*!
   * \brief Get rank of local machine
   */
@@ -242,20 +242,24 @@ inline void Linkers::Send(int rank, char* data, int64_t len) const {
 }
 
 template <typename SendFun, typename RecvFun>
-inline void Linkers::SendWhileReceiving(int send_rank, const SendFun& send, const RecvFun& recv) {
+inline void Linkers::SendWhileReceiving(int send_rank, int recv_rank, const SendFun& send, const RecvFun& recv) {
   std::exception_ptr send_error;
-  std::thread send_worker([&send, &send_error]() {
+  std::thread send_worker([this, recv_rank, &send, &send_error]() {
     try {
       send();
     } catch (...) {
       send_error = std::current_exception();
+      AbortLink(recv_rank);  // the receive may wait on another, still connected rank: make it return
     }
   });
   try {
     recv();
   } catch (...) {
-    AbortSend(send_rank);
+    AbortLink(send_rank);
     send_worker.join();
+    if (send_error) {
+      std::rethrow_exception(send_error);  // the cause, rather than the receive it aborted
+    }
     throw;
   }
   send_worker.join();
@@ -267,7 +271,7 @@ inline void Linkers::SendWhileReceiving(int send_rank, const SendFun& send, cons
 inline void Linkers::SendRecv(int send_rank, char* send_data, int64_t send_len,
                               int recv_rank, char* recv_data, int64_t recv_len) {
   auto start_time = std::chrono::high_resolution_clock::now();
-  SendWhileReceiving(send_rank, [&]() { Send(send_rank, send_data, send_len); },
+  SendWhileReceiving(send_rank, recv_rank, [&]() { Send(send_rank, send_data, send_len); },
                      [&]() { Recv(recv_rank, recv_data, recv_len); });
   // wait for send complete
   auto end_time = std::chrono::high_resolution_clock::now();
@@ -291,7 +295,7 @@ inline void Linkers::Recv(int rank, char* data, int len) const {
   }
 }
 
-inline void Linkers::AbortSend(int rank) {
+inline void Linkers::AbortLink(int rank) {
   if (rank >= 0 && rank < static_cast<int>(linkers_.size()) && linkers_[rank] != nullptr) {
     linkers_[rank]->Shutdown();
   }
@@ -316,7 +320,7 @@ inline void Linkers::SendRecv(int send_rank, char* send_data, int send_len,
     Recv(recv_rank, recv_data, recv_len);
   } else {
     // if buffer is not enough, use another thread to send, since send will be blocking
-    SendWhileReceiving(send_rank, [&]() { Send(send_rank, send_data, send_len); },
+    SendWhileReceiving(send_rank, recv_rank, [&]() { Send(send_rank, send_data, send_len); },
                        [&]() { Recv(recv_rank, recv_data, recv_len); });
   }
   // wait for send complete
@@ -330,7 +334,7 @@ inline void Linkers::SendRecv(int send_rank, char* send_data, int send_len,
 #ifdef USE_MPI
 
 // an MPI send cannot be interrupted from another thread; MPI reports the failure itself
-inline void Linkers::AbortSend(int) {}
+inline void Linkers::AbortLink(int) {}
 
 inline void Linkers::Recv(int rank, char* data, int len) const {
   MPI_Status status;
