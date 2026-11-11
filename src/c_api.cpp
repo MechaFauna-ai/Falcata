@@ -1066,6 +1066,16 @@ class CSC_RowIterator {
   std::function<std::pair<int, double>(int idx)> iter_fun_;
 };
 
+// Dataset rows and the prediction row loops are 32-bit (data_size_t / int):
+// reject larger counts instead of letting them wrap.
+static int32_t CheckedRowCount(int64_t nrow, const char* what) {
+  if (nrow < 0 || nrow > static_cast<int64_t>(INT32_MAX)) {
+    Log::Fatal("%s: %s rows is outside the supported range [0, INT32_MAX]", what,
+               std::to_string(nrow).c_str());
+  }
+  return static_cast<int32_t>(nrow);
+}
+
 // start of c_api functions
 
 const char* FLC_GetLastError() {
@@ -1435,7 +1445,7 @@ int FLC_DatasetPushRowsByCSR(DatasetHandle dataset,
   API_BEGIN();
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
-  int32_t nrow = static_cast<int32_t>(nindptr - 1);
+  int32_t nrow = CheckedRowCount(nindptr - 1, "CSR rows to push");
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
@@ -1478,7 +1488,7 @@ int FLC_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
   }
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
-  int32_t nrow = static_cast<int32_t>(nindptr - 1);
+  int32_t nrow = CheckedRowCount(nindptr - 1, "CSR rows to push");
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
@@ -1557,10 +1567,11 @@ int FLC_DatasetCreateFromMats(int32_t nmat,
 #endif  // USE_CUDA
   const double missing_sentinel = DenseMissingSentinel(config, data_type);
   std::unique_ptr<Dataset> ret;
-  int32_t total_nrow = 0;
+  int64_t total_nrow64 = 0;
   for (int j = 0; j < nmat; ++j) {
-    total_nrow += nrow[j];
+    total_nrow64 += CheckedRowCount(nrow[j], "FLC_DatasetCreateFromMats matrix");
   }
+  const int32_t total_nrow = CheckedRowCount(total_nrow64, "FLC_DatasetCreateFromMats total");
 
   std::vector<std::function<std::vector<double>(int row_idx)>> get_row_fun;
   for (int j = 0; j < nmat; ++j) {
@@ -2333,7 +2344,7 @@ int FLC_DatasetCreateFromCSR(const void* indptr,
   CheckNoMissingSentinel(config, "CSR");
   std::unique_ptr<Dataset> ret;
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
-  int32_t nrow = static_cast<int32_t>(nindptr - 1);
+  int32_t nrow = CheckedRowCount(nindptr - 1, "FLC_DatasetCreateFromCSR");
   if (reference == nullptr) {
     // sample data first
     auto sample_indices = CreateSampleIndices(nrow, config);
@@ -2474,7 +2485,7 @@ int FLC_DatasetCreateFromCSC(const void* col_ptr,
   OMP_SET_NUM_THREADS(config.num_threads);
   CheckNoMissingSentinel(config, "CSC");
   std::unique_ptr<Dataset> ret;
-  int32_t nrow = static_cast<int32_t>(num_row);
+  int32_t nrow = CheckedRowCount(num_row, "FLC_DatasetCreateFromCSC");
   if (reference == nullptr) {
     // sample data first
     auto sample_indices = CreateSampleIndices(nrow, config);
@@ -3240,7 +3251,7 @@ int FLC_BoosterPredictForCSR(BoosterHandle handle,
   OMP_SET_NUM_THREADS(config.num_threads);
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
-  int nrow = static_cast<int>(nindptr - 1);
+  int nrow = CheckedRowCount(nindptr - 1, "FLC_BoosterPredictForCSR");
   ref_booster->Predict(start_iteration, num_iteration, predict_type, nrow, static_cast<int>(num_col), get_row_fun,
                        config, out_result, out_len);
   API_END();
@@ -3447,7 +3458,7 @@ int FLC_BoosterPredictForCSC(BoosterHandle handle,
         }
         return one_row;
       };
-  ref_booster->Predict(start_iteration, num_iteration, predict_type, static_cast<int>(num_row), ncol, get_row_fun, config,
+  ref_booster->Predict(start_iteration, num_iteration, predict_type, CheckedRowCount(num_row, "FLC_BoosterPredictForCSC"), ncol, get_row_fun, config,
                        out_result, out_len);
   API_END();
 }
