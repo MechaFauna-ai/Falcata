@@ -56,18 +56,18 @@ class shared_mutex_base {
 
   void lock() {
     std::unique_lock<decltype(mtx_)> lk(mtx_);
-    RwLockPolicy::before_wait_wlock(state_);
+    RwLockPolicy::before_wait_wlock(&state_);
     while (RwLockPolicy::wait_wlock(state_)) {
       cv_.wait(lk);
     }
-    RwLockPolicy::after_wait_wlock(state_);
+    RwLockPolicy::after_wait_wlock(&state_);
     RwLockPolicy::acquire_wlock(&state_);
   }
 
   bool try_lock() {
     std::lock_guard<decltype(mtx_)> lk(mtx_);
     if (RwLockPolicy::wait_wlock(state_)) return false;
-    RwLockPolicy::acquire_wlock(state_);
+    RwLockPolicy::acquire_wlock(&state_);
     return true;
   }
 
@@ -88,7 +88,7 @@ class shared_mutex_base {
   bool try_lock_shared() {
     std::lock_guard<decltype(mtx_)> lk(mtx_);
     if (RwLockPolicy::wait_rlock(state_)) return false;
-    RwLockPolicy::acquire_rlock(state_);
+    RwLockPolicy::acquire_rlock(&state_);
     return true;
   }
 
@@ -136,17 +136,17 @@ class basic_shared_timed_mutex
   template <typename Clock, typename Duration>
   bool do_try_lockwait(const std::chrono::time_point<Clock, Duration>& tp) {
     std::unique_lock<decltype(mtx_)> lk(mtx_);
-    RwLockPolicy::before_wait_wlock(state_);
+    RwLockPolicy::before_wait_wlock(&state_);
     while (RwLockPolicy::wait_wlock(state_)) {
       if (cv_.wait_until(lk, tp) == std::cv_status::timeout) {
         if (!RwLockPolicy::wait_wlock(state_))  // re-check predicate
           break;
-        RwLockPolicy::after_wait_wlock(state_);
+        RwLockPolicy::after_wait_wlock(&state_);
         return false;
       }
     }
-    RwLockPolicy::after_wait_wlock(state_);
-    RwLockPolicy::acquire_wlock(state_);
+    RwLockPolicy::after_wait_wlock(&state_);
+    RwLockPolicy::acquire_wlock(&state_);
     return true;
   }
 
@@ -161,7 +161,7 @@ class basic_shared_timed_mutex
         return false;
       }
     }
-    RwLockPolicy::acquire_rlock(state_);
+    RwLockPolicy::acquire_rlock(&state_);
     return true;
   }
 

@@ -161,7 +161,7 @@ def main():
                 done = (e.stdout or b"").decode(errors="replace").count("OK ")
                 for j, path in enumerate(paths):
                     try:
-                        subprocess.run(
+                        single = subprocess.run(
                             [sys.executable, "-c", _WORKER, path],
                             capture_output=True,
                             timeout=20,
@@ -172,6 +172,15 @@ def main():
                         shutil.copy(path, repro)
                         print(
                             f"FAIL: loader HUNG on mutation #{tried + j} "
+                            f"(mutation seed {recipes[j]}, fuzz seed {args.seed})"
+                        )
+                        print(f"repro file kept at: {repro}")
+                        return 1
+                    if single.returncode != 0:
+                        repro = Path(__file__).resolve().parent / "falb_fuzz_crash.falb"
+                        shutil.copy(path, repro)
+                        print(
+                            f"FAIL: loader killed (exit {single.returncode}) on mutation #{tried + j} "
                             f"(mutation seed {recipes[j]}, fuzz seed {args.seed})"
                         )
                         print(f"repro file kept at: {repro}")

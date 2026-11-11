@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include "init_score_layout.hpp"
+
 namespace Falcata {
 
 using json11_internal_lightgbm::Json;
@@ -106,6 +108,10 @@ void DatasetLoader::SetHeader(const char* filename) {
     }
 
     if (!feature_names_.empty()) {
+      if (label_idx_ < 0 || label_idx_ >= static_cast<int>(feature_names_.size())) {
+        Log::Fatal("label_column %d is out of range: the header has %d columns", label_idx_,
+                   static_cast<int>(feature_names_.size()));
+      }
       // erase label column name
       feature_names_.erase(feature_names_.begin() + label_idx_);
       for (size_t i = 0; i < feature_names_.size(); ++i) {
@@ -203,6 +209,15 @@ void DatasetLoader::SetHeader(const char* filename) {
   }
 }
 
+void DatasetLoader::CheckNotMonotoneCategorical(int feature_idx) const {
+  // every bin-mapper construction path (sampled, text, distributed) applies
+  // this; the text-file paths used to skip it and silently accept the config
+  if (feature_idx < static_cast<int>(config_.monotone_constraints.size()) &&
+      config_.monotone_constraints[feature_idx] != 0) {
+    Log::Fatal("The output cannot be monotone with respect to categorical features");
+  }
+}
+
 void CheckSampleSize(size_t sample_cnt, size_t num_data) {
   if (static_cast<double>(sample_cnt) / num_data < 0.2f &&
       sample_cnt < 100000) {
@@ -216,7 +231,7 @@ void CheckSampleSize(size_t sample_cnt, size_t num_data) {
 Dataset* DatasetLoader::LoadFromFile(const char* filename, int rank, int num_machines) {
   // don't support query id in data file when using distributed training
   if (num_machines > 1 && !config_.pre_partition) {
-    if (group_idx_ > 0) {
+    if (group_idx_ >= 0) {
       Log::Fatal("Using a query id without pre-partitioning the data file is not supported for distributed training.\n"
                  "Please use an additional query file or pre-partition the data");
     }
@@ -360,6 +375,17 @@ Dataset* DatasetLoader::LoadFromFileAlignWithOtherDataset(const char* filename, 
     // checks whether there's a initial score file when loaded from binary data files
     // the initial score file should with suffix ".bin.init"
     dataset->metadata_.LoadInitialScore(bin_filename);
+    // the text branch gets these from CreateValid(train_data) and FinishLoad;
+    // a binary validation set needs them too, or a CUDA booster evaluates it
+    // without device metadata
+    dataset->device_type_ = train_data->device_type_;
+    dataset->gpu_device_id_ = train_data->gpu_device_id_;
+    #ifdef USE_CUDA
+    dataset->ReleaseCUDAColumnData();
+    if (dataset->device_type_ == std::string("cuda")) {
+      dataset->metadata_.CreateCUDAMetadata(dataset->gpu_device_id_);
+    }
+    #endif  // USE_CUDA
   }
   // not need to check validation data
   // check meta data
@@ -383,16 +409,28 @@ Dataset* DatasetLoader::LoadFromSerializedReference(const char* binary_data, siz
   }
   mem_ptr += size_of_token_in_input;
 
+  // every section below must lie inside the buffer: a truncated or corrupt
+  // reference would otherwise be read past its end
+  const char* const buffer_end = binary_data + buffer_size;
+  auto require = [&mem_ptr, buffer_end](size_t bytes, const char* what) {
+    if (bytes > static_cast<size_t>(buffer_end - mem_ptr)) {
+      Log::Fatal("Serialized reference is truncated or corrupt: %s does not fit in the buffer", what);
+    }
+  };
+
   size_t size_of_version = VirtualFileWriter::AlignedSize(Dataset::kSerializedReferenceVersionLength);
+  require(size_of_version, "version");
   std::string version(mem_ptr, Dataset::kSerializedReferenceVersionLength);
   if (version != std::string(Dataset::serialized_reference_version)) {
     Log::Fatal("Unexpected version of serialized binary data: %s", version.c_str());
   }
   mem_ptr += size_of_version;
 
+  require(sizeof(size_t), "header size");
   size_t size_of_header = *(reinterpret_cast<const size_t*>(mem_ptr));
   mem_ptr += sizeof(size_t);
 
+  require(size_of_header, "header");
   LoadHeaderFromMemory(dataset.get(), mem_ptr);
   dataset->num_data_ = num_data;  // update to the given num_data
   mem_ptr += size_of_header;
@@ -400,8 +438,10 @@ Dataset* DatasetLoader::LoadFromSerializedReference(const char* binary_data, siz
   // read feature group definitions
   for (int i = 0; i < dataset->num_groups_; ++i) {
     // read feature size
+    require(sizeof(size_t), "feature group size");
     const size_t size_of_feature = *(reinterpret_cast<const size_t*>(mem_ptr));
     mem_ptr += sizeof(size_t);
+    require(size_of_feature, "feature group");
     dataset->feature_groups_.emplace_back(std::unique_ptr<FeatureGroup>(new FeatureGroup(mem_ptr, num_data, i)));
     mem_ptr += size_of_feature;
   }
@@ -578,25 +618,29 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
   }
   if (dataset->has_raw()) {
     dataset->ResizeRaw(dataset->num_data());
-      size_t row_size = dataset->num_numeric_features_ * sizeof(float);
-      if (row_size > buffer_size) {
-        buffer_size = row_size;
-        buffer.resize(buffer_size);
+    const size_t row_size = dataset->num_numeric_features_ * sizeof(float);
+    // read the row-major raw values a block of rows at a time
+    const int num_data = dataset->num_data();
+    const int rows_per_block = row_size == 0 ? num_data
+        : static_cast<int>(std::max<size_t>(1, std::min<size_t>(num_data, (size_t{16} << 20) / row_size)));
+    std::vector<char> block(static_cast<size_t>(rows_per_block) * row_size);
+    for (int block_start = 0; block_start < num_data; block_start += rows_per_block) {
+      const int block_rows = std::min(rows_per_block, num_data - block_start);
+      const size_t block_bytes = static_cast<size_t>(block_rows) * row_size;
+      read_cnt = reader->Read(block.data(), block_bytes);
+      if (read_cnt != block_bytes) {
+        Log::Fatal("Binary file error: rows %d to %d of raw data are incorrect, read count: %zu",
+                   block_start, block_start + block_rows - 1, read_cnt);
       }
-    for (int i = 0; i < dataset->num_data(); ++i) {
-      read_cnt = reader->Read(buffer.data(), row_size);
-      if (read_cnt != row_size) {
-        Log::Fatal("Binary file error: row %d of raw data is incorrect, read count: %zu", i, read_cnt);
-      }
-      mem_ptr = buffer.data();
-      const float* tmp_ptr_raw_row = reinterpret_cast<const float*>(mem_ptr);
-      for (int j = 0; j < dataset->num_features(); ++j) {
-        int feat_ind = dataset->numeric_feature_map_[j];
-        if (feat_ind >= 0) {
-          dataset->raw_data_[feat_ind][i] = tmp_ptr_raw_row[feat_ind];
+      for (int r = 0; r < block_rows; ++r) {
+        const float* tmp_ptr_raw_row = reinterpret_cast<const float*>(block.data() + static_cast<size_t>(r) * row_size);
+        for (int j = 0; j < dataset->num_features(); ++j) {
+          int feat_ind = dataset->numeric_feature_map_[j];
+          if (feat_ind >= 0) {
+            dataset->raw_data_[feat_ind][block_start + r] = tmp_ptr_raw_row[feat_ind];
+          }
         }
       }
-      mem_ptr += row_size;
     }
   }
 
@@ -649,10 +693,7 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
       BinType bin_type = BinType::NumericalBin;
       if (categorical_features_.count(i)) {
         bin_type = BinType::CategoricalBin;
-        bool feat_is_unconstrained = ((config_.monotone_constraints.size() == 0) || (config_.monotone_constraints[i] == 0));
-        if (!feat_is_unconstrained) {
-            Log::Fatal("The output cannot be monotone with respect to categorical features");
-        }
+        CheckNotMonotoneCategorical(i);
       }
       bin_mappers[i].reset(new BinMapper());
       if (config_.max_bin_by_feature.empty()) {
@@ -699,6 +740,7 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
       BinType bin_type = BinType::NumericalBin;
       if (categorical_features_.count(start[rank] + i)) {
         bin_type = BinType::CategoricalBin;
+        CheckNotMonotoneCategorical(start[rank] + i);
       }
       bin_mappers[i].reset(new BinMapper());
       if (num_col <= start[rank] + i) {
@@ -1162,6 +1204,7 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
       BinType bin_type = BinType::NumericalBin;
       if (categorical_features_.count(i)) {
         bin_type = BinType::CategoricalBin;
+        CheckNotMonotoneCategorical(i);
       }
       bin_mappers[i].reset(new BinMapper());
       if (config_.max_bin_by_feature.empty()) {
@@ -1204,6 +1247,7 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
       BinType bin_type = BinType::NumericalBin;
       if (categorical_features_.count(start[rank] + i)) {
         bin_type = BinType::CategoricalBin;
+        CheckNotMonotoneCategorical(start[rank] + i);
       }
       bin_mappers[i].reset(new BinMapper());
       if (static_cast<int>(sample_values.size()) <= start[rank] + i) {
@@ -1341,7 +1385,7 @@ void DatasetLoader::ExtractFeaturesFromMemory(std::vector<std::string>* text_dat
   } else {
     OMP_INIT_EX();
     // if need to prediction with initial model
-    std::vector<double> init_score(static_cast<size_t>(dataset->num_data_) * num_class_);
+    std::vector<double> init_score(InitScoreSize(dataset->num_data_, num_class_));
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) private(oneline_features) firstprivate(tmp_label, feature_row)
     for (data_size_t i = 0; i < dataset->num_data_; ++i) {
       OMP_LOOP_EX_BEGIN();
@@ -1353,7 +1397,7 @@ void DatasetLoader::ExtractFeaturesFromMemory(std::vector<std::string>* text_dat
       std::vector<double> oneline_init_score(num_class_);
       predict_fun_(oneline_features, oneline_init_score.data());
       for (int k = 0; k < num_class_; ++k) {
-        init_score[k * dataset->num_data_ + i] = static_cast<double>(oneline_init_score[k]);
+        init_score[InitScoreOffset(k, dataset->num_data_, i)] = static_cast<double>(oneline_init_score[k]);
       }
       // set label
       dataset->metadata_.SetLabelAt(i, static_cast<label_t>(tmp_label));
@@ -1401,7 +1445,7 @@ void DatasetLoader::ExtractFeaturesFromMemory(std::vector<std::string>* text_dat
     }
     OMP_THROW_EX();
     // metadata_ will manage space of init_score
-    dataset->metadata_.SetInitScore(init_score.data(), dataset->num_data_ * num_class_);
+    dataset->metadata_.SetInitScore(init_score.data(), static_cast<data_size_t>(init_score.size()));
   }
   dataset->FinishLoad();
   // text data can be free after loaded feature values
@@ -1413,7 +1457,7 @@ void DatasetLoader::ExtractFeaturesFromFile(const char* filename, const Parser* 
                                             const std::vector<data_size_t>& used_data_indices, Dataset* dataset) {
   std::vector<double> init_score;
   if (predict_fun_) {
-    init_score = std::vector<double>(static_cast<size_t>(dataset->num_data_) * num_class_);
+    init_score = std::vector<double>(InitScoreSize(dataset->num_data_, num_class_));
   }
   std::function<void(data_size_t, const std::vector<std::string>&)> process_fun =
     [this, &init_score, &parser, &dataset]
@@ -1434,7 +1478,7 @@ void DatasetLoader::ExtractFeaturesFromFile(const char* filename, const Parser* 
         std::vector<double> oneline_init_score(num_class_);
         predict_fun_(oneline_features, oneline_init_score.data());
         for (int k = 0; k < num_class_; ++k) {
-          init_score[k * dataset->num_data_ + start_idx + i] = static_cast<double>(oneline_init_score[k]);
+          init_score[InitScoreOffset(k, dataset->num_data_, start_idx + i)] = static_cast<double>(oneline_init_score[k]);
         }
       }
       // set label
@@ -1490,7 +1534,7 @@ void DatasetLoader::ExtractFeaturesFromFile(const char* filename, const Parser* 
 
   // metadata_ will manage space of init_score
   if (!init_score.empty()) {
-    dataset->metadata_.SetInitScore(init_score.data(), dataset->num_data_ * num_class_);
+    dataset->metadata_.SetInitScore(init_score.data(), static_cast<data_size_t>(init_score.size()));
   }
   dataset->FinishLoad();
 }
@@ -1535,11 +1579,19 @@ std::vector<std::vector<double>> DatasetLoader::GetForcedBins(std::string forced
       buffer << forced_bins_stream.rdbuf();
       std::string err;
       Json forced_bins_json = Json::parse(buffer.str(), &err);
-      CHECK(forced_bins_json.is_array());
+      if (!err.empty()) {
+        Log::Fatal("Could not parse forced bins file %s: %s", forced_bins_path.c_str(), err.c_str());
+      }
+      if (!forced_bins_json.is_array()) {
+        Log::Fatal("Forced bins file %s must contain a JSON array", forced_bins_path.c_str());
+      }
       std::vector<Json> forced_bins_arr = forced_bins_json.array_items();
       for (size_t i = 0; i < forced_bins_arr.size(); ++i) {
         int feature_num = forced_bins_arr[i]["feature"].int_value();
-        CHECK_LT(feature_num, num_total_features);
+        if (feature_num < 0 || feature_num >= num_total_features) {
+          Log::Fatal("Forced bins file %s names feature %d, outside [0, %d)", forced_bins_path.c_str(),
+                     feature_num, num_total_features);
+        }
         if (categorical_features.count(feature_num)) {
           Log::Warning("Feature %d is categorical. Will ignore forced bins for this feature.", feature_num);
         } else {
@@ -1549,9 +1601,13 @@ std::vector<std::vector<double>> DatasetLoader::GetForcedBins(std::string forced
           }
         }
       }
-      // remove duplicates
+      // remove duplicates (std::unique alone only drops adjacent ones), keeping
+      // the first occurrence and the given order: FindBin takes the bounds in
+      // this order while it has room for them
       for (int i = 0; i < num_total_features; ++i) {
-        auto new_end = std::unique(forced_bins[i].begin(), forced_bins[i].end());
+        std::unordered_set<double> seen;
+        auto new_end = std::remove_if(forced_bins[i].begin(), forced_bins[i].end(),
+                                      [&seen](double bound) { return !seen.insert(bound).second; });
         forced_bins[i].erase(new_end, forced_bins[i].end());
       }
     }
@@ -1573,7 +1629,9 @@ void DatasetLoader::CheckCategoricalFeatureNumBin(
     }
   } else {
     const int num_threads = OMP_NUM_THREADS();
-    std::vector<bool> thread_need_warning(num_threads, false);
+    // char, not bool: std::vector<bool> packs the per-thread flags into shared
+    // words, so concurrent writes from different threads would race
+    std::vector<char> thread_need_warning(num_threads, false);
     Threading::For<size_t>(0, bin_mappers.size(), 1,
       [&bin_mappers, &thread_need_warning, &max_bin_by_feature, max_bin] (int thread_index, size_t start, size_t end) {
         for (size_t i = start; i < end; ++i) {

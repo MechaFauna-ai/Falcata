@@ -20,6 +20,7 @@ saved model outlives the library version that wrote it.
 import json
 import sys
 from pathlib import Path
+from zlib import crc32
 
 import numpy as np
 
@@ -46,7 +47,7 @@ SHAPES = {
 
 
 def make_data(name, nan_frac=0.0, cat_cols=0, n=3000, m=8):
-    rng = np.random.default_rng(abs(hash(name)) % 100_000)
+    rng = np.random.default_rng(crc32(name.encode("utf-8")) % 100_000)
     x = rng.standard_normal((n, m))
     for j in range(cat_cols):
         x[:, j] = rng.integers(0, 40, size=n)
@@ -68,15 +69,24 @@ def leaf_counts(model_text):
 
 
 def freeze(only=None):
+    unknown = set(only or ()) - SHAPES.keys()
+    if unknown:
+        raise ValueError(f"Unknown fixture names: {', '.join(sorted(unknown))}")
     for name, (params, knobs) in SHAPES.items():
         if only and name not in only:
             continue
         d = FIXTURE_DIR / name
-        d.mkdir(parents=True, exist_ok=True)
         x, y, cats = make_data(name, **knobs)
         p = dict(params, verbose=-1, seed=42, num_threads=1, deterministic=True)
         ds = flc.Dataset(x, label=y, params=p, categorical_feature=cats or "auto")
         bst = flc.train(p, ds, num_boost_round=20)
+        leaves = leaf_counts(bst.model_to_string(num_iteration=-1))
+        if "constant" in name and not (min(leaves) == 1 < max(leaves)):
+            raise SystemExit(
+                f"{name}: this fixture exists to carry constant trees next to grown ones, "
+                f"but the recipe produced leaf counts {sorted(set(leaves))}"
+            )
+        d.mkdir(parents=True, exist_ok=True)
         np.save(d / "X.npy", x.astype(np.float64))
         np.save(d / "preds.npy", bst.predict(x))
         bst.save_model(str(d / "model.falb"), format="falb")
@@ -84,12 +94,6 @@ def freeze(only=None):
         (d / "meta.json").write_text(
             json.dumps({"falcata_version": flc.__version__, "params": params}, indent=1) + "\n"
         )
-        leaves = leaf_counts((d / "model.txt").read_text())
-        if "constant" in name and not (min(leaves) == 1 < max(leaves)):
-            raise SystemExit(
-                f"{name}: this fixture exists to carry constant trees next to grown ones, "
-                f"but the recipe produced leaf counts {sorted(set(leaves))}"
-            )
         print(f"froze {name} (writer {flc.__version__}, {len(leaves)} trees, {min(leaves)}-{max(leaves)} leaves)")
 
 

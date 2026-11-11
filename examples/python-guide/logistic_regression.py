@@ -15,7 +15,7 @@ import time
 
 import numpy as np
 import pandas as pd
-from scipy.special import expit
+from scipy.special import expit, xlogy
 
 import falcata as flc
 
@@ -43,8 +43,8 @@ DATA = {
 #################
 # Set up a couple of utilities for our experiments
 def log_loss(preds, labels):
-    """Logarithmic loss with non-necessarily-binary labels."""
-    log_likelihood = np.sum(labels * np.log(preds)) / len(preds)
+    """Binary cross-entropy for binary or fractional labels."""
+    log_likelihood = np.sum(xlogy(labels, preds) + xlogy(1 - labels, 1 - preds)) / len(preds)
     return -log_likelihood
 
 
