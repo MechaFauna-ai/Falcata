@@ -538,6 +538,9 @@ inline static std::string Join(const std::vector<T>& strs, size_t start, size_t 
  */
 inline static void Softmax(std::vector<double>* p_rec) {
   std::vector<double> &rec = *p_rec;
+  if (rec.empty()) {
+    return;
+  }
   double wmax = rec[0];
   for (size_t i = 1; i < rec.size(); ++i) {
     wmax = std::max(rec[i], wmax);
@@ -553,6 +556,9 @@ inline static void Softmax(std::vector<double>* p_rec) {
 }
 
 inline static void Softmax(const double* input, double* output, int len) {
+  if (len <= 0) {
+    return;
+  }
   double wmax = input[0];
   for (int i = 1; i < len; ++i) {
     wmax = std::max(input[i], wmax);
@@ -755,9 +761,16 @@ inline static void CheckElementsIntervalClosed(const T *y, T ymin, T ymax, int n
 }
 
 // One-pass scan over array w with nw elements: find min, max and sum of elements;
-// this is useful for checking weight requirements.
+// this is useful for checking weight requirements. With no elements the sum is 0
+// and min and max are left unchanged.
 template <typename T1, typename T2>
 inline static void ObtainMinMaxSum(const T1 *w, int nw, T1 *mi, T1 *ma, T2 *su) {
+  if (nw <= 0) {
+    if (su != nullptr) {
+      *su = static_cast<T2>(0);
+    }
+    return;
+  }
   T1 minw;
   T1 maxw;
   T1 sumw;
