@@ -757,18 +757,26 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     }
     auto it = owned.find(id);
     if (it == owned.end()) {
-      // raw_len comes from the file, so cap it before allocating: a hostile
-      // header must not be able to ask for an arbitrary allocation
-      if (e.raw_len > (1ULL << 40)) {
+      // raw_len comes from the file, so bound it before allocating: a hostile
+      // header must not be able to ask for an arbitrary allocation. Deflate
+      // expands at most 1032:1, so a larger claim is corrupt; the 1 TiB cap
+      // alone still let a 4 KiB file allocate (and zero) terabytes.
+      const char* stored = r.Bytes(e.offset, e.stored_len, "section");
+      constexpr uint64_t kMaxDeflateRatio = 1032;
+      const uint64_t max_raw_len =
+          e.stored_len > ((1ULL << 40) - 1024) / kMaxDeflateRatio
+              ? (1ULL << 40)
+              : e.stored_len * kMaxDeflateRatio + 1024;
+      if (e.raw_len > max_raw_len) {
         Log::Fatal("FALB: corrupt model -- section %u declares an implausible "
-                   "decompressed size of %llu bytes", e.id,
-                   static_cast<unsigned long long>(e.raw_len));  // NOLINT(runtime/int): %llu format
+                   "decompressed size of %llu bytes from %llu stored bytes", e.id,
+                   static_cast<unsigned long long>(e.raw_len),       // NOLINT(runtime/int): %llu format
+                   static_cast<unsigned long long>(e.stored_len));  // NOLINT(runtime/int): %llu format
       }
       std::vector<char> out(static_cast<size_t>(e.raw_len));
       uLongf out_len = static_cast<uLongf>(e.raw_len);
       const int rc = uncompress(reinterpret_cast<Bytef*>(out.data()), &out_len,
-                                reinterpret_cast<const Bytef*>(
-                                    r.Bytes(e.offset, e.stored_len, "section")),
+                                reinterpret_cast<const Bytef*>(stored),
                                 static_cast<uLong>(e.stored_len));
       if (rc != Z_OK || out_len != e.raw_len) {
         Log::Fatal("FALB: corrupt model -- section %u failed to decompress (%d)",
