@@ -1095,8 +1095,22 @@ static int32_t CheckedRowCount(int64_t nrow, const char* what) {
 
 // start of c_api functions
 
+namespace {
+// One buffer per thread for the whole library: FLC_SetLastError and FLC_GetLastError are both defined here, so a
+// caller in another translation unit or library (the SWIG wrapper) sets the message FLC_GetLastError returns.
+constexpr size_t kLastErrorBufferSize = 512;
+char* LastErrorMsg() {
+  static THREAD_LOCAL char err_msg[kLastErrorBufferSize] = "Everything is fine";
+  return err_msg;
+}
+}  // namespace
+
 const char* FLC_GetLastError() {
   return LastErrorMsg();
+}
+
+void FLC_SetLastError(const char* msg) {
+  snprintf(LastErrorMsg(), kLastErrorBufferSize, "%s", msg);
 }
 
 int FLC_DumpParamAliases(int64_t buffer_len,
