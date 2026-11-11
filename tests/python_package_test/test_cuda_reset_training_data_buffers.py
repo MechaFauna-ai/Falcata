@@ -61,11 +61,10 @@ def _train_with_reset(device, extra):
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("quantized", [False, True])
-def test_reset_training_data_to_more_rows_cuda(quantized):
-    extra = {"use_quantized_grad": True, "quant_mode": "fixedpoint"} if quantized else {}
+def test_reset_training_data_to_more_rows_cuda():
+    # non-quantized: CUDA's quantized gradients reject features with more than 256 bins
+    extra = {"quant_mode": "none"}
     cuda_pred = _train_with_reset("cuda", extra)
     assert np.all(np.isfinite(cuda_pred))
-    if not quantized:
-        cpu_pred = _train_with_reset("cpu", extra)
-        np.testing.assert_allclose(cuda_pred, cpu_pred, rtol=1e-4, atol=1e-4)
+    cpu_pred = _train_with_reset("cpu", extra)
+    np.testing.assert_allclose(cuda_pred, cpu_pred, rtol=1e-4, atol=1e-4)
