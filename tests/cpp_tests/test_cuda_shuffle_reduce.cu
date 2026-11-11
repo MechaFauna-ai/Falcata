@@ -21,6 +21,7 @@
 namespace {
 
 constexpr int kThreads = 1024;
+constexpr int kBlocks = 64;
 
 __global__ void BackToBackReduceKernel(const float* a, const float* b, float* out) {
   __shared__ float scratch[32];
@@ -31,10 +32,11 @@ __global__ void BackToBackReduceKernel(const float* a, const float* b, float* ou
   const float min_a = Falcata::ShuffleReduceMin<float>(va, scratch, blockDim.x);
   const float min_b = Falcata::ShuffleReduceMin<float>(vb, scratch, blockDim.x);
   if (threadIdx.x == 0) {
-    out[0] = max_a;
-    out[1] = max_b;
-    out[2] = min_a;
-    out[3] = min_b;
+    float* block_out = out + 4 * blockIdx.x;
+    block_out[0] = max_a;
+    block_out[1] = max_b;
+    block_out[2] = min_a;
+    block_out[3] = min_b;
   }
 }
 
@@ -53,18 +55,20 @@ TEST(CUDAShuffleReduce, BackToBackMaxMinOnOneScratchBuffer) {
   float *d_a = nullptr, *d_b = nullptr, *d_out = nullptr;
   ASSERT_EQ(cudaMalloc(&d_a, kThreads * sizeof(float)), cudaSuccess);
   ASSERT_EQ(cudaMalloc(&d_b, kThreads * sizeof(float)), cudaSuccess);
-  ASSERT_EQ(cudaMalloc(&d_out, 4 * sizeof(float)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_out, 4 * kBlocks * sizeof(float)), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(d_a, a.data(), kThreads * sizeof(float), cudaMemcpyHostToDevice), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(d_b, b.data(), kThreads * sizeof(float), cudaMemcpyHostToDevice), cudaSuccess);
   for (int rep = 0; rep < 50; ++rep) {
-    BackToBackReduceKernel<<<64, kThreads>>>(d_a, d_b, d_out);
+    BackToBackReduceKernel<<<kBlocks, kThreads>>>(d_a, d_b, d_out);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
-    float out[4];
-    ASSERT_EQ(cudaMemcpy(out, d_out, sizeof(out), cudaMemcpyDeviceToHost), cudaSuccess);
-    EXPECT_EQ(out[0], static_cast<float>(kThreads - 1));
-    EXPECT_EQ(out[1], 10000.0f + static_cast<float>(kThreads - 1));
-    EXPECT_EQ(out[2], 0.0f);
-    EXPECT_EQ(out[3], 10000.0f);
+    std::vector<float> out(4 * kBlocks);
+    ASSERT_EQ(cudaMemcpy(out.data(), d_out, out.size() * sizeof(float), cudaMemcpyDeviceToHost), cudaSuccess);
+    for (int block = 0; block < kBlocks; ++block) {
+      EXPECT_EQ(out[4 * block + 0], static_cast<float>(kThreads - 1)) << "block " << block;
+      EXPECT_EQ(out[4 * block + 1], 10000.0f + static_cast<float>(kThreads - 1)) << "block " << block;
+      EXPECT_EQ(out[4 * block + 2], 0.0f) << "block " << block;
+      EXPECT_EQ(out[4 * block + 3], 10000.0f) << "block " << block;
+    }
   }
   cudaFree(d_a);
   cudaFree(d_b);
