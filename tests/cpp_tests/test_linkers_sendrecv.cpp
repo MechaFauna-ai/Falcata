@@ -127,10 +127,11 @@ TEST(LinkersSendRecv, FailedSendAbortsAReceiveFromAnotherRank) {
   auto ranks = MakeRanks(3);
   ranks[1].reset();  // the send peer dies; rank 2 stays up and sends nothing
   std::shared_ptr<Falcata::Linkers> rank0(std::move(ranks[0]));
-  const int len = 4 << 20;
+  // constexpr, read in the lambda without a capture (capturing it is clang's -Wunused-lambda-capture)
+  constexpr int len = 4 << 20;
   auto send = std::make_shared<std::vector<char>>(len, 1);
   auto recv = std::make_shared<std::vector<char>>(len);
-  const std::string result = RunWithTimeout([rank0, send, recv, len]() {
+  const std::string result = RunWithTimeout([rank0, send, recv]() {
     try {
       rank0->SendRecv(1, send->data(), len, 2, recv->data(), len);
       return std::string("returned");
@@ -150,10 +151,10 @@ TEST(LinkersSendRecv, FailedReceiveIsReportedNotTheSendItAborted) {
   auto ranks = MakeRanks(3);
   ranks[1].reset();  // the receive peer dies; rank 2 stays up and reads nothing
   std::shared_ptr<Falcata::Linkers> rank0(std::move(ranks[0]));
-  const int len = 16 << 20;  // more than the socket buffers hold, so the send blocks
+  constexpr int len = 16 << 20;  // more than the socket buffers hold, so the send blocks
   auto send = std::make_shared<std::vector<char>>(len, 1);
   auto recv = std::make_shared<std::vector<char>>(len);
-  const std::string result = RunWithTimeout([rank0, send, recv, len]() {
+  const std::string result = RunWithTimeout([rank0, send, recv]() {
     try {
       rank0->SendRecv(2, send->data(), len, 1, recv->data(), len);
       return std::string("returned");
