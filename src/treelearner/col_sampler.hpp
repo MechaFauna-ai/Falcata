@@ -89,6 +89,8 @@ class ColSampler {
         int inner_feature_index = train_data_->InnerFeatureIndex(used_feature);
         is_feature_used_[inner_feature_index] = 1;
       }
+    } else {
+      std::fill(is_feature_used_.begin(), is_feature_used_.end(), 1);
     }
   }
 
