@@ -13,10 +13,14 @@
 
 #include <string>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <ctime>
+#include <exception>
 #include <memory>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #ifdef USE_SOCKET
@@ -82,6 +86,17 @@ class Linkers {
 
   inline void SendRecv(int send_rank, char* send_data, int64_t send_len,
                        int recv_rank, char* recv_data, int64_t recv_len);
+
+  /*!
+  * \brief Runs send() on a second thread while recv() runs on this one. A failure on either side is rethrown here
+  *        once the sending thread has finished (a failure on one side first unblocks the other, see AbortLink), so no
+  *        exception escapes the thread and no joinable thread is destroyed
+  */
+  template <typename SendFun, typename RecvFun>
+  inline void SendWhileReceiving(int send_rank, int recv_rank, const SendFun& send, const RecvFun& recv);
+
+  /*! \brief Makes a send to or receive from rank blocked in another thread return (sockets: shut the link down) */
+  inline void AbortLink(int rank);
   /*!
   * \brief Get rank of local machine
   */
@@ -120,6 +135,13 @@ class Linkers {
   * \brief Construct network topo
   */
   void Construct();
+  /*!
+  * \brief Connect to every rank above this one (part of Construct)
+  * \param need_connect ranks to link with
+  */
+  void ConnectToHigherRanks(const std::unordered_map<int, int>& need_connect);
+  /*! \brief Interrupt the handshake read ListenThread may be blocked in, and refuse further ones */
+  void AbortHandshake();
   /*!
   * \brief Parser machines information from file
   * \param machines
@@ -185,6 +207,12 @@ class Linkers {
   std::vector<std::unique_ptr<TcpSocket>> linkers_;
   /*! \brief Local socket listener */
   std::unique_ptr<TcpSocket> listener_;
+  /*! \brief Guards the two members below, shared by ListenThread and AbortHandshake */
+  std::mutex handshake_mutex_;
+  /*! \brief The accepted socket ListenThread is reading a rank from, if any */
+  TcpSocket* handshake_socket_ = nullptr;
+  /*! \brief Set by AbortHandshake: ListenThread takes no further connection */
+  bool handshake_aborted_ = false;
   #endif  // USE_SOCKET
 };
 
@@ -223,15 +251,48 @@ inline void Linkers::Send(int rank, char* data, int64_t len) const {
   } while (used < len);
 }
 
+template <typename SendFun, typename RecvFun>
+inline void Linkers::SendWhileReceiving(int send_rank, int recv_rank, const SendFun& send, const RecvFun& recv) {
+  // which side failed first (0: neither, 1: send, 2: receive): its error is the cause, the other side's is the
+  // shutdown that interrupted it
+  std::atomic<int> first_failure(0);
+  std::exception_ptr send_error;
+  std::thread send_worker([this, recv_rank, &send, &send_error, &first_failure]() {
+    try {
+      send();
+    } catch (...) {
+      send_error = std::current_exception();
+      int none = 0;
+      if (first_failure.compare_exchange_strong(none, 1)) {
+        AbortLink(recv_rank);  // the receive may wait on another, still connected rank: make it return
+      }
+    }
+  });
+  try {
+    recv();
+  } catch (...) {
+    int none = 0;
+    const bool recv_first = first_failure.compare_exchange_strong(none, 2);
+    if (recv_first) {
+      AbortLink(send_rank);
+    }
+    send_worker.join();
+    if (!recv_first && send_error) {
+      std::rethrow_exception(send_error);
+    }
+    throw;
+  }
+  send_worker.join();
+  if (send_error) {
+    std::rethrow_exception(send_error);
+  }
+}
+
 inline void Linkers::SendRecv(int send_rank, char* send_data, int64_t send_len,
                               int recv_rank, char* recv_data, int64_t recv_len) {
   auto start_time = std::chrono::high_resolution_clock::now();
-  std::thread send_worker(
-    [this, send_rank, send_data, send_len]() {
-    Send(send_rank, send_data, send_len);
-  });
-  Recv(recv_rank, recv_data, recv_len);
-  send_worker.join();
+  SendWhileReceiving(send_rank, recv_rank, [&]() { Send(send_rank, send_data, send_len); },
+                     [&]() { Recv(recv_rank, recv_data, recv_len); });
   // wait for send complete
   auto end_time = std::chrono::high_resolution_clock::now();
   // output used time on each iteration
@@ -243,9 +304,20 @@ inline void Linkers::SendRecv(int send_rank, char* send_data, int64_t send_len,
 inline void Linkers::Recv(int rank, char* data, int len) const {
   int recv_cnt = 0;
   while (recv_cnt < len) {
-    recv_cnt += linkers_[rank]->Recv(data + recv_cnt,
+    const int cur_cnt = linkers_[rank]->Recv(data + recv_cnt,
       // len - recv_cnt
       std::min(len - recv_cnt, SocketConfig::kMaxReceiveSize));
+    if (cur_cnt == 0) {
+      // recv() returns 0 only at the end of the stream: the peer closed the connection
+      Log::Fatal("Socket recv error: rank %d closed the connection", rank);
+    }
+    recv_cnt += cur_cnt;
+  }
+}
+
+inline void Linkers::AbortLink(int rank) {
+  if (rank >= 0 && rank < static_cast<int>(linkers_.size()) && linkers_[rank] != nullptr) {
+    linkers_[rank]->Shutdown();
   }
 }
 
@@ -268,12 +340,8 @@ inline void Linkers::SendRecv(int send_rank, char* send_data, int send_len,
     Recv(recv_rank, recv_data, recv_len);
   } else {
     // if buffer is not enough, use another thread to send, since send will be blocking
-    std::thread send_worker(
-      [this, send_rank, send_data, send_len]() {
-      Send(send_rank, send_data, send_len);
-    });
-    Recv(recv_rank, recv_data, recv_len);
-    send_worker.join();
+    SendWhileReceiving(send_rank, recv_rank, [&]() { Send(send_rank, send_data, send_len); },
+                       [&]() { Recv(recv_rank, recv_data, recv_len); });
   }
   // wait for send complete
   auto end_time = std::chrono::high_resolution_clock::now();
@@ -284,6 +352,9 @@ inline void Linkers::SendRecv(int send_rank, char* send_data, int send_len,
 #endif  // USE_SOCKET
 
 #ifdef USE_MPI
+
+// an MPI send cannot be interrupted from another thread; MPI reports the failure itself
+inline void Linkers::AbortLink(int) {}
 
 inline void Linkers::Recv(int rank, char* data, int len) const {
   MPI_Status status;
