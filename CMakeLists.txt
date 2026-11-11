@@ -1050,6 +1050,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_dataset_subset.cpp
       tests/cpp_tests/test_host_quantization.cpp
       tests/cpp_tests/test_leaf_splits.cpp
+      tests/cpp_tests/test_linear_prediction_extra_coefficients.cpp
       tests/cpp_tests/test_main.cpp
       tests/cpp_tests/test_nccl_row_split.cpp
       tests/cpp_tests/test_serialize.cpp
