@@ -194,6 +194,9 @@ class ByteReader {
   template <typename T>
   const T* View(uint64_t offset, uint64_t count, const char* where) const {
     Require(offset, count, sizeof(T), where);
+    if (count > 0 && reinterpret_cast<uintptr_t>(data_ + offset) % alignof(T) != 0) {
+      Log::Fatal("FALB: corrupt model -- unaligned %s", where);
+    }
     return reinterpret_cast<const T*>(data_ + offset);
   }
 
