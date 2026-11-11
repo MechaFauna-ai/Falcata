@@ -429,6 +429,10 @@ def plot_construct():
     ys = range(len(libs))
     for y, lib in zip(ys, libs):
         m = MED.get((lib, "numerai", "numerai")) or MED.get((lib, "numerai", "numerai-deep"))
+        if m is None:
+            reason = FAIL.get((lib, "numerai", "numerai"), FAIL.get((lib, "numerai", "numerai-deep"), "n/a"))
+            ax.text(0.6, y, "✗ " + reason, va="center", fontsize=9, color=TEXT2)
+            continue
         v = m["construct_s"]
         ax.barh(
             y,
