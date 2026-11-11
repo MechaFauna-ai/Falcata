@@ -24,6 +24,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -203,7 +204,7 @@ class ThresholdDictionary {
   }
 
   uint32_t IndexOf(int feature, double value) const {
-    const auto& m = index_[feature];
+    const auto& m = index_[ThresholdFeatureIndex(feature, index_.size())];
     auto it = m.find(value);
     if (it == m.end()) {
       Log::Fatal("FALB: threshold %.17g of feature %d missing from dictionary",
@@ -309,35 +310,44 @@ inline void RequireWidth(size_t have, size_t need, const char* what, int tree) {
 template <typename DstT>
 void ReadWidened(const ByteReader& r, uint64_t offset, size_t count,
                  uint32_t dtype, const char* where, std::vector<DstT>* out) {
+  size_t width = 0;
+  switch (dtype) {
+    case kDTypeU8: case kDTypeI8: width = 1; break;
+    case kDTypeU16: case kDTypeI16: width = 2; break;
+    case kDTypeU32: case kDTypeI32: width = 4; break;
+    default:
+      Log::Fatal("FALB: unknown dtype %u for %s -- written by a newer Falcata?", dtype, where);
+  }
+  r.Require(offset, count, width, where);
   out->resize(count);
   switch (dtype) {
     case kDTypeU8: {
-      const uint8_t* p = r.View<uint8_t>(offset, count, where);
+      const auto p = r.View<uint8_t>(offset, count, where);
       for (size_t i = 0; i < count; ++i) (*out)[i] = static_cast<DstT>(p[i]);
       break;
     }
     case kDTypeU16: {
-      const uint16_t* p = r.View<uint16_t>(offset, count, where);
+      const auto p = r.View<uint16_t>(offset, count, where);
       for (size_t i = 0; i < count; ++i) (*out)[i] = static_cast<DstT>(p[i]);
       break;
     }
     case kDTypeU32: {
-      const uint32_t* p = r.View<uint32_t>(offset, count, where);
+      const auto p = r.View<uint32_t>(offset, count, where);
       for (size_t i = 0; i < count; ++i) (*out)[i] = static_cast<DstT>(p[i]);
       break;
     }
     case kDTypeI8: {
-      const int8_t* p = r.View<int8_t>(offset, count, where);
+      const auto p = r.View<int8_t>(offset, count, where);
       for (size_t i = 0; i < count; ++i) (*out)[i] = static_cast<DstT>(p[i]);
       break;
     }
     case kDTypeI16: {
-      const int16_t* p = r.View<int16_t>(offset, count, where);
+      const auto p = r.View<int16_t>(offset, count, where);
       for (size_t i = 0; i < count; ++i) (*out)[i] = static_cast<DstT>(p[i]);
       break;
     }
     case kDTypeI32: {
-      const int32_t* p = r.View<int32_t>(offset, count, where);
+      const auto p = r.View<int32_t>(offset, count, where);
       for (size_t i = 0; i < count; ++i) (*out)[i] = static_cast<DstT>(p[i]);
       break;
     }
@@ -679,6 +689,9 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
     out.Align(8);  // raw sections stay 8-byte aligned so they are mmap-friendly
     sections[i].entry.offset = out.size();
     out.WriteBytes(sections[i].payload.data(), sections[i].payload.size());
+    // This section is now owned by out; release its duplicate before growing
+    // the container further or making the final string copy.
+    std::vector<char>().swap(sections[i].payload);
     out.PatchAt(table_offset + i * sizeof(SectionEntry), sections[i].entry);
   }
 
@@ -735,7 +748,7 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
   auto section_reader = [&](uint32_t id) -> ByteReader {
     const SectionEntry& e = need(id);
     if (e.codec == kCodecRaw) {
-      return ByteReader(r.View<char>(e.offset, e.stored_len, "section"),
+      return ByteReader(r.Bytes(e.offset, e.stored_len, "section"),
                         static_cast<size_t>(e.stored_len));
     }
     if (e.codec != kCodecZlib) {
@@ -755,7 +768,7 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
       uLongf out_len = static_cast<uLongf>(e.raw_len);
       const int rc = uncompress(reinterpret_cast<Bytef*>(out.data()), &out_len,
                                 reinterpret_cast<const Bytef*>(
-                                    r.View<char>(e.offset, e.stored_len, "section")),
+                                    r.Bytes(e.offset, e.stored_len, "section")),
                                 static_cast<uLong>(e.stored_len));
       if (rc != Z_OK || out_len != e.raw_len) {
         Log::Fatal("FALB: corrupt model -- section %u failed to decompress (%d)",
@@ -778,7 +791,7 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
 
   // ---- metadata: reuse the text loader so predict semantics cannot drift ----
   ByteReader meta_r = section_reader(kSecMeta);
-  std::string meta_text(meta_r.View<char>(0, meta_r.size(), "metadata"),
+  std::string meta_text(meta_r.Bytes(0, meta_r.size(), "metadata"),
                         meta_r.size());
   if (!LoadModelFromString(meta_text.c_str(), meta_text.size())) {
     Log::Fatal("FALB: model metadata block failed to parse");
@@ -816,11 +829,11 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
   ByteReader dval_r = section_reader(kSecThresholdDictValues);
   const size_t dict_n_off = doff_r.size() / sizeof(uint32_t);
   const size_t dict_n_val = dval_r.size() / sizeof(double);
-  const uint32_t* dict_off = doff_r.View<uint32_t>(0, dict_n_off, "dict offsets");
-  const double* dict_val = dval_r.View<double>(0, dict_n_val, "dict values");
+  const auto dict_off = doff_r.View<uint32_t>(0, dict_n_off, "dict offsets");
+  const auto dict_val = dval_r.View<double>(0, dict_n_val, "dict values");
 
   ByteReader idx_r = section_reader(kSecTreeIndex);
-  const TreeIndexRecord* recs =
+  const auto recs =
       idx_r.View<TreeIndexRecord>(0, num_trees, "tree index");
 
   uint32_t leaf_value_dim = 1;
@@ -948,6 +961,19 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     lv_r.Require(leaf_value_offset * leaf_value_element_size, n_leaf_value,
                  leaf_value_element_size, "leaf_value");
 
+    auto require_nodes = [&](const ByteReader& reader, uint32_t dtype, const char* name) {
+      const size_t width = elem_size(dtype);
+      if (rec.node_offset > std::numeric_limits<uint64_t>::max() / width) {
+        Log::Fatal("FALB: corrupt model -- %s byte offset overflows", name);
+      }
+      reader.Require(rec.node_offset * width, n_node, width, name);
+    };
+    require_nodes(sf_r, sf.dtype, "split_feature");
+    require_nodes(lc_r, lc.dtype, "left_child");
+    require_nodes(rc_r, rc.dtype, "right_child");
+    require_nodes(ti_r, ti.dtype, "threshold index");
+    dt_r.Require(rec.node_offset, n_node, sizeof(int8_t), "decision_type");
+
     std::vector<int> split_feature, left_child, right_child;
     std::vector<double> threshold(n_node);
     std::vector<int8_t> decision_type(n_node);
@@ -960,19 +986,19 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     ReadWidened(rc_r, rec.node_offset * elem_size(rc.dtype), n_node,
                 rc.dtype, "right_child", &right_child);
     {
-      const int8_t* p = dt_r.View<int8_t>(rec.node_offset, n_node, "decision_type");
-      std::copy(p, p + n_node, decision_type.begin());
+      const auto p = dt_r.View<int8_t>(rec.node_offset, n_node, "decision_type");
+      p.CopyTo(decision_type.data());
     }
     if (lv.dtype == kDTypeF32) {
-      const float* p = lv_r.View<float>(leaf_value_offset * sizeof(float), n_leaf_value,
+      const auto p = lv_r.View<float>(leaf_value_offset * sizeof(float), n_leaf_value,
                                         "leaf_value");
       for (size_t l = 0; l < n_leaf_value; ++l) {
         leaf_value[l] = static_cast<double>(p[l]);
       }
     } else if (lv.dtype == kDTypeF64) {
-      const double* p = lv_r.View<double>(leaf_value_offset * sizeof(double), n_leaf_value,
+      const auto p = lv_r.View<double>(leaf_value_offset * sizeof(double), n_leaf_value,
                                           "leaf_value");
-      std::copy(p, p + n_leaf_value, leaf_value.begin());
+      p.CopyTo(leaf_value.data());
     }
     {
       std::vector<uint32_t> tidx;
@@ -1008,15 +1034,27 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
       const SectionEntry& cb = need(kSecCatBoundaries);
       ByteReader cb_r = section_reader(kSecCatBoundaries);
       ByteReader ct_r = section_reader(kSecCatThreshold);
-      const size_t n_bound = rec.num_cat + 1;
+      const size_t n_bound = static_cast<size_t>(rec.num_cat) + 1;
+      if (rec.cat_boundary_offset > std::numeric_limits<uint64_t>::max() / sizeof(uint32_t) ||
+          rec.cat_threshold_offset > std::numeric_limits<uint64_t>::max() / sizeof(uint32_t)) {
+        Log::Fatal("FALB: corrupt model -- cat_boundary or cat_threshold byte offset overflows");
+      }
       std::vector<int> cat_boundaries;
       ReadWidened(cb_r, rec.cat_boundary_offset * sizeof(uint32_t), n_bound,
                   cb.dtype, "cat_boundaries", &cat_boundaries);
+      if (cat_boundaries.front() != 0) {
+        Log::Fatal("FALB: corrupt model -- cat_boundaries must start at zero");
+      }
+      for (size_t b = 1; b < cat_boundaries.size(); ++b) {
+        if (cat_boundaries[b] < cat_boundaries[b - 1]) {
+          Log::Fatal("FALB: corrupt model -- cat_boundaries must be nonnegative and monotonic");
+        }
+      }
       const size_t n_thr = static_cast<size_t>(cat_boundaries.back());
       std::vector<uint32_t> cat_threshold(n_thr);
-      const uint32_t* p = ct_r.View<uint32_t>(
+      const auto p = ct_r.View<uint32_t>(
           rec.cat_threshold_offset * sizeof(uint32_t), n_thr, "cat_threshold");
-      std::copy(p, p + n_thr, cat_threshold.begin());
+      p.CopyTo(cat_threshold.data());
       TreeIO::SetCategorical(tree.get(), std::move(cat_boundaries), std::move(cat_threshold));
     }
 
@@ -1029,12 +1067,12 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
       std::vector<double> leaf_weight(n_leaf), internal_weight(n_node);
       std::vector<int> leaf_count, internal_count;
       {
-        const double* p = st_r.View<double>(lw_base + rec.leaf_offset * sizeof(double),
+        const auto p = st_r.View<double>(lw_base + rec.leaf_offset * sizeof(double),
                                             n_leaf, "leaf_weight");
-        std::copy(p, p + n_leaf, leaf_weight.begin());
-        const double* q = st_r.View<double>(iw_base + rec.node_offset * sizeof(double),
+        p.CopyTo(leaf_weight.data());
+        const auto q = st_r.View<double>(iw_base + rec.node_offset * sizeof(double),
                                             n_node, "internal_weight");
-        std::copy(q, q + n_node, internal_weight.begin());
+        q.CopyTo(internal_weight.data());
       }
       ReadWidened(st_r, lcnt_base + rec.leaf_offset * sizeof(int32_t), n_leaf,
                   kDTypeI32, "leaf_count", &leaf_count);
@@ -1049,12 +1087,12 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
       const uint64_t iv_base = total_nodes * sizeof(float);
       std::vector<float> split_gain(n_node);
       std::vector<double> internal_value(n_node);
-      const float* p = dg_r.View<float>(rec.node_offset * sizeof(float),
+      const auto p = dg_r.View<float>(rec.node_offset * sizeof(float),
                                         n_node, "split_gain");
-      std::copy(p, p + n_node, split_gain.begin());
-      const double* q = dg_r.View<double>(iv_base + rec.node_offset * sizeof(double),
+      p.CopyTo(split_gain.data());
+      const auto q = dg_r.View<double>(iv_base + rec.node_offset * sizeof(double),
                                           n_node, "internal_value");
-      std::copy(q, q + n_node, internal_value.begin());
+      q.CopyTo(internal_value.data());
       TreeIO::SetDiagnostics(tree.get(), std::move(split_gain), std::move(internal_value));
     }
 
