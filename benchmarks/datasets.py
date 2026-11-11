@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 import numpy as np
@@ -353,6 +354,7 @@ def prep_numerai_int8():
     f32 cache to exist; sampled rows are verified against it so the two
     caches cannot drift.
     """
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
     d = os.path.join(CACHE_DIR, "numerai")
@@ -376,24 +378,41 @@ def prep_numerai_int8():
         sys.exit("numerai-int8: row filter disagrees with the existing f32 cache")
     p = len(feat_cols)
 
-    x = np.memmap(os.path.join(d, "X.i8.mem"), dtype=np.int8, mode="w+", shape=(n_rows, p))
-    row_abs = row_out = 0
-    for batch in f.iter_batches(batch_size=200_000, columns=feat_cols):
-        nb = batch.num_rows
-        mask = keep_all[row_abs : row_abs + nb]
-        if mask.any():
-            sel = batch.to_pandas().to_numpy(dtype=np.int8)[mask]
-            x[row_out : row_out + len(sel)] = sel
-            row_out += len(sel)
-        row_abs += nb
-    assert row_out == n_rows, (row_out, n_rows)
-    x.flush()
+    descriptor, temporary = tempfile.mkstemp(prefix="X.i8.", suffix=".tmp", dir=d)
+    os.close(descriptor)
+    int8_schema = pa.schema([(name, pa.int8()) for name in feat_cols])
+    try:
+        x = np.memmap(temporary, dtype=np.int8, mode="w+", shape=(n_rows, p))
+        row_abs = row_out = 0
+        for batch in f.iter_batches(batch_size=200_000, columns=feat_cols):
+            nb = batch.num_rows
+            mask = keep_all[row_abs : row_abs + nb]
+            if mask.any():
+                selected = batch.filter(mask)
+                if any(column.null_count for column in selected.columns):
+                    sys.exit("numerai-int8: retained features must be finite integers in the int8 range")
+                try:
+                    converted = selected.cast(int8_schema)
+                except (pa.ArrowInvalid, pa.ArrowNotImplementedError, pa.ArrowTypeError) as error:
+                    sys.exit(f"numerai-int8: retained features must be finite integers in the int8 range: {error}")
+                sel = converted.to_pandas().to_numpy(dtype=np.int8)
+                x[row_out : row_out + len(sel)] = sel
+                row_out += len(sel)
+            row_abs += nb
+        assert row_out == n_rows, (row_out, n_rows)
+        x.flush()
 
-    xf = np.memmap(os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="r", shape=(n_rows, p))
-    rng = np.random.default_rng(SEED)
-    for r in rng.integers(0, n_rows, 50):
-        if not (x[r].astype(np.float32) == xf[r]).all():
-            sys.exit(f"numerai-int8: row {r} mismatches the f32 cache")
+        xf = np.memmap(os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="r", shape=(n_rows, p))
+        rng = np.random.default_rng(SEED)
+        for r in rng.integers(0, n_rows, 50):
+            if not (x[r].astype(np.float32) == xf[r]).all():
+                sys.exit(f"numerai-int8: row {r} mismatches the f32 cache")
+        x = xf = None
+        os.replace(temporary, os.path.join(d, "X.i8.mem"))
+    finally:
+        x = xf = None
+        if os.path.exists(temporary):
+            os.remove(temporary)
     print(f"numerai-int8 done: {n_rows} x {p}, sampled rows verified", flush=True)
 
 
