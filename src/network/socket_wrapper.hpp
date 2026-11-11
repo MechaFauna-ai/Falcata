@@ -95,6 +95,21 @@ const int kMaxReceiveSize = 100 * 1000;
 const int kNoDelay = 1;
 }
 
+/*!
+ * \brief Adds every IPv4 address of a GetAdaptersInfo adapter list to ip_list.
+ *        An adapter keeps its addresses in the IpAddressList linked list, so
+ *        a secondary address is in IpAddressList.Next, not in the first entry.
+ *        A template over the adapter type so the walk is testable off Windows.
+ */
+template <typename AdapterInfo>
+inline void CollectAdapterIps(const AdapterInfo* adapter, std::unordered_set<std::string>* ip_list) {
+  for (; adapter != nullptr; adapter = adapter->Next) {
+    for (auto address = &adapter->IpAddressList; address != nullptr; address = address->Next) {
+      ip_list->insert(address->IpAddress.String);
+    }
+  }
+}
+
 class TcpSocket {
  public:
   TcpSocket() {
@@ -199,7 +214,6 @@ class TcpSocket {
     }
     // push local ip
     PIP_ADAPTER_INFO pAdapterInfo;
-    PIP_ADAPTER_INFO pAdapter = NULL;
     DWORD dwRetVal = 0;
     ULONG ulOutBufLen = sizeof(IP_ADAPTER_INFO);
     pAdapterInfo = reinterpret_cast<IP_ADAPTER_INFO *>(MALLOC(sizeof(IP_ADAPTER_INFO)));
@@ -216,11 +230,7 @@ class TcpSocket {
       }
     }
     if ((dwRetVal = GetAdaptersInfo(pAdapterInfo, &ulOutBufLen)) == NO_ERROR) {
-      pAdapter = pAdapterInfo;
-      while (pAdapter) {
-        ip_list.insert(pAdapter->IpAddressList.IpAddress.String);
-        pAdapter = pAdapter->Next;
-      }
+      CollectAdapterIps(pAdapterInfo, &ip_list);
     } else {
       Log::Fatal("GetAdaptersinfo error: code %d", dwRetVal);
     }
