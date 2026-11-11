@@ -64,10 +64,9 @@ class Predictor {
     num_pred_one_row_ = boosting_->NumPredictOneRow(start_iteration,
         num_iteration, predict_leaf_index, predict_contrib);
     num_feature_ = boosting_->MaxFeatureIdx() + 1;
-    predict_buf_.resize(
-        OMP_NUM_THREADS(),
-        std::vector<double, Common::AlignmentAllocator<double, kAlignedSize>>(
-            num_feature_, 0.0f));
+    // one dense buffer per thread, allocated on the thread's first dense row
+    // (rows of a wide sparse model go through the map path and need none)
+    predict_buf_.resize(OMP_NUM_THREADS());
     const int kFeatureThreshold = 100000;
     const size_t KSparseThreshold = static_cast<size_t>(0.01 * num_feature_);
     if (predict_leaf_index) {
@@ -79,6 +78,7 @@ class Predictor {
           auto buf = CopyToPredictMap(features);
           boosting_->PredictLeafIndexByMap(buf, output);
         } else {
+          EnsurePredictBuffer(tid);
           CopyToPredictBuffer(predict_buf_[tid].data(), features);
           // get result for leaf index
           boosting_->PredictLeafIndex(predict_buf_[tid].data(), output);
@@ -93,6 +93,7 @@ class Predictor {
       predict_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                          double* output) {
         int tid = omp_get_thread_num();
+        EnsurePredictBuffer(tid);
         CopyToPredictBuffer(predict_buf_[tid].data(), features);
         // get feature importances
         boosting_->PredictContrib(predict_buf_[tid].data(), output);
@@ -116,6 +117,7 @@ class Predictor {
             auto buf = CopyToPredictMap(features);
             boosting_->PredictRawByMap(buf, output, &early_stop_);
           } else {
+            EnsurePredictBuffer(tid);
             CopyToPredictBuffer(predict_buf_[tid].data(), features);
             boosting_->PredictRaw(predict_buf_[tid].data(), output,
                                   &early_stop_);
@@ -132,6 +134,7 @@ class Predictor {
             auto buf = CopyToPredictMap(features);
             boosting_->PredictByMap(buf, output, &early_stop_);
           } else {
+            EnsurePredictBuffer(tid);
             CopyToPredictBuffer(predict_buf_[tid].data(), features);
             boosting_->Predict(predict_buf_[tid].data(), output, &early_stop_);
             ClearPredictBuffer(predict_buf_[tid].data(),
@@ -257,6 +260,21 @@ class Predictor {
   }
 
  private:
+  // the calling thread's dense buffer is allocated on its first dense row; the
+  // allocation is out of line so the per-row check stays a single compare
+  void EnsurePredictBuffer(int tid) {
+    if (predict_buf_[tid].empty()) {
+      AllocatePredictBuffer(tid);
+    }
+  }
+
+#if defined(__GNUC__)
+  __attribute__((noinline, cold))
+#endif
+  void AllocatePredictBuffer(int tid) {
+    predict_buf_[tid].assign(num_feature_, 0.0);
+  }
+
   void CopyToPredictBuffer(double* pred_buf, const std::vector<std::pair<int, double>>& features) {
     for (const auto &feature : features) {
       if (feature.first < num_feature_) {
