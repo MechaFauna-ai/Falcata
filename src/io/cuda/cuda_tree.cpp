@@ -422,6 +422,16 @@ void CUDATree::AddPredictionToScore(const Dataset* data,
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
+void CUDATree::LeafIndexOnDevice(const Dataset* data, const data_size_t* used_data_indices,
+                                 data_size_t num_data, int* leaf_index) const {
+  if (num_leaves_ <= 1) {
+    // a stump has no internal node to traverse: every row is in leaf 0
+    SetCUDAMemory<int>(leaf_index, 0, static_cast<size_t>(data->num_data()), __FILE__, __LINE__);
+    return;
+  }
+  LaunchAddPredictionToScoreKernel(data, used_data_indices, num_data, nullptr, leaf_index);
+}
+
 void CUDATree::SetVectorLeafValuesFromSplit(const int left_leaf_index, const int right_leaf_index,
                                             const CUDASplitInfo* cuda_split_info) {
   CHECK_GT(leaf_value_dim_, 1);

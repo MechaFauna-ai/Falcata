@@ -2625,6 +2625,52 @@ def test_cuda_bagged_linear_tree_metric_matches_the_model(bagging_fraction):
 
 
 @_REQUIRES_CUDA
+def test_cuda_linear_tree_validation_metric_matches_the_model():
+    """Validation sets score linear trees on the device; the metric must be the model's own.
+
+    Each validation row is routed to its leaf by the tree's device traversal and the leaf
+    regression is evaluated from the set's raw values, falling back to the leaf constant on a
+    NaN. A categorical split and NaNs exercise both, and two validation sets of different sizes
+    each keep their own raw columns.
+    """
+    rng = np.random.default_rng(11)
+
+    def make(n):
+        X = rng.standard_normal((n, 6))
+        X[:, 5] = rng.integers(0, 8, size=n)
+        y = 2 * X[:, 0] - X[:, 1] * (X[:, 2] > 0) + (X[:, 5] % 3) + 0.1 * rng.standard_normal(n)
+        X[rng.uniform(size=X.shape) < 0.03] = np.nan
+        return X, y
+
+    X, y = make(3000)
+    valid = [make(1200), make(700)]
+    ds = lgb.Dataset(X, label=y, categorical_feature=[5], params={"verbose": -1, "feature_pre_filter": False})
+    evals = {}
+    booster = lgb.train(
+        {
+            "objective": "regression",
+            "metric": "l2",
+            "device_type": "cuda",
+            "linear_tree": True,
+            "num_leaves": 15,
+            "seed": 0,
+            "verbose": -1,
+        },
+        ds,
+        num_boost_round=15,
+        valid_sets=[ds.create_valid(Xv, label=yv) for Xv, yv in valid],
+        valid_names=["v0", "v1"],
+        callbacks=[lgb.record_evaluation(evals)],
+    )
+    for name, (Xv, yv) in zip(["v0", "v1"], valid, strict=True):
+        reported = evals[name]["l2"][-1]
+        from_model = float(np.mean((yv - booster.predict(Xv)) ** 2))
+        assert reported == pytest.approx(from_model, rel=1e-6), (
+            f"{name}: linear tree reported l2 {reported} but its model produces {from_model}"
+        )
+
+
+@_REQUIRES_CUDA
 @pytest.mark.skipif(not _fil_stack_available(), reason="cuML Forest Inference (treelite + nvforest) not installed")
 @pytest.mark.parametrize("objective", ["regression", "binary"])
 def test_fil_matches_the_engine_predictor(objective, monkeypatch):

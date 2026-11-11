@@ -860,7 +860,9 @@ __global__ void AddPredictionToScoreKernel(
   const uint32_t* cuda_bitset_inner,
   const int* cuda_cat_boundaries_inner,
   // output
-  double* score) {
+  double* score,
+  // non-null: write each row's leaf index here instead of adding to score (the linear-tree scorer)
+  int* leaf_index_out) {
   const data_size_t inner_data_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   if (inner_data_index < num_data) {
     const data_size_t data_index = USE_INDICES ? cuda_used_indices[inner_data_index] : inner_data_index;
@@ -949,7 +951,9 @@ __global__ void AddPredictionToScoreKernel(
         }
       }
     }
-    if (cuda_leaf_values_vec == nullptr) {
+    if (leaf_index_out != nullptr) {
+      leaf_index_out[data_index] = ~node;
+    } else if (cuda_leaf_values_vec == nullptr) {
       score[data_index] += cuda_leaf_value[~node];
     } else {
       const int leaf = ~node;
@@ -998,7 +1002,8 @@ __global__ void AddPredictionToScoreNodeTableKernel(
   const data_size_t* cuda_used_indices,
   const CUDAScoreNode* nodes,
   const double* cuda_leaf_value,
-  double* score) {
+  double* score,
+  int* leaf_index_out) {
   const data_size_t inner_data_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   if (inner_data_index >= num_data) {
     return;
@@ -1052,6 +1057,10 @@ __global__ void AddPredictionToScoreNodeTableKernel(
     }
     node = go_left ? w2.x : w2.y;
   }
+  if (leaf_index_out != nullptr) {
+    leaf_index_out[data_index] = ~node;
+    return;
+  }
   score[data_index] += cuda_leaf_value[~node];
 }
 
@@ -1059,7 +1068,8 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
   const Dataset* data,
   const data_size_t* used_data_indices,
   data_size_t num_data,
-  double* score) const {
+  double* score,
+  int* leaf_index_out) const {
   const CUDAColumnData* cuda_column_data = data->cuda_column_data();
   // A launch with used_data_indices on the TRAIN data is the out-of-bag score
   // update of the tree trained this very iteration (nothing else scores a row
@@ -1171,15 +1181,15 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       AddPredictionToScoreNodeTableKernel<true, true><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
         num_data, nullptr, nullptr, cuda_column_data->cuda_packed_column_ptr(),
         cuda_column_data->cuda_packed_column_stride(), cuda_column_data->cuda_packed_column_shift(),
-        cuda_column_data->cuda_packed_column_bit_type(), used_data_indices, nodes, cuda_leaf_value_.RawData(), score);
+        cuda_column_data->cuda_packed_column_bit_type(), used_data_indices, nodes, cuda_leaf_value_.RawData(), score, leaf_index_out);
     } else if (used_data_indices == nullptr) {
       AddPredictionToScoreNodeTableKernel<false, false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
         num_data, cuda_column_data->cuda_data_by_column(), cuda_column_data->cuda_column_bit_type(), nullptr, nullptr,
-        nullptr, nullptr, nullptr, nodes, cuda_leaf_value_.RawData(), score);
+        nullptr, nullptr, nullptr, nodes, cuda_leaf_value_.RawData(), score, leaf_index_out);
     } else {
       AddPredictionToScoreNodeTableKernel<true, false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
         num_data, cuda_column_data->cuda_data_by_column(), cuda_column_data->cuda_column_bit_type(), nullptr, nullptr,
-        nullptr, nullptr, used_data_indices, nodes, cuda_leaf_value_.RawData(), score);
+        nullptr, nullptr, used_data_indices, nodes, cuda_leaf_value_.RawData(), score, leaf_index_out);
     }
     SynchronizeCUDADevice(__FILE__, __LINE__);
     return;
@@ -1238,7 +1248,8 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       cuda_bitset_inner_.RawDataReadOnly(),
       cuda_cat_boundaries_inner_.RawDataReadOnly(),
       // output
-      score);
+      score,
+      leaf_index_out);
   } else if (used_data_indices == nullptr) {
     AddPredictionToScoreKernel<false, false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
       // dataset information
@@ -1269,7 +1280,8 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       cuda_bitset_inner_.RawDataReadOnly(),
       cuda_cat_boundaries_inner_.RawDataReadOnly(),
       // output
-      score);
+      score,
+      leaf_index_out);
   } else {
     AddPredictionToScoreKernel<true, false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
       // dataset information
@@ -1300,7 +1312,8 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       cuda_bitset_inner_.RawDataReadOnly(),
       cuda_cat_boundaries_inner_.RawDataReadOnly(),
       // output
-      score);
+      score,
+      leaf_index_out);
   }
   SynchronizeCUDADevice(__FILE__, __LINE__);
   if (restore_tree_structure) {
