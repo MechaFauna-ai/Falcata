@@ -1114,6 +1114,7 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_multiclass_convert.cu
         tests/cpp_tests/test_cuda_nonquant_fixed.cu
         tests/cpp_tests/test_cuda_block_count.cu
+        tests/cpp_tests/test_cuda_round_int.cu
         tests/cpp_tests/test_cuda_tree_from_host.cu
         tests/cpp_tests/test_cuda_vector_capacity.cu
         tests/cpp_tests/test_cuda_hist_slab_size.cu
