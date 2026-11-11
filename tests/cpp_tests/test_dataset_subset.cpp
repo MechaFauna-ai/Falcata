@@ -10,11 +10,15 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <memory>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "../../src/io/sparse_bin.hpp"
 
 using Falcata::Dataset;
 using Falcata::TestUtils;
@@ -115,5 +119,36 @@ TEST(Parser, NoLabelColumnResetsLabel) {
                          &label);
     EXPECT_EQ(label, 0.0) << c.first;
     std::remove(path.c_str());
+  }
+}
+
+// SparseBinIterator's raw-access constructor (bin, start_idx) left min_bin_,
+// max_bin_, most_freq_bin_ and offset_ uninitialized, and Get() reads them.
+// Build the iterator over storage pre-filled with two different byte patterns:
+// with defined members, Get() cannot depend on what the storage held before.
+TEST(SparseBinIterator, RawConstructorGivesDefinedGet) {
+  using Iter = Falcata::SparseBinIterator<uint8_t>;
+  const Falcata::data_size_t num_data = 64;
+  Falcata::SparseBin<uint8_t> bin(num_data);
+  for (Falcata::data_size_t i = 0; i < num_data; i += 3) {
+    bin.Push(0, i, static_cast<uint32_t>(1 + i % 7));
+  }
+  bin.FinishLoad();
+
+  std::vector<uint32_t> raw;
+  {
+    Iter it(&bin, 0);
+    for (Falcata::data_size_t i = 0; i < num_data; ++i) raw.push_back(it.RawGet(i));
+  }
+  ASSERT_NE(raw[3], 0u);  // the bin really holds nonzero values
+
+  for (const unsigned char fill : {0x00, 0xA5, 0xFF}) {
+    alignas(Iter) unsigned char storage[sizeof(Iter)];
+    std::memset(storage, fill, sizeof(storage));
+    Iter* it = new (storage) Iter(&bin, 0);
+    for (Falcata::data_size_t i = 0; i < num_data; ++i) {
+      EXPECT_EQ(it->Get(i), raw[i]) << "row " << i << ", storage pre-filled with 0x" << std::hex << int(fill);
+    }
+    it->~Iter();
   }
 }
