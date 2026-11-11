@@ -41,7 +41,7 @@ class BinaryLogloss: public ObjectiveFunction {
   }
 
   explicit BinaryLogloss(const std::vector<std::string>& strs)
-      : deterministic_(false) {
+      : BinaryLogloss(Config()) {
     sigmoid_ = -1;
     for (auto str : strs) {
       auto tokens = Common::Split(str.c_str(), ':');
