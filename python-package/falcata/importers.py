@@ -589,7 +589,7 @@ def from_catboost(model: Any, feature_names: Optional[List[str]] = None) -> Boos
     if bias != 0.0:
         bodies.append(_constant_tree(bias))
     for t in trees:
-        splits = list(t.get("splits") or [])
+        splits = [dict(split) for split in (t.get("splits") or [])]
         if not splits:
             # a constant tree: CatBoost can emit depth-0 trees
             vals = t["leaf_values"]
