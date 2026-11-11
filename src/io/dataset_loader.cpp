@@ -705,7 +705,7 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
       BinType bin_type = BinType::NumericalBin;
       if (categorical_features_.count(start[rank] + i)) {
         bin_type = BinType::CategoricalBin;
-        CheckNotMonotoneCategorical(i);
+        CheckNotMonotoneCategorical(start[rank] + i);
       }
       bin_mappers[i].reset(new BinMapper());
       if (num_col <= start[rank] + i) {
@@ -1212,7 +1212,7 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
       BinType bin_type = BinType::NumericalBin;
       if (categorical_features_.count(start[rank] + i)) {
         bin_type = BinType::CategoricalBin;
-        CheckNotMonotoneCategorical(i);
+        CheckNotMonotoneCategorical(start[rank] + i);
       }
       bin_mappers[i].reset(new BinMapper());
       if (static_cast<int>(sample_values.size()) <= start[rank] + i) {
