@@ -169,3 +169,31 @@ TEST(SortForPair, SortsOnlyTheSuffixFromStart) {
   EXPECT_EQ(keys, (std::vector<int>{9, 8, 3, 2, 1}));
   EXPECT_EQ(values, (std::vector<int>{90, 80, 30, 20, 10}));
 }
+
+// RoundInt added 0.5 and truncated toward zero, so negative values rounded
+// toward zero (-2.7 gave -2), and a value beyond the int range was an
+// undefined double-to-int conversion.
+TEST(RoundInt, RoundsHalfAwayFromZeroAndSaturates) {
+  using Falcata::Common::RoundInt;
+  EXPECT_EQ(RoundInt(0.0), 0);
+  EXPECT_EQ(RoundInt(0.49), 0);
+  EXPECT_EQ(RoundInt(0.5), 1);
+  EXPECT_EQ(RoundInt(2.5), 3);
+  EXPECT_EQ(RoundInt(2.7), 3);
+  EXPECT_EQ(RoundInt(1e6 + 0.4), 1000000);
+  EXPECT_EQ(RoundInt(-0.49), 0);
+  EXPECT_EQ(RoundInt(-0.5), -1);
+  EXPECT_EQ(RoundInt(-2.2), -2);
+  EXPECT_EQ(RoundInt(-2.5), -3);
+  EXPECT_EQ(RoundInt(-2.7), -3);
+  EXPECT_EQ(RoundInt(2147483647.0), 2147483647);
+  EXPECT_EQ(RoundInt(-2147483648.0), -2147483647 - 1);
+  EXPECT_EQ(RoundInt(1e20), std::numeric_limits<int>::max());
+  EXPECT_EQ(RoundInt(-1e20), std::numeric_limits<int>::min());
+  EXPECT_EQ(RoundInt(std::numeric_limits<double>::infinity()), std::numeric_limits<int>::max());
+  EXPECT_EQ(RoundInt(std::numeric_limits<double>::quiet_NaN()), 0);
+  // non-negative values round exactly as before: static_cast<int>(x + 0.5f)
+  for (double x = 0.0; x < 1000.0; x += 0.0625) {
+    EXPECT_EQ(RoundInt(x), static_cast<int>(x + 0.5f)) << x;
+  }
+}

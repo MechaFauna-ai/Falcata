@@ -899,8 +899,21 @@ inline bool CheckAllowedJSON(const std::string& s) {
   return true;
 }
 
+// Rounds to the nearest int, halves away from zero. Values beyond the int
+// range saturate and NaN gives 0 (like the device conversion), instead of the
+// undefined out-of-range cast.
 inline int RoundInt(double x) {
-  return static_cast<int>(x + 0.5f);
+  const double r = x >= 0.0 ? x + 0.5f : x - 0.5f;
+  if (r >= 2147483648.0) {  // 2^31
+    return std::numeric_limits<int>::max();
+  }
+  if (r <= -2147483649.0) {  // -2^31 - 1
+    return std::numeric_limits<int>::min();
+  }
+  if (r != r) {  // NaN
+    return 0;
+  }
+  return static_cast<int>(r);
 }
 
 template <typename T, std::size_t N = 32>
