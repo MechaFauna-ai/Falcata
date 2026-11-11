@@ -67,19 +67,18 @@ def get_parameter_infos(config_hpp: Path) -> Tuple[List[Tuple[str, int]], List[L
                     else:
                         cur_info[key].append(val)
                 elif line:
-                    has_eqsgn = False
-                    tokens = line.split("=")
-                    if len(tokens) == 2:
-                        if "default" not in cur_info:
-                            cur_info["default"] = [tokens[1][:-1].strip()]
-                        has_eqsgn = True
-                    tokens = line.split()
-                    cur_info["inner_type"] = [tokens[0].strip()]
+                    declaration = re.fullmatch(
+                        r"(?P<type>\S+)\s+(?P<name>\w+)\s*(?:=\s*(?P<default>.*?))?;\s*(?://.*)?",
+                        line,
+                    )
+                    if declaration is None:
+                        raise ValueError(f"Invalid parameter declaration: {line}")
+                    default = declaration.group("default")
+                    if default is not None and "default" not in cur_info:
+                        cur_info["default"] = [default.strip()]
+                    cur_info["inner_type"] = [declaration.group("type")]
                     if "name" not in cur_info:
-                        if has_eqsgn:
-                            cur_info["name"] = [tokens[1].strip()]
-                        else:
-                            cur_info["name"] = [tokens[1][:-1].strip()]
+                        cur_info["name"] = [declaration.group("name")]
                     member_infos[-1].append(cur_info)
                     cur_info = {}
 
