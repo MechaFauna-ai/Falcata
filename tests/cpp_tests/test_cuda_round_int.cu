@@ -5,6 +5,7 @@
  */
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <Falcata/utils/common.h>
 
 #include <cmath>
 #include <limits>
@@ -12,18 +13,10 @@
 
 #include "../../src/treelearner/cuda/cuda_best_split_finder_kernels.cuh"
 
-// The CPU's Common::RoundInt as fixed in https://github.com/MechaFauna-ai/Falcata/pull/322: halves away from
-// zero, saturation beyond the int range, NaN to 0. The device count estimate round(hessian * cnt_factor) must agree
-// with it, also for negative products (custom objectives can return negative hessians).
+// The device count estimate round(hessian * cnt_factor) must agree with the CPU's Common::RoundInt (halves away from
+// zero, saturation beyond the int range, NaN to 0; https://github.com/MechaFauna-ai/Falcata/pull/322), also for
+// negative products (custom objectives can return negative hessians).
 namespace {
-
-int ReferenceRoundInt(double x) {
-  const double r = x >= 0.0 ? x + 0.5f : x - 0.5f;
-  if (r >= 2147483648.0) return std::numeric_limits<int>::max();
-  if (r <= -2147483649.0) return std::numeric_limits<int>::min();
-  if (r != r) return 0;
-  return static_cast<int>(r);
-}
 
 // the float overload rounds in float arithmetic (as before for non-negative values), with the same tie rule,
 // saturation and NaN handling
@@ -65,7 +58,7 @@ TEST(CUDARoundInt, MatchesTheCPURoundIntIncludingNegativeAndOutOfRange) {
   ASSERT_EQ(cudaMemcpy(out_double.data(), d_double, n * sizeof(int), cudaMemcpyDeviceToHost), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(out_float.data(), d_float, n * sizeof(int), cudaMemcpyDeviceToHost), cudaSuccess);
   for (int i = 0; i < n; ++i) {
-    EXPECT_EQ(out_double[i], ReferenceRoundInt(values[i])) << "double " << values[i];
+    EXPECT_EQ(out_double[i], Falcata::Common::RoundInt(values[i])) << "double " << values[i];
     const float f = static_cast<float>(values[i]);
     EXPECT_EQ(out_float[i], ReferenceRoundIntFloat(f)) << "float " << f;
   }
