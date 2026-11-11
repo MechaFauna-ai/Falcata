@@ -1775,59 +1775,134 @@ int64_t DenseMatDTypeSize(int data_type) {
   }
 }
 
+// pushes rows rows of a host chunk (row major, or column major with a
+// leading dimension of rows) through the normal host push loops
+void PushHostChunk(Dataset* ret, const void* chunk, int data_type, int32_t rows, int32_t ncol,
+                   int is_row_major, data_size_t dst_row, double missing_sentinel) {
+  if (data_type == C_API_DTYPE_INT8) {
+    ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
+  } else if (data_type == C_API_DTYPE_INT16) {
+    ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
+  } else if (data_type == C_API_DTYPE_UINT8) {
+    ret->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
+  } else if (data_type == C_API_DTYPE_UINT16) {
+    ret->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
+  } else if (data_type == C_API_DTYPE_FLOAT16) {
+    ret->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
+  } else {
+    auto get_row_fun = RowFunctionFromDenseMatrix(chunk, rows, ncol, data_type, is_row_major);
+    OMP_INIT_EX();
+    #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+    for (int i = 0; i < rows; ++i) {
+      OMP_LOOP_EX_BEGIN();
+      const int tid = omp_get_thread_num();
+      auto one_row = get_row_fun(i);
+      ret->PushOneRow(tid, dst_row + i, one_row);
+      OMP_LOOP_EX_END();
+    }
+    OMP_THROW_EX();
+  }
+}
+
 // fallback for device matrices the GPU binner cannot handle: stream row
 // chunks to the host and feed them through the normal host push loops.
 // base_row offsets the pushed rows so the matrix may be one chunk of a
-// larger dataset build.
+// larger dataset build. The copies go through two pinned buffers on their
+// own stream, so the copy of the next chunk overlaps the push of this one;
+// if pinned memory is not available it copies each chunk synchronously.
 void PushDeviceMatrixViaHost(Dataset* ret, const void* data, int data_type,
                              int64_t elem_size, int32_t nrow, int32_t ncol,
                              int is_row_major, data_size_t base_row,
                              double missing_sentinel) {
   const int64_t row_bytes = static_cast<int64_t>(ncol) * elem_size;
   const int32_t chunk_rows = static_cast<int32_t>(std::max<int64_t>(
-      1, std::min<int64_t>(nrow, (256LL << 20) / std::max<int64_t>(row_bytes, 1))));
-  std::vector<uint8_t> host_chunk(static_cast<size_t>(chunk_rows) * row_bytes);
+      1, std::min<int64_t>(nrow, (32LL << 20) / std::max<int64_t>(row_bytes, 1))));
+  const size_t chunk_bytes = static_cast<size_t>(chunk_rows) * row_bytes;
   const uint8_t* base = static_cast<const uint8_t*>(data);
-  for (int32_t start_row = 0; start_row < nrow; start_row += chunk_rows) {
-    const int32_t rows = std::min(chunk_rows, nrow - start_row);
+  // copies rows [start_row, start_row + rows) into dst (on stream, or synchronously when stream is null)
+  const auto copy_rows = [&](void* dst, int32_t start_row, int32_t rows, cudaStream_t stream) {
     if (is_row_major) {
-      CUDASUCCESS_OR_FATAL(cudaMemcpy(
-          host_chunk.data(), base + static_cast<int64_t>(start_row) * row_bytes,
-          static_cast<size_t>(rows) * row_bytes, cudaMemcpyDeviceToHost));
-    } else {
-      CUDASUCCESS_OR_FATAL(cudaMemcpy2D(
-          host_chunk.data(), static_cast<size_t>(rows) * elem_size,
-          base + static_cast<int64_t>(start_row) * elem_size,
-          static_cast<size_t>(nrow) * elem_size,
-          static_cast<size_t>(rows) * elem_size, static_cast<size_t>(ncol),
-          cudaMemcpyDeviceToHost));
-    }
-    const void* chunk = host_chunk.data();
-    const data_size_t dst_row = base_row + start_row;
-    if (data_type == C_API_DTYPE_INT8) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
-    } else if (data_type == C_API_DTYPE_INT16) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
-    } else if (data_type == C_API_DTYPE_UINT8) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
-    } else if (data_type == C_API_DTYPE_UINT16) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
-    } else if (data_type == C_API_DTYPE_FLOAT16) {
-      ret->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
-    } else {
-      auto get_row_fun = RowFunctionFromDenseMatrix(chunk, rows, ncol, data_type, is_row_major);
-      OMP_INIT_EX();
-      #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
-      for (int i = 0; i < rows; ++i) {
-        OMP_LOOP_EX_BEGIN();
-        const int tid = omp_get_thread_num();
-        auto one_row = get_row_fun(i);
-        ret->PushOneRow(tid, dst_row + i, one_row);
-        OMP_LOOP_EX_END();
+      const void* src = base + static_cast<int64_t>(start_row) * row_bytes;
+      const size_t bytes = static_cast<size_t>(rows) * row_bytes;
+      if (stream != nullptr) {
+        CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToHost, stream));
+      } else {
+        CUDASUCCESS_OR_FATAL(cudaMemcpy(dst, src, bytes, cudaMemcpyDeviceToHost));
       }
-      OMP_THROW_EX();
+    } else {
+      const void* src = base + static_cast<int64_t>(start_row) * elem_size;
+      const size_t dpitch = static_cast<size_t>(rows) * elem_size;
+      const size_t spitch = static_cast<size_t>(nrow) * elem_size;
+      if (stream != nullptr) {
+        CUDASUCCESS_OR_FATAL(cudaMemcpy2DAsync(dst, dpitch, src, spitch, dpitch, static_cast<size_t>(ncol),
+                                               cudaMemcpyDeviceToHost, stream));
+      } else {
+        CUDASUCCESS_OR_FATAL(cudaMemcpy2D(dst, dpitch, src, spitch, dpitch, static_cast<size_t>(ncol),
+                                          cudaMemcpyDeviceToHost));
+      }
+    }
+  };
+  void* pinned[2] = {nullptr, nullptr};
+  cudaStream_t stream = nullptr;
+  cudaEvent_t copied[2] = {nullptr, nullptr};
+  bool overlap = nrow > chunk_rows;
+  if (overlap) {
+    overlap = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess &&
+              cudaHostAlloc(&pinned[0], chunk_bytes, cudaHostAllocDefault) == cudaSuccess &&
+              cudaHostAlloc(&pinned[1], chunk_bytes, cudaHostAllocDefault) == cudaSuccess &&
+              cudaEventCreateWithFlags(&copied[0], cudaEventDisableTiming) == cudaSuccess &&
+              cudaEventCreateWithFlags(&copied[1], cudaEventDisableTiming) == cudaSuccess;
+    if (!overlap) {
+      cudaGetLastError();  // clear the failed allocation; fall back to synchronous copies
     }
   }
+  const auto release = [&]() {
+    if (stream != nullptr) {
+      cudaStreamSynchronize(stream);
+    }
+    for (int b = 0; b < 2; ++b) {
+      if (copied[b] != nullptr) {
+        cudaEventDestroy(copied[b]);
+      }
+      if (pinned[b] != nullptr) {
+        cudaFreeHost(pinned[b]);
+      }
+    }
+    if (stream != nullptr) {
+      cudaStreamDestroy(stream);
+    }
+  };
+  try {
+    if (overlap) {
+      copy_rows(pinned[0], 0, chunk_rows, stream);
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(copied[0], stream));
+      int buffer = 0;
+      for (int32_t start_row = 0; start_row < nrow; start_row += chunk_rows, buffer ^= 1) {
+        const int32_t rows = std::min(chunk_rows, nrow - start_row);
+        const int32_t next_row = start_row + chunk_rows;
+        if (next_row < nrow) {
+          // the other buffer's chunk was pushed in the previous iteration
+          copy_rows(pinned[buffer ^ 1], next_row, std::min(chunk_rows, nrow - next_row), stream);
+          CUDASUCCESS_OR_FATAL(cudaEventRecord(copied[buffer ^ 1], stream));
+        }
+        CUDASUCCESS_OR_FATAL(cudaEventSynchronize(copied[buffer]));
+        PushHostChunk(ret, pinned[buffer], data_type, rows, ncol, is_row_major, base_row + start_row,
+                      missing_sentinel);
+      }
+    } else {
+      std::vector<uint8_t> host_chunk(chunk_bytes);
+      for (int32_t start_row = 0; start_row < nrow; start_row += chunk_rows) {
+        const int32_t rows = std::min(chunk_rows, nrow - start_row);
+        copy_rows(host_chunk.data(), start_row, rows, nullptr);
+        PushHostChunk(ret, host_chunk.data(), data_type, rows, ncol, is_row_major, base_row + start_row,
+                      missing_sentinel);
+      }
+    }
+  } catch (...) {
+    release();
+    throw;
+  }
+  release();
 }
 
 }  // anonymous namespace
