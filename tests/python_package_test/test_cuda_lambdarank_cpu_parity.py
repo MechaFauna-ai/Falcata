@@ -50,13 +50,44 @@ def _train(device, group, extra):
     return booster.predict(X)
 
 
+_GROUPS = {"up_to_1024": [200] * 40, "up_to_2048": [1500, 1300, 1700], "sorted": [2600, 3100]}
+_EXTRAS = {"default": {}, "no_norm": {"lambdarank_norm": False}, "truncation_10": {"lambdarank_truncation_level": 10}}
+
+# The tree learners, not the objectives, part ways here: the gradients of every round are the CPU's bit for bit (fed
+# the CPU model's own scores, the CUDA objective returns identical lambdas and hessians), trees 0-2 are identical, and
+# tree 3's ninth split picks a different feature for the same 89-row leaf. With lambdarank_truncation_level=10 most
+# hessians are near zero, and min_data_in_leaf gates on counts estimated from hessian sums: the CPU sums per-bin
+# RoundInt(hess * cnt_factor), while CUDA split-finder paths round the side's summed hessian (e.g.
+# cuda_best_split_finder_kernels.cuh), so the estimates differ by enough to flip the gate. With min_data_in_leaf <= 5
+# the models are identical. Strict, so the case starts passing loudly once the learners agree.
+_LEARNER_COUNT_ESTIMATE = pytest.mark.xfail(
+    strict=True, reason="CPU/CUDA tree learners estimate min_data_in_leaf counts from hessians differently"
+)
+
+
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    "group",
-    [[200] * 40, [1500, 1300, 1700], [2600, 3100]],
-    ids=["up_to_1024", "up_to_2048", "sorted"],
+    ("group", "extra"),
+    [
+        pytest.param(
+            _GROUPS[g],
+            _EXTRAS[e],
+            id=f"{g}-{e}",
+            marks=[_LEARNER_COUNT_ESTIMATE] if (g, e) == ("sorted", "truncation_10") else [],
+        )
+        for g in _GROUPS
+        for e in _EXTRAS
+    ],
 )
-@pytest.mark.parametrize("extra", [{}, {"lambdarank_norm": False}, {"lambdarank_truncation_level": 10}])
 def test_lambdarank_matches_cpu_cuda(group, extra):
     # the same trees: identical predictions up to the order of the float additions in prediction itself
     np.testing.assert_allclose(_train("cuda", group, extra), _train("cpu", group, extra), rtol=0, atol=1e-12)
+
+
+@_REQUIRES_CUDA
+def test_lambdarank_matches_cpu_cuda_sorted_truncation_without_count_gate():
+    """The xfailed case above with min_data_in_leaf=5: the objectives agree, so the models do."""
+    extra = {"lambdarank_truncation_level": 10, "min_data_in_leaf": 5}
+    np.testing.assert_allclose(
+        _train("cuda", _GROUPS["sorted"], extra), _train("cpu", _GROUPS["sorted"], extra), rtol=0, atol=1e-12
+    )
