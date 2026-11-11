@@ -376,13 +376,17 @@ def prep_numerai_int8():
         sys.exit("numerai-int8: row filter disagrees with the existing f32 cache")
     p = len(feat_cols)
 
-    x = np.memmap(os.path.join(d, "X.i8.mem"), dtype=np.int8, mode="w+", shape=(n_rows, p))
+    temporary = os.path.join(d, "X.i8.mem.tmp")
+    x = np.memmap(temporary, dtype=np.int8, mode="w+", shape=(n_rows, p))
     row_abs = row_out = 0
     for batch in f.iter_batches(batch_size=200_000, columns=feat_cols):
         nb = batch.num_rows
         mask = keep_all[row_abs : row_abs + nb]
         if mask.any():
-            sel = batch.to_pandas().to_numpy(dtype=np.int8)[mask]
+            sel = batch.to_pandas().to_numpy(dtype=np.float32, na_value=np.nan)[mask]
+            if not np.all(np.isfinite(sel) & (sel >= -128) & (sel <= 127) & (sel == np.trunc(sel))):
+                sys.exit("numerai-int8: retained features must be finite integers in the int8 range")
+            sel = sel.astype(np.int8)
             x[row_out : row_out + len(sel)] = sel
             row_out += len(sel)
         row_abs += nb
@@ -394,6 +398,8 @@ def prep_numerai_int8():
     for r in rng.integers(0, n_rows, 50):
         if not (x[r].astype(np.float32) == xf[r]).all():
             sys.exit(f"numerai-int8: row {r} mismatches the f32 cache")
+    del x, xf
+    os.replace(temporary, os.path.join(d, "X.i8.mem"))
     print(f"numerai-int8 done: {n_rows} x {p}, sampled rows verified", flush=True)
 
 
