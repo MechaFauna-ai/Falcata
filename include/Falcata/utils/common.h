@@ -195,22 +195,38 @@ inline static std::string SaveToParserConfig(std::string config_str, std::string
 
 template<typename T>
 inline static const char* Atoi(const char* p, T* out) {
-  int sign;
-  T value;
+  static_assert(std::is_integral<T>::value, "Atoi parses integers");
+  bool negative = false;
   while (*p == ' ') {
     ++p;
   }
-  sign = 1;
   if (*p == '-') {
-    sign = -1;
+    negative = true;
     ++p;
   } else if (*p == '+') {
     ++p;
   }
-  for (value = 0; *p >= '0' && *p <= '9'; ++p) {
-    value = value * 10 + (*p - '0');
+  // Accumulate the magnitude unsigned and saturate at T's range: a long
+  // digit string in a model or config file used to overflow T, which is
+  // undefined behaviour, and silently wrapped to an arbitrary value.
+  using U = unsigned long long;  // NOLINT(runtime/int): widest standard unsigned
+  const U max_magnitude =
+      (negative && std::is_signed<T>::value)
+          ? static_cast<U>(std::numeric_limits<T>::max()) + 1
+          : static_cast<U>(std::numeric_limits<T>::max());
+  U value = 0;
+  for (; *p >= '0' && *p <= '9'; ++p) {
+    const U digit = static_cast<U>(*p - '0');
+    value = value > (max_magnitude - digit) / 10 ? max_magnitude : value * 10 + digit;
   }
-  *out = static_cast<T>(sign * value);
+  if (!negative) {
+    *out = static_cast<T>(value);
+  } else if (std::is_signed<T>::value) {
+    *out = value == max_magnitude ? std::numeric_limits<T>::min()
+                                  : static_cast<T>(-static_cast<long long>(value));  // NOLINT(runtime/int)
+  } else {
+    *out = static_cast<T>(U(0) - value);  // modular, as the old sign * value was
+  }
   while (*p == ' ') {
     ++p;
   }

@@ -205,6 +205,30 @@ TEST_F(AtofPreciseTest, NaN) {
 // CommonC::StringToArrayFast (used to parse tree arrays from model text)
 // had no end-of-string check: a short string silently produced 0 for the
 // missing integers and NaN for the missing floats.
+TEST(CommonAtoi, SaturatesInsteadOfOverflowing) {
+  // a long digit string used to overflow the accumulator (UB) and wrap
+  int v = 0;
+  Falcata::Common::Atoi("2147483647", &v);
+  EXPECT_EQ(v, std::numeric_limits<int>::max());
+  Falcata::Common::Atoi("2147483648", &v);
+  EXPECT_EQ(v, std::numeric_limits<int>::max());
+  Falcata::Common::Atoi("99999999999999999999999", &v);
+  EXPECT_EQ(v, std::numeric_limits<int>::max());
+  Falcata::Common::Atoi("-2147483648", &v);
+  EXPECT_EQ(v, std::numeric_limits<int>::min());
+  Falcata::Common::Atoi("-99999999999999999999999", &v);
+  EXPECT_EQ(v, std::numeric_limits<int>::min());
+  Falcata::Common::Atoi("  -42  ", &v);
+  EXPECT_EQ(v, -42);
+  Falcata::Common::Atoi("+7x", &v);
+  EXPECT_EQ(v, 7);
+  int64_t w = 0;
+  Falcata::Common::Atoi("-9223372036854775808", &w);
+  EXPECT_EQ(w, std::numeric_limits<int64_t>::min());
+  Falcata::Common::Atoi("18446744073709551616", &w);
+  EXPECT_EQ(w, std::numeric_limits<int64_t>::max());
+}
+
 TEST(CommonCStringToArrayFast, ShortStringFails) {
   EXPECT_EQ(Falcata::CommonC::StringToArrayFast<int>("1 2 3", 3), (std::vector<int>{1, 2, 3}));
   EXPECT_THROW(Falcata::CommonC::StringToArrayFast<int>("1 2", 3), std::exception);
