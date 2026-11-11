@@ -2,9 +2,10 @@
 
 import struct
 
-import falcata as flc
 import numpy as np
 import pytest
+
+import falcata as flc
 
 
 def _categorical_binary():
@@ -23,8 +24,7 @@ def _categorical_binary():
         flc.Dataset(x, label=(x[:, 0] == 1).astype(float), categorical_feature=[0]),
         num_boost_round=1,
     )
-    data = bytearray(model.model_to_binary(compress_level=0))
-    return data
+    return bytearray(model.model_to_binary(compress_level=0))
 
 
 def _section(data, ident):
@@ -45,7 +45,7 @@ def test_binary_categorical_boundaries(tmp_path, boundaries):
         flc.Booster(model_file=path)
 
 
-@pytest.mark.parametrize("field,fmt,value", [(4, "I", 0xFFFFFFFF), (16, "Q", 2**64 - 1)])
+@pytest.mark.parametrize(("field", "fmt", "value"), [(4, "I", 0xFFFFFFFF), (16, "Q", 2**64 - 1)])
 def test_binary_tree_array_ranges(tmp_path, field, fmt, value):
     data = _categorical_binary()
     struct.pack_into("<" + fmt, data, _section(data, 2) + field, value)
