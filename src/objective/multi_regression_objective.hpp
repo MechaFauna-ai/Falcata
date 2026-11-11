@@ -79,6 +79,9 @@ class MultiRegressionL2 : public ObjectiveFunction {
         sum_weights += weights_[i];
       }
     }
+    if (Network::num_machines() > 1) {
+      sum_weights = Network::GlobalSyncUpBySum(sum_weights);
+    }
     for (int k = 0; k < num_target_; ++k) {
       const label_t* target_label = label_ + static_cast<size_t>(k) * num_data_;
       double sum = 0.0;

@@ -87,7 +87,20 @@ CUDAHistogramConstructor::CUDAHistogramConstructor(
 }
 
 CUDAHistogramConstructor::~CUDAHistogramConstructor() {
-  gpuAssert(cudaStreamDestroy(cuda_stream_), __FILE__, __LINE__);
+  // Init created every pipeline's stream and events; pipeline_streams_[0] is the stream it created as cuda_stream_
+  // (cuda_stream_ itself may be on loan to the device levels, see ExchangeHistStream). Nothing to release when Init
+  // never ran.
+  for (int p = 0; p < kNumHistPipelines; ++p) {
+    if (construct_done_events_[p] != nullptr) {
+      gpuAssert(cudaEventDestroy(construct_done_events_[p]), __FILE__, __LINE__);
+    }
+    if (subtract_done_events_[p] != nullptr) {
+      gpuAssert(cudaEventDestroy(subtract_done_events_[p]), __FILE__, __LINE__);
+    }
+    if (pipeline_streams_[p] != nullptr) {
+      gpuAssert(cudaStreamDestroy(pipeline_streams_[p]), __FILE__, __LINE__);
+    }
+  }
   if (prefetch_stream_ != nullptr) {
     gpuAssert(cudaStreamDestroy(prefetch_stream_), __FILE__, __LINE__);
   }
@@ -1446,8 +1459,7 @@ void CUDAHistogramConstructor::InitDeterministicDenseScratch() {
 }
 
 void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStates* share_state) {
-  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_) *
-                    static_cast<size_t>(num_hist_planes_));
+  cuda_hist_.Resize(CUDAHistSlabElements(num_total_bin_, num_leaves_, num_hist_planes_));
   cuda_hist_.SetValue(0);
   // Deterministic float-mode construct scratch (see ResetTrainingData; both
   // entry points size it because either can be the only one a flow calls).
@@ -2227,8 +2239,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   num_features_ = train_data->num_features();
   InitFeatureMetaInfo(train_data, share_states->feature_hist_offsets());
 
-  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_) *
-                    static_cast<size_t>(num_hist_planes_));
+  cuda_hist_.Resize(CUDAHistSlabElements(num_total_bin_, num_leaves_, num_hist_planes_));
   cuda_hist_.SetValue(0);
   // Deterministic float-mode construct scratch: launches clamp their tile
   // grid to det_tile_alloc_, so the buffer can never be written past its end.
@@ -2277,8 +2288,7 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
   min_data_in_leaf_ = config->min_data_in_leaf;
   feature_fraction_ = config->feature_fraction;
   min_sum_hessian_in_leaf_ = config->min_sum_hessian_in_leaf;
-  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_) *
-                    static_cast<size_t>(num_hist_planes_));
+  cuda_hist_.Resize(CUDAHistSlabElements(num_total_bin_, num_leaves_, num_hist_planes_));
   cuda_hist_.SetValue(0);
   num_dirty_leaves_ = -1;
   // (colmajor_direct: the tree learner re-chooses the regime when feature_fraction changed)
