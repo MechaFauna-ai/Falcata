@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include "init_score_layout.hpp"
+
 namespace Falcata {
 
 using json11_internal_lightgbm::Json;
@@ -1341,7 +1343,7 @@ void DatasetLoader::ExtractFeaturesFromMemory(std::vector<std::string>* text_dat
   } else {
     OMP_INIT_EX();
     // if need to prediction with initial model
-    std::vector<double> init_score(static_cast<size_t>(dataset->num_data_) * num_class_);
+    std::vector<double> init_score(InitScoreSize(dataset->num_data_, num_class_));
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) private(oneline_features) firstprivate(tmp_label, feature_row)
     for (data_size_t i = 0; i < dataset->num_data_; ++i) {
       OMP_LOOP_EX_BEGIN();
@@ -1353,7 +1355,7 @@ void DatasetLoader::ExtractFeaturesFromMemory(std::vector<std::string>* text_dat
       std::vector<double> oneline_init_score(num_class_);
       predict_fun_(oneline_features, oneline_init_score.data());
       for (int k = 0; k < num_class_; ++k) {
-        init_score[k * dataset->num_data_ + i] = static_cast<double>(oneline_init_score[k]);
+        init_score[InitScoreOffset(k, dataset->num_data_, i)] = static_cast<double>(oneline_init_score[k]);
       }
       // set label
       dataset->metadata_.SetLabelAt(i, static_cast<label_t>(tmp_label));
@@ -1401,7 +1403,7 @@ void DatasetLoader::ExtractFeaturesFromMemory(std::vector<std::string>* text_dat
     }
     OMP_THROW_EX();
     // metadata_ will manage space of init_score
-    dataset->metadata_.SetInitScore(init_score.data(), dataset->num_data_ * num_class_);
+    dataset->metadata_.SetInitScore(init_score.data(), static_cast<data_size_t>(init_score.size()));
   }
   dataset->FinishLoad();
   // text data can be free after loaded feature values
@@ -1413,7 +1415,7 @@ void DatasetLoader::ExtractFeaturesFromFile(const char* filename, const Parser* 
                                             const std::vector<data_size_t>& used_data_indices, Dataset* dataset) {
   std::vector<double> init_score;
   if (predict_fun_) {
-    init_score = std::vector<double>(static_cast<size_t>(dataset->num_data_) * num_class_);
+    init_score = std::vector<double>(InitScoreSize(dataset->num_data_, num_class_));
   }
   std::function<void(data_size_t, const std::vector<std::string>&)> process_fun =
     [this, &init_score, &parser, &dataset]
@@ -1434,7 +1436,7 @@ void DatasetLoader::ExtractFeaturesFromFile(const char* filename, const Parser* 
         std::vector<double> oneline_init_score(num_class_);
         predict_fun_(oneline_features, oneline_init_score.data());
         for (int k = 0; k < num_class_; ++k) {
-          init_score[k * dataset->num_data_ + start_idx + i] = static_cast<double>(oneline_init_score[k]);
+          init_score[InitScoreOffset(k, dataset->num_data_, start_idx + i)] = static_cast<double>(oneline_init_score[k]);
         }
       }
       // set label
@@ -1490,7 +1492,7 @@ void DatasetLoader::ExtractFeaturesFromFile(const char* filename, const Parser* 
 
   // metadata_ will manage space of init_score
   if (!init_score.empty()) {
-    dataset->metadata_.SetInitScore(init_score.data(), dataset->num_data_ * num_class_);
+    dataset->metadata_.SetInitScore(init_score.data(), static_cast<data_size_t>(init_score.size()));
   }
   dataset->FinishLoad();
 }
