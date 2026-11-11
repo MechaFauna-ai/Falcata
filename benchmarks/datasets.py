@@ -102,8 +102,8 @@ def prep_higgs():
 def prep_epsilon():
     from sklearn.datasets import load_svmlight_file
 
-    x_tr, y_tr = load_svmlight_file(fetch("epsilon_train.bz2"), n_features=2000)
-    x_te, y_te = load_svmlight_file(fetch("epsilon_test.bz2"), n_features=2000)
+    x_tr, y_tr = load_svmlight_file(fetch("epsilon_train.bz2"), n_features=2000, dtype=np.float32)
+    x_te, y_te = load_svmlight_file(fetch("epsilon_test.bz2"), n_features=2000, dtype=np.float32)
     save(
         "epsilon",
         x_tr.toarray(),
