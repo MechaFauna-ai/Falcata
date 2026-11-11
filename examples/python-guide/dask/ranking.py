@@ -29,7 +29,7 @@ if __name__ == "__main__":
     num_features = X.shape[1]
 
     # Dask can slice CSR rows directly; keep the sparse feature matrix.
-    dX = da.from_array(x=X, chunks=[(rows_in_part1, rows_in_part2), (num_features,)])
+    dX = da.from_array(x=X, chunks=[(rows_in_part1, rows_in_part2), (num_features,)], asarray=False)
     dy = da.from_array(
         x=y,
         chunks=[
