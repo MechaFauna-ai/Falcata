@@ -52,7 +52,10 @@ def test_perf_remeasurement_propagates_lattice_stop(monkeypatch):
     spec = importlib.util.spec_from_file_location("perf_lattice_stop_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess([], 125))
+    # remeasure supervises lattice through Popen (bounded communicate); the worker reports 125
+    lattice_stop = Mock(pid=12345, returncode=125)
+    lattice_stop.communicate.return_value = ("", "")
+    monkeypatch.setattr(module.subprocess, "Popen", Mock(return_value=lattice_stop))
     with pytest.raises(module.UnresolvedCUDATimeout, match="CUDA timeout"):
         module.remeasure("first")
     monkeypatch.setattr(module, "StrictGPUQ", lambda: None)
