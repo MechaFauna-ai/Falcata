@@ -374,7 +374,8 @@ class Booster {
       Log::Fatal(
           "Cannot change ignore_column after constructed Dataset handle.");
     }
-    if (new_param.count("forcedbins_filename")) {
+    if (new_param.count("forcedbins_filename") &&
+        new_config.forcedbins_filename != old_config.forcedbins_filename) {
       Log::Fatal("Cannot change forced bins after constructed Dataset handle.");
     }
     if (new_param.count("min_data_in_leaf") &&
