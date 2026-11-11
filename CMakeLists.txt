@@ -1125,6 +1125,7 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_multi_target_index.cu
         tests/cpp_tests/test_cuda_prefix_sum_exclusive.cu
         tests/cpp_tests/test_cuda_random_advance.cu
+        tests/cpp_tests/test_cuda_rank_xendcg_query_bounds.cu
         tests/cpp_tests/test_cuda_shuffle_reduce.cu
         tests/cpp_tests/test_cuda_reduce_min_global.cu
         tests/cpp_tests/test_cuda_binary_init_score.cu
