@@ -50,6 +50,7 @@ Numerical design choices (documented because they differ from the papers):
 """
 
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -116,6 +117,63 @@ def _validate_dataframe_columns(frame: Any, num_projections: int) -> tuple[List[
     if collisions:
         raise ValueError(f"pandas DataFrame columns conflict with generated features: {', '.join(sorted(collisions))}")
     return feature_names, [_column_schema_key(column) for column in frame.columns]
+
+
+@lru_cache(maxsize=1)
+def _cupy_projection_kernel(xp: Any) -> Any:
+    return xp.ElementwiseKernel(
+        "raw T data, raw int32 indices, raw int64 offsets, raw float32 weights, "
+        "raw float32 center, raw float32 scale, int64 row_stride, int64 column_stride, int64 projections",
+        "float32 projected",
+        """
+        const long long row = i / projections;
+        const long long projection = i % projections;
+        float total = 0.0f;
+        for (long long term = offsets[projection]; term < offsets[projection + 1]; ++term) {
+            const int feature = indices[term];
+            float value = static_cast<float>(data[row * row_stride + feature * column_stride]);
+            if (isnan(value)) value = center[feature];
+            const float normalized = (value - center[feature]) / scale[feature];
+            total += normalized * weights[term];
+        }
+        projected = total;
+        """,
+        "falcata_oblique_projection",
+    )
+
+
+def _fill_cupy_projections(
+    xp: Any,
+    matrix: Any,
+    *,
+    feature_indices: List[np.ndarray],
+    weights: List[np.ndarray],
+    center: Any,
+    scale: Any,
+    output: Any,
+) -> None:
+    if output.size == 0:
+        return
+    # Ragged metadata avoids padding and keeps uploads constant in the number
+    # of projections. No device arrays are retained in the serialized pool.
+    offsets = np.zeros(len(feature_indices) + 1, dtype=np.int64)
+    np.cumsum([len(indices) for indices in feature_indices], out=offsets[1:])
+    indices = np.concatenate(feature_indices).astype(np.int32, copy=False)
+    packed_weights = np.concatenate(weights).astype(np.float32)
+    matrix = xp.asarray(matrix)
+    _cupy_projection_kernel(xp)(
+        matrix,
+        xp.asarray(indices),
+        xp.asarray(offsets),
+        xp.asarray(packed_weights),
+        center,
+        scale,
+        matrix.strides[0] // matrix.itemsize,
+        matrix.strides[1] // matrix.itemsize,
+        output.shape[1],
+        output.ravel(),
+        size=output.size,
+    )
 
 
 class ObliquePool:
@@ -257,13 +315,24 @@ class ObliquePool:
         Z = xp.empty((n, self.num_projections), dtype=xp.float32)
         center = xp.asarray(self.center_, dtype=xp.float32)
         scale = xp.asarray(self.scale_, dtype=xp.float32)
-        for j, (idx_h, w_h) in enumerate(zip(self.feature_idx_, self.weights_, strict=True)):
-            idx = xp.asarray(idx_h)
-            w = xp.asarray(w_h, dtype=xp.float32)
-            cols = xp.asarray(matrix[:, idx], dtype=xp.float32)
-            cols = xp.where(xp.isnan(cols), center[idx], cols)
-            cols = (cols - center[idx]) / scale[idx]
-            Z[:, j] = cols @ w
+        if xp is not np and matrix.dtype.kind != "c":
+            _fill_cupy_projections(
+                xp,
+                matrix,
+                feature_indices=self.feature_idx_,
+                weights=self.weights_,
+                center=center,
+                scale=scale,
+                output=Z,
+            )
+        else:
+            for j, (idx_h, w_h) in enumerate(zip(self.feature_idx_, self.weights_, strict=True)):
+                idx = xp.asarray(idx_h)
+                w = xp.asarray(w_h, dtype=xp.float32)
+                cols = xp.asarray(matrix[:, idx], dtype=xp.float32)
+                cols = xp.where(xp.isnan(cols), center[idx], cols)
+                cols = (cols - center[idx]) / scale[idx]
+                Z[:, j] = cols @ w
         augmented = xp.concatenate([xp.asarray(matrix, dtype=out_dtype), Z.astype(out_dtype)], axis=1)
         if is_dataframe:
             assert feature_names is not None
