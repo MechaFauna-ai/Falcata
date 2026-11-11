@@ -10,6 +10,9 @@ def test_disable_balanced_bagging():
     data = flc.Dataset(x, label=(x[:, 0] > 0).astype(int), free_raw_data=False)
     params = {
         "objective": "binary",
+        # the device-independent boosting state is under test; a cuda booster keeps device scores that differ from the
+        # init_model host predictions in the last bit, the same size as the stuck-bagging difference checked below
+        "device_type": "cpu",
         "pos_bagging_fraction": 0.8,
         "neg_bagging_fraction": 0.8,
         "bagging_freq": 1,
