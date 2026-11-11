@@ -44,6 +44,7 @@
 #endif  // USE_CUDA
 
 #include "application/predictor.hpp"
+#include "c_api_csc_row_iterator.hpp"
 #ifndef LGB_R_BUILD
 #include "arrow/array.hpp"
 #endif  // LGB_R_BUILD
@@ -1045,24 +1046,7 @@ std::function<std::vector<std::pair<int, double>>(T idx)>
 RowFunctionFromCSR(const void* indptr, int indptr_type, const int32_t* indices,
                    const void* data, int data_type, int64_t nindptr, int64_t nelem);
 
-// Row iterator of on column for CSC matrix
-class CSC_RowIterator {
- public:
-  CSC_RowIterator(const void* col_ptr, int col_ptr_type, const int32_t* indices,
-                  const void* data, int data_type, int64_t ncol_ptr, int64_t nelem, int col_idx);
-  ~CSC_RowIterator() {}
-  // return value at idx, only can access by ascent order
-  double Get(int idx);
-  // return next non-zero pair, if index < 0, means no more data
-  std::pair<int, double> NextNonZero();
-
- private:
-  int nonzero_idx_ = 0;
-  int cur_idx_ = -1;
-  double cur_val_ = 0.0f;
-  bool is_end_ = false;
-  std::function<std::pair<int, double>(int idx)> iter_fun_;
-};
+// CSC_RowIterator: row iterator of one column of a CSC matrix, in c_api_csc_row_iterator.hpp
 
 // start of c_api functions
 
@@ -4209,24 +4193,6 @@ IterateFunctionFromCSC(const void* col_ptr, int col_ptr_type, const int32_t* ind
 CSC_RowIterator::CSC_RowIterator(const void* col_ptr, int col_ptr_type, const int32_t* indices,
                                  const void* data, int data_type, int64_t ncol_ptr, int64_t nelem, int col_idx) {
   iter_fun_ = IterateFunctionFromCSC(col_ptr, col_ptr_type, indices, data, data_type, ncol_ptr, nelem, col_idx);
-}
-
-double CSC_RowIterator::Get(int idx) {
-  while (idx > cur_idx_ && !is_end_) {
-    auto ret = iter_fun_(nonzero_idx_);
-    if (ret.first < 0) {
-      is_end_ = true;
-      break;
-    }
-    cur_idx_ = ret.first;
-    cur_val_ = ret.second;
-    ++nonzero_idx_;
-  }
-  if (idx == cur_idx_) {
-    return cur_val_;
-  } else {
-    return 0.0f;
-  }
 }
 
 std::pair<int, double> CSC_RowIterator::NextNonZero() {
