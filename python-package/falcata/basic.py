@@ -2026,7 +2026,7 @@ class Dataset:
             Dataset object.
         """
         nrow, ncol = data.shape
-        data = data.reshape(data.size)
+        data, _ = _np2d_to_np1d(np.ascontiguousarray(data))
         data_ptr, data_type, _ = _c_float_array(data)
 
         _safe_call(
