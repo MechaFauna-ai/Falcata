@@ -58,6 +58,13 @@ inline ncclResult_t ncclAllReduce(const void*, void*, size_t, ncclDataType_t, nc
 
 namespace Falcata {
 
+/*! \brief ceil(count / block_size), the block count of a launch over count items. The sum is formed in 64 bits:
+ *  in a 32-bit data_size_t, count + block_size - 1 overflows for counts within block_size of INT32_MAX and the block
+ *  count came out negative. */
+__host__ __device__ constexpr int CUDABlockCount(const int64_t count, const int block_size) {
+  return static_cast<int>((count + block_size - 1) / block_size);
+}
+
 typedef unsigned long long atomic_add_long_t;
 
 #define CUDASUCCESS_OR_FATAL(ans) { gpuAssert((ans), __FILE__, __LINE__); }

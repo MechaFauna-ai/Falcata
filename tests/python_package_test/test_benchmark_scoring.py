@@ -240,3 +240,24 @@ def test_multiclass_throughput_keeps_iteration_units_and_reports_physical_trees(
     assert record["iterations_per_s"] == pytest.approx(expected_iteration_rate)
     assert record["physical_trees_per_s"] == pytest.approx(21 / record["train_s"])
     assert record["physical_trees_per_s"] == pytest.approx(7 * record["trees_per_s"])
+
+
+def test_catboost_curve_refuses_missing_requested_metric(monkeypatch):
+    model = SimpleNamespace(
+        fit=lambda *args, **kwargs: None,
+        get_evals_result=lambda: {"validation": {"Logloss": [0.4]}},
+        predict_proba=lambda data: np.tile([0.5, 0.5], (len(data), 1)),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "catboost",
+        SimpleNamespace(
+            Pool=lambda *args, **kwargs: None,
+            CatBoostClassifier=lambda **kwargs: model,
+            __version__="test",
+        ),
+    )
+    data = np.zeros((4, 2))
+    reg = {"rounds": 1, "lr": 0.1, "depth": 2, "leaves": 4, "eval_every": 1}
+    with pytest.raises(KeyError, match="AUC"):
+        bench.run_catboost("binary", data, np.array([0, 1, 0, 1]), data, np.array([0, 1, 0, 1]), reg, curve=True)

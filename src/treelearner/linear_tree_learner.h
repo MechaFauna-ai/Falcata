@@ -7,6 +7,7 @@
 #define FALCATA_SRC_TREELEARNER_LINEAR_TREE_LEARNER_H_
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <memory>
 #include <random>
@@ -50,7 +51,8 @@ class LinearTreeLearner: public TREE_LEARNER_TYPE {
     if (any_nan_) {
       for (int i = 0; i < tree->num_leaves() - 1 ; ++i) {
         // use split_feature because split_feature_inner doesn't work when refitting existing tree
-        if (contains_nan_[this->train_data_->InnerFeatureIndex(tree->split_feature(i))]) {
+        const int inner_feature = this->train_data_->InnerFeatureIndex(tree->split_feature(i));
+        if (inner_feature >= 0 && contains_nan_[inner_feature]) {
           has_nan = true;
           break;
         }
@@ -67,18 +69,23 @@ class LinearTreeLearner: public TREE_LEARNER_TYPE {
   void AddPredictionToScoreInner(const Tree* tree, double* out_score) const {
     int num_leaves = tree->num_leaves();
     std::vector<double> leaf_const(num_leaves);
-    std::vector<std::vector<double>> leaf_coeff(num_leaves);
-    std::vector<std::vector<const float*>> feat_ptr(num_leaves);
+    std::vector<double> leaf_coeff;
+    std::vector<std::size_t> leaf_offsets(num_leaves);
+    std::vector<const float*> feat_ptr;
     std::vector<double> leaf_output(num_leaves);
     std::vector<int> leaf_num_features(num_leaves);
     for (int leaf_num = 0; leaf_num < num_leaves; ++leaf_num) {
       leaf_const[leaf_num] = tree->LeafConst(leaf_num);
-      leaf_coeff[leaf_num] = tree->LeafCoeffs(leaf_num);
+      leaf_offsets[leaf_num] = leaf_coeff.size();
+      const auto& coefficients = tree->LeafCoeffs(leaf_num);
+      const auto features = tree->LeafFeaturesInner(leaf_num);
+      CHECK_GE(coefficients.size(), features.size());
+      leaf_coeff.insert(leaf_coeff.end(), coefficients.begin(), coefficients.begin() + features.size());
       leaf_output[leaf_num] = tree->LeafOutput(leaf_num);
-      for (int feat : tree->LeafFeaturesInner(leaf_num)) {
-        feat_ptr[leaf_num].push_back(this->train_data_->raw_index(feat));
+      for (int feat : features) {
+        feat_ptr.push_back(this->train_data_->raw_index(feat));
       }
-      leaf_num_features[leaf_num] = static_cast<int>(feat_ptr[leaf_num].size());
+      leaf_num_features[leaf_num] = static_cast<int>(features.size());
     }
     OMP_INIT_EX();
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) if (this->num_data_ > 1024)
@@ -90,15 +97,16 @@ class LinearTreeLearner: public TREE_LEARNER_TYPE {
       }
       double output = leaf_const[leaf_num];
       int num_feat = leaf_num_features[leaf_num];
+      const std::size_t offset = leaf_offsets[leaf_num];
       if (HAS_NAN) {
         bool nan_found = false;
         for (int feat_ind = 0; feat_ind < num_feat; ++feat_ind) {
-          float val = feat_ptr[leaf_num][feat_ind][i];
+          float val = feat_ptr[offset + feat_ind][i];
           if (std::isnan(val)) {
             nan_found = true;
             break;
           }
-          output += val * leaf_coeff[leaf_num][feat_ind];
+          output += val * leaf_coeff[offset + feat_ind];
         }
         if (nan_found) {
           out_score[i] += leaf_output[leaf_num];
@@ -107,7 +115,7 @@ class LinearTreeLearner: public TREE_LEARNER_TYPE {
         }
       } else {
         for (int feat_ind = 0; feat_ind < num_feat; ++feat_ind) {
-          output += feat_ptr[leaf_num][feat_ind][i] * leaf_coeff[leaf_num][feat_ind];
+          output += feat_ptr[offset + feat_ind][i] * leaf_coeff[offset + feat_ind];
         }
         out_score[i] += output;
       }

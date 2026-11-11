@@ -83,6 +83,9 @@ class DatasetLoader {
    */
   void CheckCategoricalFeatureNumBin(const std::vector<std::unique_ptr<BinMapper>>& bin_mappers, const int max_bin, const std::vector<int>& max_bin_by_feature) const;
 
+  /*! \brief Fatal if a categorical feature has a monotone constraint */
+  void CheckNotMonotoneCategorical(int feature_idx) const;
+
   const Config& config_;
   /*! \brief Random generator*/
   Random random_;

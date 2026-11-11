@@ -38,31 +38,19 @@ CUDARankXENDCG::~CUDARankXENDCG() {}
 
 void CUDARankXENDCG::Init(const Metadata& metadata, data_size_t num_data) {
   CUDALambdaRankObjectiveInterface<RankXENDCG>::Init(metadata, num_data);
+  // RankXENDCG::Init seeds rands_[q] with seed_ + q (Random(int) stores the seed as its unsigned state); the device
+  // generators start from the same states, so every Init reseeds them
+  std::vector<uint32_t> rand_states(static_cast<size_t>(num_queries_));
   for (data_size_t i = 0; i < num_queries_; ++i) {
-    rands_.emplace_back(seed_ + i);
+    rand_states[i] = static_cast<uint32_t>(seed_) + static_cast<uint32_t>(i);
   }
-  item_rands_.resize(num_data, 0.0f);
+  cuda_query_rand_states_.InitFromHostVector(rand_states);
   cuda_item_rands_.Resize(static_cast<size_t>(num_data));
   if (max_items_in_query_aligned_ >= 2048) {
     cuda_params_buffer_.Resize(static_cast<size_t>(num_data_));
   }
 }
 
-void CUDARankXENDCG::GenerateItemRands() const {
-  const int num_threads = OMP_NUM_THREADS();
-  OMP_INIT_EX();
-  #pragma omp parallel for schedule(static) num_threads(num_threads)
-  for (data_size_t i = 0; i < num_queries_; ++i) {
-    OMP_LOOP_EX_BEGIN();
-    const data_size_t start = query_boundaries_[i];
-    const data_size_t end = query_boundaries_[i + 1];
-    for (data_size_t j = start; j < end; ++j) {
-      item_rands_[j] = rands_[i].NextFloat();
-    }
-    OMP_LOOP_EX_END();
-  }
-  OMP_THROW_EX();
-}
 
 }  // namespace Falcata
 
