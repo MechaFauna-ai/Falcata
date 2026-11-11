@@ -10,6 +10,7 @@
 #include <Falcata/bin.h>
 #include <Falcata/cuda/vector_cudahost.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -82,7 +83,11 @@ class DenseBin : public Bin {
       const int i1 = idx >> 1;
       const int i2 = (idx & 1) << 2;
       const uint8_t val = static_cast<uint8_t>(value) << i2;
-      if (i2 == 0) {
+      if (buf_ == nullptr) {
+        // loading has finished (FinishLoad / SetLoadedFromRawData merged the
+        // odd nibbles into data_): update this row's nibble in place
+        data_[i1] = static_cast<uint8_t>((data_[i1] & ~(0xf << i2)) | val);
+      } else if (i2 == 0) {
         data_[i1] = val;
       } else {
         buf_.get()[i1] = val;
@@ -103,9 +108,14 @@ class DenseBin : public Bin {
 
   void ReSize(data_size_t num_data) override {
     if (num_data_ != num_data) {
+      const size_t old_bytes = (static_cast<size_t>(num_data_) + 1) / 2;
       num_data_ = num_data;
       if (IS_4BIT) {
         data_.resize((num_data_ + 1) / 2, static_cast<VAL_T>(0));
+        if (buf_ != nullptr) {
+          // still loading: the odd-nibble buffer follows the new size
+          buf_ = CopyOddNibbles(buf_.get(), old_bytes, (static_cast<size_t>(num_data_) + 1) / 2);
+        }
       } else {
         data_.resize(num_data_);
       }
@@ -643,8 +653,27 @@ class DenseBin : public Bin {
   // odd-nibble accumulation (4-bit only), calloc'd: see the constructor
   std::unique_ptr<uint8_t, void (*)(void*)> buf_{nullptr, std::free};
 
+  // a calloc'd copy of the first min(old_bytes, new_bytes) bytes of src, zero beyond
+  static std::unique_ptr<uint8_t, void (*)(void*)> CopyOddNibbles(const uint8_t* src, size_t old_bytes,
+                                                                  size_t new_bytes) {
+    std::unique_ptr<uint8_t, void (*)(void*)> copy(static_cast<uint8_t*>(std::calloc(new_bytes, 1)), std::free);
+    if (copy == nullptr && new_bytes > 0) {
+      throw std::bad_alloc();
+    }
+    if (new_bytes > 0) {
+      std::memcpy(copy.get(), src, std::min(old_bytes, new_bytes));
+    }
+    return copy;
+  }
+
+  // copies the odd-nibble buffer too, so a clone taken before FinishLoad keeps the odd rows
   DenseBin(const DenseBin<VAL_T, IS_4BIT>& other)
-      : num_data_(other.num_data_), data_(other.data_) {}
+      : num_data_(other.num_data_), data_(other.data_) {
+    if (IS_4BIT && other.buf_ != nullptr) {
+      const size_t bytes = (static_cast<size_t>(num_data_) + 1) / 2;
+      buf_ = CopyOddNibbles(other.buf_.get(), bytes, bytes);
+    }
+  }
 };
 
 template <typename VAL_T, bool IS_4BIT>

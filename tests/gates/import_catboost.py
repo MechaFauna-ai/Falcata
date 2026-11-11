@@ -11,6 +11,7 @@ grow policies) REFUSE rather than silently converting to something else.
 """
 
 import sys
+from zlib import crc32
 
 import catboost as cb
 import numpy as np
@@ -19,7 +20,7 @@ from falcata.importers import from_catboost
 
 
 def case(name, loss, depth=4, iters=25, n=3000, m=6, nan_frac=0.0, cls=False):
-    rng = np.random.default_rng(abs(hash(name)) % 10_000)
+    rng = np.random.default_rng(crc32(name.encode("utf-8")) % 10_000)
     X = rng.standard_normal((n, m))
     if nan_frac:
         X[rng.random((n, m)) < nan_frac] = np.nan
@@ -89,7 +90,7 @@ fb = os.path.join(d, "cb.falb")
 from_catboost(mdl).save_model(fb)
 chk(
     "imported -> FALB -> load",
-    np.allclose(np.asarray(flc.Booster(model_file=fb).predict(Xs)), base, atol=0),
+    np.array_equal(np.asarray(flc.Booster(model_file=fb).predict(Xs)), base),
     f"({os.path.getsize(jp):,}B json vs {os.path.getsize(fb):,}B falb)",
 )
 
@@ -108,7 +109,7 @@ try:
     from_catboost(cm)
     chk("refuses categorical features", False)
 except ValueError as e:
-    chk("refuses categorical features", True, str(e)[:42])
+    chk("refuses categorical features", "categorical" in str(e).lower(), str(e)[:42])
 try:
     lg = cb.CatBoostRegressor(iterations=8, depth=4, grow_policy="Lossguide", verbose=0, allow_writing_files=False).fit(
         Xs, ys

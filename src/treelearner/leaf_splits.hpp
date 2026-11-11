@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "data_partition.hpp"
+#include "quantized_index.hpp"
 
 namespace Falcata {
 
@@ -124,8 +125,8 @@ class LeafSplits {
     int64_t tmp_sum_gradients_and_hessians = 0;
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 512) reduction(+:tmp_sum_gradients, tmp_sum_hessians, tmp_sum_gradients_and_hessians) if (num_data_in_leaf_ >= 1024 && !deterministic_)
     for (data_size_t i = 0; i < num_data_in_leaf_; ++i) {
-      tmp_sum_gradients += int_gradients_and_hessians[2 * i + 1] * grad_scale;
-      tmp_sum_hessians += int_gradients_and_hessians[2 * i] * hess_scale;
+      tmp_sum_gradients += int_gradients_and_hessians[QuantizedPairOffset(i) + 1] * grad_scale;
+      tmp_sum_hessians += int_gradients_and_hessians[QuantizedPairOffset(i)] * hess_scale;
       const int16_t packed_int_grad_and_hess = packed_int_gradients_and_hessians[i];
       const int64_t packed_long_int_grad_and_hess =
         (static_cast<int64_t>(static_cast<int8_t>(packed_int_grad_and_hess >> 8)) * (int64_t{1} << 32)) |
@@ -182,8 +183,8 @@ class LeafSplits {
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 512) reduction(+:tmp_sum_gradients, tmp_sum_hessians, tmp_sum_gradients_and_hessians) if (num_data_in_leaf_ >= 1024 && !deterministic_)
     for (data_size_t i = 0; i < num_data_in_leaf_; ++i) {
       const data_size_t idx = data_indices_[i];
-      tmp_sum_gradients += int_gradients_and_hessians[2 * idx + 1] * grad_scale;
-      tmp_sum_hessians += int_gradients_and_hessians[2 * idx] * hess_scale;
+      tmp_sum_gradients += int_gradients_and_hessians[QuantizedPairOffset(idx) + 1] * grad_scale;
+      tmp_sum_hessians += int_gradients_and_hessians[QuantizedPairOffset(idx)] * hess_scale;
       const int16_t packed_int_grad_and_hess = packed_int_gradients_and_hessians[idx];
       const int64_t packed_long_int_grad_and_hess =
         (static_cast<int64_t>(static_cast<int8_t>(packed_int_grad_and_hess >> 8)) * (int64_t{1} << 32)) |
