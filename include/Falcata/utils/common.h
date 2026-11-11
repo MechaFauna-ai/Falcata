@@ -830,10 +830,15 @@ inline static std::vector<uint32_t> ConstructBitset(const T* vals, int n) {
   return ret;
 }
 
-// n is the number of 32-bit words in bits. A negative pos converts to a huge
-// word index and is reported as absent.
+// n is the number of 32-bit words in bits; a negative pos is absent.
 template<typename T>
 inline static bool FindInBitset(const uint32_t* bits, size_t n, T pos) {
+  if constexpr (std::is_signed<T>::value) {
+    // -k / 32 is 0 for small k and -k % 32 a negative shift: test first
+    if (pos < 0) {
+      return false;
+    }
+  }
   const size_t i1 = static_cast<size_t>(pos / 32);
   if (i1 >= n) {
     return false;
