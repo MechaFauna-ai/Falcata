@@ -1048,6 +1048,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_chunked_array.cpp
       tests/cpp_tests/test_common.cpp
       tests/cpp_tests/test_dataset_subset.cpp
+      tests/cpp_tests/test_dense_bin.cpp
       tests/cpp_tests/test_host_quantization.cpp
       tests/cpp_tests/test_leaf_splits.cpp
       tests/cpp_tests/test_main.cpp
