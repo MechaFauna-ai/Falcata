@@ -138,6 +138,16 @@ TEST_F(AtofPreciseTest, NaN) {
   }
 }
 
+// CommonC::StringToArrayFast (used to parse tree arrays from model text)
+// had no end-of-string check: a short string silently produced 0 for the
+// missing integers and NaN for the missing floats.
+TEST(CommonCStringToArrayFast, ShortStringFails) {
+  EXPECT_EQ(Falcata::CommonC::StringToArrayFast<int>("1 2 3", 3), (std::vector<int>{1, 2, 3}));
+  EXPECT_THROW(Falcata::CommonC::StringToArrayFast<int>("1 2", 3), std::exception);
+  EXPECT_THROW(Falcata::CommonC::StringToArrayFast<double>("0.5 ", 2), std::exception);
+  EXPECT_THROW(Falcata::CommonC::StringToArrayFast<int>("", 1), std::exception);
+}
+
 TEST_F(AtofPreciseTest, Inf) {
   AtofTestCase test_cases[] = {
       { "inf", std::numeric_limits<double>::infinity() },
