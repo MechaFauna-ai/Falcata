@@ -263,3 +263,56 @@ TEST_F(ChunkedArrayTest, testDataLayoutWithAdvancedInsertionAPI) {
     }
   }
 }
+
+/**
+  * release() left _last_chunk_idx at 0 with no chunk allocated: a later add()
+  * allocated chunk 0 but then wrote to chunk 1 and failed a CHECK, and
+  * coalesce_to() read _chunks[get_chunks_count() - 1] with a count of 0.
+  */
+TEST(ChunkedArrayRelease, AddAndCoalesceAfterReleaseStartAfresh) {
+  ChunkedArray<int> ca(4);
+  for (int i = 0; i < 6; ++i) {
+    ca.add(i);
+  }
+  ca.release();
+  EXPECT_EQ(ca.get_add_count(), 0);
+  int untouched = -7;
+  ca.coalesce_to(&untouched);  // nothing to copy
+  ca.coalesce_to(&untouched, true);
+  EXPECT_EQ(untouched, -7);
+
+  ca.add(10);
+  ca.add(11);
+  EXPECT_EQ(ca.get_add_count(), 2);
+  std::vector<int> out(2, -1);
+  ca.coalesce_to(out.data());
+  EXPECT_EQ(out, std::vector<int>({10, 11}));
+}
+
+/**
+  * coalesce_to() took the last allocated chunk as the partially filled one, so
+  * a chunk allocated with new_chunk() beyond the add() position made it copy a
+  * whole chunk too many (past an output sized get_add_count()).
+  */
+TEST(ChunkedArrayRelease, CoalesceCopiesAddCountWithSpareChunks) {
+  ChunkedArray<int> ca(4);
+  for (int i = 0; i < 6; ++i) {
+    ca.add(i);
+  }
+  ca.new_chunk();  // a spare chunk past the add() position
+  ASSERT_EQ(ca.get_chunks_count(), 3);
+  std::vector<int> out(ca.get_add_count(), -1);
+  ca.coalesce_to(out.data());
+  EXPECT_EQ(out, std::vector<int>({0, 1, 2, 3, 4, 5}));
+
+  // add() goes on into the chunks already allocated
+  for (int i = 6; i < 12; ++i) {
+    ca.add(i);
+  }
+  EXPECT_EQ(ca.get_chunks_count(), 3);
+  std::vector<int> all(ca.get_add_count(), -1);
+  ca.coalesce_to(all.data());
+  for (int i = 0; i < 12; ++i) {
+    EXPECT_EQ(all[i], i);
+  }
+}
