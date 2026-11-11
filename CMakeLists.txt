@@ -1074,6 +1074,7 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_selective_r3.cu
         tests/cpp_tests/test_cuda_nonquant_fixed.cu
         tests/cpp_tests/test_cuda_vector_capacity.cu
+        tests/cpp_tests/test_cuda_shuffle_reduce.cu
     )
     set_target_properties(
       testfalcata
