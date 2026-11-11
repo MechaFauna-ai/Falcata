@@ -1128,6 +1128,7 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_reduce_min_global.cu
         tests/cpp_tests/test_cuda_binary_init_score.cu
         tests/cpp_tests/test_cuda_row_data_partitions.cu
+        tests/cpp_tests/test_cuda_interleave_grad_hess.cu
     )
     set_target_properties(
       testfalcata

@@ -182,10 +182,17 @@ void LaunchInterleaveGradHessKernel(
   float2* gradients_hessians,
   data_size_t num_data,
   uint32_t* absmax_bits) {
+  // no rows, nothing to interleave: an empty grid is an invalid launch whose error would stay pending for an
+  // unrelated check
+  if (num_data <= 0) {
+    return;
+  }
   const int block_size = 1024;
   const int num_blocks = static_cast<int>((num_data + block_size - 1) / block_size);
   InterleaveGradHessKernel<<<num_blocks, block_size>>>(
     gradients, hessians, gradients_hessians, num_data, absmax_bits);
+  // the construct kernels read the interleaved pairs: a rejected launch must not leave them stale
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
 void LaunchFillCompactDataKernel(
