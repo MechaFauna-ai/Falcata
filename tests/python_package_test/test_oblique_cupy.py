@@ -60,3 +60,17 @@ def test_cupy_empty_projection_batch():
     result = pool.transform(cp.empty((0, 3), dtype=cp.float64))
     assert result.shape == (0, 10)
     assert result.dtype == cp.float64
+
+
+@pytest.mark.parametrize("invalid", ["weights", "index", "center"])
+def test_cupy_rejects_inconsistent_projection_metadata(invalid):
+    host = np.ones((4, 3), dtype=np.float32)
+    pool = flc.ObliquePool(num_projections=7).fit(host)
+    if invalid == "weights":
+        pool.weights_[0] = pool.weights_[0][:-1]
+    elif invalid == "index":
+        pool.feature_idx_[0][0] = 3
+    else:
+        pool.center_ = pool.center_[:-1]
+    with pytest.raises(ValueError, match="metadata"):
+        pool.transform(cp.asarray(host))

@@ -123,7 +123,7 @@ def _validate_dataframe_columns(frame: Any, num_projections: int) -> tuple[List[
 def _cupy_projection_kernel(xp: Any) -> Any:
     return xp.ElementwiseKernel(
         "raw T data, raw int32 indices, raw int64 offsets, raw float32 weights, "
-        "raw float32 center, raw float32 scale, int64 row_stride, int64 column_stride, int64 projections",
+        "raw float32 center, raw float32 scale, int64 projections",
         "float32 projected",
         """
         const long long row = i / projections;
@@ -131,7 +131,8 @@ def _cupy_projection_kernel(xp: Any) -> Any:
         float total = 0.0f;
         for (long long term = offsets[projection]; term < offsets[projection + 1]; ++term) {
             const int feature = indices[term];
-            float value = static_cast<float>(data[row * row_stride + feature * column_stride]);
+            const long long position[2] = {row, static_cast<long long>(feature)};
+            float value = static_cast<float>(data[position]);
             if (isnan(value)) value = center[feature];
             const float normalized = (value - center[feature]) / scale[feature];
             total += normalized * weights[term];
@@ -139,6 +140,7 @@ def _cupy_projection_kernel(xp: Any) -> Any:
         projected = total;
         """,
         "falcata_oblique_projection",
+        reduce_dims=False,
     )
 
 
@@ -154,11 +156,26 @@ def _fill_cupy_projections(
 ) -> None:
     if output.size == 0:
         return
+    if (
+        len(feature_indices) != output.shape[1]
+        or len(weights) != len(feature_indices)
+        or any(np.ndim(indices) != 1 for indices in feature_indices)
+        or any(np.ndim(weight) != 1 for weight in weights)
+        or any(len(indices) != len(weight) for indices, weight in zip(feature_indices, weights, strict=True))
+        or center.shape != (matrix.shape[1],)
+        or scale.shape != (matrix.shape[1],)
+    ):
+        raise ValueError("projection metadata have inconsistent shapes")
     # Ragged metadata avoids padding and keeps uploads constant in the number
     # of projections. No device arrays are retained in the serialized pool.
     offsets = np.zeros(len(feature_indices) + 1, dtype=np.int64)
     np.cumsum([len(indices) for indices in feature_indices], out=offsets[1:])
-    indices = np.concatenate(feature_indices).astype(np.int32, copy=False)
+    indices = np.concatenate(feature_indices)
+    if indices.dtype.kind not in "iu" or np.any(indices < 0) or np.any(indices >= matrix.shape[1]):
+        raise ValueError("projection metadata contain invalid feature indices")
+    if np.any(indices > np.iinfo(np.int32).max):
+        raise ValueError("projection metadata exceed the int32 feature index limit")
+    indices = indices.astype(np.int32, copy=False)
     packed_weights = np.concatenate(weights).astype(np.float32)
     matrix = xp.asarray(matrix)
     _cupy_projection_kernel(xp)(
@@ -168,11 +185,8 @@ def _fill_cupy_projections(
         xp.asarray(packed_weights),
         center,
         scale,
-        matrix.strides[0] // matrix.itemsize,
-        matrix.strides[1] // matrix.itemsize,
         output.shape[1],
         output.ravel(),
-        size=output.size,
     )
 
 
