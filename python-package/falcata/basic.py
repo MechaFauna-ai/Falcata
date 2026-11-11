@@ -25,6 +25,7 @@ from functools import wraps
 from os import SEEK_END, environ
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from threading import RLock
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 import narwhals as nw
@@ -48,6 +49,11 @@ __all__ = [
     "register_logger",
     "Sequence",
 ]
+
+# The native network is process-global, even when several boosters use it.
+_NETWORK_LOCK = RLock()
+_NETWORK_REFCOUNT = 0
+_NETWORK_CONFIG: Optional[Tuple[str, int, int, int]] = None
 
 _BoosterHandle = ctypes.c_void_p
 _DatasetHandle = ctypes.c_void_p
@@ -4140,6 +4146,9 @@ class Booster:
     ) -> "Booster":
         """Set the network configuration.
 
+        Boosters with the same configuration share the native network. A different
+        configuration can only be set when this booster is its sole owner.
+
         Parameters
         ----------
         machines : list, set or str
@@ -4158,27 +4167,46 @@ class Booster:
         """
         if isinstance(machines, (list, set)):
             machines = ",".join(machines)
-        _safe_call(
-            _LIB.FLC_NetworkInit(
-                _c_str(machines),
-                ctypes.c_int(local_listen_port),
-                ctypes.c_int(listen_time_out),
-                ctypes.c_int(num_machines),
-            )
-        )
-        self._network = True
+        global _NETWORK_REFCOUNT, _NETWORK_CONFIG
+        config = (machines, local_listen_port, listen_time_out, num_machines)
+        with _NETWORK_LOCK:
+            if _NETWORK_REFCOUNT and config != _NETWORK_CONFIG:
+                if not self._network or _NETWORK_REFCOUNT > 1:
+                    raise FalcataError("Cannot change network configuration while other boosters hold the network")
+            if not _NETWORK_REFCOUNT or config != _NETWORK_CONFIG:
+                _safe_call(
+                    _LIB.FLC_NetworkInit(
+                        _c_str(machines),
+                        ctypes.c_int(local_listen_port),
+                        ctypes.c_int(listen_time_out),
+                        ctypes.c_int(num_machines),
+                    )
+                )
+                _NETWORK_CONFIG = config
+            if not self._network:
+                _NETWORK_REFCOUNT += 1
+                self._network = True
         return self
 
     def free_network(self) -> "Booster":
-        """Free Booster's network.
+        """Release this booster's network ownership.
+
+        The native network is freed after the last owner releases it. Repeated
+        calls on a booster without network ownership have no effect.
 
         Returns
         -------
         self : Booster
             Booster with freed network.
         """
-        _safe_call(_LIB.FLC_NetworkFree())
-        self._network = False
+        global _NETWORK_REFCOUNT, _NETWORK_CONFIG
+        with _NETWORK_LOCK:
+            if self._network:
+                if _NETWORK_REFCOUNT == 1:
+                    _safe_call(_LIB.FLC_NetworkFree())
+                    _NETWORK_CONFIG = None
+                _NETWORK_REFCOUNT -= 1
+                self._network = False
         return self
 
     def trees_to_dataframe(self) -> pd_DataFrame:
@@ -5555,6 +5583,11 @@ class Booster:
         )
         new_params["refit_decay_rate"] = decay_rate
         new_booster = Booster(new_params, train_set)
+        global _NETWORK_REFCOUNT
+        with _NETWORK_LOCK:
+            if self._network and not new_booster._network:
+                _NETWORK_REFCOUNT += 1
+                new_booster._network = True
         # Copy models
         _safe_call(
             _LIB.FLC_BoosterMerge(
@@ -5572,7 +5605,6 @@ class Booster:
                 ctypes.c_int32(ncol),
             )
         )
-        new_booster._network = self._network
         return new_booster
 
     def get_leaf_output(self, tree_id: int, leaf_id: int) -> float:
