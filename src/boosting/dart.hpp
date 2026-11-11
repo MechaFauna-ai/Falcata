@@ -205,7 +205,7 @@ class DART: public GBDT {
   /*! \brief Random generator, used to select dropping trees */
   Random random_for_drop_;
   /*! \brief Flag that the score is update on current iter or not*/
-  bool is_update_score_cur_iter_;
+  bool is_update_score_cur_iter_ = false;
 };
 
 }  // namespace Falcata

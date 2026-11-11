@@ -50,7 +50,7 @@ __global__ void EvalKernel(const data_size_t num_data, const label_t* labels, co
 
 template <typename HOST_METRIC, typename CUDA_METRIC>
 void CUDAPointwiseMetricInterface<HOST_METRIC, CUDA_METRIC>::LaunchEvalKernel(const double* score, double* sum_loss, double* sum_weight) const {
-  const int num_blocks = (this->num_data_ + NUM_DATA_PER_EVAL_THREAD - 1) / NUM_DATA_PER_EVAL_THREAD;
+  const int num_blocks = CUDABlockCount(this->num_data_, NUM_DATA_PER_EVAL_THREAD);
   if (this->cuda_weights_ != nullptr) {
     EvalKernel<CUDA_METRIC, true><<<num_blocks, NUM_DATA_PER_EVAL_THREAD>>>(
       this->num_data_, this->cuda_labels_, this->cuda_weights_, score, reduce_block_buffer_.RawData(), GetParamFromConfig());

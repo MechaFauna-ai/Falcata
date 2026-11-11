@@ -117,10 +117,17 @@ def make_ranking(
 
 
 @lru_cache(maxsize=None)
-def make_synthetic_regression(*, n_samples=100, n_features=4, n_informative=2, random_state=42):
+def _cached_synthetic_regression(*, n_samples=100, n_features=4, n_informative=2, random_state=42):
     return sklearn.datasets.make_regression(
         n_samples=n_samples, n_features=n_features, n_informative=n_informative, random_state=random_state
     )
+
+
+def make_synthetic_regression(*, n_samples=100, n_features=4, n_informative=2, random_state=42):
+    arrays = _cached_synthetic_regression(
+        n_samples=n_samples, n_features=n_features, n_informative=n_informative, random_state=random_state
+    )
+    return tuple(array.copy() for array in arrays)
 
 
 def dummy_obj(preds, train_data):

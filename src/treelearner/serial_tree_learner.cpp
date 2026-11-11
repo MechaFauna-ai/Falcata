@@ -837,7 +837,9 @@ void SerialTreeLearner::RenewTreeOutput(Tree* tree, const ObjectiveFunction* obj
       outputs = Network::GlobalSum(&outputs);
       n_nozeroworker_perleaf = Network::GlobalSum(&n_nozeroworker_perleaf);
       for (int i = 0; i < tree->num_leaves(); ++i) {
-        tree->SetLeafOutput(i, outputs[i] / n_nozeroworker_perleaf[i]);
+        if (n_nozeroworker_perleaf[i] > 0) {
+          tree->SetLeafOutput(i, outputs[i] / n_nozeroworker_perleaf[i]);
+        }
       }
     }
   }
