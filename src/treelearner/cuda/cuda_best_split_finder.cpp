@@ -127,21 +127,26 @@ void CUDABestSplitFinder::Init() {
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[0]));
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[1]));
   cuda_best_split_info_buffer_.Resize(8);
-  if (use_global_memory_) {
-    // 2x: separate staging regions for the forward and reverse direction
-    // tasks of a feature (they run as concurrent blocks of one launch)
-    cuda_feature_hist_grad_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
-    cuda_feature_hist_cnt_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
-    cuda_feature_hist_hess_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
-    if (has_categorical_feature_) {
-      cuda_feature_hist_stat_buffer_.Resize(static_cast<size_t>(num_total_bin_));
-      cuda_feature_hist_index_buffer_.Resize(static_cast<size_t>(num_total_bin_));
-    }
-  }
+  AllocateGlobalMemoryHistBuffers();
 
   if (select_features_by_node_) {
     is_feature_used_by_smaller_node_.Resize(num_features_);
     is_feature_used_by_larger_node_.Resize(num_features_);
+  }
+}
+
+void CUDABestSplitFinder::AllocateGlobalMemoryHistBuffers() {
+  if (!use_global_memory_) {
+    return;
+  }
+  // 2x: separate staging regions for the forward and reverse direction
+  // tasks of a feature (they run as concurrent blocks of one launch)
+  cuda_feature_hist_grad_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
+  cuda_feature_hist_cnt_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
+  cuda_feature_hist_hess_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
+  if (has_categorical_feature_) {
+    cuda_feature_hist_stat_buffer_.Resize(static_cast<size_t>(num_total_bin_));
+    cuda_feature_hist_index_buffer_.Resize(static_cast<size_t>(num_total_bin_));
   }
 }
 
@@ -423,7 +428,11 @@ void CUDABestSplitFinder::ResetTrainingData(
   train_data_ = train_data;
   num_features_ = train_data->num_features();
   feature_hist_offsets_ = feature_hist_offsets;
+  // the histogram layout (feature grouping) of the new data may differ, and InitFeatureMetaInfo may switch
+  // use_global_memory_: size the global-memory staging buffers for the new data as Init does
+  num_total_bin_ = feature_hist_offsets.empty() ? 0 : static_cast<int>(feature_hist_offsets.back());
   InitFeatureMetaInfo(train_data);
+  AllocateGlobalMemoryHistBuffers();
   cuda_is_feature_used_bytree_.Clear();
   cuda_best_split_info_.Clear();
   InitCUDAFeatureMetaInfo();

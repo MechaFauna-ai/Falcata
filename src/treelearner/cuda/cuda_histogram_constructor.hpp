@@ -610,6 +610,10 @@ class CUDAHistogramConstructor {
 
   void ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states);
 
+  /*! \brief size cuda_hist_buffer_ (the global-memory construct kernels' per-grid-row partial histograms) for
+   *  num_data_ when the row data has large-bin partitions */
+  void ResizeLargeBinHistBuffer();
+
   void ResetConfig(const Config* config);
 
   /*! \brief cuda_plan key device_levels: the device level state the batched construct, fix/subtract and copy

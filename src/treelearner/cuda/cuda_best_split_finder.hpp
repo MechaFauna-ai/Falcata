@@ -85,6 +85,9 @@ class CUDABestSplitFinder {
 
   void Init();
 
+  /*! \brief size the global-memory histogram staging buffers for num_total_bin_ (when use_global_memory_) */
+  void AllocateGlobalMemoryHistBuffers();
+
   void InitCUDAFeatureMetaInfo();
 
   /*! \brief Provide the histogram subtraction completion events so the per-leaf

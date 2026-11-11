@@ -1446,7 +1446,7 @@ void CUDAHistogramConstructor::InitDeterministicDenseScratch() {
 }
 
 void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStates* share_state) {
-  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_) *
+  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_) * 2 * static_cast<size_t>(num_leaves_) *
                     static_cast<size_t>(num_hist_planes_));
   cuda_hist_.SetValue(0);
   // Deterministic float-mode construct scratch (see ResetTrainingData; both
@@ -1528,22 +1528,7 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   cuda_hybrid_construct_dim_y_.Resize(1);
   InitFixMFBMask();
 
-  if (cuda_row_data_->NumLargeBinPartition() > 0) {
-    int grid_dim_x = 0, grid_dim_y = 0, block_dim_x = 0, block_dim_y = 0;
-    CalcConstructHistogramKernelDim(&grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y, num_data_);
-    const size_t buffer_size = static_cast<size_t>(grid_dim_y) * static_cast<size_t>(num_total_bin_);
-    if (!use_quantized_grad_) {
-      if (gpu_use_dp_) {
-        // need to double the size of histogram buffer in global memory when using double precision in histogram construction
-        cuda_hist_buffer_.Resize(buffer_size * 4);
-      } else {
-        cuda_hist_buffer_.Resize(buffer_size * 2);
-      }
-    } else {
-      // use only half the size of histogram buffer in global memory when quantized training since each gradient and hessian takes only 2 bytes
-      cuda_hist_buffer_.Resize(buffer_size);
-    }
-  }
+  ResizeLargeBinHistBuffer();
   // The column-major fill source (cuda_plan key colmajor_fill) is not made here. Under colmajor_direct the tree
   // learner chooses the regime and its view is built from the Dataset's columns (ChooseViewRegime) at the end of its
   // Init; otherwise the tree learner calls InitColMajorFill before its second tree.
@@ -2164,6 +2149,28 @@ int CUDAHistogramConstructor::QuantConstructMaxRowsPerThread(const int block_dim
   return HybridQuantConstructMaxRowsPerThread(num_grad_quant_bins_, block_dim_y);
 }
 
+void CUDAHistogramConstructor::ResizeLargeBinHistBuffer() {
+  if (cuda_row_data_->NumLargeBinPartition() <= 0) {
+    return;
+  }
+  // the global-memory construct kernels write one partial histogram per grid row: size for the largest grid, the
+  // one over every row of the data
+  int grid_dim_x = 0, grid_dim_y = 0, block_dim_x = 0, block_dim_y = 0;
+  CalcConstructHistogramKernelDim(&grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y, num_data_);
+  const size_t buffer_size = static_cast<size_t>(grid_dim_y) * static_cast<size_t>(num_total_bin_);
+  if (!use_quantized_grad_) {
+    if (gpu_use_dp_) {
+      // need to double the size of histogram buffer in global memory when using double precision in histogram construction
+      cuda_hist_buffer_.Resize(buffer_size * 4);
+    } else {
+      cuda_hist_buffer_.Resize(buffer_size * 2);
+    }
+  } else {
+    // use only half the size of histogram buffer in global memory when quantized training since each gradient and hessian takes only 2 bytes
+    cuda_hist_buffer_.Resize(buffer_size);
+  }
+}
+
 void CUDAHistogramConstructor::CalcConstructHistogramKernelDim(
   int* grid_dim_x,
   int* grid_dim_y,
@@ -2227,7 +2234,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   num_features_ = train_data->num_features();
   InitFeatureMetaInfo(train_data, share_states->feature_hist_offsets());
 
-  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_) *
+  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_) * 2 * static_cast<size_t>(num_leaves_) *
                     static_cast<size_t>(num_hist_planes_));
   cuda_hist_.SetValue(0);
   // Deterministic float-mode construct scratch: launches clamp their tile
@@ -2253,6 +2260,8 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_row_data_.reset(new CUDARowData(train_data, share_states, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
   cuda_row_data_->Init(train_data, share_states);
+  // sized from num_data_ and the new row data's partitions (Init sizes it for the original data)
+  ResizeLargeBinHistBuffer();
 
   InitDeterministicDenseScratch();
 
@@ -2277,7 +2286,7 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
   min_data_in_leaf_ = config->min_data_in_leaf;
   feature_fraction_ = config->feature_fraction;
   min_sum_hessian_in_leaf_ = config->min_sum_hessian_in_leaf;
-  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_) *
+  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_) * 2 * static_cast<size_t>(num_leaves_) *
                     static_cast<size_t>(num_hist_planes_));
   cuda_hist_.SetValue(0);
   num_dirty_leaves_ = -1;
