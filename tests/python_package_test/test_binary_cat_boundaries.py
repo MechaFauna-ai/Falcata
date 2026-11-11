@@ -27,7 +27,7 @@ def test_binary_categorical_boundaries(tmp_path, boundaries):
     data = bytearray(model.model_to_binary(compress_level=0))
     for i in range(struct.unpack_from("<I", data, 24)[0]):
         entry = 32 + 40 * i
-        ident, dtype, codec, shuffle, offset, stored, raw = struct.unpack_from("<IIIIQQQ", data, entry)
+        ident, _dtype, _codec, _shuffle, offset, stored, _raw = struct.unpack_from("<IIIIQQQ", data, entry)
         if ident == 11:
             assert stored == 8
             struct.pack_into("<ii", data, offset, *boundaries)
