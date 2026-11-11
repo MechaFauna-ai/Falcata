@@ -32,6 +32,7 @@ class NDCGMetric:public Metric {
   ~NDCGMetric() {
   }
   void Init(const Metadata& metadata, data_size_t num_data) override {
+    name_.clear();
     for (auto k : eval_at_) {
       name_.emplace_back(std::string("ndcg@") + std::to_string(k));
     }

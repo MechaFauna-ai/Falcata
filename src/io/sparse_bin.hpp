@@ -41,8 +41,11 @@ class SparseBinIterator : public BinIterator {
     }
     Reset(0);
   }
+  // raw-access iterator (RawGet/InnerRawGet): Get() is not meant to be used,
+  // but give its members defined values rather than leave them uninitialized
   SparseBinIterator(const SparseBin<VAL_T>* bin_data, data_size_t start_idx)
-      : bin_data_(bin_data) {
+      : bin_data_(bin_data), min_bin_(0), max_bin_(std::numeric_limits<VAL_T>::max()), most_freq_bin_(0),
+        offset_(0) {
     Reset(start_idx);
   }
 

@@ -25,26 +25,7 @@ void VotingParallelTreeLearner<TREELEARNER_T>::Init(const Dataset* train_data, b
   rank_ = Network::rank();
   num_machines_ = Network::num_machines();
 
-  // limit top k
-  if (top_k_ > this->num_features_) {
-    top_k_ = this->num_features_;
-  }
-  // get max bin
-  int max_bin = 0;
-  for (int i = 0; i < this->num_features_; ++i) {
-    if (max_bin < this->train_data_->FeatureNumBin(i)) {
-      max_bin = this->train_data_->FeatureNumBin(i);
-    }
-  }
-  // calculate buffer size
-  size_t buffer_size = 2 * top_k_ * std::max(max_bin * kHistEntrySize, sizeof(LightSplitInfo) * num_machines_);
-  auto max_cat_threshold = this->config_->max_cat_threshold;
-  // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit
-  size_t split_info_size = static_cast<size_t>(SplitInfo::Size(max_cat_threshold) * 2);
-  buffer_size = std::max(buffer_size, split_info_size);
-  // left and right on same time, so need double size
-  input_buffer_.resize(buffer_size);
-  output_buffer_.resize(buffer_size);
+  ResetTopKAndBuffers();
 
   smaller_is_feature_aggregated_.resize(this->num_features_);
   larger_is_feature_aggregated_.resize(this->num_features_);
@@ -80,8 +61,33 @@ void VotingParallelTreeLearner<TREELEARNER_T>::Init(const Dataset* train_data, b
 }
 
 template <typename TREELEARNER_T>
+void VotingParallelTreeLearner<TREELEARNER_T>::ResetTopKAndBuffers() {
+  // limit top k
+  top_k_ = std::min(this->config_->top_k, this->num_features_);
+  // get max bin
+  int max_bin = 0;
+  for (int i = 0; i < this->num_features_; ++i) {
+    if (max_bin < this->train_data_->FeatureNumBin(i)) {
+      max_bin = this->train_data_->FeatureNumBin(i);
+    }
+  }
+  // calculate buffer size
+  size_t buffer_size = 2 * top_k_ * std::max(max_bin * kHistEntrySize, sizeof(LightSplitInfo) * num_machines_);
+  auto max_cat_threshold = this->config_->max_cat_threshold;
+  // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit
+  size_t split_info_size = static_cast<size_t>(SplitInfo::Size(max_cat_threshold) * 2);
+  buffer_size = std::max(buffer_size, split_info_size);
+  // left and right on same time, so need double size
+  input_buffer_.resize(buffer_size);
+  output_buffer_.resize(buffer_size);
+}
+
+template <typename TREELEARNER_T>
 void VotingParallelTreeLearner<TREELEARNER_T>::ResetConfig(const Config* config) {
   TREELEARNER_T::ResetConfig(config);
+  // top_k and max_cat_threshold may have changed: refresh top_k_ and the
+  // buffers sized from them (they used to keep their Init values)
+  ResetTopKAndBuffers();
 
   local_config_ = *this->config_;
   local_config_.min_data_in_leaf /= num_machines_;
