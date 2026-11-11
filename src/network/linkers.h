@@ -225,8 +225,8 @@ inline void Linkers::Send(int rank, char* data, int64_t len) const {
 
 inline void Linkers::SendRecv(int send_rank, char* send_data, int64_t send_len,
                               int recv_rank, char* recv_data, int64_t recv_len) {
-  if (send_len <= INT32_MAX && recv_len <= INT32_MAX) {
-    // the transport's own exchange
+  if (send_len > 0 && send_len <= INT32_MAX && recv_len <= INT32_MAX) {
+    // the transport's own exchange (an empty send is left to the paths below, which post none, as Send does)
     SendRecv(send_rank, send_data, static_cast<int>(send_len), recv_rank, recv_data, static_cast<int>(recv_len));
     return;
   }
