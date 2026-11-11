@@ -3,8 +3,8 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-// POSIX sockets, Linux only (the tests also rely on Linux socket behaviour)
-#if defined(__linux__)
+// the socket transport (not MPI) over POSIX sockets: Linux only
+#if defined(__linux__) && defined(USE_SOCKET)
 
 #include <gtest/gtest.h>
 
@@ -141,4 +141,4 @@ TEST(LinkersSendRecv, BadHandshakeFailsTheSetup) {
   close(fd);
 }
 
-#endif  // defined(__linux__)
+#endif  // defined(__linux__) && defined(USE_SOCKET)
