@@ -6,7 +6,15 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("text", ["intro", ".. start params list\n\nbody", "body\n\n.. end params list"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "intro",
+        ".. start params list\n\nbody",
+        "body\n\n.. end params list",
+        "\n\n.. end params list\n.. start params list\n\n",
+    ],
+)
 def test_missing_parameter_markers_do_not_rewrite(tmp_path, text):
     path = Path(__file__).resolve().parents[2] / ".ci" / "parameter-generator.py"
     spec = importlib.util.spec_from_file_location("parameter_generator", path)
@@ -17,3 +25,14 @@ def test_missing_parameter_markers_do_not_rewrite(tmp_path, text):
     with pytest.raises(ValueError, match="marker"):
         module.gen_parameter_description([], [], target)
     assert target.read_text() == text
+
+
+def test_valid_parameter_markers_preserve_surrounding_text(tmp_path):
+    path = Path(__file__).resolve().parents[2] / ".ci" / "parameter-generator.py"
+    spec = importlib.util.spec_from_file_location("parameter_generator", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    target = tmp_path / "Parameters.rst"
+    target.write_text("intro\n.. start params list\n\nold\n\n.. end params list\ntail")
+    module.gen_parameter_description([], [], target)
+    assert target.read_text() == "intro\n.. start params list\n\n\n\n.. end params list\ntail"
