@@ -10,6 +10,7 @@
 #include "../../src/treelearner/quantized_index.hpp"
 
 TEST(QuantizedIndex, LargeOffsetsDoNotOverflow) {
+  EXPECT_EQ(Falcata::QuantizedPairOffset(1 << 30), uint64_t{1} << 31);
   const auto max_rows = std::numeric_limits<Falcata::data_size_t>::max();
   EXPECT_EQ(Falcata::QuantizedPairOffset(max_rows), uint64_t{4294967294});
   EXPECT_EQ(Falcata::QuantizedPairOffset(max_rows - 1) + 1, uint64_t{4294967293});
