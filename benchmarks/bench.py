@@ -57,6 +57,7 @@ class ResourceMonitor:
     def __init__(self, interval=0.25):
         self.interval = interval
         self._gpu_id = os.environ.get("FALCATA_BENCH_GPU_ID") or None
+        self._gpu_uuid_resolved = False
         visible = os.environ.get("CUDA_VISIBLE_DEVICES")
         if (visible or "").split(",")[0].strip().startswith("MIG-") or (self._gpu_id or "").startswith("MIG-"):
             raise ValueError("MIG per-instance GPU memory telemetry is unsupported by this benchmark")
@@ -76,6 +77,21 @@ class ResourceMonitor:
     def _gpu_memory_mb(self):
         if self._gpu_id == "":
             return 0
+        if self._gpu_id and self._gpu_id.startswith("GPU-") and not self._gpu_uuid_resolved:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return None
+            matches = [row.strip() for row in result.stdout.splitlines() if row.strip().startswith(self._gpu_id)]
+            if len(matches) != 1:
+                raise ValueError("GPU UUID must match exactly one device")
+            self._gpu_id = matches[0]
+            self._gpu_uuid_resolved = True
         command = ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"]
         if self._gpu_id is not None:
             command.append(f"--id={self._gpu_id}")

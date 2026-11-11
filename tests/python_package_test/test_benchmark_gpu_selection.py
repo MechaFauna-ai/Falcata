@@ -22,11 +22,14 @@ def monitor_class():
 
 
 def test_monitor_reads_selected_gpu(monkeypatch, monitor_class):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-second")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-bbbbbbbb")
     monkeypatch.delenv("FALCATA_BENCH_GPU_ID", raising=False)
 
     def query(command, **kwargs):
-        text = "10\n" if "--id=GPU-second" in command else "999\n10\n"
+        if "--query-gpu=uuid" in command:
+            text = "GPU-aaaaaaaa-1111-2222-3333-444444444444\nGPU-bbbbbbbb-1111-2222-3333-444444444444\n"
+        else:
+            text = "10\n" if "--id=GPU-bbbbbbbb-1111-2222-3333-444444444444" in command else "999\n10\n"
         return subprocess.CompletedProcess(command, 0, text, "")
 
     monkeypatch.setattr(subprocess, "run", query)
@@ -49,11 +52,11 @@ def test_ambiguous_monitor_selection_fails_before_training(monkeypatch, monitor_
 
 def test_explicit_monitor_device_override(monkeypatch, monitor_class):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
-    monkeypatch.setenv("FALCATA_BENCH_GPU_ID", "GPU-selected")
+    monkeypatch.setenv("FALCATA_BENCH_GPU_ID", "1")
     query = Mock(return_value=subprocess.CompletedProcess([], 0, "12\n", ""))
     monkeypatch.setattr(subprocess, "run", query)
     assert monitor_class()._gpu_memory_mb() == 12
-    assert "--id=GPU-selected" in query.call_args.args[0]
+    assert "--id=1" in query.call_args.args[0]
 
 
 @pytest.mark.parametrize("visible", ["", "-1"])
@@ -83,3 +86,13 @@ def test_ambiguous_or_mig_monitor_selection_is_explicit(monkeypatch, monitor_cla
     monkeypatch.delenv("FALCATA_BENCH_GPU_ID", raising=False)
     with pytest.raises(ValueError, match="MIG|UUID"):
         monitor_class()
+
+
+def test_ambiguous_uuid_prefix_is_rejected(monkeypatch, monitor_class):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-")
+    monkeypatch.delenv("FALCATA_BENCH_GPU_ID", raising=False)
+    monkeypatch.setattr(
+        subprocess, "run", Mock(return_value=subprocess.CompletedProcess([], 0, "GPU-one\nGPU-two\n", ""))
+    )
+    with pytest.raises(ValueError, match="exactly one"):
+        monitor_class()._gpu_memory_mb()
