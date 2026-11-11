@@ -1707,7 +1707,6 @@ class _InnerPredictor:
         ptr_indptr, type_ptr_indptr, __ = _c_int_array(csc.indptr)
         ptr_data, type_ptr_data, _ = _c_float_array(csc.data)
 
-        assert csc.shape[0] <= _MAX_INT32
         csc_indices = csc.indices.astype(np.int32, copy=False)
 
         _safe_call(
@@ -2600,7 +2599,8 @@ class Dataset:
         ptr_indptr, type_ptr_indptr, __ = _c_int_array(csr.indptr)
         ptr_data, type_ptr_data, _ = _c_float_array(csr.data)
 
-        assert csr.shape[1] <= _MAX_INT32
+        if csr.shape[1] > _MAX_INT32:
+            raise ValueError(f"CSR data cannot use more than {_MAX_INT32} columns")
         csr_indices = csr.indices.astype(np.int32, copy=False)
 
         _safe_call(
@@ -2635,7 +2635,8 @@ class Dataset:
         ptr_indptr, type_ptr_indptr, __ = _c_int_array(csc.indptr)
         ptr_data, type_ptr_data, _ = _c_float_array(csc.data)
 
-        assert csc.shape[0] <= _MAX_INT32
+        if csc.shape[0] > _MAX_INT32:
+            raise ValueError(f"CSC data cannot use more than {_MAX_INT32} rows")
         csc_indices = csc.indices.astype(np.int32, copy=False)
 
         _safe_call(
