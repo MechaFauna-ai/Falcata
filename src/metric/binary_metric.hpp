@@ -174,6 +174,7 @@ class AUCMetric: public Metric {
   }
 
   void Init(const Metadata& metadata, data_size_t num_data) override {
+    CHECK_GT(num_data, 0);
     name_.emplace_back("auc");
 
     num_data_ = num_data;
@@ -285,6 +286,7 @@ class AveragePrecisionMetric: public Metric {
   }
 
   void Init(const Metadata& metadata, data_size_t num_data) override {
+    CHECK_GT(num_data, 0);
     name_.emplace_back("average_precision");
 
     num_data_ = num_data;
