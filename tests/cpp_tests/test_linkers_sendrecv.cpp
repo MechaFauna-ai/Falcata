@@ -59,6 +59,20 @@ void MakePair(std::unique_ptr<Falcata::Linkers>* rank0, std::unique_ptr<Falcata:
   *rank1 = f1.get();
 }
 
+// Runs f on a detached thread and returns its result, or "timeout" if it has not finished after the given time.
+// f must own everything it touches (capture shared_ptrs by value): on a timeout the thread is left running, so a
+// hang fails the test instead of hanging the test binary.
+template <typename F>
+std::string RunWithTimeout(F f, int seconds) {
+  auto promise = std::make_shared<std::promise<std::string>>();
+  std::future<std::string> result = promise->get_future();
+  std::thread([promise, f]() mutable { promise->set_value(f()); }).detach();
+  if (result.wait_for(std::chrono::seconds(seconds)) != std::future_status::ready) {
+    return "timeout";
+  }
+  return result.get();
+}
+
 }  // namespace
 
 // A failure while SendRecv waited for its receive left the std::thread that
@@ -69,20 +83,21 @@ TEST(LinkersSendRecv, PeerGoneIsAnErrorNotAnAbortOrAHang) {
   signal(SIGPIPE, SIG_IGN);  // as the Python interpreter does
   for (const int send_len : {1000, 4 << 20}) {  // below and above the size SendRecv sends from a thread
     SCOPED_TRACE(send_len);
-    std::unique_ptr<Falcata::Linkers> rank0, rank1;
-    MakePair(&rank0, &rank1);
+    std::unique_ptr<Falcata::Linkers> rank0_owner, rank1;
+    MakePair(&rank0_owner, &rank1);
     rank1.reset();  // the peer dies
-    std::vector<char> send(send_len, 1), recv(send_len);
-    auto result = std::async(std::launch::async, [&]() {
+    std::shared_ptr<Falcata::Linkers> rank0(std::move(rank0_owner));
+    auto send = std::make_shared<std::vector<char>>(send_len, 1);
+    auto recv = std::make_shared<std::vector<char>>(send_len);
+    const std::string result = RunWithTimeout([rank0, send, recv, send_len]() {
       try {
-        rank0->SendRecv(1, send.data(), send_len, 1, recv.data(), send_len);
+        rank0->SendRecv(1, send->data(), send_len, 1, recv->data(), send_len);
         return std::string("returned");
       } catch (const std::runtime_error&) {
         return std::string("threw");
       }
-    });
-    ASSERT_EQ(result.wait_for(std::chrono::seconds(30)), std::future_status::ready) << "SendRecv hangs";
-    EXPECT_EQ(result.get(), "threw");
+    }, 30);
+    EXPECT_EQ(result, "threw") << "(\"timeout\": SendRecv hangs)";
   }
 }
 
@@ -110,14 +125,16 @@ TEST(LinkersSendRecv, BadHandshakeFailsTheSetup) {
   config.machines = "127.0.0.1 " + std::to_string(p0) + ",127.0.0.1 " + std::to_string(p1);
   config.local_listen_port = p1;  // rank 1 waits for rank 0 to connect
   config.time_out = 1;
-  auto setup = std::async(std::launch::async, [&config]() {
+  auto setup_promise = std::make_shared<std::promise<std::string>>();
+  std::future<std::string> setup = setup_promise->get_future();
+  std::thread([setup_promise, config]() {
     try {
       Falcata::Linkers linkers(config);
-      return std::string("constructed");
+      setup_promise->set_value("constructed");
     } catch (const std::runtime_error&) {
-      return std::string("threw");
+      setup_promise->set_value("threw");
     }
-  });
+  }).detach();  // see RunWithTimeout: a hang fails the test, it does not block it
   // play rank 0, badly
   int fd = -1;
   for (int attempt = 0; attempt < 100; ++attempt) {
