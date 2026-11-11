@@ -70,3 +70,27 @@ def test_rf_absent_class_prediction_does_not_drift_with_iterations(n_features):
     bin_params = {**_params("binary", False), "metric": "None"}
     bst = flc.train(bin_params, flc.Dataset(X, np.zeros(400)), num_boost_round=50)
     assert bst.predict(X[:20]).max() < 1e-6
+
+
+@pytest.mark.parametrize("objective", ["cross_entropy", "regression", "regression_l1", "binary"])
+def test_rf_empty_bag_keeps_predictions_finite(objective):
+    # Bagging draws each row independently, so 5 rows at bagging_fraction=0.3
+    # often get an empty bag. The tree grown on it had a 0/0 = NaN root output
+    # (handoff from fz-model: rf + cross_entropy, 5 rows, a -nan constant tree).
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((5, 3))
+    y = {"binary": np.array([0.0, 1.0, 0.0, 1.0, 1.0]), "cross_entropy": rng.random(5)}.get(
+        objective, rng.standard_normal(5)
+    )
+    for seed in range(20):
+        params = {
+            "objective": objective,
+            "boosting": "rf",
+            "bagging_fraction": 0.3,
+            "bagging_freq": 1,
+            "bagging_seed": seed,
+            "min_data_in_leaf": 1,
+            "verbose": -1,
+        }
+        bst = flc.train(params, flc.Dataset(X, y), num_boost_round=10)
+        assert np.all(np.isfinite(bst.predict(X))), seed

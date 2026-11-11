@@ -193,7 +193,12 @@ class RF : public GBDT {
           hess = tmp_hess_.data();
         }
 
-        new_tree.reset(tree_learner_->Train(grad, hess, false));
+        if (bag_data_cnt > 0) {
+          new_tree.reset(tree_learner_->Train(grad, hess, false));
+        }
+        // else: the bag drew no rows (bagging draws each row independently, so a small dataset
+        // can get an empty bag). A grown root would be 0/0 = NaN; the tree keeps output 0 and
+        // carries the class bias alone.
       }
 
       if (class_need_train_[cur_tree_id]) {
@@ -210,8 +215,10 @@ class RF : public GBDT {
           renew_score = cuda_init_score_.RawData() + offset;
         }
         #endif  // USE_CUDA
-        tree_learner_->RenewTreeOutput(new_tree.get(), objective_function_, residual_getter,
-          num_data_, bag_data_indices.data(), bag_data_cnt, renew_score);
+        if (bag_data_cnt > 0) {
+          tree_learner_->RenewTreeOutput(new_tree.get(), objective_function_, residual_getter,
+            num_data_, bag_data_indices.data(), bag_data_cnt, renew_score);
+        }
         if (std::fabs(init_scores_[cur_tree_id]) > kEpsilon) {
           new_tree->AddBias(init_scores_[cur_tree_id]);
         }
