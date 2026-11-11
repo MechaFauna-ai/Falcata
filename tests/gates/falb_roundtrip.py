@@ -9,6 +9,7 @@ import datetime
 import os
 import struct
 import sys
+from zlib import crc32
 
 import numpy as np
 
@@ -33,7 +34,9 @@ def resolve_lib():
     except Exception:
         pass
     explicit = os.environ.get("FALCATA_LIB")
-    path = explicit or installed or "./lib_falcata.so"
+    if not explicit and not installed:
+        raise RuntimeError("Cannot import falcata; set FALCATA_LIB explicitly for a source-tree build")
+    path = explicit or installed
     stamp = "missing"
     if os.path.exists(path):
         mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
@@ -206,7 +209,7 @@ def leaf_counts(text):
 
 fails = 0
 for name, kw, params in CASES:
-    X, y = make_data(seed=abs(hash(name)) % 1000, **kw)
+    X, y = make_data(seed=crc32(name.encode("utf-8")) % 1000, **kw)
     if "binary" in params:
         y = (y > np.median(y)).astype(np.float64)
     n_out = 1

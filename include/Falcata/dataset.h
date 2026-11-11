@@ -678,7 +678,9 @@ class Dataset {
     }
     std::vector<bool> is_feature_added(num_features_, false);
     for (auto& inner_data : feature_values) {
-      if (inner_data.first >= num_total_features_) {
+      // out-of-range columns are ignored (negative ones would index
+      // used_feature_map_[-1])
+      if (inner_data.first < 0 || inner_data.first >= num_total_features_) {
         continue;
       }
       int feature_idx = used_feature_map_[inner_data.first];
@@ -1216,6 +1218,9 @@ class Dataset {
   /*! \brief Device columns. Mutable and mutex-guarded: they are built on
    *  demand from the const accessor, concurrently on the NCCL path. */
   mutable std::unique_ptr<CUDAColumnData> cuda_column_data_;
+  /*! \brief Columns replaced by AddFeaturesFrom while a Booster may still
+   *  hold them; freed with the Dataset. */
+  std::vector<std::unique_ptr<CUDAColumnData>> retired_cuda_column_data_;
   /*! \brief Guards the lazy upload against two threads racing to build it. */
   mutable std::mutex cuda_column_data_mutex_;
   /*! \brief per-group expected bin bytes captured by GPUBinDenseRows under

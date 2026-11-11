@@ -174,6 +174,7 @@ class AUCMetric: public Metric {
   }
 
   void Init(const Metadata& metadata, data_size_t num_data) override {
+    CHECK_GT(num_data, 0);
     name_.emplace_back("auc");
 
     num_data_ = num_data;
@@ -285,6 +286,7 @@ class AveragePrecisionMetric: public Metric {
   }
 
   void Init(const Metadata& metadata, data_size_t num_data) override {
+    CHECK_GT(num_data, 0);
     name_.emplace_back("average_precision");
 
     num_data_ = num_data;
@@ -333,7 +335,7 @@ class AveragePrecisionMetric: public Metric {
           // accumulate
           sum_actual_pos += cur_actual_pos;
           sum_pred_pos += cur_actual_pos + cur_neg;
-          accum_prec = sum_actual_pos / sum_pred_pos;
+          accum_prec = sum_pred_pos > 0.0 ? sum_actual_pos / sum_pred_pos : 0.0;
           accum += cur_actual_pos * accum_prec;
           // reset
           cur_neg = cur_actual_pos = 0.0f;
@@ -352,7 +354,7 @@ class AveragePrecisionMetric: public Metric {
           // accumulate
           sum_actual_pos += cur_actual_pos;
           sum_pred_pos += cur_actual_pos + cur_neg;
-          accum_prec = sum_actual_pos / sum_pred_pos;
+          accum_prec = sum_pred_pos > 0.0 ? sum_actual_pos / sum_pred_pos : 0.0;
           accum += cur_actual_pos * accum_prec;
           // reset
           cur_neg = cur_actual_pos = 0.0f;
@@ -363,7 +365,7 @@ class AveragePrecisionMetric: public Metric {
     }
     sum_actual_pos += cur_actual_pos;
     sum_pred_pos += cur_actual_pos + cur_neg;
-    accum_prec = sum_actual_pos / sum_pred_pos;
+    accum_prec = sum_pred_pos > 0.0 ? sum_actual_pos / sum_pred_pos : 0.0;
     accum += cur_actual_pos * accum_prec;
     double ap = 1.0f;
     if (sum_actual_pos > 0.0f && sum_actual_pos != sum_weights_) {

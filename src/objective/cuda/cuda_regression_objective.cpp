@@ -33,25 +33,13 @@ CUDAMultiRegressionL2::CUDAMultiRegressionL2(const std::vector<std::string>& str
 CUDAMultiRegressionL2::~CUDAMultiRegressionL2() {}
 
 CUDARegressionL1loss::CUDARegressionL1loss(const Config& config):
-CUDARegressionObjectiveInterface<RegressionL1loss>(config) {}
+CUDAPercentileRegressionObjective<RegressionL1loss>(config) {}
 
 CUDARegressionL1loss::CUDARegressionL1loss(const std::vector<std::string>& strs):
-CUDARegressionObjectiveInterface<RegressionL1loss>(strs) {}
+CUDAPercentileRegressionObjective<RegressionL1loss>(strs) {}
 
 CUDARegressionL1loss::~CUDARegressionL1loss() {}
 
-void CUDARegressionL1loss::Init(const Metadata& metadata, data_size_t num_data) {
-  CUDARegressionObjectiveInterface<RegressionL1loss>::Init(metadata, num_data);
-  cuda_data_indices_buffer_.Resize(static_cast<size_t>(num_data));
-  cuda_percentile_result_.Resize(1);
-  if (cuda_weights_ != nullptr) {
-    const int num_blocks = (num_data + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION + 1;
-    cuda_weights_prefix_sum_.Resize(static_cast<size_t>(num_data));
-    cuda_weights_prefix_sum_buffer_.Resize(static_cast<size_t>(num_blocks));
-    cuda_weight_by_leaf_buffer_.Resize(static_cast<size_t>(num_data));
-  }
-  cuda_residual_buffer_.Resize(static_cast<size_t>(num_data));
-}
 
 
 CUDARegressionHuberLoss::CUDARegressionHuberLoss(const Config& config):
@@ -91,25 +79,13 @@ double CUDARegressionPoissonLoss::LaunchCalcInitScoreKernel(const int class_id) 
 
 
 CUDARegressionQuantileloss::CUDARegressionQuantileloss(const Config& config):
-CUDARegressionObjectiveInterface<RegressionQuantileloss>(config) {}
+CUDAPercentileRegressionObjective<RegressionQuantileloss>(config) {}
 
 CUDARegressionQuantileloss::CUDARegressionQuantileloss(const std::vector<std::string>& strs):
-CUDARegressionObjectiveInterface<RegressionQuantileloss>(strs) {}
+CUDAPercentileRegressionObjective<RegressionQuantileloss>(strs) {}
 
 CUDARegressionQuantileloss::~CUDARegressionQuantileloss() {}
 
-void CUDARegressionQuantileloss::Init(const Metadata& metadata, data_size_t num_data) {
-  CUDARegressionObjectiveInterface<RegressionQuantileloss>::Init(metadata, num_data);
-  cuda_data_indices_buffer_.Resize(static_cast<size_t>(num_data));
-  cuda_percentile_result_.Resize(1);
-  if (cuda_weights_ != nullptr) {
-    const int num_blocks = (num_data + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION + 1;
-    cuda_weights_prefix_sum_.Resize(static_cast<size_t>(num_data));
-    cuda_weights_prefix_sum_buffer_.Resize(static_cast<size_t>(num_blocks));
-    cuda_weight_by_leaf_buffer_.Resize(static_cast<size_t>(num_data));
-  }
-  cuda_residual_buffer_.Resize(static_cast<size_t>(num_data));
-}
 
 }  // namespace Falcata
 
