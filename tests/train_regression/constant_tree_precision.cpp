@@ -5,15 +5,16 @@
 #include <string>
 int main() {
   Falcata::Tree tree(2, false, false);
-  const double value = 1.2345678901234567;
-  tree.AsConstantTree(value);
-  const std::string code = tree.ToIfElse(0, false);
-  size_t position = 0;
-  int count = 0;
-  while ((position = code.find("return ", position)) != std::string::npos) {
-    position += 7;
-    assert(std::stod(code.substr(position)) == value);
-    ++count;
+  for (double value : {1.2345678901234567, -1.2345678901234567e-100, 1.2345678901234567e100}) {
+    tree.AsConstantTree(value);
+    const std::string code = tree.ToIfElse(0, false);
+    size_t position = 0;
+    int count = 0;
+    while ((position = code.find("return ", position)) != std::string::npos) {
+      position += 7;
+      assert(std::stod(code.substr(position)) == value);
+      ++count;
+    }
+    assert(count == 2);
   }
-  assert(count == 2);
 }
