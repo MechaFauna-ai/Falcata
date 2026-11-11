@@ -21,6 +21,8 @@ def test_gpu_guard_handles_query_timeout(monkeypatch, capsys):
 
     monkeypatch.setattr(subprocess, "run", hung_query)
     monkeypatch.setattr(sys, "argv", ["gpu_guard"])
+    # the default device: the guard refuses an ambiguous CUDA_VISIBLE_DEVICES before querying
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     with pytest.raises(SystemExit) as exc:  # noqa: PT011 - exit status is the contract
         module.main()
     assert exc.value.code == 2
