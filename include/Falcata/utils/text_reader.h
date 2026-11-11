@@ -10,6 +10,7 @@
 #include <Falcata/utils/pipeline_reader.h>
 #include <Falcata/utils/random.h>
 
+#include <algorithm>
 #include <string>
 #include <cstdio>
 #include <functional>
@@ -184,6 +185,10 @@ class TextReader {
         if (reader->Read(&probe, 1) == 0) {
           break;
         }
+        // one explicit, doubling reallocation for the probe byte and the chunk: left to push_back and resize, the
+        // library's own growth factor applied twice (MSVC: 1.5x for the byte, then again for the chunk), ending
+        // well past twice the file
+        ret.reserve(std::max(ret.size() + 1 + buffer_size, 2 * ret.capacity()));
         ret.push_back(probe);
       }
       const size_t old_size = ret.size();
