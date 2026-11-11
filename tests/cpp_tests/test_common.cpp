@@ -5,11 +5,13 @@
  */
 #include <gtest/gtest.h>
 #include <Falcata/utils/common.h>
+#include <Falcata/utils/json11.h>
 
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <vector>
 
 
@@ -156,6 +158,34 @@ TEST_F(AtofPreciseTest, Inf) {
     EXPECT_EQ(memcmp(&got, &test.expected, sizeof(test.expected)), 0)
               << "parsed infinite is not the same for every bit: " << test.data;
   }
+}
+
+// Inputs that end inside a \u escape or a literal used to be read 4 (or
+// len("false")) bytes past the end of the buffer before the length check;
+// under AddressSanitizer that was a heap-buffer-overflow.
+TEST(Json11, TruncatedInputFailsWithoutOverread) {
+  using json11_internal_lightgbm::Json;
+  // padded past the small-string buffer, so each text sits in an exact-size
+  // heap block and an overread is visible to sanitizers
+  const std::string pad(32, ' ');
+  for (const char* text : {"\"\\u12", "\"\\u", "t", "fa", "nul"}) {
+    const std::string padded = pad + text;
+    const std::string in(padded.data(), padded.size());
+    std::string err;
+    Json::parse(in, &err);
+    EXPECT_FALSE(err.empty()) << "accepted truncated input: " << text;
+  }
+}
+
+// int_value() of a number outside int's range was an undefined
+// double-to-int cast (x86 gives INT_MIN for both signs); it saturates now.
+TEST(Json11, IntValueSaturates) {
+  using json11_internal_lightgbm::Json;
+  std::string err;
+  EXPECT_EQ(Json::parse("1e30", &err).int_value(), std::numeric_limits<int>::max());
+  EXPECT_EQ(Json::parse("-1e30", &err).int_value(), std::numeric_limits<int>::min());
+  EXPECT_EQ(Json::parse("-7.9", &err).int_value(), -7);
+  EXPECT_EQ(Json(std::nan("")).int_value(), 0);
 }
 
 TEST(SortForPair, SortsOnlyTheSuffixFromStart) {

@@ -22,6 +22,7 @@
 
 #include <Falcata/utils/log.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -170,7 +171,13 @@ class Value : public JsonValue {
 
 class JsonDouble final : public Value<Json::NUMBER, double> {
   double number_value() const override { return m_value; }
-  int int_value() const override { return static_cast<int>(m_value); }
+  int int_value() const override {
+    // casting a NaN or out-of-range double to int is undefined: saturate
+    if (std::isnan(m_value)) return 0;
+    if (m_value >= static_cast<double>(std::numeric_limits<int>::max())) return std::numeric_limits<int>::max();
+    if (m_value <= static_cast<double>(std::numeric_limits<int>::min())) return std::numeric_limits<int>::min();
+    return static_cast<int>(m_value);
+  }
   bool equals(const JsonValue *other) const override {
     return m_value == other->number_value();
   }
@@ -525,8 +532,8 @@ struct JsonParser final {
       ch = str[i++];
 
       if (ch == 'u') {
-        // Extract 4-byte escape sequence
-        string esc = string(str + i, 4);
+        // Extract 4-byte escape sequence (fewer if the input ends early)
+        string esc = string(str + i, std::min<size_t>(4, str_len - i));
         // Explicitly check length of the substring. The following loop
         // relies on std::string returning the terminating NUL when
         // accessing str[length]. Checking here reduces brittleness.
@@ -645,7 +652,7 @@ struct JsonParser final {
   Json expect(const string &expected, Json res) {
     CHECK_NE(i, 0)
     i--;
-    auto substr = string(str + i, expected.length());
+    auto substr = string(str + i, std::min(expected.length(), str_len - i));
     if (substr == expected) {
       i += expected.length();
       return res;
