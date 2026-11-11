@@ -209,7 +209,7 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
     attr.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
     attr.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
     for (int p = 0; p < kNumHistPipelines; ++p) {
-      cudaStreamSetAttribute(pipeline_streams_[p], cudaStreamAttributeAccessPolicyWindow, &attr);
+      CUDASUCCESS_OR_FATAL(cudaStreamSetAttribute(pipeline_streams_[p], cudaStreamAttributeAccessPolicyWindow, &attr));
     }
   }
   // interleave (gradient, hessian) into float2 pairs for the dense construct

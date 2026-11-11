@@ -17,6 +17,8 @@
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
 
+#include "device_check_once.hpp"
+
 namespace Falcata {
 
 template <typename T>
@@ -605,10 +607,8 @@ void CheckCUDADeviceSupportsThisBuild(const int device_id) {
   }
   const int device = device_id < 0 ? current : device_id;
   // one-shot per device: SetCUDADevice calls this on every CUDA entry path
-  static std::atomic<uint64_t> checked_mask{0};
-  const int slot = device < 63 ? device : 63;
-  const uint64_t bit = 1ULL << slot;
-  if (checked_mask.fetch_or(bit) & bit) {
+  static DeviceCheckOnce checked;
+  if (!checked.Claim(device)) {
     return;
   }
   cudaDeviceProp prop{};

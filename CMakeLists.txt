@@ -1055,6 +1055,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_csc_row_iterator.cpp
       tests/cpp_tests/test_dataset_subset.cpp
       tests/cpp_tests/test_dense_bin.cpp
+      tests/cpp_tests/test_device_check_once.cpp
       tests/cpp_tests/test_discretizer_zero_scale.cpp
       tests/cpp_tests/test_empty_binary_ranking_metrics.cpp
       tests/cpp_tests/test_empty_global_leaf.cpp
@@ -1125,6 +1126,10 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_prefix_sum_exclusive.cu
         tests/cpp_tests/test_cuda_random_advance.cu
         tests/cpp_tests/test_cuda_shuffle_reduce.cu
+        tests/cpp_tests/test_cuda_reduce_min_global.cu
+        tests/cpp_tests/test_cuda_binary_init_score.cu
+        tests/cpp_tests/test_cuda_row_data_partitions.cu
+        tests/cpp_tests/test_cuda_interleave_grad_hess.cu
     )
     set_target_properties(
       testfalcata

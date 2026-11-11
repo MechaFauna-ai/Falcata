@@ -66,7 +66,7 @@ Metric* Metric::CreateMetric(const std::string& type, const Config& config) {
       Log::Warning("Metric multi_error is not implemented in cuda version. Fall back to evaluation on CPU.");
       return new MultiErrorMetric(config);
     } else if (type == std::string("multi_rmse") || type == std::string("multi_regression")) {
-      // CPU evaluation; cheap relative to training
+      Log::Warning("Metric %s is not implemented in cuda version. Fall back to evaluation on CPU.", type.c_str());
       return new MultiRMSEMetric(config);
     } else if (type == std::string("cross_entropy")) {
       Log::Warning("Metric cross_entropy is not implemented in cuda version. Fall back to evaluation on CPU.");
