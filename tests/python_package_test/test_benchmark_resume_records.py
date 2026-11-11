@@ -1,5 +1,6 @@
 """One malformed journal record must not prevent benchmark resumption."""
 
+import ast
 import importlib.util
 import json
 import sys
@@ -20,3 +21,11 @@ def test_resume_skips_invalid_records(tmp_path, monkeypatch):
     records = [{}, [], None, {**valid, "library": []}, valid]
     path.write_text("broken JSON\n" + "\n".join(json.dumps(r) for r in records))
     assert module.load_done(path) == {("falcata-stoch", "higgs", "shallow", "timed1"): "ok"}
+
+    node = next(
+        n
+        for n in ast.parse((directory / "bench.py").read_text()).body
+        if isinstance(n, ast.FunctionDef) and n.name == "recorded_cells"
+    )
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "bench.py", "exec"), module.__dict__)
+    assert module.recorded_cells(path, "falcata-stoch", "higgs") == {("shallow", "timed1"): "ok"}
