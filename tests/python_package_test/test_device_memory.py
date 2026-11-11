@@ -149,6 +149,8 @@ def _resident_gpu_used_bytes():
 
 def test_gpu_memory_query_distinguishes_unavailable_from_zero(monkeypatch):
     """A failed query is unavailable; a successful empty query measures zero."""
+    # the query contract, wherever this runs (a nested PID namespace would make the PID unknown)
+    monkeypatch.setattr(sys.modules[__name__], "_nvidia_smi_pid", os.getpid)
     monkeypatch.setattr(
         subprocess,
         "run",
