@@ -142,6 +142,28 @@ TEST(LinkersSendRecv, FailedSendAbortsAReceiveFromAnotherRank) {
   EXPECT_EQ(result, "threw the send error");
 }
 
+// The other way round: the receive peer dies while the send to a live rank
+// that does not read is blocked. The receive failure is what is reported, not
+// the send the abort interrupted.
+TEST(LinkersSendRecv, FailedReceiveIsReportedNotTheSendItAborted) {
+  signal(SIGPIPE, SIG_IGN);
+  auto ranks = MakeRanks(3);
+  ranks[1].reset();  // the receive peer dies; rank 2 stays up and reads nothing
+  std::shared_ptr<Falcata::Linkers> rank0(std::move(ranks[0]));
+  const int len = 16 << 20;  // more than the socket buffers hold, so the send blocks
+  auto send = std::make_shared<std::vector<char>>(len, 1);
+  auto recv = std::make_shared<std::vector<char>>(len);
+  const std::string result = RunWithTimeout([rank0, send, recv, len]() {
+    try {
+      rank0->SendRecv(2, send->data(), len, 1, recv->data(), len);
+      return std::string("returned");
+    } catch (const std::runtime_error& e) {
+      return std::string(e.what());
+    }
+  }, 30);
+  EXPECT_NE(result.find("rank 1 closed the connection"), std::string::npos) << result;
+}
+
 // A healthy exchange still works, from the thread and the direct path.
 TEST(LinkersSendRecv, ExchangesBothWays) {
   std::unique_ptr<Falcata::Linkers> rank0, rank1;

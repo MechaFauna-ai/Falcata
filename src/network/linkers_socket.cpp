@@ -14,6 +14,7 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -162,22 +163,45 @@ void Linkers::ListenThread(int incoming_cnt) {
     if (handler.IsClosed()) {
       continue;
     }
-    // receive rank
-    int read_cnt = 0;
-    int size_of_int = static_cast<int>(sizeof(int));
-    while (read_cnt < size_of_int) {
-      int cur_read_cnt = handler.Recv(buffer + read_cnt, size_of_int - read_cnt);
-      if (cur_read_cnt == 0) {
+    // the handshake read is bounded by the socket timeout, and Construct can interrupt it (AbortHandshake)
+    handler.SetTimeout(socket_timeout_ * 1000 * 60);
+    {
+      std::lock_guard<std::mutex> lock(handshake_mutex_);
+      if (handshake_aborted_) {
         handler.Close();
-        Log::Fatal("A connecting machine closed the connection before sending its rank");
+        Log::Fatal("Linkers setup was aborted");
       }
-      read_cnt += cur_read_cnt;
+      handshake_socket_ = &handler;
     }
-    int* ptr_in_rank = reinterpret_cast<int*>(buffer);
-    int in_rank = *ptr_in_rank;
-    if (in_rank < 0 || in_rank >= num_machines_) {
+    int in_rank = -1;
+    try {
+      // receive rank
+      int read_cnt = 0;
+      int size_of_int = static_cast<int>(sizeof(int));
+      while (read_cnt < size_of_int) {
+        int cur_read_cnt = handler.Recv(buffer + read_cnt, size_of_int - read_cnt);
+        if (cur_read_cnt == 0) {
+          Log::Fatal("A connecting machine closed the connection before sending its rank");
+        }
+        read_cnt += cur_read_cnt;
+      }
+      int* ptr_in_rank = reinterpret_cast<int*>(buffer);
+      in_rank = *ptr_in_rank;
+      if (in_rank < 0 || in_rank >= num_machines_) {
+        Log::Fatal("Invalid rank %d found during initialization of linkers. The world size is %d.", in_rank,
+                   num_machines_);
+      }
+    } catch (...) {
+      {
+        std::lock_guard<std::mutex> lock(handshake_mutex_);
+        handshake_socket_ = nullptr;
+      }
       handler.Close();
-      Log::Fatal("Invalid rank %d found during initialization of linkers. The world size is %d.", in_rank, num_machines_);
+      throw;
+    }
+    {
+      std::lock_guard<std::mutex> lock(handshake_mutex_);
+      handshake_socket_ = nullptr;
     }
     // add new socket
     SetLinker(in_rank, handler);
@@ -216,6 +240,7 @@ void Linkers::Construct() {
   try {
     ConnectToHigherRanks(need_connect);
   } catch (...) {
+    AbortHandshake();  // makes a handshake read in progress return
     listener_->Shutdown();  // makes a blocked accept return, so the thread finishes
     listen_thread.join();
     throw;
@@ -256,6 +281,14 @@ void Linkers::ConnectToHigherRanks(const std::unordered_map<int, int>& need_conn
         }
       }
     }
+  }
+}
+
+void Linkers::AbortHandshake() {
+  std::lock_guard<std::mutex> lock(handshake_mutex_);
+  handshake_aborted_ = true;
+  if (handshake_socket_ != nullptr) {
+    handshake_socket_->Shutdown();
   }
 }
 

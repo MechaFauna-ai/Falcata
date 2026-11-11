@@ -13,10 +13,12 @@
 
 #include <string>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -138,6 +140,8 @@ class Linkers {
   * \param need_connect ranks to link with
   */
   void ConnectToHigherRanks(const std::unordered_map<int, int>& need_connect);
+  /*! \brief Interrupt the handshake read ListenThread may be blocked in, and refuse further ones */
+  void AbortHandshake();
   /*!
   * \brief Parser machines information from file
   * \param machines
@@ -203,6 +207,12 @@ class Linkers {
   std::vector<std::unique_ptr<TcpSocket>> linkers_;
   /*! \brief Local socket listener */
   std::unique_ptr<TcpSocket> listener_;
+  /*! \brief Guards the two members below, shared by ListenThread and AbortHandshake */
+  std::mutex handshake_mutex_;
+  /*! \brief The accepted socket ListenThread is reading a rank from, if any */
+  TcpSocket* handshake_socket_ = nullptr;
+  /*! \brief Set by AbortHandshake: ListenThread takes no further connection */
+  bool handshake_aborted_ = false;
   #endif  // USE_SOCKET
 };
 
@@ -243,22 +253,32 @@ inline void Linkers::Send(int rank, char* data, int64_t len) const {
 
 template <typename SendFun, typename RecvFun>
 inline void Linkers::SendWhileReceiving(int send_rank, int recv_rank, const SendFun& send, const RecvFun& recv) {
+  // which side failed first (0: neither, 1: send, 2: receive): its error is the cause, the other side's is the
+  // shutdown that interrupted it
+  std::atomic<int> first_failure(0);
   std::exception_ptr send_error;
-  std::thread send_worker([this, recv_rank, &send, &send_error]() {
+  std::thread send_worker([this, recv_rank, &send, &send_error, &first_failure]() {
     try {
       send();
     } catch (...) {
       send_error = std::current_exception();
-      AbortLink(recv_rank);  // the receive may wait on another, still connected rank: make it return
+      int none = 0;
+      if (first_failure.compare_exchange_strong(none, 1)) {
+        AbortLink(recv_rank);  // the receive may wait on another, still connected rank: make it return
+      }
     }
   });
   try {
     recv();
   } catch (...) {
-    AbortLink(send_rank);
+    int none = 0;
+    const bool recv_first = first_failure.compare_exchange_strong(none, 2);
+    if (recv_first) {
+      AbortLink(send_rank);
+    }
     send_worker.join();
-    if (send_error) {
-      std::rethrow_exception(send_error);  // the cause, rather than the receive it aborted
+    if (!recv_first && send_error) {
+      std::rethrow_exception(send_error);
     }
     throw;
   }
