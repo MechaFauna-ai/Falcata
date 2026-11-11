@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 from pathlib import Path
 
 import h5py
@@ -31,27 +32,28 @@ class HDFSequence(flc.Sequence):
 
 
 def create_dataset_from_multiple_hdf(input_flist, batch_size):
-    data = []
-    ylist = []
-    for f in input_flist:
-        f = h5py.File(f, "r")
-        data.append(HDFSequence(f["X"], batch_size))
-        ylist.append(f["Y"][:])
+    with ExitStack() as stack:
+        data = []
+        ylist = []
+        for f in input_flist:
+            f = stack.enter_context(h5py.File(f, "r"))
+            data.append(HDFSequence(f["X"], batch_size))
+            ylist.append(f["Y"][:])
 
-    params = {
-        "bin_construct_sample_cnt": 200000,
-        "max_bin": 255,
-    }
-    y = np.concatenate(ylist)
-    dataset = flc.Dataset(data, label=y, params=params)
-    # With binary dataset created, we can use either Python API or cmdline version to train.
-    #
-    # Note: in order to create exactly the same dataset with the one created in simple_example.py, we need
-    # to modify simple_example.py to pass numpy array instead of pandas DataFrame to Dataset constructor.
-    # The reason is that DataFrame column names will be used in Dataset. For a DataFrame with Int64Index
-    # as columns, Dataset will use column names like ["0", "1", "2", ...]. While for numpy array, column names
-    # are using the default one assigned in C++ code (dataset_loader.cpp), like ["Column_0", "Column_1", ...].
-    dataset.save_binary("regression.train.from_hdf.bin")
+        params = {
+            "bin_construct_sample_cnt": 200000,
+            "max_bin": 255,
+        }
+        y = np.concatenate(ylist)
+        dataset = flc.Dataset(data, label=y, params=params)
+        # With binary dataset created, we can use either Python API or cmdline version to train.
+        #
+        # Note: in order to create exactly the same dataset with the one created in simple_example.py, we need
+        # to modify simple_example.py to pass numpy array instead of pandas DataFrame to Dataset constructor.
+        # The reason is that DataFrame column names will be used in Dataset. For a DataFrame with Int64Index
+        # as columns, Dataset will use column names like ["0", "1", "2", ...]. While for numpy array, column names
+        # are using the default one assigned in C++ code (dataset_loader.cpp), like ["Column_0", "Column_1", ...].
+        dataset.save_binary("regression.train.from_hdf.bin")
 
 
 def save2hdf(input_data, fname, batch_size):

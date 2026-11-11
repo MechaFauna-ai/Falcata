@@ -339,6 +339,27 @@ class MultiValSparseBin : public MultiValBin {
     if (SUBROW) {
       CHECK_EQ(num_data_, num_used_indices);
     }
+    if (SUBCOL) {
+      CHECK(!upper.empty());
+      CHECK_EQ(lower.size(), upper.size());
+      // a delta for every range a value can land in (the sentinel range is empty)
+      CHECK(delta.size() >= upper.size() || (delta.size() + 1 == upper.size() && lower.back() >= upper.back()));
+    }
+    // The range search below stops at the first range whose upper bound exceeds
+    // the value, so the last bound must exceed every stored bin (< num_bin_ of
+    // the full bin). Callers end the ranges with an empty sentinel range that
+    // does; if the last bound does not, search copies ending in one, so a value
+    // past every range is dropped like a value in an unused range.
+    std::vector<uint32_t> lower_ext, upper_ext;
+    const bool add_sentinel = SUBCOL && upper.back() < static_cast<uint32_t>(other->num_bin_);
+    if (add_sentinel) {
+      lower_ext = lower;
+      upper_ext = upper;
+      lower_ext.push_back(static_cast<uint32_t>(other->num_bin_));
+      upper_ext.push_back(static_cast<uint32_t>(other->num_bin_));
+    }
+    const std::vector<uint32_t>& lower_r = add_sentinel ? lower_ext : lower;
+    const std::vector<uint32_t>& upper_r = add_sentinel ? upper_ext : upper;
     int n_block = 1;
     data_size_t block_size = num_data_;
     Threading::BlockInfo<data_size_t>(static_cast<int>(t_data_.size() + 1),
@@ -364,10 +385,10 @@ class MultiValSparseBin : public MultiValBin {
         for (auto j = j_start; j < j_end; ++j) {
           const auto val = other->data_[j];
           if (SUBCOL) {
-            while (val >= upper[k]) {
+            while (val >= upper_r[k]) {
               ++k;
             }
-            if (val >= lower[k]) {
+            if (val >= lower_r[k]) {
               buf[size++] = static_cast<VAL_T>(val - delta[k]);
             }
           } else {
@@ -436,7 +457,10 @@ class MultiValSparseBin : public MultiValBin {
         num_bin_(other.num_bin_),
         estimate_element_per_row_(other.estimate_element_per_row_),
         data_(other.data_),
-        row_ptr_(other.row_ptr_) {}
+        row_ptr_(other.row_ptr_),
+        t_data_(other.t_data_),
+        t_size_(other.t_size_),
+        offsets_(other.offsets_) {}
 };
 
 template <typename INDEX_T, typename VAL_T>

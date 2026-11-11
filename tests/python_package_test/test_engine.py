@@ -2573,7 +2573,7 @@ def test_monotone_constraints(test_with_categorical_variable):
             constrained_model = lgb.train(params, trainset)
             assert is_correctly_constrained(constrained_model, test_with_categorical_variable), error_msg
             if test_with_interaction_constraints:
-                feature_sets = [["Column_0"], ["Column_1"], "Column_2"]
+                feature_sets = [["Column_0"], ["Column_1"], ["Column_2"]]
                 assert are_interactions_enforced(constrained_model, feature_sets)
 
 
