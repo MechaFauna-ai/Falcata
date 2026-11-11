@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace Falcata {
@@ -88,10 +89,9 @@ class MultiValSparseBin : public MultiValBin {
       total_entries += static_cast<uint64_t>(row_ptr_[i + 1]);
     }
     if (total_entries > static_cast<uint64_t>(std::numeric_limits<INDEX_T>::max())) {
-      Log::Fatal("Sparse multi-value bin holds %llu entries, more than its %zu-byte row index can count "
+      Log::Fatal("Sparse multi-value bin holds %s entries, more than its %zu-byte row index can count "
                  "(the index type was chosen from an estimated %.4f entries per row over %d rows)",
-                 static_cast<unsigned long long>(total_entries), sizeof(INDEX_T), estimate_element_per_row_,
-                 num_data_);
+                 std::to_string(total_entries).c_str(), sizeof(INDEX_T), estimate_element_per_row_, num_data_);
     }
     for (data_size_t i = 0; i < num_data_; ++i) {
       row_ptr_[i + 1] += row_ptr_[i];
