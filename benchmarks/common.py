@@ -160,7 +160,12 @@ def library_runs_cell(library: str, dataset: str, regime: str) -> bool:
 
 
 def venv_python(library: str) -> str:
-    """Path of the venv python that owns ``library`` (see setup_envs.sh)."""
+    """Path of the venv python that owns ``library`` (see setup_envs.sh).
+
+    Override with FALCATA_BENCH_PY_ENV_FALCATA for Falcata,
+    FALCATA_BENCH_PY_ENV_LIGHTGBM_OCL for OpenCL LightGBM, or
+    FALCATA_BENCH_PY_ENV_COMPETITORS for the other libraries.
+    """
     if library.startswith("falcata"):
         env = "env-falcata"
     elif library == "lightgbm-ocl":
