@@ -355,6 +355,15 @@ inline static const char* AtofPrecise(const char* p, double* out) {
 }
 
 inline static bool AtoiAndCheck(const char* p, int* out) {
+  // range first: Atoi accumulates in int, so a value beyond it (e.g. num_class=1e30
+  // written out as digits) overflowed (undefined behaviour) and parsed as garbage
+  errno = 0;
+  char* end = nullptr;
+  const long long wide = std::strtoll(p, &end, 10);  // NOLINT(runtime/int)
+  if (end != p && (errno == ERANGE || wide < std::numeric_limits<int>::min() ||
+                   wide > std::numeric_limits<int>::max())) {
+    return false;
+  }
   const char* after = Atoi(p, out);
   if (*after != '\0') {
     return false;
