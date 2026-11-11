@@ -462,44 +462,54 @@ class Booster {
       }
     }
 
+    // a failed reset keeps the previous parameters: without this, the rejected keys stayed in
+    // config_ and were merged into every later reset (and GBDT::ResetConfig rolls its own
+    // state back to the config it keeps)
+    const Config previous_config(config_);
     config_.Set(param);
 
-    OMP_SET_NUM_THREADS(config_.num_threads);
+    try {
+      OMP_SET_NUM_THREADS(config_.num_threads);
 
-    // The objective and the metrics are built from one config: a CUDA metric converts the score only through a
-    // CUDA objective, so a new objective needs new metrics (train and every valid set) when it moves between the
-    // device and the host (binary <-> cross_entropy, update(fobj=...) resetting the objective to "none").
-    if (param.count("objective")) {
-      // recreating the objective requires training data to initialize
-      // against; a model-loaded booster has none
-      if (train_data_ == nullptr) {
-        Log::Fatal("Cannot change objective for a Booster with no training data.");
+      // The objective and the metrics are built from one config: a CUDA metric converts the score only through a
+      // CUDA objective, so a new objective needs new metrics (train and every valid set) when it moves between the
+      // device and the host (binary <-> cross_entropy, update(fobj=...) resetting the objective to "none").
+      if (param.count("objective")) {
+        // recreating the objective requires training data to initialize
+        // against; a model-loaded booster has none
+        if (train_data_ == nullptr) {
+          Log::Fatal("Cannot change objective for a Booster with no training data.");
+        }
+        // build and initialize everything first (objective and metric Init can Fatal), so a Fatal here leaves the
+        // booster and GBDT on the previous objective and metrics
+        std::unique_ptr<ObjectiveFunction> objective(
+            ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
+        if (objective == nullptr) {
+          Log::Info("Using self-defined objective function");
+        } else {
+          objective->Init(train_data_->metadata(), train_data_->num_data());
+        }
+        auto train_metric = CreateMetrics(train_data_);
+        std::vector<std::vector<std::unique_ptr<Metric>>> valid_metrics;
+        for (const Dataset* valid_data : valid_data_) {
+          valid_metrics.push_back(CreateMetrics(valid_data));
+        }
+        // then commit: the new objects replace the old ones only after GBDT holds the new pointers
+        boosting_->ResetTrainingData(train_data_, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
+        for (size_t i = 0; i < valid_metrics.size(); ++i) {
+          boosting_->ResetValidMetrics(static_cast<int>(i), Common::ConstPtrInVectorWrapper<Metric>(valid_metrics[i]));
+        }
+        objective_fun_ = std::move(objective);
+        train_metric_ = std::move(train_metric);
+        valid_metrics_ = std::move(valid_metrics);
       }
-      // build and initialize everything first (objective and metric Init can Fatal), so a Fatal here leaves the
-      // booster and GBDT on the previous objective and metrics
-      std::unique_ptr<ObjectiveFunction> objective(
-          ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
-      if (objective == nullptr) {
-        Log::Info("Using self-defined objective function");
-      } else {
-        objective->Init(train_data_->metadata(), train_data_->num_data());
-      }
-      auto train_metric = CreateMetrics(train_data_);
-      std::vector<std::vector<std::unique_ptr<Metric>>> valid_metrics;
-      for (const Dataset* valid_data : valid_data_) {
-        valid_metrics.push_back(CreateMetrics(valid_data));
-      }
-      // then commit: the new objects replace the old ones only after GBDT holds the new pointers
-      boosting_->ResetTrainingData(train_data_, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
-      for (size_t i = 0; i < valid_metrics.size(); ++i) {
-        boosting_->ResetValidMetrics(static_cast<int>(i), Common::ConstPtrInVectorWrapper<Metric>(valid_metrics[i]));
-      }
-      objective_fun_ = std::move(objective);
-      train_metric_ = std::move(train_metric);
-      valid_metrics_ = std::move(valid_metrics);
+
+      boosting_->ResetConfig(&config_);
+    } catch (...) {
+      config_ = previous_config;
+      OMP_SET_NUM_THREADS(config_.num_threads);
+      throw;
     }
-
-    boosting_->ResetConfig(&config_);
   }
 
   void AddValidData(const Dataset* valid_data) {
