@@ -72,6 +72,8 @@ __device__ __forceinline__ T ShufflePrefixSumExclusive(T value, T* shared_mem_bu
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
   const uint32_t num_warp = blockDim.x / warpSize;
+  // see ShufflePrefixSum: late readers of a previous call's scratch must finish before this call's first write
+  __syncthreads();
   for (uint32_t offset = 1; offset < warpSize; offset <<= 1) {
     const T other_value = __shfl_up_sync(mask, value, offset);
     if (warpLane >= offset) {
@@ -95,6 +97,9 @@ __device__ __forceinline__ T ShufflePrefixSumExclusive(T value, T* shared_mem_bu
   __syncthreads();
   const T warp_base = warpID == 0 ? 0 : shared_mem_buffer[warpID - 1];
   const T inclusive_result = warp_base + value;
+  // every warp has read its base before any warp overwrites its slot with the hand-off below: warp w + 1 reads
+  // slot w, which warp w rewrites, and for floating types the two values can differ in the last bits
+  __syncthreads();
   // Hand-off of each warp's total to the next warp's lane 0. The buffer must be
   // indexed by warpID: for a last-lane thread warpLane is always warpSize-1, so
   // indexing by warpLane made every warp overwrite one slot, and lane 0's read
