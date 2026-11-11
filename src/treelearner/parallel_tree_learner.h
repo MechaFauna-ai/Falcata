@@ -152,6 +152,8 @@ class VotingParallelTreeLearner: public TREELEARNER_T {
     const std::vector<int>& larger_top_features);
 
  private:
+  /*! \brief Clamp top_k_ from config_ and size the collective buffers from it and max_cat_threshold */
+  void ResetTopKAndBuffers();
   /*! \brief Tree config used in local mode */
   Config local_config_;
   /*! \brief Voting size */

@@ -159,7 +159,11 @@ int GetNumColFromLIBSVMFile(const char* filename, bool header) {
       cur_line = Common::Trim(cur_line);
       auto colon_pos = cur_line.find_last_of(":");
       auto space_pos = cur_line.find_last_of(" \f\t\v");
-      auto sub_str = cur_line.substr(space_pos + 1, space_pos - colon_pos - 1);
+      // the index token sits between the last separator and the last colon
+      // (npos + 1 == 0 when the line has a single token)
+      auto sub_str = colon_pos == std::string::npos || colon_pos <= space_pos + 1
+                         ? std::string()
+                         : cur_line.substr(space_pos + 1, colon_pos - space_pos - 1);
       int cur_idx = 0;
       if (colon_pos != std::string::npos) {
         Common::Atoi(sub_str.c_str(), &cur_idx);

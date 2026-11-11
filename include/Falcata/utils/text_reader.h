@@ -125,7 +125,7 @@ class TextReader {
           ++i;
           ++total_cnt;
           // skip end of line
-          while ((buffer_process[i] == '\n' || buffer_process[i] == '\r') && i < read_cnt) {
+          while (i < read_cnt && (buffer_process[i] == '\n' || buffer_process[i] == '\r')) {
             ++i;
           }
           last_i = i;
@@ -287,7 +287,7 @@ class TextReader {
           ++i;
           ++total_cnt;
           // skip end of line
-          while ((buffer_process[i] == '\n' || buffer_process[i] == '\r') && i < read_cnt) {
+          while (i < read_cnt && (buffer_process[i] == '\n' || buffer_process[i] == '\r')) {
             ++i;
           }
           last_i = i;

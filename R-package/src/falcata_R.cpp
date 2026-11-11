@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <utility>
 #include <vector>
 #include <algorithm>
@@ -636,9 +637,11 @@ SEXP FLC_BoosterLoadModelFromString_R(SEXP model_str) {
   int n_protected = 1;
   int out_num_iterations = 0;
   const char* model_str_ptr = nullptr;
+  std::string raw_model;
   switch (TYPEOF(model_str)) {
     case RAWSXP: {
-      model_str_ptr = reinterpret_cast<const char*>(RAW(model_str));
+      raw_model.assign(reinterpret_cast<const char*>(RAW(model_str)), Rf_xlength(model_str));
+      model_str_ptr = raw_model.c_str();
       break;
     }
     case CHARSXP: {
@@ -646,10 +649,16 @@ SEXP FLC_BoosterLoadModelFromString_R(SEXP model_str) {
       break;
     }
     case STRSXP: {
+      if (Rf_xlength(model_str) != 1) {
+        Log::Fatal("model_str must contain exactly one string");
+      }
       temp = Rf_protect(STRING_ELT(model_str, 0));
       n_protected++;
       model_str_ptr = reinterpret_cast<const char*>(CHAR(temp));
+      break;
     }
+    default:
+      Log::Fatal("model_str must be a raw vector or a string");
   }
   BoosterHandle handle = nullptr;
   CHECK_CALL(FLC_BoosterLoadModelFromString(model_str_ptr, &out_num_iterations, &handle));
@@ -876,6 +885,9 @@ SEXP FLC_BoosterGetNumPredict_R(SEXP handle,
   _AssertBoosterHandleNotNull(handle);
   int64_t len;
   CHECK_CALL(FLC_BoosterGetNumPredict(R_ExternalPtrAddr(handle), Rf_asInteger(data_idx), &len));
+  if (len > std::numeric_limits<int>::max()) {
+    Log::Fatal("Prediction length exceeds the R integer limit");
+  }
   INTEGER(out)[0] = static_cast<int>(len);
   return R_NilValue;
   R_API_END();
@@ -945,6 +957,9 @@ SEXP FLC_BoosterCalcNumPredict_R(SEXP handle,
   int64_t len = 0;
   CHECK_CALL(FLC_BoosterCalcNumPredict(R_ExternalPtrAddr(handle), Rf_asInteger(num_row),
     pred_type, Rf_asInteger(start_iteration), Rf_asInteger(num_iteration), &len));
+  if (len > std::numeric_limits<int>::max()) {
+    Log::Fatal("Prediction length exceeds the R integer limit");
+  }
   INTEGER(out_len)[0] = static_cast<int>(len);
   return R_NilValue;
   R_API_END();
@@ -1076,6 +1091,9 @@ SEXP FLC_BoosterPredictForCSRSingleRowFast_R(SEXP handle_fastConfig,
   SEXP data,
   SEXP out_result) {
   R_API_BEGIN();
+  if (Rf_isNull(handle_fastConfig) || R_ExternalPtrAddr(handle_fastConfig) == nullptr) {
+    Log::Fatal("FastConfig handle is null; initialize fast prediction before predicting");
+  }
   int nnz = static_cast<int>(Rf_xlength(data));
   const int indptr[] = {0, nnz};
   int64_t out_len;
@@ -1248,6 +1266,9 @@ SEXP FLC_BoosterPredictForMatSingleRowFast_R(SEXP handle_fastConfig,
   SEXP data,
   SEXP out_result) {
   R_API_BEGIN();
+  if (Rf_isNull(handle_fastConfig) || R_ExternalPtrAddr(handle_fastConfig) == nullptr) {
+    Log::Fatal("FastConfig handle is null; initialize fast prediction before predicting");
+  }
   int64_t out_len;
   CHECK_CALL(FLC_BoosterPredictForMatSingleRowFast(R_ExternalPtrAddr(handle_fastConfig),
     REAL(data), &out_len, REAL(out_result)));

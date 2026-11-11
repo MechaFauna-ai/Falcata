@@ -21,6 +21,29 @@ namespace {
 
 // Init rejects an invalid host config before reading the Dataset, including
 // for parallel and linear wrappers. These tests need no network or GPU device.
+#ifdef USE_CUDA
+// deterministic=true on CUDA maps to quant_mode=fixedpoint and resets a
+// num_grad_quant_bins of 4 to the auto sentinel 0 -- meant for the 4 that
+// "auto" resolved to, but it also discarded an explicit quant_bins=4 and left
+// quant_bins_from_auto (false) disagreeing with the value. Config only: no
+// device is touched.
+TEST(HostQuantization, DeterministicKeepsExplicitQuantBins) {
+  // Config::Set takes canonical names (aliases such as quant_bins are
+  // resolved earlier, by Config::Str2Map / KeyAliasTransform).
+  Config explicit_four;
+  explicit_four.Set({{"device_type", "cuda"}, {"deterministic", "true"}, {"num_grad_quant_bins", "4"}});
+  EXPECT_EQ(explicit_four.ResolvedQuantMode(), QuantMode::kFixedPoint);
+  EXPECT_EQ(explicit_four.num_grad_quant_bins, 4);
+  EXPECT_FALSE(explicit_four.quant_bins_from_auto);
+
+  Config automatic;
+  automatic.Set({{"device_type", "cuda"}, {"deterministic", "true"}});
+  EXPECT_EQ(automatic.ResolvedQuantMode(), QuantMode::kFixedPoint);
+  EXPECT_EQ(automatic.num_grad_quant_bins, 0);
+  EXPECT_TRUE(automatic.quant_bins_from_auto);
+}
+#endif  // USE_CUDA
+
 TEST(HostQuantization, FactoryChecksSelectedBackendForEveryFamily) {
   for (const std::string device : {"cpu", "gpu"}) {
     for (const std::string family : {"serial", "feature", "data", "voting"}) {

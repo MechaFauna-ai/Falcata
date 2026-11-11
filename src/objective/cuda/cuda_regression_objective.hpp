@@ -22,6 +22,18 @@
 
 namespace Falcata {
 
+/*! \brief multi-target objectives: the column-major offset of target k's element of row, k * num_data + row. In 64
+ *  bits: num_data * num_target exceeds INT32_MAX for large multi-target datasets. */
+__host__ __device__ inline size_t MultiTargetElementIndex(const int k, const data_size_t num_data,
+                                                          const data_size_t row) {
+  return static_cast<size_t>(k) * static_cast<size_t>(num_data) + static_cast<size_t>(row);
+}
+
+/*! \brief multi-target objectives: blocks of block_size threads covering num_data rows (one thread per row) */
+__host__ __device__ inline int MultiTargetRowBlocks(const data_size_t num_data, const int block_size) {
+  return static_cast<int>((static_cast<int64_t>(num_data) + block_size - 1) / block_size);
+}
+
 template <typename HOST_OBJECTIVE>
 class CUDARegressionObjectiveInterface: public CUDAObjectiveInterface<HOST_OBJECTIVE> {
  public:

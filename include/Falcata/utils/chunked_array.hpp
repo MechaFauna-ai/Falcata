@@ -80,8 +80,17 @@ class ChunkedArray {
      * @param value value to insert.
      */
     void add(T value) {
-        if (!within_bounds(_last_chunk_idx, _last_idx_in_last_chunk)) {
+        if (_chunks.empty()) {
+            // after release(): start afresh in a new first chunk
             new_chunk();
+            _last_chunk_idx = 0;
+            _last_idx_in_last_chunk = 0;
+        } else if (_last_idx_in_last_chunk >= _chunk_size) {
+            // the current chunk is full: move on, reusing a chunk already
+            // allocated with new_chunk() if there is one
+            if (_last_chunk_idx + 1 >= _chunks.size()) {
+                new_chunk();
+            }
             ++_last_chunk_idx;
             _last_idx_in_last_chunk = 0;
         }
@@ -139,21 +148,25 @@ class ChunkedArray {
      *            Otherwise, exports only up to `get_add_count()` addresses.
      */
     void coalesce_to(T *other, bool all_valid_addresses = false) const {
-        const size_t full_chunks = this->get_chunks_count() - 1;
-
-        // Copy full chunks:
+        if (_chunks.empty()) {
+            return;  // released: nothing to copy
+        }
+        // all valid addresses: every allocated chunk in full; otherwise the
+        // chunks add() filled, then the add() count of the current chunk
+        // (chunks allocated with new_chunk() past it hold no added values)
+        const size_t full_chunks = all_valid_addresses ? _chunks.size() : _last_chunk_idx;
         size_t i = 0;
         for (size_t chunk = 0; chunk < full_chunks; ++chunk) {
-            T* chunk_ptr = _chunks[chunk];
+            const T* chunk_ptr = _chunks[chunk];
             for (size_t in_chunk_idx = 0; in_chunk_idx < _chunk_size; ++in_chunk_idx) {
                 other[i++] = chunk_ptr[in_chunk_idx];
             }
         }
-        // Copy filled values from last chunk only:
-        const size_t last_chunk_elems_to_copy = all_valid_addresses ? _chunk_size : this->get_last_chunk_add_count();
-        T* chunk_ptr = _chunks[full_chunks];
-        for (size_t in_chunk_idx = 0; in_chunk_idx < last_chunk_elems_to_copy; ++in_chunk_idx) {
-            other[i++] = chunk_ptr[in_chunk_idx];
+        if (!all_valid_addresses) {
+            const T* chunk_ptr = _chunks[_last_chunk_idx];
+            for (size_t in_chunk_idx = 0; in_chunk_idx < _last_idx_in_last_chunk; ++in_chunk_idx) {
+                other[i++] = chunk_ptr[in_chunk_idx];
+            }
         }
     }
 
@@ -201,8 +214,8 @@ class ChunkedArray {
     }
 
     /**
-     * Deletes all the allocated chunks.
-     * Do not use container after this! See ``clear()`` instead.
+     * Deletes all the allocated chunks. ``clear()`` also releases and makes
+     * the first chunk ready; after ``release()`` the next ``add()`` allocates it.
      */
     void release() noexcept {
         std::for_each(_chunks.begin(), _chunks.end(), [](T* c) { delete[] c; });
