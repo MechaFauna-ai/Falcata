@@ -1180,10 +1180,12 @@ class CUDAHistogramConstructor {
   /*! \brief minimum sum value of hessians allowed per leaf */
   double min_sum_hessian_in_leaf_;
   /*! \brief cuda stream for histogram construction */
-  cudaStream_t cuda_stream_;
-  cudaStream_t pipeline_streams_[kNumHistPipelines];
-  cudaEvent_t construct_done_events_[kNumHistPipelines];
-  cudaEvent_t subtract_done_events_[kNumHistPipelines];
+  cudaStream_t cuda_stream_ = nullptr;
+  /*! \brief the streams and events Init creates (pipeline_streams_[0] is the stream it created as cuda_stream_);
+   *  null until then, and released by the destructor */
+  cudaStream_t pipeline_streams_[kNumHistPipelines] = {};
+  cudaEvent_t construct_done_events_[kNumHistPipelines] = {};
+  cudaEvent_t subtract_done_events_[kNumHistPipelines] = {};
   int active_pipeline_ = 0;
   /*! \brief indices of feature whose histograms need to be fixed */
   std::vector<int> need_fix_histogram_features_;
