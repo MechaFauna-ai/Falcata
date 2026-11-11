@@ -1,7 +1,9 @@
 """FALB-only conversion options cannot be silently ignored for text output."""
 
+import numpy as np
 import pytest
 
+import falcata as flc
 from falcata.__main__ import main
 
 
@@ -13,3 +15,19 @@ def test_text_convert_rejects_falb_options(tmp_path, option, format_option):
         args.append("6")
     with pytest.raises(ValueError, match="FALB"):
         main(args)
+
+
+@pytest.mark.parametrize("extension", ["txt", "falb"])
+def test_default_conversion_roundtrip(tmp_path, extension):
+    data = np.arange(80, dtype=np.float64).reshape(40, 2)
+    booster = flc.train(
+        {"device_type": "cpu", "num_threads": 2, "verbosity": -1, "min_data_in_leaf": 1},
+        flc.Dataset(data, label=np.arange(40)),
+        num_boost_round=2,
+    )
+    source = tmp_path / "source.txt"
+    output = tmp_path / f"output.{extension}"
+    booster.save_model(source)
+    assert main(["convert", str(source), str(output)]) == 0
+    restored = flc.Booster(model_file=output)
+    np.testing.assert_array_equal(restored.predict(data), booster.predict(data))
