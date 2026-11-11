@@ -435,6 +435,22 @@ class Booster {
       Log::Fatal("Cannot change data_sample_strategy during training");
     }
     CheckDatasetResetConfig(config_, param);
+    if (train_data_ != nullptr) {
+      // The tree learners pick the quantized or float histogram storage, the
+      // gradient discretizer and their split-search functions once, at Init:
+      // ResetConfig rebuilds none of them, so a reset may not switch
+      // quantization on, off, or between modes. Compare the config this reset
+      // would produce (quant flags can also follow from e.g. deterministic).
+      Config reset_config(config_);
+      reset_config.Set(param);
+      if (reset_config.use_quantized_grad != config_.use_quantized_grad ||
+          (config_.use_quantized_grad && reset_config.ResolvedQuantMode() != config_.ResolvedQuantMode())) {
+        Log::Fatal("Cannot change quantized training (use_quantized_grad/quant_mode: %s/%s -> %s/%s) "
+                   "by resetting parameters; construct a new Booster instead",
+                   config_.use_quantized_grad ? "true" : "false", config_.quant_mode.c_str(),
+                   reset_config.use_quantized_grad ? "true" : "false", reset_config.quant_mode.c_str());
+      }
+    }
 
     config_.Set(param);
 
