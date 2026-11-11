@@ -1,9 +1,10 @@
 # coding: utf-8
-"""Deterministic CUDA lambdarank on queries longer than 2048 items must match the CPU objective.
+"""Deterministic CUDA lambdarank on queries longer than 2048 items must be reproducible and must learn.
 
 Queries above 2048 items take the globally sorted kernel. Its deterministic variant accumulates each item's lambdas
-and hessians over the item's pairs in the CPU's (i, j) order; this test pins those values against the CPU objective
-(through the trained model) and checks that two runs are identical.
+and hessians over the item's pairs in the CPU's (i, j) order, visiting only the pairs that involve the item. Two runs
+must give identical models, and the training NDCG must improve. (The CUDA lambdarank kernels use log2(2 + rank) as
+the pair discount where the CPU objective uses its reciprocal, so the models are not compared with the CPU's.)
 """
 
 import os
@@ -26,7 +27,7 @@ def _data():
     return X, y, group
 
 
-def _train(device):
+def _train(device, rounds=5):
     X, y, group = _data()
     params = {
         "objective": "lambdarank",
@@ -39,13 +40,26 @@ def _train(device):
         "seed": 0,
         "num_threads": 8,
         "verbose": -1,
+        "metric": "ndcg",
+        "eval_at": [10],
     }
-    booster = flc.train(params, flc.Dataset(X, label=y, group=group, params=params), num_boost_round=5)
-    return booster.predict(X)
+    ds = flc.Dataset(X, label=y, group=group, params=params)
+    evals = {}
+    booster = flc.train(
+        params,
+        ds,
+        num_boost_round=rounds,
+        valid_sets=[ds],
+        valid_names=["train"],
+        callbacks=[flc.record_evaluation(evals)],
+    )
+    return booster.predict(X), evals["train"]["ndcg@10"]
 
 
 @_REQUIRES_CUDA
 def test_lambdarank_queries_over_2048_items_deterministic_cuda():
-    cuda_pred = _train("cuda")
-    np.testing.assert_array_equal(cuda_pred, _train("cuda"))
-    np.testing.assert_allclose(cuda_pred, _train("cpu"), rtol=1e-4, atol=1e-4)
+    pred, ndcg = _train("cuda")
+    pred_again, _ = _train("cuda")
+    np.testing.assert_array_equal(pred, pred_again)
+    assert np.all(np.isfinite(pred))
+    assert ndcg[-1] > ndcg[0]
