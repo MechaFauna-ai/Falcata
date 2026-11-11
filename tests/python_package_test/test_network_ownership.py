@@ -23,7 +23,11 @@ def test_refit_keeps_network_until_last_owner(monkeypatch, machines_in_params, d
     original = lgb.train(params, lgb.Dataset(data, label=data[:, 0]), num_boost_round=2)
     if not machines_in_params:
         original.set_network("localhost:12400")
+    else:
+        # Refit must also work if the current configuration differs from params.
+        original.set_network("localhost:12401")
     refitted = original.refit(data, data[:, 0])
+    expected_inits = ["init"] * (3 if machines_in_params else 1)
     try:
         assert original._network
         assert refitted._network
@@ -34,11 +38,11 @@ def test_refit_keeps_network_until_last_owner(monkeypatch, machines_in_params, d
             del refitted
             survivor = original
         gc.collect()
-        assert calls == ["init"]
+        assert calls == expected_inits
         assert survivor._network
         survivor.free_network()
         survivor.free_network()
-        assert calls == ["init", "free"]
+        assert calls == expected_inits + ["free"]
     finally:
         # Also release ownership if an assertion fails, before mocks are restored.
         for name in ("original", "refitted", "survivor"):
@@ -59,11 +63,10 @@ def test_network_reinitialization_and_failed_calls(monkeypatch):
         original.set_network("localhost:12400")
         original.set_network("localhost:12401")
         other.set_network("localhost:12401")
-        assert calls == ["init", "init"]
-        with pytest.raises(basic.FalcataError, match="other boosters"):
-            original.set_network("localhost:12402")
+        original.set_network("localhost:12402")
+        assert calls == ["init"] * 5
         original.free_network()
-        assert calls == ["init", "init"]
+        assert calls == ["init"] * 5
         monkeypatch.setattr(basic._LIB, "FLC_GetLastError", lambda: b"network failure")
         monkeypatch.setattr(basic._LIB, "FLC_NetworkFree", lambda: -1)
         with pytest.raises(basic.FalcataError, match="network failure"):
@@ -72,7 +75,7 @@ def test_network_reinitialization_and_failed_calls(monkeypatch):
         monkeypatch.setattr(basic._LIB, "FLC_NetworkFree", lambda: calls.append("free") or 0)
         other = None
         gc.collect()
-        assert calls == ["init", "init", "free"]
+        assert calls == ["init"] * 5 + ["free"]
         monkeypatch.setattr(basic._LIB, "FLC_NetworkInit", lambda *args: -1)
         with pytest.raises(basic.FalcataError, match="network failure"):
             original.set_network("localhost:12400")

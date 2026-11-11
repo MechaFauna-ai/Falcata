@@ -53,7 +53,6 @@ __all__ = [
 # The native network is process-global, even when several boosters use it.
 _NETWORK_LOCK = RLock()
 _NETWORK_REFCOUNT = 0
-_NETWORK_CONFIG: Optional[Tuple[str, int, int, int]] = None
 
 _BoosterHandle = ctypes.c_void_p
 _DatasetHandle = ctypes.c_void_p
@@ -4150,8 +4149,9 @@ class Booster:
     ) -> "Booster":
         """Set the network configuration.
 
-        Boosters with the same configuration share the native network. A different
-        configuration can only be set when this booster is its sole owner.
+        The native network is shared by all boosters in this process. Each call
+        initializes it, while repeated calls on this booster retain one ownership
+        reference.
 
         Parameters
         ----------
@@ -4171,22 +4171,17 @@ class Booster:
         """
         if isinstance(machines, (list, set)):
             machines = ",".join(machines)
-        global _NETWORK_REFCOUNT, _NETWORK_CONFIG
-        config = (machines, local_listen_port, listen_time_out, num_machines)
+        global _NETWORK_REFCOUNT
         with _NETWORK_LOCK:
-            if _NETWORK_REFCOUNT and config != _NETWORK_CONFIG:
-                if not self._network or _NETWORK_REFCOUNT > 1:
-                    raise FalcataError("Cannot change network configuration while other boosters hold the network")
-            if not _NETWORK_REFCOUNT or config != _NETWORK_CONFIG:
-                _safe_call(
-                    _LIB.FLC_NetworkInit(
-                        _c_str(machines),
-                        ctypes.c_int(local_listen_port),
-                        ctypes.c_int(listen_time_out),
-                        ctypes.c_int(num_machines),
-                    )
+            # Always initialize: peers may be starting a new distributed session.
+            _safe_call(
+                _LIB.FLC_NetworkInit(
+                    _c_str(machines),
+                    ctypes.c_int(local_listen_port),
+                    ctypes.c_int(listen_time_out),
+                    ctypes.c_int(num_machines),
                 )
-                _NETWORK_CONFIG = config
+            )
             if not self._network:
                 _NETWORK_REFCOUNT += 1
                 self._network = True
@@ -4203,12 +4198,11 @@ class Booster:
         self : Booster
             Booster with freed network.
         """
-        global _NETWORK_REFCOUNT, _NETWORK_CONFIG
+        global _NETWORK_REFCOUNT
         with _NETWORK_LOCK:
             if self._network:
                 if _NETWORK_REFCOUNT == 1:
                     _safe_call(_LIB.FLC_NetworkFree())
-                    _NETWORK_CONFIG = None
                 _NETWORK_REFCOUNT -= 1
                 self._network = False
         return self
