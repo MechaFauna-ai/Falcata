@@ -223,8 +223,9 @@ def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
 
     ``backend`` is "fil" when cuML's Forest Inference Library served the
     predictions and "cpu" otherwise. Falcata falls back to the CPU predictor
-    silently (FIL off, cuML missing, or a conversion failure), so the first
-    slab is sent through the FIL entry point directly to learn which one ran.
+    when FIL is off, missing, or unusable. Check its cached model before
+    staging; the first slab still probes the FIL entry point to confirm the
+    backend, and a failed probe reuses the original host slab for CPU scoring.
     """
     try:
         import cupy as cp  # noqa: PLC0415
@@ -236,27 +237,41 @@ def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
         to_device = to_host = None
     n = x_te.shape[0]
 
+    def host_slab(start):
+        return np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
+
     def slab(start):
-        host = np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
+        host = host_slab(start)
         return to_device(host) if cp is not None else host
 
     def as_numpy(preds):
         return to_host(preds) if cp is not None and not isinstance(preds, np.ndarray) else preds
 
-    first = slab(0)
+    fil_predict = getattr(bst, "_fil_predict", None)
+    best_iteration = getattr(bst, "best_iteration", -1)
+    num_iteration = best_iteration if best_iteration > 0 else -1
+    if cp is not None:
+        params = getattr(bst, "params", None) or {}
+        device = str(params.get("device_type", params.get("device", ""))).lower()
+        fil_model = getattr(bst, "_fil_model", None)
+        if fil_predict is None or os.environ.get("FALCATA_FIL", "1") == "0" or device not in ("cuda", "gpu"):
+            cp = None
+        elif fil_model is not None and fil_model(0, num_iteration, False) is None:
+            cp = None
+    first_host = host_slab(0)
+    first = to_device(first_host) if cp is not None else first_host
     backend = "cpu"
     out = []
-    fil_predict = getattr(bst, "_fil_predict", None)
     if fil_predict is not None:
-        num_iteration = bst.best_iteration if bst.best_iteration > 0 else -1
         probe = fil_predict(data=first, start_iteration=0, num_iteration=num_iteration, raw_score=False)
         if probe is not None:
             backend = "fil"
             out.append(as_numpy(probe))
     if not out:
         # the CPU predictor reads host memory; a device slab would be a round trip
-        out.append(bst.predict(as_numpy(first) if cp is not None else first))
+        out.append(bst.predict(first_host))
         cp = None
+    del first_host, first
     for start in range(chunk_rows, n, chunk_rows):
         out.append(as_numpy(bst.predict(slab(start))))
     return (out[0] if len(out) == 1 else np.concatenate(out), backend)
