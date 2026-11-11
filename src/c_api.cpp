@@ -2332,7 +2332,9 @@ int FLC_DatasetCreateFromCSR(const void* indptr,
       auto idx = sample_indices[i];
       auto row = get_row_fun(static_cast<int>(idx));
       for (std::pair<int, double>& inner_data : row) {
-        CHECK_LT(inner_data.first, num_col);
+        if (inner_data.first < 0 || inner_data.first >= num_col) {
+          Log::Fatal("CSR column index %d is outside [0, %d)", inner_data.first, static_cast<int>(num_col));
+        }
         if (std::fabs(inner_data.second) > kZeroThreshold || std::isnan(inner_data.second)) {
           sample_values[inner_data.first].emplace_back(inner_data.second);
           sample_idx[inner_data.first].emplace_back(static_cast<int>(i));
@@ -2402,7 +2404,9 @@ int FLC_DatasetCreateFromCSRFunc(void* get_row_funptr,
       auto idx = sample_indices[i];
       get_row_fun(static_cast<int>(idx), buffer);
       for (std::pair<int, double>& inner_data : buffer) {
-        CHECK_LT(inner_data.first, num_col);
+        if (inner_data.first < 0 || inner_data.first >= num_col) {
+          Log::Fatal("CSR column index %d is outside [0, %d)", inner_data.first, static_cast<int>(num_col));
+        }
         if (std::fabs(inner_data.second) > kZeroThreshold || std::isnan(inner_data.second)) {
           sample_values[inner_data.first].emplace_back(inner_data.second);
           sample_idx[inner_data.first].emplace_back(static_cast<int>(i));
@@ -4188,7 +4192,8 @@ std::function<std::pair<int, double>(int idx)> IterateFunctionFromCSC_helper(con
 
 std::function<std::pair<int, double>(int idx)>
 IterateFunctionFromCSC(const void* col_ptr, int col_ptr_type, const int32_t* indices, const void* data, int data_type, int64_t ncol_ptr, int64_t , int col_idx) {
-  CHECK(col_idx < ncol_ptr && col_idx >= 0);
+  // ptr[col_idx + 1] is read below, so col_idx must leave room for it
+  CHECK(col_idx >= 0 && col_idx < ncol_ptr - 1);
   if (data_type == C_API_DTYPE_FLOAT32) {
     if (col_ptr_type == C_API_DTYPE_INT32) {
       return IterateFunctionFromCSC_helper<float, int32_t>(col_ptr, indices, data, col_idx);
