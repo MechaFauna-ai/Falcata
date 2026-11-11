@@ -11,6 +11,7 @@
 #include <Falcata/utils/pipeline_reader.h>
 #include <Falcata/utils/text_reader.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -269,6 +270,56 @@ TEST(SortForPair, SortsOnlyTheSuffixFromStart) {
   Falcata::Common::SortForPair<int, int>(&keys, &values, 1, true);
   EXPECT_EQ(keys, (std::vector<int>{9, 8, 3, 2, 1}));
   EXPECT_EQ(values, (std::vector<int>{90, 80, 30, 20, 10}));
+}
+
+// Softmax read rec[0] / input[0] and ObtainMinMaxSum read w[0] and w[1] (the
+// even-count branch) without checking for an empty input.
+TEST(Softmax, EmptyInputIsANoOp) {
+  std::vector<double> empty;
+  Falcata::Common::Softmax(&empty);
+  EXPECT_TRUE(empty.empty());
+  Falcata::Common::Softmax(empty.data(), empty.data(), 0);
+
+  std::vector<double> rec = {1.0, 2.0, 3.0};
+  Falcata::Common::Softmax(&rec);
+  double out[3];
+  const double in[3] = {1.0, 2.0, 3.0};
+  Falcata::Common::Softmax(in, out, 3);
+  double sum = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_DOUBLE_EQ(rec[i], out[i]);
+    sum += rec[i];
+  }
+  EXPECT_DOUBLE_EQ(sum, 1.0);
+  EXPECT_LT(rec[0], rec[1]);
+}
+
+TEST(ObtainMinMaxSum, EmptyInputGivesZeros) {
+  std::vector<float> empty;
+  float mi = -1.0f, ma = -2.0f;
+  double su = -3.0;
+  Falcata::Common::ObtainMinMaxSum(empty.data(), 0, &mi, &ma, &su);
+  EXPECT_EQ(mi, 0.0f);
+  EXPECT_EQ(ma, 0.0f);
+  EXPECT_EQ(su, 0.0);
+
+  for (int n = 1; n <= 5; ++n) {
+    std::vector<float> w;
+    for (int i = 0; i < n; ++i) {
+      w.push_back(static_cast<float>((i * 7) % 5) - 1.0f);
+    }
+    Falcata::Common::ObtainMinMaxSum(w.data(), n, &mi, &ma, &su);
+    float emi = w[0], ema = w[0];
+    double esu = 0.0;
+    for (float v : w) {
+      emi = std::min(emi, v);
+      ema = std::max(ema, v);
+      esu += v;
+    }
+    EXPECT_EQ(mi, emi) << n;
+    EXPECT_EQ(ma, ema) << n;
+    EXPECT_EQ(su, esu) << n;
+  }
 }
 
 // TextReader's end-of-line skip read buffer_process[i] before checking
