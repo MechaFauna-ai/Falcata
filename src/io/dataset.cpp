@@ -2311,8 +2311,16 @@ void Dataset::AddFeaturesFrom(Dataset* other) {
     }
   }
   #ifdef USE_CUDA
-  // The columns just changed shape; drop them and let the next use rebuild.
-  ReleaseCUDAColumnData();
+  // The columns just changed shape: the next use rebuilds them. A Booster
+  // set up on this Dataset keeps a pointer to the old ones (its data
+  // partition and tree learner), so they are retired, not freed, and live
+  // as long as the Dataset.
+  {
+    std::lock_guard<std::mutex> lock(cuda_column_data_mutex_);
+    if (cuda_column_data_ != nullptr) {
+      retired_cuda_column_data_.push_back(std::move(cuda_column_data_));
+    }
+  }
   #endif  // USE_CUDA
 }
 

@@ -1041,6 +1041,7 @@ if(BUILD_CPP_TEST)
 
   set(
     CPP_TEST_SOURCES
+      tests/cpp_tests/test_add_features_booster.cpp
       tests/cpp_tests/test_array_args.cpp
       tests/cpp_tests/test_arrow.cpp
       tests/cpp_tests/test_arrow_deprecated.cpp
