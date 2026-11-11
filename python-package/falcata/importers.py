@@ -456,7 +456,7 @@ def _catboost_objective(raw: Dict[str, Any]) -> Tuple[str, Any]:
             if isinstance(params.get("loss_function"), dict)
             else params.get("loss_function", "")
         )
-    if loss in ("RMSE", "", "Quantile", "MAE", "LossFunctionChange"):
+    if loss in ("RMSE", "Quantile", "MAE", "LossFunctionChange"):
         return "regression", None
     if loss == "Logloss":
         return "binary sigmoid:1", None
