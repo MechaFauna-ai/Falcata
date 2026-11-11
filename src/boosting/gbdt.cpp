@@ -737,20 +737,33 @@ std::vector<double> GBDT::EvalOneMetric(const Metric* metric, const double* scor
     if (total_size > host_score_.size()) {
       host_score_.resize(total_size, 0.0f);
     }
-    CopyFromCUDADeviceToHost<double>(host_score_.data(), score, total_size, __FILE__, __LINE__);
+    if (!metric_transfer_scope_active_ || metric_transferred_source_ != score ||
+        metric_transferred_size_ != total_size) {
+      CopyFromCUDADeviceToHost<double>(host_score_.data(), score, total_size, __FILE__, __LINE__);
+      metric_transferred_source_ = score;
+      metric_transferred_size_ = total_size;
+    }
     return metric->Eval(host_score_.data(), objective_function_);
   } else {
     const size_t total_size = static_cast<size_t>(num_data) * static_cast<size_t>(NumOutputPerIteration());
     if (total_size > cuda_score_.Size()) {
       cuda_score_.Resize(total_size);
     }
-    CopyFromHostToCUDADevice<double>(cuda_score_.RawData(), score, total_size, __FILE__, __LINE__);
+    if (!metric_transfer_scope_active_ || metric_transferred_source_ != score ||
+        metric_transferred_size_ != total_size) {
+      CopyFromHostToCUDADevice<double>(cuda_score_.RawData(), score, total_size, __FILE__, __LINE__);
+      metric_transferred_source_ = score;
+      metric_transferred_size_ = total_size;
+    }
     return metric->Eval(cuda_score_.RawData(), objective_function_);
   }
   #endif  // USE_CUDA
 }
 
 std::string GBDT::OutputMetric(int iter) {
+#ifdef USE_CUDA
+  MetricScoreTransferScope transfer_scope(this);
+#endif  // USE_CUDA
   bool need_output = (iter % config_->metric_freq) == 0;
   std::string ret = "";
   std::stringstream msg_buf;
@@ -816,6 +829,9 @@ std::string GBDT::OutputMetric(int iter) {
 
 /*! \brief Get eval result */
 std::vector<double> GBDT::GetEvalAt(int data_idx) const {
+#ifdef USE_CUDA
+  MetricScoreTransferScope transfer_scope(this);
+#endif  // USE_CUDA
   CHECK(data_idx >= 0 && data_idx <= static_cast<int>(valid_score_updater_.size()));
   std::vector<double> ret;
   if (data_idx == 0) {

@@ -582,6 +582,28 @@ class GBDT : public GBDTBase {
   */
   virtual std::vector<double> EvalOneMetric(const Metric* metric, const double* score, const data_size_t num_data) const;
 
+#ifdef USE_CUDA
+  // Transfer reuse is valid only while evaluating an unchanged set of scores.
+  // Nested evaluations invalidate the outer cache rather than restoring stale buffers.
+  struct MetricScoreTransferScope {
+    explicit MetricScoreTransferScope(const GBDT* model)
+        : model_(model), was_active_(model->metric_transfer_scope_active_) {
+      model_->metric_transfer_scope_active_ = true;
+      model_->metric_transferred_source_ = nullptr;
+    }
+    ~MetricScoreTransferScope() {
+      model_->metric_transfer_scope_active_ = was_active_;
+      model_->metric_transferred_source_ = nullptr;
+    }
+    const GBDT* model_;
+    bool was_active_;
+  };
+  mutable bool metric_transfer_scope_active_ = false;
+  mutable const double* metric_transferred_source_ = nullptr;
+  mutable size_t metric_transferred_size_ = 0;
+#endif  // USE_CUDA
+
+
   /*!
   * \brief Print metric result of current iteration
   * \param iter Current iteration
