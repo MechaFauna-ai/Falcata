@@ -133,8 +133,8 @@ double NCCLGBDT<GBDT_T>::BoostFromAverage(int class_id, bool update_scorer) {
 template <typename GBDT_T>
 void NCCLGBDT<GBDT_T>::TrainTreeLearnerThread(NCCLGBDTComponent* thread_data, const int class_id, const bool is_first_tree) {
   const data_size_t num_data_in_gpu = thread_data->num_data_in_gpu();
-  const score_t* gradients = thread_data->gradients() + class_id * num_data_in_gpu;
-  const score_t* hessians = thread_data->hessians() + class_id * num_data_in_gpu;
+  const score_t* gradients = thread_data->gradients() + static_cast<size_t>(class_id) * num_data_in_gpu;
+  const score_t* hessians = thread_data->hessians() + static_cast<size_t>(class_id) * num_data_in_gpu;
   thread_data->SetTree(thread_data->tree_learner()->Train(gradients, hessians, is_first_tree));
 }
 
@@ -155,11 +155,11 @@ bool NCCLGBDT<GBDT_T>::TrainOneIter(const score_t* gradients, const score_t* hes
 
       for (int class_id = 0; class_id < this->num_class_; ++class_id) {
         CopyFromHostToCUDADevice<score_t>(
-          thread_data->gradients() + class_id * num_data_in_gpu,
-          gradients + class_id * this->num_data_ + data_start_index, num_data_in_gpu, __FILE__, __LINE__);
+          thread_data->gradients() + static_cast<size_t>(class_id) * num_data_in_gpu,
+          gradients + static_cast<size_t>(class_id) * this->num_data_ + data_start_index, num_data_in_gpu, __FILE__, __LINE__);
         CopyFromHostToCUDADevice<score_t>(
-          thread_data->hessians() + class_id * num_data_in_gpu,
-          hessians + class_id * this->num_data_ + data_start_index, num_data_in_gpu, __FILE__, __LINE__);
+          thread_data->hessians() + static_cast<size_t>(class_id) * num_data_in_gpu,
+          hessians + static_cast<size_t>(class_id) * this->num_data_ + data_start_index, num_data_in_gpu, __FILE__, __LINE__);
       }
     });
   }
@@ -242,14 +242,14 @@ template <typename GBDT_T>
 std::vector<double> NCCLGBDT<GBDT_T>::EvalOneMetric(const Metric* metric, const double* score, const data_size_t num_data) const {
   if (score == this->train_score_updater_->score()) {
     // delegate to per gpu train score updater
-    std::vector<double> tmp_score(num_data * this->num_class_, 0.0f);
+    std::vector<double> tmp_score(static_cast<size_t>(num_data) * static_cast<size_t>(this->num_class_), 0.0f);
 
     nccl_topology_->RunPerDevice<NCCLGBDTComponent, void>(nccl_gbdt_components_, [this, &tmp_score] (NCCLGBDTComponent* thread_data) {
       const data_size_t data_start = thread_data->data_start_index();
       const data_size_t num_data_in_gpu = thread_data->num_data_in_gpu();
       for (int class_id = 0; class_id < this->num_class_; ++class_id) {
-        CopyFromCUDADeviceToHost<double>(tmp_score.data() + class_id * this->num_data_ + data_start,
-          thread_data->train_score_updater()->score() + class_id * num_data_in_gpu,
+        CopyFromCUDADeviceToHost<double>(tmp_score.data() + static_cast<size_t>(class_id) * this->num_data_ + data_start,
+          thread_data->train_score_updater()->score() + static_cast<size_t>(class_id) * num_data_in_gpu,
           static_cast<size_t>(num_data_in_gpu), __FILE__, __LINE__);
       }
     });
