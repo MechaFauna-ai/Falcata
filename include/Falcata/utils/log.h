@@ -7,6 +7,7 @@
 #ifndef FALCATA_INCLUDE_FALCATA_UTILS_LOG_H_
 #define FALCATA_INCLUDE_FALCATA_UTILS_LOG_H_
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -100,12 +101,21 @@ class Log {
    * \brief Resets the minimal log level. It is INFO by default.
    * \param level The new minimal log level.
    */
-  static void ResetLogLevel(LogLevel level) { GetLevel() = level; }
+  static void ResetLogLevel(LogLevel level) {
+    ThreadSetting().level = level;
+    ThreadSetting().level_set = true;
+    DefaultLevel().store(level, std::memory_order_relaxed);
+  }
 
-  static void ResetCallBack(Callback callback) { GetLogCallBack() = callback; }
+  static void ResetCallBack(Callback callback) {
+    ThreadSetting().callback = callback;
+    ThreadSetting().callback_set = true;
+    DefaultCallBack().store(callback, std::memory_order_relaxed);
+  }
 
-  /*! \brief The calling thread's log level and callback (both are per thread): a thread started on behalf of another
-   *  (the CUDA forest trainer's slot threads) installs the starting thread's with ResetLogLevel / ResetCallBack */
+  /*! \brief The calling thread's log level and callback: a thread keeps what it set itself with ResetLogLevel /
+   *  ResetCallBack, and a thread that never set them (an OpenMP worker, a thread the library starts) uses the
+   *  last ones any thread set */
   static LogLevel CurrentLevel() { return GetLevel(); }
   static Callback CurrentCallBack() { return GetLogCallBack(); }
 
@@ -161,7 +171,8 @@ class Log {
 // R code should write back to R's output stream,
 // otherwise to stdout
 #ifndef LGB_R_BUILD
-      if (GetLogCallBack() == nullptr) {
+      const Callback callback = GetLogCallBack();
+      if (callback == nullptr) {
         printf("[Falcata] [%s] ", level_str);
         vprintf(format, val);
         printf("\n");
@@ -170,10 +181,10 @@ class Log {
         const size_t kBufSize = 512;
         char buf[kBufSize];
         snprintf(buf, kBufSize, "[Falcata] [%s] ", level_str);
-        GetLogCallBack()(buf);
+        callback(buf);
         vsnprintf(buf, kBufSize, format, val);
-        GetLogCallBack()(buf);
-        GetLogCallBack()("\n");
+        callback(buf);
+        callback("\n");
       }
 #else
       Rprintf("[Falcata] [%s] ", level_str);
@@ -186,9 +197,33 @@ class Log {
 
   // a trick to use static variable in header file.
   // May be not good, but avoid to use an additional cpp file
-  static LogLevel &GetLevel() {
-    static THREAD_LOCAL LogLevel level = LogLevel::Info;
+  // a plain aggregate, constant-initialized (as __declspec(thread) requires)
+  struct PerThread {
+    bool level_set;
+    bool callback_set;
+    LogLevel level;
+    Callback callback;
+  };
+
+  static PerThread &ThreadSetting() {
+    static THREAD_LOCAL PerThread setting = {false, false, LogLevel::Info, nullptr};
+    return setting;
+  }
+
+  // the last level / callback set by any thread
+  static std::atomic<LogLevel> &DefaultLevel() {
+    static std::atomic<LogLevel> level(LogLevel::Info);
     return level;
+  }
+
+  static std::atomic<Callback> &DefaultCallBack() {
+    static std::atomic<Callback> callback(nullptr);
+    return callback;
+  }
+
+  static LogLevel GetLevel() {
+    const PerThread &setting = ThreadSetting();
+    return setting.level_set ? setting.level : DefaultLevel().load(std::memory_order_relaxed);
   }
 
   static std::mutex &WriteMutex() {
@@ -196,9 +231,9 @@ class Log {
     return mutex;
   }
 
-  static Callback &GetLogCallBack() {
-    static THREAD_LOCAL Callback callback = nullptr;
-    return callback;
+  static Callback GetLogCallBack() {
+    const PerThread &setting = ThreadSetting();
+    return setting.callback_set ? setting.callback : DefaultCallBack().load(std::memory_order_relaxed);
   }
 };
 
