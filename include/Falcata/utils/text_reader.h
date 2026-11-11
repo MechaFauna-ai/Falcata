@@ -13,6 +13,7 @@
 #include <string>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -185,6 +186,8 @@ class TextReader {
   }
 
   INDEX_T SampleFromFile(Random* random, INDEX_T sample_cnt, std::vector<std::string>* out_sampled_data) {
+    static_assert(std::numeric_limits<INDEX_T>::max() <= std::numeric_limits<int>::max(),
+                  "reservoir sampling draws line indices with Random::NextInt, which takes an int range");
     INDEX_T cur_sample_cnt = 0;
     return ReadAllAndProcess([=, &random, &cur_sample_cnt,
                               &out_sampled_data]
@@ -222,6 +225,8 @@ class TextReader {
 
   INDEX_T SampleAndFilterFromFile(const std::function<bool(INDEX_T)>& filter_fun, std::vector<INDEX_T>* out_used_data_indices,
     Random* random, INDEX_T sample_cnt, std::vector<std::string>* out_sampled_data) {
+    static_assert(std::numeric_limits<INDEX_T>::max() <= std::numeric_limits<int>::max(),
+                  "reservoir sampling draws line indices with Random::NextInt, which takes an int range");
     INDEX_T cur_sample_cnt = 0;
     out_used_data_indices->clear();
     INDEX_T total_cnt = ReadAllAndProcess(
