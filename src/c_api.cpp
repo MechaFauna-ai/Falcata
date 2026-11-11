@@ -201,6 +201,7 @@ class Booster {
     boosting_.reset(Boosting::CreateBoosting(config_.boosting, nullptr, config_.device_type, config_.num_gpu));
 
     train_data_ = train_data;
+    train_data_num_total_features_ = train_data_->num_total_features();
     CreateObjectiveAndMetrics();
     // initialize the boosting
     // tree_learner=feature doubles as the CUDA multi-GPU feature-parallel
@@ -266,6 +267,7 @@ class Booster {
     if (train_data != train_data_) {
       UNIQUE_LOCK(mutex_)
       train_data_ = train_data;
+      train_data_num_total_features_ = train_data_->num_total_features();
       CreateObjectiveAndMetrics();
       // reset the boosting
       boosting_->ResetTrainingData(train_data_,
@@ -504,6 +506,7 @@ class Booster {
 
   bool TrainOneIter() {
     UNIQUE_LOCK(mutex_)
+    CheckTrainDataUnchanged();
     return boosting_->TrainOneIter(nullptr, nullptr);
   }
 
@@ -514,7 +517,18 @@ class Booster {
 
   bool TrainOneIter(const score_t* gradients, const score_t* hessians) {
     UNIQUE_LOCK(mutex_)
+    CheckTrainDataUnchanged();
     return boosting_->TrainOneIter(gradients, hessians);
+  }
+
+  // The tree learner sized itself for the training Dataset's features when it was set up; features added to that
+  // Dataset afterwards (FLC_DatasetAddFeaturesFrom) would be read through those stale sizes.
+  void CheckTrainDataUnchanged() const {
+    if (train_data_ != nullptr && train_data_->num_total_features() != train_data_num_total_features_) {
+      Log::Fatal("The training Dataset gained features (%d, was %d) after this Booster was created on it; "
+                 "create a new Booster to train on the extended Dataset",
+                 train_data_->num_total_features(), train_data_num_total_features_);
+    }
   }
 
   void RollbackOneIter() {
@@ -991,6 +1005,8 @@ class Booster {
   // nullptr for a model-loaded Booster: the filename constructor never
   // attaches training data
   const Dataset* train_data_ = nullptr;
+  /*! \brief train_data_->num_total_features() when the boosting was set up on it */
+  int train_data_num_total_features_ = 0;
   std::unique_ptr<Boosting> boosting_;
   std::unique_ptr<SingleRowPredictorInner> single_row_predictor_[PREDICTOR_TYPES];
 
