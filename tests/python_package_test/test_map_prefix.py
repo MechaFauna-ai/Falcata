@@ -1,8 +1,9 @@
 """Regression coverage for MAP prefix selection and stable score ties."""
 
-import falcata as lgb
 import numpy as np
 import pytest
+
+import falcata as lgb
 
 
 @pytest.mark.parametrize("cutoffs", [[1, 3, 5], [1, 3, 5, 10001], [5, 1]])
