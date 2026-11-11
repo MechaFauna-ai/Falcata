@@ -28,6 +28,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 DEFAULT_BASELINE = Path.home() / ".cache" / "falcata-gates" / "perf_baseline.json"
@@ -75,12 +76,72 @@ class StrictGPUQ:
         return 0
 
 
-def _stop_lattice_group(proc):
+def _children_pids(pid):
+    children = set()
+    for entry in Path(f"/proc/{pid}/task").glob("*/children"):
+        try:
+            children.update(int(child) for child in entry.read_text().split())
+        except FileNotFoundError:
+            pass  # A thread exited while its task directory was enumerated.
+    return children
+
+
+def _wait_stopped(pid):
+    deadline = time.monotonic() + 1
+    while True:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[0]
+        except FileNotFoundError:
+            return
+        if state in ("T", "t", "Z", "X"):
+            return
+        if time.monotonic() >= deadline:
+            raise UnresolvedCUDATimeout(f"CUDA timeout: could not stop worker {pid}")
+        time.sleep(0.001)
+
+
+def _stop_lattice_tree(proc):
+    # Finish cleanup before honoring cancellation: SIGTERM cannot resume a
+    # stopped child, whereas the SIGKILL below always terminates it.
+    cancel = {signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGQUIT}
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, cancel)
+    pending, frozen, seen = [proc.pid], [], set()
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass  # The group exited between the timeout and the signal.
-    proc.communicate()
+        try:
+            while pending:
+                pid = pending.pop()
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                try:
+                    os.kill(pid, signal.SIGSTOP)
+                except ProcessLookupError:
+                    continue
+                frozen.append(pid)
+                _wait_stopped(pid)
+                pending.extend(_children_pids(pid))
+        finally:
+            for pid in reversed(frozen):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired as exc:
+            raise UnresolvedCUDATimeout("CUDA timeout: lattice cleanup did not complete; stop GPU job") from exc
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+def _remeasure_timeout():
+    try:
+        timeout = int(os.environ.get("FALCATA_REMEASURE_TIMEOUT_SEC", "1800"))
+        if timeout <= 0:
+            raise ValueError
+    except ValueError as exc:
+        raise ValueError("FALCATA_REMEASURE_TIMEOUT_SEC must be a positive integer") from exc
+    return timeout
 
 
 def remeasure(cell_id):
@@ -88,30 +149,29 @@ def remeasure(cell_id):
 
     Returns None if the re-run cannot be done (lattice failure, missing cell);
     the caller then falls back to the original timing. An unresolved timeout
-    aborts the GPU job with 125; the process group is killed before returning.
+    aborts the GPU job with 125; the owned process tree is stopped before returning.
     FALCATA_REMEASURE_TIMEOUT_SEC overrides the 30-minute default.
     """
+    if sys.platform != "linux":
+        raise GPUQContextError("remeasurement supervision requires Linux procfs")
     gates_dir = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "results.json"
-        timeout = int(os.environ.get("FALCATA_REMEASURE_TIMEOUT_SEC", "1800"))
-        if timeout <= 0:
-            raise ValueError("FALCATA_REMEASURE_TIMEOUT_SEC must be positive")
+        timeout = _remeasure_timeout()
         proc = subprocess.Popen(
             [sys.executable, str(gates_dir / "lattice.py"), "--check", "--only", cell_id],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            start_new_session=True,
             env={**os.environ, "FALCATA_GATES_RESULTS": str(out)},
         )
         try:
             proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            _stop_lattice_group(proc)
+            _stop_lattice_tree(proc)
             raise UnresolvedCUDATimeout(f"CUDA timeout remeasuring {cell_id} after {timeout}s; stop GPU job") from exc
         except BaseException:
-            _stop_lattice_group(proc)
+            _stop_lattice_tree(proc)
             raise
         if proc.returncode == 125:
             raise UnresolvedCUDATimeout("lattice reported an unresolved CUDA timeout; stop GPU job")
@@ -229,6 +289,11 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if not args.gpuq_strict:
         ap.error("use --gpuq-strict inside gpuq submit --exclusive with an explicit bounded timeout; no bypass")
+    try:
+        _remeasure_timeout()
+    except ValueError as exc:
+        print(f"  FAIL perf configuration: {exc}", file=sys.stderr)
+        return 2
     try:
         return evaluate(args, StrictGPUQ())
     except UnresolvedCUDATimeout as e:
