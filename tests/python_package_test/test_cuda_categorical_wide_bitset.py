@@ -20,14 +20,17 @@ _REQUIRES_CUDA = pytest.mark.skipif(os.environ.get("TASK", "") != "cuda", reason
 
 def _data():
     rng = np.random.default_rng(0)
-    num_categories = 3000
-    rows = 120000
-    cat = rng.integers(0, num_categories, size=rows)
-    # a random half of the categories carries the signal, so the best split puts about 1500 of them on one side
-    positive = rng.permutation(num_categories)[: num_categories // 2]
-    is_positive = np.zeros(num_categories, dtype=bool)
-    is_positive[positive] = True
-    y = np.where(is_positive[cat], 2.0, -2.0) + 0.1 * rng.standard_normal(rows)
+    # category c appears less often as c grows, so its bin index (bins follow descending frequency) grows with c
+    num_categories = 4000
+    counts = 20 + (num_categories - np.arange(num_categories)) // 40
+    cat = rng.permutation(np.repeat(np.arange(num_categories), counts))
+    rows = cat.size
+    # categories below 1500 carry a positive signal that weakens as c grows, the rest a negative one: the best split
+    # sends categories 0..1499 left, so the thresholds sorted by gradient ratio start with the 1024 lowest bins
+    # (block 0 of CUDABitsetLen) and the largest bins come in the next block; the 2500 negative categories exceed
+    # max_cat_threshold, so the split from the negative side cannot win
+    target = np.where(np.arange(num_categories) < 1500, 3.0 - np.arange(num_categories) / 1000.0, -2.0)
+    y = target[cat] + 0.05 * rng.standard_normal(rows)
     X = np.column_stack([cat.astype(np.float64), rng.standard_normal(rows)])
     return X, y
 
@@ -37,7 +40,7 @@ def _train(device, plan=None):
     params = {
         "objective": "regression",
         "device_type": device,
-        "max_bin": 4000,
+        "max_bin": 4100,
         "max_cat_threshold": 2000,
         "max_cat_to_onehot": 4,
         "min_data_per_group": 1,
