@@ -25,6 +25,7 @@ from functools import wraps
 from os import SEEK_END, environ
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from threading import RLock, local
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 import narwhals as nw
@@ -48,6 +49,29 @@ __all__ = [
     "register_logger",
     "Sequence",
 ]
+
+# Native network state is shared by boosters on the same thread (THREAD_LOCAL
+# in network.cpp). Keep each ownership record alive even if a booster moves threads.
+_NETWORK_LOCAL = local()
+
+
+class _NetworkState:
+    def __init__(self) -> None:
+        self.refcount = 0
+        self.pending_free = False
+        self.lock = RLock()
+
+
+def _get_network_state() -> _NetworkState:
+    if not hasattr(_NETWORK_LOCAL, "state"):
+        _NETWORK_LOCAL.state = _NetworkState()
+    state: _NetworkState = _NETWORK_LOCAL.state
+    with state.lock:
+        if state.pending_free and state.refcount == 0:
+            _safe_call(_LIB.FLC_NetworkFree())
+            state.pending_free = False
+    return state
+
 
 _BoosterHandle = ctypes.c_void_p
 _DatasetHandle = ctypes.c_void_p
@@ -3891,6 +3915,7 @@ class Booster:
         """
         self._handle = ctypes.c_void_p()
         self._network = False
+        self._network_state: Optional[_NetworkState] = None
         self.__need_reload_eval_info = True
         self._train_data_name = "training"
         self.__set_objective_to_none = False
@@ -4045,6 +4070,9 @@ class Booster:
 
     def __getstate__(self) -> Dict[str, Any]:
         this = self.__dict__.copy()
+        # A serialized model does not own this process's native network.
+        this["_network"] = False
+        this.pop("_network_state", None)
         handle = this["_handle"]
         this.pop("train_set", None)
         this.pop("valid_sets", None)
@@ -4096,6 +4124,9 @@ class Booster:
                 )
             state["_handle"] = handle
         self.__dict__.update(state)
+        # Also discard ownership flags from pickles written by older versions.
+        self._network = False
+        self._network_state = None
 
     def _get_loaded_param(self) -> Dict[str, Any]:
         buffer_len = 1 << 20
@@ -4161,6 +4192,10 @@ class Booster:
     ) -> "Booster":
         """Set the network configuration.
 
+        The native network is shared by boosters on the calling thread. Each
+        call initializes it, while repeated calls on this booster retain one
+        ownership reference.
+
         Parameters
         ----------
         machines : list, set or str
@@ -4179,27 +4214,66 @@ class Booster:
         """
         if isinstance(machines, (list, set)):
             machines = ",".join(machines)
-        _safe_call(
-            _LIB.FLC_NetworkInit(
-                _c_str(machines),
-                ctypes.c_int(local_listen_port),
-                ctypes.c_int(listen_time_out),
-                ctypes.c_int(num_machines),
-            )
-        )
-        self._network = True
+        state = _get_network_state()
+        if self._network and self._network_state is not state:
+            self.free_network()
+        with state.lock:
+            # A cross-thread release may have happened after state lookup.
+            if state.pending_free:
+                _safe_call(_LIB.FLC_NetworkFree())
+                state.pending_free = False
+            acquired = not self._network
+            if acquired:
+                state.refcount += 1
+                self._network_state = state
+                self._network = True
+            try:
+                # Always initialize: peers may be starting a new distributed session.
+                _safe_call(
+                    _LIB.FLC_NetworkInit(
+                        _c_str(machines),
+                        ctypes.c_int(local_listen_port),
+                        ctypes.c_int(listen_time_out),
+                        ctypes.c_int(num_machines),
+                    )
+                )
+            except Exception:
+                if acquired:
+                    state.refcount -= 1
+                    self._network = False
+                    self._network_state = None
+                raise
         return self
 
     def free_network(self) -> "Booster":
-        """Free Booster's network.
+        """Release this booster's network ownership.
+
+        The native network is freed after the last owner releases it. Repeated
+        calls on a booster without network ownership have no effect. If released
+        from another thread, native cleanup waits until the owning thread next
+        accesses its network state or exits.
 
         Returns
         -------
         self : Booster
             Booster with freed network.
         """
-        _safe_call(_LIB.FLC_NetworkFree())
-        self._network = False
+        state = self._network_state
+        if state is None:
+            return self
+        with state.lock:
+            if self._network:
+                if state.refcount == 1:
+                    if getattr(_NETWORK_LOCAL, "state", None) is state:
+                        _safe_call(_LIB.FLC_NetworkFree())
+                    else:
+                        # Native TLS cannot be freed from another thread. Defer
+                        # until the owner thread next accesses its network state;
+                        # native thread exit also releases its resources.
+                        state.pending_free = True
+                state.refcount -= 1
+                self._network = False
+                self._network_state = None
         return self
 
     def trees_to_dataframe(self) -> pd_DataFrame:
@@ -5576,6 +5650,12 @@ class Booster:
         )
         new_params["refit_decay_rate"] = decay_rate
         new_booster = Booster(new_params, train_set)
+        state = _get_network_state()
+        with state.lock:
+            if self._network and self._network_state is state and not new_booster._network:
+                state.refcount += 1
+                new_booster._network_state = state
+                new_booster._network = True
         # Copy models
         _safe_call(
             _LIB.FLC_BoosterMerge(
@@ -5593,7 +5673,6 @@ class Booster:
                 ctypes.c_int32(ncol),
             )
         )
-        new_booster._network = self._network
         return new_booster
 
     def get_leaf_output(self, tree_id: int, leaf_id: int) -> float:
