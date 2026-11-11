@@ -572,12 +572,9 @@ bool CUDADeviceUsableByDefault(const int device_id) {
   if (cudaGetDeviceCount(&count) != cudaSuccess || count < 1) {
     return false;
   }
-  // judge the GPU training will run on: gpu_device_id, or the current device when it is negative (as
-  // CheckCUDADeviceSupportsThisBuild); a device that does not exist cannot run anything
-  int device = device_id;
-  if (device < 0 && cudaGetDevice(&device) != cudaSuccess) {
-    return false;
-  }
+  // judge the GPU training will run on: gpu_device_id, or device 0 when it is negative (the tree learner's
+  // resolution in CUDASingleGPUTreeLearner::Init); a device that does not exist cannot run anything
+  const int device = device_id >= 0 ? device_id : 0;
   if (device >= count) {
     return false;
   }
