@@ -592,7 +592,9 @@ std::string Tree::CategoricalDecisionIfElse(int node) const {
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
   int cat_idx = static_cast<int>(threshold_[node]);
-  str_buf << "if (std::isnan(fval)) { int_fval = -1; } else { int_fval = static_cast<int>(fval); }";
+  str_buf << "if (!(fval >= std::numeric_limits<int>::min() && "
+             "fval <= std::numeric_limits<int>::max())) { int_fval = -1; } "
+             "else { int_fval = static_cast<int>(fval); }";
   str_buf << "if (int_fval >= 0 && int_fval < 32 * (";
   str_buf << cat_boundaries_[cat_idx + 1] - cat_boundaries_[cat_idx];
   str_buf << ") && (((cat_threshold[" << cat_boundaries_[cat_idx];
