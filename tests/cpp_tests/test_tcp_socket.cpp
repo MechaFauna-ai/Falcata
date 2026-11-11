@@ -3,8 +3,8 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-// POSIX sockets and /proc/self/fd: Linux only
-#if defined(__linux__)
+// POSIX sockets and /proc/self/fd, socket transport (not MPI): Linux only
+#if defined(__linux__) && defined(USE_SOCKET)
 
 #include <gtest/gtest.h>
 
@@ -93,4 +93,4 @@ TEST(TcpSocket, FailedLinkersSetupLeavesNoDescriptor) {
   close(holder);
 }
 
-#endif  // defined(__linux__)
+#endif  // defined(__linux__) && defined(USE_SOCKET)
