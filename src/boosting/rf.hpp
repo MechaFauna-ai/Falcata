@@ -232,22 +232,26 @@ class RF : public GBDT {
           MultiplyScore(cur_tree_id, 1.0 / (num_averaged + 1));
         }
       } else {
-        // only add default score one-time
-        if (models_.size() < static_cast<size_t>(num_tree_per_iteration_)) {
-          double output = 0.0;
-          if (!class_need_train_[cur_tree_id]) {
-            if (objective_function_ != nullptr) {
-              output = objective_function_->BoostFromScore(cur_tree_id);
-            } else {
-              output = init_scores_[cur_tree_id];
-            }
-          }
-          new_tree->AsConstantTree(output, num_data_);
-          FlushDeferredTrainTrees();
-          MultiplyScore(cur_tree_id, (iter_ + num_init_iteration_));
-          UpdateScore(new_tree.get(), cur_tree_id);
-          MultiplyScore(cur_tree_id, 1.0 / (iter_ + num_init_iteration_ + 1));
+        // A tree without a split (a class with nothing to learn, or no split found). RF
+        // predicts the AVERAGE of its trees, so this round's tree has to carry the class's
+        // constant: a 0 after the first round pulled the average toward 0 (an absent class's
+        // probability grew with num_iterations).
+        double output = init_scores_[cur_tree_id];
+        if (!class_need_train_[cur_tree_id]) {
+          output = objective_function_->BoostFromScore(cur_tree_id);
         }
+        new_tree->AsConstantTree(output, num_data_);
+        FlushDeferredTrainTrees();
+        MultiplyScore(cur_tree_id, (iter_ + num_init_iteration_));
+        // A constant tree adds its output to every row. UpdateScore would go through the
+        // tree learner, whose data partition belongs to the last tree it grew: the serial
+        // learner adds nothing for a 1-leaf tree, and the linear learner reads linear
+        // metadata this tree does not have.
+        train_score_updater_->AddScore(output, cur_tree_id);
+        for (auto& score_updater : valid_score_updater_) {
+          score_updater->AddScore(output, cur_tree_id);
+        }
+        MultiplyScore(cur_tree_id, 1.0 / (iter_ + num_init_iteration_ + 1));
       }
       // add model
       models_.push_back(std::move(new_tree));
