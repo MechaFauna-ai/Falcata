@@ -32,6 +32,7 @@ from pathlib import Path
 DEFAULT_BASELINE = Path.home() / ".cache" / "falcata-gates" / "perf_baseline.json"
 HISTORY = 20
 REMEASURE_TRIES = 3
+REMEASURE_TIMEOUT_SEC = 3600
 
 
 class UnresolvedCUDATimeout(RuntimeError):
@@ -83,13 +84,19 @@ def remeasure(cell_id):
     gates_dir = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "results.json"
-        proc = subprocess.run(
-            [sys.executable, str(gates_dir / "lattice.py"), "--check", "--only", cell_id],
-            capture_output=True,
-            text=True,
-            check=False,
-            env={**os.environ, "FALCATA_GATES_RESULTS": str(out)},
-        )
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(gates_dir / "lattice.py"), "--check", "--only", cell_id],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=REMEASURE_TIMEOUT_SEC,
+                env={**os.environ, "FALCATA_GATES_RESULTS": str(out)},
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise UnresolvedCUDATimeout(
+                f"lattice remeasurement exceeded {REMEASURE_TIMEOUT_SEC}s; stop GPU job"
+            ) from exc
         if proc.returncode == 125:
             raise UnresolvedCUDATimeout("lattice reported an unresolved CUDA timeout; stop GPU job")
         if proc.returncode != 0 or not out.exists():
