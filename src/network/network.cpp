@@ -49,6 +49,14 @@ void Network::Init(Config config) {
 void Network::Init(int num_machines, int rank,
                    ReduceScatterFunction reduce_scatter_ext_fun, AllgatherFunction allgather_ext_fun) {
   if (num_machines > 1) {
+    // without linkers_ (and its bruck/recursive-halving maps) the built-in
+    // collectives cannot run, so a missing callback cannot fall back to them
+    if (reduce_scatter_ext_fun == nullptr || allgather_ext_fun == nullptr) {
+      Log::Fatal("Network::Init with external functions needs both a reduce-scatter and an allgather function");
+    }
+    if (rank < 0 || rank >= num_machines) {
+      Log::Fatal("Invalid rank %d for %d machines", rank, num_machines);
+    }
     rank_ = rank;
     num_machines_ = num_machines;
     block_start_ = std::vector<comm_size_t>(num_machines_);

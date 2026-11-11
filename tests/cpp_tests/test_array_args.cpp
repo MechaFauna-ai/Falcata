@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <Falcata/meta.h>
 #include <Falcata/utils/array_args.h>
+#include <Falcata/utils/threading.h>
 
 #include <random>
 #include <vector>
@@ -51,4 +52,23 @@ TEST(Partition, AllEqual) {
   EXPECT_EQ(gradients[middle_begin + 1], gradients[middle_end - 1]);
   EXPECT_EQ(middle_begin, -1);
   EXPECT_EQ(middle_end, 3);
+}
+
+// An empty range made BlockInfo return zero blocks, and Run then read
+// left_write_pos_[-1] / left_cnts_[-1] (heap-buffer-overflow under ASan).
+TEST(ParallelPartitionRunner, EmptyInputReturnsZero) {
+  using Falcata::data_size_t;
+  Falcata::ParallelPartitionRunner<data_size_t, false> runner(16, 1);
+  int calls = 0;
+  std::vector<data_size_t> out(1, -7);
+  const data_size_t left = runner.Run<false>(
+      0,
+      [&calls](int, data_size_t, data_size_t, data_size_t*, data_size_t*) -> data_size_t {
+        ++calls;
+        return 0;
+      },
+      out.data());
+  EXPECT_EQ(left, 0);
+  EXPECT_EQ(calls, 0);
+  EXPECT_EQ(out[0], -7);
 }

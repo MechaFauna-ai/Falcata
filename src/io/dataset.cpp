@@ -192,9 +192,11 @@ std::vector<std::vector<int>> FindGroups(
         MarkUsed(&conflict_marks[best_gid], sample_indices[fidx],
                  num_per_col[fidx]);
       }
+      // same rule as the candidate count above and FeatureGroup itself: a
+      // feature whose most-frequent bin is 0 shares the group's bin 0
       group_num_bin[best_gid] +=
           bin_mappers[fidx]->num_bin() +
-          (bin_mappers[fidx]->GetDefaultBin() == 0 ? -1 : 0);
+          (bin_mappers[fidx]->GetMostFreqBin() == 0 ? -1 : 0);
     } else {
       features_in_group.emplace_back();
       features_in_group.back().push_back(fidx);
@@ -461,6 +463,11 @@ std::vector<std::vector<int>> FastFeatureBundling(
 
   std::vector<std::vector<int>> tmp_indices;
   std::vector<int> tmp_num_per_col(num_sample_col, 0);
+  // the fixed index lists below live in tmp_indices, which dies with this
+  // function: point a local copy of the pointer array at them, never the
+  // caller's array (it would be left dangling)
+  std::vector<int*> local_sample_indices(sample_indices, sample_indices + num_sample_col);
+  sample_indices = local_sample_indices.data();
   for (auto fidx : used_features) {
     if (fidx >= num_sample_col) {
       continue;
@@ -707,29 +714,43 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
   // unsigned values (incl. half bit patterns) index the table directly
   constexpr int64_t kLutSize = static_cast<int64_t>(1) << (8 * sizeof(T));
   constexpr int64_t kLutOffset = std::is_signed<T>::value ? kLutSize / 2 : 0;
-  std::vector<uint32_t> lut(static_cast<size_t>(num_cols) * kLutSize, Bin::kSkipBin);
+  // Building a table costs kLutSize ValueToBin calls per column; binning each
+  // value directly costs nrow. For 16-bit types (65536 entries per column) a
+  // small call, e.g. one chunk of a chunked push, is far cheaper without it.
+  const bool use_lut = 2 * static_cast<int64_t>(nrow) >= kLutSize;
+  std::vector<uint32_t> lut(use_lut ? static_cast<size_t>(num_cols) * kLutSize : 0, Bin::kSkipBin);
   std::vector<Bin*> targets(num_cols, nullptr);
+  std::vector<FeatureGroup*> col_group(num_cols, nullptr);
+  std::vector<int> col_sub_feature(num_cols, 0);
+  std::vector<const BinMapper*> col_mapper(num_cols, nullptr);
+  // the encoded bin of one raw value of column col (most-freq skip, offset
+  // and multi-val adjustment folded in)
+  auto encode = [&](int col, T raw) -> uint32_t {
+    double value = IS_FLOAT16
+        ? static_cast<double>(Common::HalfBitsToFloat(static_cast<uint16_t>(raw)))
+        : static_cast<double>(raw);
+    if (value == missing_sentinel) {
+      // declared missing sentinel (never matches the default NaN): bin the
+      // raw value exactly as the NaN it stands for
+      value = std::numeric_limits<double>::quiet_NaN();
+    }
+    return col_group[col]->EncodeBinForPush(col_sub_feature[col], col_mapper[col]->ValueToBin(value));
+  };
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int col = 0; col < num_cols; ++col) {
     const int feature_idx = used_feature_map_[col];
     if (feature_idx < 0) {
       continue;
     }
-    const int sub_feature = feature2subfeature_[feature_idx];
-    FeatureGroup* fg = feature_groups_[feature2group_[feature_idx]].get();
-    targets[col] = fg->PushTargetBin(sub_feature);
-    const BinMapper* mapper = FeatureBinMapper(feature_idx);
-    uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize;
-    for (int64_t v = 0; v < kLutSize; ++v) {
-      double value = IS_FLOAT16
-          ? static_cast<double>(Common::HalfBitsToFloat(static_cast<uint16_t>(v)))
-          : static_cast<double>(static_cast<T>(v - kLutOffset));
-      if (value == missing_sentinel) {
-        // declared missing sentinel (never matches the default NaN): bin the
-        // raw value exactly as the NaN it stands for
-        value = std::numeric_limits<double>::quiet_NaN();
+    col_sub_feature[col] = feature2subfeature_[feature_idx];
+    col_group[col] = feature_groups_[feature2group_[feature_idx]].get();
+    col_mapper[col] = FeatureBinMapper(feature_idx);
+    targets[col] = col_group[col]->PushTargetBin(col_sub_feature[col]);
+    if (use_lut) {
+      uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize;
+      for (int64_t v = 0; v < kLutSize; ++v) {
+        col_lut[v] = encode(col, static_cast<T>(v - kLutOffset));
       }
-      col_lut[v] = fg->EncodeBinForPush(sub_feature, mapper->ValueToBin(value));
     }
   }
   // tiles keep the strided per-column reads of row-major data cache-resident
@@ -748,12 +769,18 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
       if (bin_data == nullptr) {
         continue;
       }
-      const uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize + kLutOffset;
-      if (is_row_major) {
+      if (!use_lut) {
+        for (int32_t r = r0; r < r1; ++r) {
+          bins[r - r0] = encode(col, is_row_major ? data[static_cast<size_t>(r) * ncol + col]
+                                                  : data[static_cast<size_t>(nrow) * col + r]);
+        }
+      } else if (is_row_major) {
+        const uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize + kLutOffset;
         for (int32_t r = r0; r < r1; ++r) {
           bins[r - r0] = col_lut[data[static_cast<size_t>(r) * ncol + col]];
         }
       } else {
+        const uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize + kLutOffset;
         const T* col_ptr = data + static_cast<size_t>(nrow) * col;
         for (int32_t r = r0; r < r1; ++r) {
           bins[r - r0] = col_lut[col_ptr[r]];
@@ -1388,10 +1415,16 @@ void Dataset::CopySubrowHostPart(const Dataset* fullset, const data_size_t* used
   num_numeric_features_ = fullset->num_numeric_features_;
   if (has_raw_) {
     ResizeRaw(num_used_indices);
-#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
-    for (int i = 0; i < num_used_indices; ++i) {
-      for (int j = 0; j < num_numeric_features_; ++j) {
-        raw_data_[j][i] = fullset->raw_data_[j][used_indices[i]];
+    // feature-major: each thread writes a contiguous stretch of one column
+    // and gathers from the matching (sorted-index) source column; one team
+    // for all features (bagging and GOSS call this every iteration)
+#pragma omp parallel num_threads(OMP_NUM_THREADS())
+    for (int j = 0; j < num_numeric_features_; ++j) {
+      float* dst = raw_data_[j].data();
+      const float* src = fullset->raw_data_[j].data();
+#pragma omp for schedule(static) nowait
+      for (int i = 0; i < num_used_indices; ++i) {
+        dst[i] = src[used_indices[i]];
       }
     }
   }
@@ -1641,12 +1674,19 @@ void Dataset::SaveBinaryFile(const char* bin_filename) {
 
     // write raw data; use row-major order so we can read row-by-row
     if (has_raw_) {
+      // one Write per row instead of one per value (same bytes, same order)
+      std::vector<float> row;
+      row.reserve(num_features_);
       for (int i = 0; i < num_data_; ++i) {
+        row.clear();
         for (int j = 0; j < num_features_; ++j) {
           int feat_ind = numeric_feature_map_[j];
           if (feat_ind > -1) {
-            writer->Write(&raw_data_[feat_ind][i], sizeof(float));
+            row.push_back(raw_data_[feat_ind][i]);
           }
+        }
+        if (!row.empty()) {
+          writer->Write(row.data(), sizeof(float) * row.size());
         }
       }
     }
@@ -1771,6 +1811,9 @@ void Dataset::DumpTextFile(const char* text_filename) {
 #else
   file = fopen(text_filename, "wt");
 #endif
+  if (file == NULL) {
+    Log::Fatal("Could not open %s to dump the dataset", text_filename);
+  }
   fprintf(file, "num_features: %d\n", num_features_);
   fprintf(file, "num_total_features: %d\n", num_total_features_);
   fprintf(file, "num_groups: %d\n", num_groups_);
@@ -2311,8 +2354,16 @@ void Dataset::AddFeaturesFrom(Dataset* other) {
     }
   }
   #ifdef USE_CUDA
-  // The columns just changed shape; drop them and let the next use rebuild.
-  ReleaseCUDAColumnData();
+  // The columns just changed shape: the next use rebuilds them. A Booster
+  // set up on this Dataset keeps a pointer to the old ones (its data
+  // partition and tree learner), so they are retired, not freed, and live
+  // as long as the Dataset.
+  {
+    std::lock_guard<std::mutex> lock(cuda_column_data_mutex_);
+    if (cuda_column_data_ != nullptr) {
+      retired_cuda_column_data_.push_back(std::move(cuda_column_data_));
+    }
+  }
   #endif  // USE_CUDA
 }
 
