@@ -56,6 +56,31 @@ class CUDARandom {
     return static_cast<float>(RandInt16()) / (32768.0f);
   }
 
+  /*!
+  * \brief The state k draws after state x: the generator's affine step x <- 214013 x + 2531011 (mod 2^32), composed
+  *        with itself by squaring, so the k-th draw costs O(log k) instead of k steps
+  */
+  __host__ __device__ static inline unsigned int AdvanceState(unsigned int x, unsigned int k) {
+    unsigned int mul = 214013u;
+    unsigned int add = 2531011u;
+    while (k != 0) {
+      if (k & 1u) {
+        x = mul * x + add;
+      }
+      add = mul * add + add;
+      mul *= mul;
+      k >>= 1;
+    }
+    return x;
+  }
+
+  /*!
+  * \brief The value NextFloat returns when its step lands on state x
+  */
+  __host__ __device__ static inline float FloatFromState(unsigned int x) {
+    return static_cast<float>(static_cast<int>((x >> 16) & 0x7FFF)) / (32768.0f);
+  }
+
  private:
   __device__ inline int RandInt16() {
     x = (214013 * x + 2531011);

@@ -1113,6 +1113,7 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_learner_destructors.cu
         tests/cpp_tests/test_cuda_multi_target_index.cu
         tests/cpp_tests/test_cuda_prefix_sum_exclusive.cu
+        tests/cpp_tests/test_cuda_random_advance.cu
         tests/cpp_tests/test_cuda_shuffle_reduce.cu
     )
     set_target_properties(
