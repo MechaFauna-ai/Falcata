@@ -22,6 +22,7 @@ the daemon confirms that the completed strict job remained clean.
 import argparse
 import json
 import os
+import signal
 import stat
 import statistics
 import subprocess
@@ -32,6 +33,10 @@ from pathlib import Path
 DEFAULT_BASELINE = Path.home() / ".cache" / "falcata-gates" / "perf_baseline.json"
 HISTORY = 20
 REMEASURE_TRIES = 3
+
+
+class UnresolvedCUDATimeout(RuntimeError):
+    """A worker timeout requires stopping the entire GPU job."""
 
 
 class GPUQContextError(RuntimeError):
@@ -70,22 +75,46 @@ class StrictGPUQ:
         return 0
 
 
+def _stop_lattice_group(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # The group exited between the timeout and the signal.
+    proc.communicate()
+
+
 def remeasure(cell_id):
     """Re-run one lattice cell and return its construct+train seconds.
 
     Returns None if the re-run cannot be done (lattice failure, missing cell);
-    the caller then falls back to the original timing.
+    the caller then falls back to the original timing. An unresolved timeout
+    aborts the GPU job with 125; the process group is killed before returning.
+    FALCATA_REMEASURE_TIMEOUT_SEC overrides the 30-minute default.
     """
     gates_dir = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "results.json"
-        proc = subprocess.run(
+        timeout = int(os.environ.get("FALCATA_REMEASURE_TIMEOUT_SEC", "1800"))
+        if timeout <= 0:
+            raise ValueError("FALCATA_REMEASURE_TIMEOUT_SEC must be positive")
+        proc = subprocess.Popen(
             [sys.executable, str(gates_dir / "lattice.py"), "--check", "--only", cell_id],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            check=False,
+            start_new_session=True,
             env={**os.environ, "FALCATA_GATES_RESULTS": str(out)},
         )
+        try:
+            proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            _stop_lattice_group(proc)
+            raise UnresolvedCUDATimeout(f"CUDA timeout remeasuring {cell_id} after {timeout}s; stop GPU job") from exc
+        except BaseException:
+            _stop_lattice_group(proc)
+            raise
+        if proc.returncode == 125:
+            raise UnresolvedCUDATimeout("lattice reported an unresolved CUDA timeout; stop GPU job")
         if proc.returncode != 0 or not out.exists():
             print(f"  note {cell_id}: re-measurement unavailable, keeping original timing")
             return None
@@ -202,6 +231,9 @@ def main(argv=None):
         ap.error("use --gpuq-strict inside gpuq submit --exclusive with an explicit bounded timeout; no bypass")
     try:
         return evaluate(args, StrictGPUQ())
+    except UnresolvedCUDATimeout as e:
+        print(f"UNRESOLVED_CUDA_TIMEOUT: {e}", file=sys.stderr)
+        return 125
     except GPUQContextError as e:
         print(f"  FAIL strict gpuq context: {e}", file=sys.stderr)
         return 2

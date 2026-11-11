@@ -367,3 +367,16 @@ def test_nightly_scheduler_contention_never_seeds_history(nightly):
     assert proc.returncode == 0, log  # Parent still must reject publication after daemon completion.
     assert not (home / ".cache/falcata-gates/bench_baseline.json").exists()
     assert "timing history and pending unchanged" in log
+
+
+def test_unresolved_remeasurement_never_updates_history(perf, queue, files, monkeypatch):
+    files[1].write_text(json.dumps({"a": [1.0] * 3, "_pending": ["a"]}))
+    set_times(files, a=1.5)
+    before = files[1].read_bytes()
+
+    def stalled(_):
+        raise perf.UnresolvedCUDATimeout("CUDA timeout")
+
+    monkeypatch.setattr(perf, "remeasure", stalled)
+    assert invoke(perf, monkeypatch, files) == 125
+    assert files[1].read_bytes() == before
