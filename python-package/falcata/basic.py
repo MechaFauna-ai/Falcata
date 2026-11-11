@@ -2318,7 +2318,7 @@ class Dataset:
         indices = self._create_sample_indices(total_nrow=total_nrow)
 
         # Select sampled rows, transpose to column order.
-        sampled = np.array(list(self._yield_row_from_seqlist(seqs, indices)))
+        sampled = np.array(list(self._yield_row_from_seqlist(seqs, indices)), dtype=np.float64)
         sampled = sampled.T
 
         filtered = []
