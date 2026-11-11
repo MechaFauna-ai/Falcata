@@ -1077,6 +1077,21 @@ static int32_t CheckedRowCount(int64_t nrow, const char* what) {
   return static_cast<int32_t>(nrow);
 }
 
+// One iterator per column of a CSC matrix, built by a prediction thread on its first row; out of line so the
+// per-row check in the prediction loop stays a single compare.
+#if defined(__GNUC__)
+__attribute__((noinline, cold))
+#endif
+static void BuildCSCColumnIterators(std::vector<CSC_RowIterator>* iterators, const void* col_ptr, int col_ptr_type,
+                             const int32_t* indices, const void* data, int data_type, int64_t ncol_ptr,
+                             int64_t nelem) {
+  const int ncol = static_cast<int>(ncol_ptr - 1);
+  iterators->reserve(ncol);
+  for (int j = 0; j < ncol; ++j) {
+    iterators->emplace_back(col_ptr, col_ptr_type, indices, data, data_type, ncol_ptr, nelem, j);
+  }
+}
+
 // start of c_api functions
 
 namespace {
@@ -3313,17 +3328,17 @@ int FLC_BoosterPredictSparseOutput(BoosterHandle handle,
   } else if (matrix_type == C_API_MATRIX_TYPE_CSC) {
     int num_threads = OMP_NUM_THREADS();
     int ncol = static_cast<int>(nindptr - 1);
+    // one iterator per column for each thread, built by the thread on its first row (in parallel, and only
+    // for the threads that get rows)
     std::vector<std::vector<CSC_RowIterator>> iterators(num_threads, std::vector<CSC_RowIterator>());
-    for (int i = 0; i < num_threads; ++i) {
-      for (int j = 0; j < ncol; ++j) {
-        iterators[i].emplace_back(indptr, indptr_type, indices, data, data_type, nindptr, nelem, j);
-      }
-    }
     std::function<std::vector<std::pair<int, double>>(int64_t row_idx)> get_row_fun =
-      [&iterators, ncol](int64_t i) {
+      [&iterators, ncol, indptr, indptr_type, indices, data, data_type, nindptr, nelem](int64_t i) {
       std::vector<std::pair<int, double>> one_row;
       one_row.reserve(ncol);
       const int tid = omp_get_thread_num();
+      if (iterators[tid].empty()) {
+        BuildCSCColumnIterators(&iterators[tid], indptr, indptr_type, indices, data, data_type, nindptr, nelem);
+      }
       for (int j = 0; j < ncol; ++j) {
         auto val = iterators[tid][j].Get(static_cast<int>(i));
         if (std::fabs(val) > kZeroThreshold || std::isnan(val)) {
@@ -3458,17 +3473,17 @@ int FLC_BoosterPredictForCSC(BoosterHandle handle,
   OMP_SET_NUM_THREADS(config.num_threads);
   int num_threads = OMP_NUM_THREADS();
   int ncol = static_cast<int>(ncol_ptr - 1);
+  // one iterator per column for each thread, built by the thread on its first row (in parallel, and only for
+  // the threads that get rows)
   std::vector<std::vector<CSC_RowIterator>> iterators(num_threads, std::vector<CSC_RowIterator>());
-  for (int i = 0; i < num_threads; ++i) {
-    for (int j = 0; j < ncol; ++j) {
-      iterators[i].emplace_back(col_ptr, col_ptr_type, indices, data, data_type, ncol_ptr, nelem, j);
-    }
-  }
   std::function<std::vector<std::pair<int, double>>(int row_idx)> get_row_fun =
-      [&iterators, ncol](int i) {
+      [&iterators, ncol, col_ptr, col_ptr_type, indices, data, data_type, ncol_ptr, nelem](int i) {
         std::vector<std::pair<int, double>> one_row;
         one_row.reserve(ncol);
         const int tid = omp_get_thread_num();
+        if (iterators[tid].empty()) {
+          BuildCSCColumnIterators(&iterators[tid], col_ptr, col_ptr_type, indices, data, data_type, ncol_ptr, nelem);
+        }
         for (int j = 0; j < ncol; ++j) {
           auto val = iterators[tid][j].Get(i);
           if (std::fabs(val) > kZeroThreshold || std::isnan(val)) {
