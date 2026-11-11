@@ -272,7 +272,8 @@ class RF : public GBDT {
       for (auto& score_updater : valid_score_updater_) {
         score_updater->AddScore(models_[curr_tree].get(), cur_tree_id);
       }
-      MultiplyScore(cur_tree_id, 1.0f / (iter_ + num_init_iteration_ - 1));
+      const int remaining_iterations = iter_ + num_init_iteration_ - 1;
+      MultiplyScore(cur_tree_id, remaining_iterations > 0 ? 1.0f / remaining_iterations : 0.0f);
     }
     // remove model
     for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
