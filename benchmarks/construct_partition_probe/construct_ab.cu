@@ -141,11 +141,9 @@ int main(int argc, char** argv) {
   cudaDeviceProp prop; cudaGetDeviceProperties(&prop,0);
   int num_data_in_leaf = (int)((long)num_data * leaf_frac_pct / 100);
   std::mt19937 rng(42);
-  std::vector<uint8_t> h_data((size_t)num_feature*num_data);
   std::uniform_int_distribution<int> bd(0,bins-1);
-  // data is stored partitioned; but the per-partition slice layout differs by
-  // cols_per_part. For timing we only need a byte buffer of the right size and a
-  // valid bin range; build it per-layout below.
+  // data is stored partitioned, and the per-partition slice layout differs by
+  // cols_per_part: the byte buffer is built per layout below.
   std::vector<int32_t> h_gh(num_data); std::vector<int32_t> h_idx(num_data_in_leaf);
   for (int i=0;i<num_data;i++){ int16_t g=(int16_t)(bd(rng)%7-3); int16_t h=1; h_gh[i]=((int32_t)g<<16)|((int32_t)h&0xffff);}
   for (int i=0;i<num_data_in_leaf;i++) h_idx[i]=i;

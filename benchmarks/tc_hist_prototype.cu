@@ -369,16 +369,19 @@ int main(int argc, char** argv) {
   };
   auto bench = [&](const char* name, auto launch) {
     CHECK(cudaMemset(d_hist, 0, kCols * kBins * 2 * sizeof(int)));
-    launch(); CHECK(cudaDeviceSynchronize());
+    launch(); CHECK(cudaGetLastError()); CHECK(cudaDeviceSynchronize());
     if (!verify(name)) return;
-    cudaEvent_t t0, t1; cudaEventCreate(&t0); cudaEventCreate(&t1);
-    cudaEventRecord(t0);
+    cudaEvent_t t0, t1; CHECK(cudaEventCreate(&t0)); CHECK(cudaEventCreate(&t1));
+    CHECK(cudaEventRecord(t0));
     for (int i = 0; i < iters; ++i) {
       CHECK(cudaMemset(d_hist, 0, kCols * kBins * 2 * sizeof(int)));
       launch();
     }
-    cudaEventRecord(t1); CHECK(cudaDeviceSynchronize());
-    float ms; cudaEventElapsedTime(&ms, t0, t1);
+    // a failed launch in the timed loop must not be reported as a timing
+    CHECK(cudaGetLastError());
+    CHECK(cudaEventRecord(t1)); CHECK(cudaDeviceSynchronize());
+    float ms; CHECK(cudaEventElapsedTime(&ms, t0, t1));
+    CHECK(cudaEventDestroy(t0)); CHECK(cudaEventDestroy(t1));
     printf("%-12s %8.3f ms/pass  (%.1f Grows/s cell-updates: %.1f G/s)\n",
            name, ms / iters, kRows / (ms / iters) / 1e6,
            (double)kRows * kCols / (ms / iters) / 1e6);
