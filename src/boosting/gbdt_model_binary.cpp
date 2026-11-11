@@ -24,6 +24,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -309,6 +310,15 @@ inline void RequireWidth(size_t have, size_t need, const char* what, int tree) {
 template <typename DstT>
 void ReadWidened(const ByteReader& r, uint64_t offset, size_t count,
                  uint32_t dtype, const char* where, std::vector<DstT>* out) {
+  size_t width = 0;
+  switch (dtype) {
+    case kDTypeU8: case kDTypeI8: width = 1; break;
+    case kDTypeU16: case kDTypeI16: width = 2; break;
+    case kDTypeU32: case kDTypeI32: width = 4; break;
+    default:
+      Log::Fatal("FALB: unknown dtype %u for %s -- written by a newer Falcata?", dtype, where);
+  }
+  r.Require(offset, count, width, where);
   out->resize(count);
   switch (dtype) {
     case kDTypeU8: {
@@ -951,6 +961,19 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     lv_r.Require(leaf_value_offset * leaf_value_element_size, n_leaf_value,
                  leaf_value_element_size, "leaf_value");
 
+    auto require_nodes = [&](const ByteReader& reader, uint32_t dtype, const char* name) {
+      const size_t width = elem_size(dtype);
+      if (rec.node_offset > std::numeric_limits<uint64_t>::max() / width) {
+        Log::Fatal("FALB: corrupt model -- %s byte offset overflows", name);
+      }
+      reader.Require(rec.node_offset * width, n_node, width, name);
+    };
+    require_nodes(sf_r, sf.dtype, "split_feature");
+    require_nodes(lc_r, lc.dtype, "left_child");
+    require_nodes(rc_r, rc.dtype, "right_child");
+    require_nodes(ti_r, ti.dtype, "threshold index");
+    dt_r.Require(rec.node_offset, n_node, sizeof(int8_t), "decision_type");
+
     std::vector<int> split_feature, left_child, right_child;
     std::vector<double> threshold(n_node);
     std::vector<int8_t> decision_type(n_node);
@@ -1011,10 +1034,22 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
       const SectionEntry& cb = need(kSecCatBoundaries);
       ByteReader cb_r = section_reader(kSecCatBoundaries);
       ByteReader ct_r = section_reader(kSecCatThreshold);
-      const size_t n_bound = rec.num_cat + 1;
+      const size_t n_bound = static_cast<size_t>(rec.num_cat) + 1;
+      if (rec.cat_boundary_offset > std::numeric_limits<uint64_t>::max() / sizeof(uint32_t) ||
+          rec.cat_threshold_offset > std::numeric_limits<uint64_t>::max() / sizeof(uint32_t)) {
+        Log::Fatal("FALB: corrupt model -- cat_boundary or cat_threshold byte offset overflows");
+      }
       std::vector<int> cat_boundaries;
       ReadWidened(cb_r, rec.cat_boundary_offset * sizeof(uint32_t), n_bound,
                   cb.dtype, "cat_boundaries", &cat_boundaries);
+      if (cat_boundaries.front() != 0) {
+        Log::Fatal("FALB: corrupt model -- cat_boundaries must start at zero");
+      }
+      for (size_t b = 1; b < cat_boundaries.size(); ++b) {
+        if (cat_boundaries[b] < cat_boundaries[b - 1]) {
+          Log::Fatal("FALB: corrupt model -- cat_boundaries must be nonnegative and monotonic");
+        }
+      }
       const size_t n_thr = static_cast<size_t>(cat_boundaries.back());
       std::vector<uint32_t> cat_threshold(n_thr);
       const auto p = ct_r.View<uint32_t>(
