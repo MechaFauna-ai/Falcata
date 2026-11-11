@@ -1091,6 +1091,9 @@ SEXP FLC_BoosterPredictForCSRSingleRowFast_R(SEXP handle_fastConfig,
   SEXP data,
   SEXP out_result) {
   R_API_BEGIN();
+  if (Rf_isNull(handle_fastConfig) || R_ExternalPtrAddr(handle_fastConfig) == nullptr) {
+    Log::Fatal("FastConfig handle is null; initialize fast prediction before predicting");
+  }
   int nnz = static_cast<int>(Rf_xlength(data));
   const int indptr[] = {0, nnz};
   int64_t out_len;
@@ -1263,6 +1266,9 @@ SEXP FLC_BoosterPredictForMatSingleRowFast_R(SEXP handle_fastConfig,
   SEXP data,
   SEXP out_result) {
   R_API_BEGIN();
+  if (Rf_isNull(handle_fastConfig) || R_ExternalPtrAddr(handle_fastConfig) == nullptr) {
+    Log::Fatal("FastConfig handle is null; initialize fast prediction before predicting");
+  }
   int64_t out_len;
   CHECK_CALL(FLC_BoosterPredictForMatSingleRowFast(R_ExternalPtrAddr(handle_fastConfig),
     REAL(data), &out_len, REAL(out_result)));
