@@ -1049,6 +1049,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_chunked_array.cpp
       tests/cpp_tests/test_colwise_iterators.cpp
       tests/cpp_tests/test_common.cpp
+      tests/cpp_tests/test_csc_row_iterator.cpp
       tests/cpp_tests/test_dataset_subset.cpp
       tests/cpp_tests/test_falb_unaligned_view.cpp
       tests/cpp_tests/test_host_quantization.cpp
