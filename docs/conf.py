@@ -73,9 +73,10 @@ RTD = bool(os.environ.get("READTHEDOCS", ""))
 RTD_VERSION = os.environ.get("READTHEDOCS_VERSION", "stable")
 
 # If your documentation needs a minimal Sphinx version, state it here.
-needs_sphinx = "2.1.0"  # Due to sphinx.ext.napoleon, autodoc_typehints
-if sphinx.version_info[:3] < tuple(int(part) for part in needs_sphinx.split(".")):
-    message = f"This project needs at least Sphinx v{needs_sphinx}"
+minimum_sphinx_version = "2.1.0"  # Due to sphinx.ext.napoleon, autodoc_typehints
+needs_sphinx = minimum_sphinx_version  # the config name Sphinx itself reads
+if sphinx.version_info[:3] < tuple(int(part) for part in minimum_sphinx_version.split(".")):
+    message = f"This project needs at least Sphinx v{minimum_sphinx_version}"
     raise VersionRequirementError(message)
 
 # Add any Sphinx extension module names here, as strings. They can be
