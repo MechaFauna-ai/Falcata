@@ -894,13 +894,13 @@ void GBDT::GetPredictAt(int data_idx, double* out_result, int64_t* out_len) {
   #endif  // USE_CUDA
   const int num_score_planes = NumOutputPerIteration();
   if (objective_function_ != nullptr) {
-    #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+    std::vector<double> tree_pred(num_score_planes);
+    std::vector<double> tmp_result(num_class_);
+    #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) firstprivate(tree_pred, tmp_result)
     for (data_size_t i = 0; i < num_data; ++i) {
-      std::vector<double> tree_pred(num_score_planes);
       for (int j = 0; j < num_score_planes; ++j) {
         tree_pred[j] = raw_scores[j * num_data + i];
       }
-      std::vector<double> tmp_result(num_class_);
       objective_function_->ConvertOutput(tree_pred.data(), tmp_result.data());
       for (int j = 0; j < num_class_; ++j) {
         out_result[j * num_data + i] = static_cast<double>(tmp_result[j]);
