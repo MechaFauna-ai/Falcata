@@ -1194,21 +1194,13 @@ class _InnerPredictor:
             predict_type = _C_API_PREDICT_CONTRIB
 
         if isinstance(data, (str, Path)):
-            with _TempFile() as f:
-                _safe_call(
-                    _LIB.FLC_BoosterPredictForFile(
-                        self._handle,
-                        _c_str(str(data)),
-                        ctypes.c_int(data_has_header),
-                        ctypes.c_int(predict_type),
-                        ctypes.c_int(start_iteration),
-                        ctypes.c_int(num_iteration),
-                        _c_str(self.pred_parameter),
-                        _c_str(f.name),
-                    )
-                )
-                preds = np.loadtxt(f.name, dtype=np.float64)
-                nrow = preds.shape[0]
+            preds, nrow = self.__pred_for_file(
+                path=data,
+                data_has_header=data_has_header,
+                start_iteration=start_iteration,
+                num_iteration=num_iteration,
+                predict_type=predict_type,
+            )
         elif isinstance(data, scipy.sparse.csr_matrix):
             # TODO: remove 'type: ignore[assignment]' when https://github.com/lightgbm-org/LightGBM/pull/6348 is resolved.
             preds, nrow = self.__pred_for_csr(  # type: ignore[assignment]
@@ -1272,6 +1264,42 @@ class _InnerPredictor:
             else:
                 raise ValueError(f"Length of predict result ({preds.size}) cannot be divide nrow ({nrow})")
         return preds
+
+    def __pred_for_file(
+        self,
+        *,
+        path: Union[str, Path],
+        data_has_header: bool,
+        start_iteration: int,
+        num_iteration: int,
+        predict_type: int,
+    ) -> Tuple[np.ndarray, int]:
+        """Predict for a data file, receiving the predictions in memory (no result file to write and parse)."""
+        out_num_row = ctypes.c_int64(0)
+        out_len = ctypes.c_int64(0)
+        out_result = ctypes.POINTER(ctypes.c_double)()
+        _safe_call(
+            _LIB.FLC_BoosterPredictForFileToArray(
+                self._handle,
+                _c_str(str(path)),
+                ctypes.c_int(data_has_header),
+                ctypes.c_int(predict_type),
+                ctypes.c_int(start_iteration),
+                ctypes.c_int(num_iteration),
+                _c_str(self.pred_parameter),
+                ctypes.byref(out_num_row),
+                ctypes.byref(out_len),
+                ctypes.byref(out_result),
+            )
+        )
+        try:
+            if out_len.value > 0:
+                preds = np.ctypeslib.as_array(out_result, shape=(out_len.value,)).copy()
+            else:
+                preds = np.empty(0, dtype=np.float64)
+        finally:
+            _safe_call(_LIB.FLC_BoosterFreePredictForFileResult(out_result))
+        return preds, out_num_row.value
 
     def __get_num_preds(
         self,
