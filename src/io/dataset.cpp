@@ -1388,12 +1388,14 @@ void Dataset::CopySubrowHostPart(const Dataset* fullset, const data_size_t* used
   num_numeric_features_ = fullset->num_numeric_features_;
   if (has_raw_) {
     ResizeRaw(num_used_indices);
-    // feature-major: each thread writes one contiguous column and gathers
-    // from the matching (sorted-index) source column
+    // feature-major: each thread writes a contiguous stretch of one column
+    // and gathers from the matching (sorted-index) source column; one team
+    // for all features (bagging and GOSS call this every iteration)
+#pragma omp parallel num_threads(OMP_NUM_THREADS())
     for (int j = 0; j < num_numeric_features_; ++j) {
       float* dst = raw_data_[j].data();
       const float* src = fullset->raw_data_[j].data();
-#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+#pragma omp for schedule(static) nowait
       for (int i = 0; i < num_used_indices; ++i) {
         dst[i] = src[used_indices[i]];
       }
