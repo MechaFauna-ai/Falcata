@@ -172,6 +172,9 @@ template <typename T>
 __device__ __forceinline__ T ShuffleReduceMax(T value, T* shared_mem_buffer, const size_t len) {
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
+  // As in ShuffleReduceSum: warp 0 of the previous call may still be reading
+  // the scratch slots this call's first writes overwrite.
+  __syncthreads();
   const data_size_t warp_len = min(static_cast<data_size_t>(warpSize), static_cast<data_size_t>(len) - static_cast<data_size_t>(warpID * warpSize));
   value = ShuffleReduceMaxWarp<T>(value, warp_len);
   if (warpLane == 0) {
@@ -234,6 +237,9 @@ template <typename T>
 __device__ __forceinline__ T ShuffleReduceMin(T value, T* shared_mem_buffer, const size_t len) {
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
+  // As in ShuffleReduceSum: warp 0 of the previous call may still be reading
+  // the scratch slots this call's first writes overwrite.
+  __syncthreads();
   const data_size_t warp_len = min(static_cast<data_size_t>(warpSize), static_cast<data_size_t>(len) - static_cast<data_size_t>(warpID * warpSize));
   value = ShuffleReduceMinWarp<T>(value, warp_len);
   if (warpLane == 0) {
