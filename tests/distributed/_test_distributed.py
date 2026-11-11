@@ -97,7 +97,7 @@ class DistributedMockup:
             candidates = _generate_n_ports(n_ports_left)
             ports.update(candidates)
             i += 1
-        if i == max_tries:
+        if len(ports) < self.n_workers:
             raise RuntimeError("Unable to find non-colliding ports.")
         self.listen_ports = list(ports)
         with open(TESTS_DIR / "mlist.txt", "wt") as f:
