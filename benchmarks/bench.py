@@ -48,14 +48,63 @@ except Exception:
 
 
 class ResourceMonitor:
-    """Polls peak GPU memory (nvidia-smi) and host RSS in a thread."""
+    """Poll peak GPU memory and host RSS.
+
+    Multi-GPU hosts require FALCATA_BENCH_GPU_ID (nvidia-smi index or UUID),
+    or a GPU UUID in CUDA_VISIBLE_DEVICES, to avoid ambiguous ordinal maps.
+    """
 
     def __init__(self, interval=0.25):
         self.interval = interval
+        self._gpu_id = os.environ.get("FALCATA_BENCH_GPU_ID") or None
+        self._gpu_uuid_resolved = False
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if (visible or "").split(",")[0].strip().startswith("MIG-") or (self._gpu_id or "").startswith("MIG-"):
+            raise ValueError("MIG per-instance GPU memory telemetry is unsupported by this benchmark")
+        if self._gpu_id is None and visible is not None:
+            first = visible.split(",")[0].strip()
+            if first.startswith("GPU-"):
+                self._gpu_id = first
+            elif not first or first == "-1":
+                self._gpu_id = ""  # CUDA is disabled: monitor only host RSS.
+            elif first != "0":
+                raise ValueError("Select a GPU UUID or set FALCATA_BENCH_GPU_ID to its nvidia-smi ID")
         self.gpu_peak_mb = 0
         self.rss_peak_mb = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _gpu_memory_mb(self):
+        if self._gpu_id == "":
+            return 0
+        if self._gpu_id and self._gpu_id.startswith("GPU-") and not self._gpu_uuid_resolved:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return None
+            matches = [row.strip() for row in result.stdout.splitlines() if row.strip().startswith(self._gpu_id)]
+            if len(matches) != 1:
+                raise ValueError("GPU UUID must match exactly one device")
+            self._gpu_id = matches[0]
+            self._gpu_uuid_resolved = True
+        command = ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"]
+        if self._gpu_id is not None:
+            command.append(f"--id={self._gpu_id}")
+        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            return None
+        rows = result.stdout.strip().splitlines()
+        if len(rows) > 1:
+            raise ValueError("Multiple GPUs: select a GPU UUID or set FALCATA_BENCH_GPU_ID")
+        try:
+            return int(rows[0]) if rows else None
+        except ValueError:
+            return None  # Optional memory telemetry can be unavailable (e.g. [N/A]).
 
     def _run(self):
         import psutil
@@ -63,18 +112,9 @@ class ResourceMonitor:
         proc = psutil.Process()
         while not self._stop.is_set():
             try:
-                out = subprocess.run(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=memory.used",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                ).stdout.strip()
-                self.gpu_peak_mb = max(self.gpu_peak_mb, int(out.splitlines()[0]))
+                memory = self._gpu_memory_mb()
+                if memory is not None:
+                    self.gpu_peak_mb = max(self.gpu_peak_mb, memory)
             except Exception:
                 pass
             try:
@@ -90,6 +130,13 @@ class ResourceMonitor:
             self._stop.wait(self.interval)
 
     def __enter__(self):
+        # Validate ambiguous multi-GPU selection before any timed work starts.
+        try:
+            memory = self._gpu_memory_mb()
+        except (FileNotFoundError, subprocess.SubprocessError):
+            memory = None
+        if memory is not None:
+            self.gpu_peak_mb = max(self.gpu_peak_mb, memory)
         self._thread.start()
         return self
 
