@@ -32,7 +32,7 @@ REPEATS = 3
 # the same width as the perf gate's fail threshold, so it fired on its own
 # upper tail and taught readers to ignore the gate. Every cell's tail reaches
 # ~8%; the short ones just get there often. Median over more samples narrows
-# that, and nine repeats of a 0.4s cell costs about four seconds.
+# that: int(3.0 / 0.4) + 1 gives eight repeats, costing about 3.2 seconds.
 MEASURE_BUDGET_SEC = 3.0
 MAX_REPEATS = 15
 
@@ -174,7 +174,9 @@ def run_h60_cell(cid, params, rounds):
         t1 = time.monotonic()
         bst = lgb.train(p, ds, num_boost_round=rounds)
         t2 = time.monotonic()
-        assert bst.num_trees() == rounds
+        actual_trees = bst.num_trees()
+        if actual_trees != rounds:
+            raise RuntimeError(f"Expected {rounds} trees, got {actual_trees}")
         cs.append(t1 - t0)
         ts.append(t2 - t1)
         del bst, ds
@@ -204,7 +206,10 @@ def run_cell(cid, dataset, params, rounds):
         t1 = time.monotonic()
         bst = lgb.train(p, ds, num_boost_round=rounds)
         t2 = time.monotonic()
-        assert bst.num_trees() == rounds * p.get("num_class", 1)
+        expected_trees = rounds * p.get("num_class", 1)
+        actual_trees = bst.num_trees()
+        if actual_trees != expected_trees:
+            raise RuntimeError(f"Expected {expected_trees} trees, got {actual_trees}")
         cs.append(t1 - t0)
         ts.append(t2 - t1)
         del bst, ds
