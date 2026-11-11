@@ -800,10 +800,12 @@ def test_random_state_object(rng_constructor):
 
 def test_feature_importances_single_leaf():
     data = load_iris(return_X_y=False)
-    clf = lgb.FalcataClassifier(n_estimators=10)
+    clf = lgb.FalcataClassifier(n_estimators=10, min_child_samples=len(data.target), n_jobs=2)
     clf.fit(data.data, data.target)
     importances = clf.feature_importances_
     assert len(importances) == 4
+    np.testing.assert_array_equal(importances, np.zeros(4))
+    assert all(tree["num_leaves"] == 1 for tree in clf.booster_.dump_model()["tree_info"])
 
 
 def test_feature_importances_type():
