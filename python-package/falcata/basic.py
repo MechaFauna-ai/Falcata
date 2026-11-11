@@ -4030,6 +4030,8 @@ class Booster:
         handle = this["_handle"]
         this.pop("train_set", None)
         this.pop("valid_sets", None)
+        this["_Booster__inner_predict_buffer"] = []
+        this["_Booster__is_predicted_cur_iter"] = []
         this.pop("_fil_models", None)
         if handle is not None:
             # FALB by default: same model, ~10x less to write and read. Opt out
