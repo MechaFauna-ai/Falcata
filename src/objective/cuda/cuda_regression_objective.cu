@@ -19,7 +19,7 @@ namespace Falcata {
 template <typename HOST_OBJECTIVE>
 void CUDARegressionObjectiveInterface<HOST_OBJECTIVE>::Init(const Metadata& metadata, data_size_t num_data) {
   CUDAObjectiveInterface<HOST_OBJECTIVE>::Init(metadata, num_data);
-  const data_size_t num_get_gradients_blocks = (this->num_data_ + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const data_size_t num_get_gradients_blocks = CUDABlockCount(this->num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   cuda_block_buffer_.Resize(static_cast<size_t>(num_get_gradients_blocks));
   if (this->sqrt_) {
     cuda_trans_label_.Resize(this->trans_label_.size());
@@ -74,7 +74,7 @@ __global__ void ConvertOutputCUDAKernel_Regression(const bool sqrt, const data_s
 }
 
 const double* CUDARegressionL2loss::LaunchConvertOutputCUDAKernel(const data_size_t num_data, const double* input, double* output) const {
-  const int num_blocks = (num_data + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const int num_blocks = CUDABlockCount(num_data, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   if (sqrt_) {
     ConvertOutputCUDAKernel_Regression<<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(sqrt_, num_data, input, output);
     return output;
@@ -101,7 +101,7 @@ __global__ void GetGradientsKernel_RegressionL2(const double* cuda_scores, const
 }
 
 void CUDARegressionL2loss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
-  const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   if (cuda_weights_ == nullptr) {
     GetGradientsKernel_RegressionL2<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, nullptr, num_data_, gradients, hessians);
   } else {
@@ -188,7 +188,7 @@ __global__ void GetGradientsKernel_RegressionL1(const double* cuda_scores, const
 }
 
 void CUDARegressionL1loss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
-  const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   if (cuda_weights_ == nullptr) {
     GetGradientsKernel_RegressionL1<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, nullptr, num_data_, gradients, hessians);
   } else {
@@ -304,7 +304,7 @@ __global__ void GetGradientsKernel_Huber(const double* cuda_scores, const label_
 }
 
 void CUDARegressionHuberLoss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
-  const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   if (cuda_weights_ == nullptr) {
     GetGradientsKernel_Huber<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians);
   } else {
@@ -333,7 +333,7 @@ __global__ void GetGradientsKernel_Fair(const double* cuda_scores, const label_t
 }
 
 void CUDARegressionFairLoss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
-  const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   if (cuda_weights_ == nullptr) {
     GetGradientsKernel_Fair<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, nullptr, num_data_, c_, gradients, hessians);
   } else {
@@ -379,7 +379,7 @@ __global__ void GetGradientsKernel_Poisson(const double* cuda_scores, const labe
 }
 
 void CUDARegressionPoissonLoss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
-  const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   if (cuda_weights_ == nullptr) {
     GetGradientsKernel_Poisson<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
       score, cuda_labels_, nullptr, num_data_, max_delta_step_, gradients, hessians);
@@ -397,7 +397,7 @@ __global__ void ConvertOutputCUDAKernel_Regression_Poisson(const data_size_t num
 }
 
 const double* CUDARegressionPoissonLoss::LaunchConvertOutputCUDAKernel(const data_size_t num_data, const double* input, double* output) const {
-  const int num_blocks = (num_data + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const int num_blocks = CUDABlockCount(num_data, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   ConvertOutputCUDAKernel_Regression_Poisson<<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(num_data, input, output);
   return output;
 }
@@ -521,7 +521,7 @@ __global__ void GetGradientsKernel_RegressionQuantile(const double* cuda_scores,
 }
 
 void CUDARegressionQuantileloss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
-  const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   if (cuda_weights_ == nullptr) {
     GetGradientsKernel_RegressionQuantile<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians);
   } else {

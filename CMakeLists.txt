@@ -1106,6 +1106,7 @@ if(BUILD_CPP_TEST)
         tests/cpp_tests/test_cuda_selective_r3.cu
         tests/cpp_tests/test_cuda_multiclass_convert.cu
         tests/cpp_tests/test_cuda_nonquant_fixed.cu
+        tests/cpp_tests/test_cuda_block_count.cu
         tests/cpp_tests/test_cuda_tree_from_host.cu
         tests/cpp_tests/test_cuda_vector_capacity.cu
         tests/cpp_tests/test_cuda_learner_destructors.cu

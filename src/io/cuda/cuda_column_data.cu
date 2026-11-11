@@ -80,7 +80,7 @@ void CUDAColumnData::LaunchCopySubrowKernel(uint8_t* const* in_cuda_data_by_colu
   if (num_used_indices_ <= 0 || num_columns_ <= 0) {
     return;
   }
-  const int num_blocks = (num_used_indices_ + COPY_SUBROW_BLOCK_SIZE_COLUMN_DATA - 1) / COPY_SUBROW_BLOCK_SIZE_COLUMN_DATA;
+  const int num_blocks = CUDABlockCount(num_used_indices_, COPY_SUBROW_BLOCK_SIZE_COLUMN_DATA);
   CopySubrowKernel_ColumnData<<<num_blocks, COPY_SUBROW_BLOCK_SIZE_COLUMN_DATA>>>(
     in_cuda_data_by_column,
     cuda_column_bit_type_.RawData(),
