@@ -1063,6 +1063,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_main.cpp
       tests/cpp_tests/test_multi_val_sparse_bin.cpp
       tests/cpp_tests/test_nccl_row_split.cpp
+      tests/cpp_tests/test_ndcg_reinitialization.cpp
       tests/cpp_tests/test_opencl_host_buffers.cpp
       tests/cpp_tests/test_partition_leaf_predictions.cpp
       tests/cpp_tests/test_serialize.cpp
