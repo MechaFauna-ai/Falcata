@@ -7,6 +7,8 @@
 
 #ifdef USE_CUDA
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -27,6 +29,25 @@ void CUDALambdarankNDCG::Init(const Metadata& metadata, data_size_t num_data) {
   CopyFromHostToCUDADevice(cuda_inverse_max_dcgs_.RawData(), this->inverse_max_dcgs_.data(), this->inverse_max_dcgs_.size(), __FILE__, __LINE__);
   cuda_label_gain_.Resize(this->label_gain_.size());
   CopyFromHostToCUDADevice(cuda_label_gain_.RawData(), this->label_gain_.data(), this->label_gain_.size(), __FILE__, __LINE__);
+  // the CPU objective's sigmoid table (LambdarankNDCG::Init built it) and its lookup parameters
+  cuda_sigmoid_table_.InitFromHostVector(this->sigmoid_table_);
+  lambda_tables_.sigmoid_table = cuda_sigmoid_table_.RawData();
+  lambda_tables_.min_sigmoid_input = this->min_sigmoid_input_;
+  lambda_tables_.max_sigmoid_input = this->max_sigmoid_input_;
+  lambda_tables_.sigmoid_table_idx_factor = this->sigmoid_table_idx_factor_;
+  lambda_tables_.sigmoid_bins = this->_sigmoid_bins;
+  // the pair discounts, one per rank a query can have: DCGCalculator::Init's 1.0 / std::log2(2.0 + i), the values
+  // GetDiscount returns (computed here for every rank, since its table stops at kMaxPosition)
+  data_size_t max_items_in_query = 1;
+  for (data_size_t q = 0; q < this->num_queries_; ++q) {
+    max_items_in_query = std::max(max_items_in_query, this->query_boundaries_[q + 1] - this->query_boundaries_[q]);
+  }
+  std::vector<double> discount(static_cast<size_t>(max_items_in_query));
+  for (data_size_t i = 0; i < max_items_in_query; ++i) {
+    discount[i] = 1.0 / std::log2(2.0 + i);
+  }
+  cuda_discount_.InitFromHostVector(discount);
+  lambda_tables_.discount = cuda_discount_.RawData();
 }
 
 

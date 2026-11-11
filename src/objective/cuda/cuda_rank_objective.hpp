@@ -23,6 +23,18 @@
 
 namespace Falcata {
 
+/*! \brief Device copies of the CPU lambdarank objective's lookup tables, passed to every gradient kernel by value:
+ *  the sigmoid table LambdarankNDCG::GetSigmoid reads (with its bounds and index factor) and the pair discounts
+ *  1 / log2(2 + rank) of DCGCalculator::GetDiscount, so a pair's lambda is the CPU's to the bit */
+struct LambdarankLambdaTables {
+  const double* sigmoid_table;
+  double min_sigmoid_input;
+  double max_sigmoid_input;
+  double sigmoid_table_idx_factor;
+  size_t sigmoid_bins;
+  const double* discount;
+};
+
 template <typename HOST_OBJECTIVE>
 class CUDALambdaRankObjectiveInterface : public CUDAObjectiveInterface<HOST_OBJECTIVE> {
  public:
@@ -93,6 +105,9 @@ class CUDALambdarankNDCG: public CUDALambdaRankObjectiveInterface<LambdarankNDCG
   // CUDA memory, held by this object
   CUDAVector<double> cuda_inverse_max_dcgs_;
   CUDAVector<double> cuda_label_gain_;
+  CUDAVector<double> cuda_sigmoid_table_;
+  CUDAVector<double> cuda_discount_;
+  LambdarankLambdaTables lambda_tables_;
 
   // When true, the gradient kernel runs on a deterministic code path that
   // avoids order-dependent atomicAdd_block accumulation.

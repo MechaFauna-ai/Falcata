@@ -91,7 +91,7 @@ __global__ void BitonicArgSortItemsGlobalKernel(const double* scores,
     const data_size_t query_item_start = cuda_query_boundaries[query_index];
     const data_size_t query_item_end = cuda_query_boundaries[query_index + 1];
     const data_size_t num_items_in_query = query_item_end - query_item_start;
-    BitonicArgSortDevice<double, data_size_t, false, BITONIC_SORT_NUM_ELEMENTS, 11>(scores + query_item_start,
+    BitonicArgSortDevice<double, data_size_t, false, BITONIC_SORT_NUM_ELEMENTS, 11, /*STABLE=*/true>(scores + query_item_start,
           out_indices + query_item_start,
           num_items_in_query);
     __syncthreads();
