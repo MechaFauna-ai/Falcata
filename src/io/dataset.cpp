@@ -192,9 +192,11 @@ std::vector<std::vector<int>> FindGroups(
         MarkUsed(&conflict_marks[best_gid], sample_indices[fidx],
                  num_per_col[fidx]);
       }
+      // same rule as the candidate count above and FeatureGroup itself: a
+      // feature whose most-frequent bin is 0 shares the group's bin 0
       group_num_bin[best_gid] +=
           bin_mappers[fidx]->num_bin() +
-          (bin_mappers[fidx]->GetDefaultBin() == 0 ? -1 : 0);
+          (bin_mappers[fidx]->GetMostFreqBin() == 0 ? -1 : 0);
     } else {
       features_in_group.emplace_back();
       features_in_group.back().push_back(fidx);
