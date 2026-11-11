@@ -3,6 +3,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
+// the socket transport only (an MPI build has no TcpSocket)
+#ifdef USE_SOCKET
+
 #include <gtest/gtest.h>
 
 #include <string>
@@ -44,3 +47,5 @@ TEST(AdapterIps, EveryAddressOfEveryAdapter) {
   Falcata::CollectAdapterIps(static_cast<const AdapterInfo*>(nullptr), &none);
   EXPECT_TRUE(none.empty());
 }
+
+#endif  // USE_SOCKET
