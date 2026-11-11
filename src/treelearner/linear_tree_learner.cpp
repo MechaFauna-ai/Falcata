@@ -191,7 +191,7 @@ Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::FitByExistingTree(const Tree* old_tr
 
 template <typename TREE_LEARNER_TYPE>
 void LinearTreeLearner<TREE_LEARNER_TYPE>::GetLeafMap(Tree* tree) const {
-  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) if (this->num_data_ >= 65536)
+#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) if (this->num_data_ >= 65536)
   for (data_size_t i = 0; i < this->num_data_; ++i) {
     leaf_map_[i] = -1;
   }
