@@ -15,12 +15,15 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <ctime>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #ifdef USE_SOCKET
@@ -35,15 +38,87 @@
 namespace Falcata {
 
 /*!
+* \brief One long-lived thread that runs a job at a time for Linkers::SendRecv, so a large exchange does not
+*        create and join a thread per call. A job's exception is kept and handed back by Wait.
+*/
+class SendWorker {
+ public:
+  SendWorker() : thread_([this]() { Loop(); }) {}
+
+  ~SendWorker() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    thread_.join();
+  }
+
+  SendWorker(const SendWorker&) = delete;
+  SendWorker& operator=(const SendWorker&) = delete;
+
+  /*! \brief Start job on the worker thread; the job must stay valid until Wait returns */
+  void Start(std::function<void()> job) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      job_ = std::move(job);
+      has_job_ = true;
+      done_ = false;
+      error_ = nullptr;
+    }
+    cv_.notify_all();
+  }
+
+  /*! \brief Wait for the job Start gave; returns what it threw, if anything */
+  std::exception_ptr Wait() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [this]() { return done_; });
+    return error_;
+  }
+
+ private:
+  void Loop() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (;;) {
+      cv_.wait(lock, [this]() { return has_job_ || stop_; });
+      if (!has_job_) {
+        return;  // stop
+      }
+      std::function<void()> job = std::move(job_);
+      has_job_ = false;
+      lock.unlock();
+      std::exception_ptr error;
+      try {
+        job();
+      } catch (...) {
+        error = std::current_exception();
+      }
+      lock.lock();
+      error_ = error;
+      done_ = true;
+      cv_.notify_all();
+    }
+  }
+
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::function<void()> job_;
+  bool has_job_ = false;
+  bool done_ = false;
+  bool stop_ = false;
+  std::exception_ptr error_;
+  std::thread thread_;  // last: starts once the members above exist
+};
+
+/*!
 * \brief A network basic communication wrapper.
 * Will wrap low level communication methods, e.g. mpi, socket and so on.
 * This class will wrap all linkers to other machines if needs
 */
 class Linkers {
  public:
-  Linkers() {
-    is_init_ = false;
-  }
+  /*! \brief A placeholder for no network (Network::Dispose): one machine, rank 0 */
+  Linkers() {}
   /*!
   * \brief Constructor
   * \param config Config of network settings
@@ -88,9 +163,8 @@ class Linkers {
                        int recv_rank, char* recv_data, int64_t recv_len);
 
   /*!
-  * \brief Runs send() on a second thread while recv() runs on this one. A failure on either side is rethrown here
-  *        once the sending thread has finished (a failure on one side first unblocks the other, see AbortLink), so no
-  *        exception escapes the thread and no joinable thread is destroyed
+  * \brief Runs send() on the send worker thread while recv() runs on this one. A failure on either side is
+  *        rethrown here once the send has finished (a failure on one side first unblocks the other, see AbortLink)
   */
   template <typename SendFun, typename RecvFun>
   inline void SendWhileReceiving(int send_rank, int recv_rank, const SendFun& send, const RecvFun& recv);
@@ -125,7 +199,7 @@ class Linkers {
   * \param rank
   * \param socket
   */
-  void SetLinker(int rank, const TcpSocket& socket);
+  void SetLinker(int rank, TcpSocket socket);
   /*!
   * \brief Thread for listening
   * \param incoming_cnt Number of incoming machines
@@ -182,17 +256,17 @@ class Linkers {
 
  private:
   /*! \brief Rank of local machine */
-  int rank_;
+  int rank_ = 0;
   /*! \brief Total number machines */
-  int num_machines_;
+  int num_machines_ = 1;
   /*! \brief Bruck map */
   BruckMap bruck_map_;
   /*! \brief Recursive Halving map */
   RecursiveHalvingMap recursive_halving_map_;
 
-  std::chrono::duration<double, std::milli> network_time_;
+  std::chrono::duration<double, std::milli> network_time_{0};
 
-  bool is_init_;
+  bool is_init_ = false;
 
   #ifdef USE_SOCKET
   /*! \brief use to store client ips */
@@ -200,9 +274,9 @@ class Linkers {
   /*! \brief use to store client ports */
   std::vector<int> client_ports_;
   /*! \brief time out for sockets, in minutes */
-  int socket_timeout_;
+  int socket_timeout_ = 0;
   /*! \brief Local listen ports */
-  int local_listen_port_;
+  int local_listen_port_ = 0;
   /*! \brief Linkers */
   std::vector<std::unique_ptr<TcpSocket>> linkers_;
   /*! \brief Local socket listener */
@@ -214,6 +288,8 @@ class Linkers {
   /*! \brief Set by AbortHandshake: ListenThread takes no further connection */
   bool handshake_aborted_ = false;
   #endif  // USE_SOCKET
+  /*! \brief Runs the sending half of SendWhileReceiving; started on first use */
+  std::unique_ptr<SendWorker> send_worker_;
 };
 
 
@@ -253,19 +329,21 @@ inline void Linkers::Send(int rank, char* data, int64_t len) const {
 
 template <typename SendFun, typename RecvFun>
 inline void Linkers::SendWhileReceiving(int send_rank, int recv_rank, const SendFun& send, const RecvFun& recv) {
+  if (send_worker_ == nullptr) {
+    send_worker_.reset(new SendWorker());
+  }
   // which side failed first (0: neither, 1: send, 2: receive): its error is the cause, the other side's is the
   // shutdown that interrupted it
   std::atomic<int> first_failure(0);
-  std::exception_ptr send_error;
-  std::thread send_worker([this, recv_rank, &send, &send_error, &first_failure]() {
+  send_worker_->Start([this, recv_rank, &send, &first_failure]() {
     try {
       send();
     } catch (...) {
-      send_error = std::current_exception();
       int none = 0;
       if (first_failure.compare_exchange_strong(none, 1)) {
         AbortLink(recv_rank);  // the receive may wait on another, still connected rank: make it return
       }
+      throw;
     }
   });
   try {
@@ -276,13 +354,13 @@ inline void Linkers::SendWhileReceiving(int send_rank, int recv_rank, const Send
     if (recv_first) {
       AbortLink(send_rank);
     }
-    send_worker.join();
+    const std::exception_ptr send_error = send_worker_->Wait();
     if (!recv_first && send_error) {
       std::rethrow_exception(send_error);
     }
     throw;
   }
-  send_worker.join();
+  const std::exception_ptr send_error = send_worker_->Wait();
   if (send_error) {
     std::rethrow_exception(send_error);
   }
@@ -290,9 +368,28 @@ inline void Linkers::SendWhileReceiving(int send_rank, int recv_rank, const Send
 
 inline void Linkers::SendRecv(int send_rank, char* send_data, int64_t send_len,
                               int recv_rank, char* recv_data, int64_t recv_len) {
+  if (send_len > 0 && send_len <= INT32_MAX && recv_len <= INT32_MAX) {
+    // the transport's own exchange (an empty send is left to the paths below, which post none, as Send does)
+    SendRecv(send_rank, send_data, static_cast<int>(send_len), recv_rank, recv_data, static_cast<int>(recv_len));
+    return;
+  }
   auto start_time = std::chrono::high_resolution_clock::now();
+#ifdef USE_MPI
+  // MPI is initialized for one thread at a time (MPI_THREAD_SERIALIZED): post the int-sized pieces of the send
+  // non-blocking, receive, then wait, all on this thread
+  std::vector<MPI_Request> requests;
+  for (int64_t used = 0; used < send_len;) {
+    const int cur_size = static_cast<int>(std::min<int64_t>(send_len - used, INT32_MAX));
+    requests.emplace_back();
+    MPI_SAFE_CALL(MPI_Isend(send_data + used, cur_size, MPI_BYTE, send_rank, 0, MPI_COMM_WORLD, &requests.back()));
+    used += cur_size;
+  }
+  Recv(recv_rank, recv_data, recv_len);
+  MPI_SAFE_CALL(MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE));
+#else
   SendWhileReceiving(send_rank, recv_rank, [&]() { Send(send_rank, send_data, send_len); },
                      [&]() { Recv(recv_rank, recv_data, recv_len); });
+#endif  // USE_MPI
   // wait for send complete
   auto end_time = std::chrono::high_resolution_clock::now();
   // output used time on each iteration

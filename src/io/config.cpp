@@ -332,7 +332,7 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
     // fails inside allocators whose destructors then fail again during
     // unwinding, and the process terminates instead of raising.
     if (const char* missing_driver = CudaDriverShim::MissingDriverMessage()) {
-      Log::Fatal(missing_driver);
+      Log::Fatal("%s", missing_driver);
     }
 #endif
     FLC_config_::current_device = lgbm_device_cuda;
@@ -712,10 +712,11 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
                 "override.");
       quant_mode = std::string("fixedpoint");
       use_quantized_grad = true;
-      if (num_grad_quant_bins == 4) {
+      if (quant_bins_from_auto && num_grad_quant_bins == 4) {
         // the 0->auto default resolved to the stochastic/none value of 4
         // BEFORE this mapping ran; restore the auto sentinel so the tree
-        // learner's deterministic auto-raise picks the finest safe count
+        // learner's deterministic auto-raise picks the finest safe count.
+        // An explicit quant_bins=4 (quant_bins_from_auto false) is kept.
         num_grad_quant_bins = 0;
       }
     }

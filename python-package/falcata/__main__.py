@@ -16,11 +16,15 @@ def _cmd_convert(args: argparse.Namespace) -> int:
 
     src = Path(args.input)
     dst = Path(args.output)
-    booster = flc.Booster(model_file=str(src))
     fmt = args.format
     if fmt == "auto":
         stripped = [x.lower() for x in dst.suffixes if x.lower() != ".gz"]
         fmt = "falb" if stripped and stripped[-1] == ".falb" else "txt"
+    if fmt != "falb" and (
+        args.drop_stats or args.drop_diagnostics or args.f32_leaves or args.compress_level is not None
+    ):
+        raise ValueError("FALB conversion options require FALB output")
+    booster = flc.Booster(model_file=str(src))
     kwargs = {}
     if fmt == "falb":
         # Converting is transforming an EXISTING artifact, so it is lossless by
@@ -32,7 +36,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
             "with_stats": not args.drop_stats,
             "with_diagnostics": not args.drop_diagnostics,
             "f32_leaves": args.f32_leaves,
-            "compress_level": args.compress_level,
+            "compress_level": 6 if args.compress_level is None else args.compress_level,
         }
     booster.save_model(str(dst), num_iteration=-1, format=fmt, **kwargs)
     src_size, dst_size = src.stat().st_size, dst.stat().st_size
@@ -80,7 +84,12 @@ def main(argv: "list[str] | None" = None) -> int:
         "--drop-diagnostics", action="store_true", help="discard split_gain/internal_value (breaks gain importance)"
     )
     cv.add_argument("--f32-leaves", action="store_true", help="store leaf values as float32 (LOSSY, ~35%% smaller)")
-    cv.add_argument("--compress-level", type=int, default=6, help="zlib level 0-9; 0 keeps sections raw and mmap-able")
+    cv.add_argument(
+        "--compress-level",
+        type=int,
+        default=None,
+        help="FALB zlib level 0-9 (default 6); 0 keeps sections raw and mmap-able",
+    )
     cv.set_defaults(func=_cmd_convert)
 
     args = ap.parse_args(argv)
