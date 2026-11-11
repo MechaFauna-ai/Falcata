@@ -987,6 +987,7 @@ def _predict(
         num_classes = model._n_classes
 
         if num_classes > 2 and pred_contrib and isinstance(data._meta, ss.spmatrix):
+            data = data.rechunk({1: -1})
             predict_function = partial(
                 _predict_part,
                 model=model,
