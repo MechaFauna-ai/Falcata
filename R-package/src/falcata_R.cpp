@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <utility>
 #include <vector>
 #include <algorithm>
@@ -876,6 +877,9 @@ SEXP FLC_BoosterGetNumPredict_R(SEXP handle,
   _AssertBoosterHandleNotNull(handle);
   int64_t len;
   CHECK_CALL(FLC_BoosterGetNumPredict(R_ExternalPtrAddr(handle), Rf_asInteger(data_idx), &len));
+  if (len > std::numeric_limits<int>::max()) {
+    Log::Fatal("Prediction length exceeds the R integer limit");
+  }
   INTEGER(out)[0] = static_cast<int>(len);
   return R_NilValue;
   R_API_END();
@@ -945,6 +949,9 @@ SEXP FLC_BoosterCalcNumPredict_R(SEXP handle,
   int64_t len = 0;
   CHECK_CALL(FLC_BoosterCalcNumPredict(R_ExternalPtrAddr(handle), Rf_asInteger(num_row),
     pred_type, Rf_asInteger(start_iteration), Rf_asInteger(num_iteration), &len));
+  if (len > std::numeric_limits<int>::max()) {
+    Log::Fatal("Prediction length exceeds the R integer limit");
+  }
   INTEGER(out_len)[0] = static_cast<int>(len);
   return R_NilValue;
   R_API_END();
