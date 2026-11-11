@@ -70,10 +70,14 @@ def arg_names(args):
         if fp:
             out.append(fp.group(1))
             continue
-        a = re.sub(r"\[\s*\]", "", a)
+        a = re.sub(r"\[[^\]]*\]", "", a)
         idents = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", a)
-        if idents:
-            out.append(idents[-1])
+        qualifiers = {"const", "volatile", "restrict"}
+        type_keywords = {"void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "bool"}
+        unqualified = [token for token in idents if token not in qualifiers]
+        if len(unqualified) < 2 or unqualified[-1] in type_keywords:
+            raise ValueError(f"Compatibility forwarders require named parameters: {a}")
+        out.append(unqualified[-1])
     return out
 
 
