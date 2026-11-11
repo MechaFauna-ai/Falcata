@@ -109,7 +109,7 @@ try:
     from_catboost(cm)
     chk("refuses categorical features", False)
 except ValueError as e:
-    chk("refuses categorical features", True, str(e)[:42])
+    chk("refuses categorical features", "categorical" in str(e).lower(), str(e)[:42])
 try:
     lg = cb.CatBoostRegressor(iterations=8, depth=4, grow_policy="Lossguide", verbose=0, allow_writing_files=False).fit(
         Xs, ys
