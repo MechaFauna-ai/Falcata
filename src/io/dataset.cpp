@@ -712,29 +712,43 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
   // unsigned values (incl. half bit patterns) index the table directly
   constexpr int64_t kLutSize = static_cast<int64_t>(1) << (8 * sizeof(T));
   constexpr int64_t kLutOffset = std::is_signed<T>::value ? kLutSize / 2 : 0;
-  std::vector<uint32_t> lut(static_cast<size_t>(num_cols) * kLutSize, Bin::kSkipBin);
+  // Building a table costs kLutSize ValueToBin calls per column; binning each
+  // value directly costs nrow. For 16-bit types (65536 entries per column) a
+  // small call, e.g. one chunk of a chunked push, is far cheaper without it.
+  const bool use_lut = 2 * static_cast<int64_t>(nrow) >= kLutSize;
+  std::vector<uint32_t> lut(use_lut ? static_cast<size_t>(num_cols) * kLutSize : 0, Bin::kSkipBin);
   std::vector<Bin*> targets(num_cols, nullptr);
+  std::vector<FeatureGroup*> col_group(num_cols, nullptr);
+  std::vector<int> col_sub_feature(num_cols, 0);
+  std::vector<const BinMapper*> col_mapper(num_cols, nullptr);
+  // the encoded bin of one raw value of column col (most-freq skip, offset
+  // and multi-val adjustment folded in)
+  auto encode = [&](int col, T raw) -> uint32_t {
+    double value = IS_FLOAT16
+        ? static_cast<double>(Common::HalfBitsToFloat(static_cast<uint16_t>(raw)))
+        : static_cast<double>(raw);
+    if (value == missing_sentinel) {
+      // declared missing sentinel (never matches the default NaN): bin the
+      // raw value exactly as the NaN it stands for
+      value = std::numeric_limits<double>::quiet_NaN();
+    }
+    return col_group[col]->EncodeBinForPush(col_sub_feature[col], col_mapper[col]->ValueToBin(value));
+  };
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int col = 0; col < num_cols; ++col) {
     const int feature_idx = used_feature_map_[col];
     if (feature_idx < 0) {
       continue;
     }
-    const int sub_feature = feature2subfeature_[feature_idx];
-    FeatureGroup* fg = feature_groups_[feature2group_[feature_idx]].get();
-    targets[col] = fg->PushTargetBin(sub_feature);
-    const BinMapper* mapper = FeatureBinMapper(feature_idx);
-    uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize;
-    for (int64_t v = 0; v < kLutSize; ++v) {
-      double value = IS_FLOAT16
-          ? static_cast<double>(Common::HalfBitsToFloat(static_cast<uint16_t>(v)))
-          : static_cast<double>(static_cast<T>(v - kLutOffset));
-      if (value == missing_sentinel) {
-        // declared missing sentinel (never matches the default NaN): bin the
-        // raw value exactly as the NaN it stands for
-        value = std::numeric_limits<double>::quiet_NaN();
+    col_sub_feature[col] = feature2subfeature_[feature_idx];
+    col_group[col] = feature_groups_[feature2group_[feature_idx]].get();
+    col_mapper[col] = FeatureBinMapper(feature_idx);
+    targets[col] = col_group[col]->PushTargetBin(col_sub_feature[col]);
+    if (use_lut) {
+      uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize;
+      for (int64_t v = 0; v < kLutSize; ++v) {
+        col_lut[v] = encode(col, static_cast<T>(v - kLutOffset));
       }
-      col_lut[v] = fg->EncodeBinForPush(sub_feature, mapper->ValueToBin(value));
     }
   }
   // tiles keep the strided per-column reads of row-major data cache-resident
@@ -753,12 +767,18 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
       if (bin_data == nullptr) {
         continue;
       }
-      const uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize + kLutOffset;
-      if (is_row_major) {
+      if (!use_lut) {
+        for (int32_t r = r0; r < r1; ++r) {
+          bins[r - r0] = encode(col, is_row_major ? data[static_cast<size_t>(r) * ncol + col]
+                                                  : data[static_cast<size_t>(nrow) * col + r]);
+        }
+      } else if (is_row_major) {
+        const uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize + kLutOffset;
         for (int32_t r = r0; r < r1; ++r) {
           bins[r - r0] = col_lut[data[static_cast<size_t>(r) * ncol + col]];
         }
       } else {
+        const uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize + kLutOffset;
         const T* col_ptr = data + static_cast<size_t>(nrow) * col;
         for (int32_t r = r0; r < r1; ++r) {
           bins[r - r0] = col_lut[col_ptr[r]];
