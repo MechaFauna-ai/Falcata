@@ -146,7 +146,7 @@ class MultiValDenseBin : public MultiValBin {
         PREFETCH_T0(data_ptr_base + RowPtr(pf_idx));
         const auto j_start = RowPtr(idx);
         const VAL_T* data_ptr = data_ptr_base + j_start;
-        const int16_t gradient_16 = gradients_and_hessians_ptr[idx];
+        const int16_t gradient_16 = ORDERED ? gradients_and_hessians_ptr[i] : gradients_and_hessians_ptr[idx];
         const PACKED_HIST_T gradient_packed = (HIST_BITS == 8) ? gradient_16 :
           ((static_cast<PACKED_HIST_T>(static_cast<int8_t>(gradient_16 >> 8)) << HIST_BITS) |
           static_cast<PACKED_HIST_T>(gradient_16 & 0xff));
@@ -161,7 +161,7 @@ class MultiValDenseBin : public MultiValBin {
       const auto idx = USE_INDICES ? data_indices[i] : i;
       const auto j_start = RowPtr(idx);
       const VAL_T* data_ptr = data_ptr_base + j_start;
-      const int16_t gradient_16 = gradients_and_hessians_ptr[idx];
+      const int16_t gradient_16 = ORDERED ? gradients_and_hessians_ptr[i] : gradients_and_hessians_ptr[idx];
       const PACKED_HIST_T gradient_packed = (HIST_BITS == 8) ? gradient_16 :
           ((static_cast<PACKED_HIST_T>(static_cast<int8_t>(gradient_16 >> 8)) << HIST_BITS) |
           static_cast<PACKED_HIST_T>(gradient_16 & 0xff));

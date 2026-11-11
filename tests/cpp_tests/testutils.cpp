@@ -206,7 +206,9 @@ void TestUtils::StreamDenseDataset(DatasetHandle dataset_handle,
   }
 
   auto cur_time = std::chrono::steady_clock::now();
-  Log::Info(" Time: %d", cur_time - start_time);
+  // a duration is not an int: pass a plain integer through the varargs
+  Log::Info(" Time: %lld ms", static_cast<long long>(  // NOLINT(runtime/int)
+      std::chrono::duration_cast<std::chrono::milliseconds>(cur_time - start_time).count()));
 }
 
 void TestUtils::StreamSparseDataset(DatasetHandle dataset_handle,
@@ -273,7 +275,9 @@ void TestUtils::StreamSparseDataset(DatasetHandle dataset_handle,
   for (auto& t : threads) t.join();
 
   auto cur_time = std::chrono::steady_clock::now();
-  Log::Info(" Time: %d", cur_time - start_time);
+  // a duration is not an int: pass a plain integer through the varargs
+  Log::Info(" Time: %lld ms", static_cast<long long>(  // NOLINT(runtime/int)
+      std::chrono::duration_cast<std::chrono::milliseconds>(cur_time - start_time).count()));
 }
 
 /*!
@@ -317,7 +321,8 @@ void TestUtils::PushSparseBatch(DatasetHandle dataset_handle,
       init_scores_ptr = CreateInitScoreBatch(&init_score_batch, i, nrows, nclasses, batch_count, init_scores);
     }
 
-    int32_t nelem = indptr->at(i + batch_count - 1) - indptr->at(i);
+    // rows i .. i + batch_count - 1 end at indptr[i + batch_count]
+    int32_t nelem = indptr->at(i + batch_count) - indptr->at(i);
 
     int result = FLC_DatasetPushRowsByCSRWithMetadata(dataset_handle,
                                                         indptr_ptr,

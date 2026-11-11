@@ -22,6 +22,10 @@ Usage:
   python tests/gates/canonical.py covtype-fixedpoint
   python tests/gates/canonical.py numerai
   python tests/gates/canonical.py all
+  python tests/gates/canonical.py numerai-treecount
+
+``all`` runs the canonical model locks above. The separate, large-data nightly
+``numerai-treecount`` contract must be selected explicitly.
 """
 
 import argparse

@@ -50,7 +50,8 @@ class LinearTreeLearner: public TREE_LEARNER_TYPE {
     if (any_nan_) {
       for (int i = 0; i < tree->num_leaves() - 1 ; ++i) {
         // use split_feature because split_feature_inner doesn't work when refitting existing tree
-        if (contains_nan_[this->train_data_->InnerFeatureIndex(tree->split_feature(i))]) {
+        const int inner_feature = this->train_data_->InnerFeatureIndex(tree->split_feature(i));
+        if (inner_feature >= 0 && contains_nan_[inner_feature]) {
           has_nan = true;
           break;
         }

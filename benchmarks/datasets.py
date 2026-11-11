@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 import numpy as np
@@ -102,8 +103,8 @@ def prep_higgs():
 def prep_epsilon():
     from sklearn.datasets import load_svmlight_file
 
-    x_tr, y_tr = load_svmlight_file(fetch("epsilon_train.bz2"), n_features=2000)
-    x_te, y_te = load_svmlight_file(fetch("epsilon_test.bz2"), n_features=2000)
+    x_tr, y_tr = load_svmlight_file(fetch("epsilon_train.bz2"), n_features=2000, dtype=np.float32)
+    x_te, y_te = load_svmlight_file(fetch("epsilon_test.bz2"), n_features=2000, dtype=np.float32)
     save(
         "epsilon",
         x_tr.toarray(),
@@ -189,7 +190,14 @@ def prep_airline_cat():
     beyond the top 254 is collapsed into a single rare bucket. Ranking on the
     train split only keeps the test split from informing the encoding.
     """
-    x_tr, y_tr, x_te, y_te = _airline_split()
+    cached = [
+        os.path.join(CACHE_DIR, "airline", name) for name in ("X_train.npy", "y_train.npy", "X_test.npy", "y_test.npy")
+    ]
+    if all(os.path.exists(path) for path in cached):
+        # Recoding must never modify the numeric airline cache's backing files.
+        x_tr, y_tr, x_te, y_te = (np.load(path, mmap_mode="c") for path in cached)
+    else:
+        x_tr, y_tr, x_te, y_te = _airline_split()
     for col in AIRLINE_CAT_COLS:
         codes, counts = np.unique(x_tr[:, col], return_counts=True)
         # descending frequency; ties broken by code for a deterministic map
@@ -353,6 +361,7 @@ def prep_numerai_int8():
     f32 cache to exist; sampled rows are verified against it so the two
     caches cannot drift.
     """
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
     d = os.path.join(CACHE_DIR, "numerai")
@@ -376,24 +385,41 @@ def prep_numerai_int8():
         sys.exit("numerai-int8: row filter disagrees with the existing f32 cache")
     p = len(feat_cols)
 
-    x = np.memmap(os.path.join(d, "X.i8.mem"), dtype=np.int8, mode="w+", shape=(n_rows, p))
-    row_abs = row_out = 0
-    for batch in f.iter_batches(batch_size=200_000, columns=feat_cols):
-        nb = batch.num_rows
-        mask = keep_all[row_abs : row_abs + nb]
-        if mask.any():
-            sel = batch.to_pandas().to_numpy(dtype=np.int8)[mask]
-            x[row_out : row_out + len(sel)] = sel
-            row_out += len(sel)
-        row_abs += nb
-    assert row_out == n_rows, (row_out, n_rows)
-    x.flush()
+    descriptor, temporary = tempfile.mkstemp(prefix="X.i8.", suffix=".tmp", dir=d)
+    os.close(descriptor)
+    int8_schema = pa.schema([(name, pa.int8()) for name in feat_cols])
+    try:
+        x = np.memmap(temporary, dtype=np.int8, mode="w+", shape=(n_rows, p))
+        row_abs = row_out = 0
+        for batch in f.iter_batches(batch_size=200_000, columns=feat_cols):
+            nb = batch.num_rows
+            mask = keep_all[row_abs : row_abs + nb]
+            if mask.any():
+                selected = batch.filter(mask)
+                if any(column.null_count for column in selected.columns):
+                    sys.exit("numerai-int8: retained features must be finite integers in the int8 range")
+                try:
+                    converted = selected.cast(int8_schema)
+                except (pa.ArrowInvalid, pa.ArrowNotImplementedError, pa.ArrowTypeError) as error:
+                    sys.exit(f"numerai-int8: retained features must be finite integers in the int8 range: {error}")
+                sel = converted.to_pandas().to_numpy(dtype=np.int8)
+                x[row_out : row_out + len(sel)] = sel
+                row_out += len(sel)
+            row_abs += nb
+        assert row_out == n_rows, (row_out, n_rows)
+        x.flush()
 
-    xf = np.memmap(os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="r", shape=(n_rows, p))
-    rng = np.random.default_rng(SEED)
-    for r in rng.integers(0, n_rows, 50):
-        if not (x[r].astype(np.float32) == xf[r]).all():
-            sys.exit(f"numerai-int8: row {r} mismatches the f32 cache")
+        xf = np.memmap(os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="r", shape=(n_rows, p))
+        rng = np.random.default_rng(SEED)
+        for r in rng.integers(0, n_rows, 50):
+            if not (x[r].astype(np.float32) == xf[r]).all():
+                sys.exit(f"numerai-int8: row {r} mismatches the f32 cache")
+        x = xf = None
+        os.replace(temporary, os.path.join(d, "X.i8.mem"))
+    finally:
+        x = xf = None
+        if os.path.exists(temporary):
+            os.remove(temporary)
     print(f"numerai-int8 done: {n_rows} x {p}, sampled rows verified", flush=True)
 
 

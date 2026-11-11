@@ -205,8 +205,8 @@ print("Starting a new training job...")
 # callback
 def reset_metrics():
     def callback(env):
-        lgb_eval_new = flc.Dataset(X_test, y_test, reference=lgb_train)
         if env.iteration - env.begin_iteration == 5:
+            lgb_eval_new = flc.Dataset(X_test, y_test, reference=lgb_train)
             print("Add a new valid dataset at iteration 5...")
             env.model.add_valid(lgb_eval_new, "new_valid")
 
