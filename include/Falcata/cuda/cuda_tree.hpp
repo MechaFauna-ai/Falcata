@@ -341,6 +341,17 @@ class CUDATree : public Tree {
                             const data_size_t* used_data_indices,
                             data_size_t num_data, double* score) const override;
 
+  /*!
+  * \brief Write the leaf each row of data falls into, on the device: the same traversal as AddPredictionToScore
+  *        (the linear-tree scorer evaluates the leaf regressions from it)
+  * \param data The dataset
+  * \param used_data_indices Device indices of the rows to route, or nullptr for rows [0, num_data)
+  * \param num_data Number of rows to route
+  * \param leaf_index Device array indexed by row (data->num_data() entries); only the routed rows are written
+  */
+  void LeafIndexOnDevice(const Dataset* data, const data_size_t* used_data_indices,
+                         data_size_t num_data, int* leaf_index) const;
+
   inline void AsConstantTree(double val, int count) override;
 
   const int* cuda_leaf_parent() const { return cuda_leaf_parent_.RawData(); }
@@ -464,9 +475,11 @@ class CUDATree : public Tree {
     size_t cuda_bitset_len,
     size_t cuda_bitset_inner_len);
 
+  // leaf_index_out non-null: write each scored row's leaf index there instead of adding to score
   void LaunchAddPredictionToScoreKernel(const Dataset* data,
                                         const data_size_t* used_data_indices,
-                                        data_size_t num_data, double* score) const;
+                                        data_size_t num_data, double* score,
+                                        int* leaf_index_out = nullptr) const;
 
   void LaunchShrinkageKernel(const double rate);
 
