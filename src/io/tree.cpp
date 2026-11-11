@@ -611,6 +611,7 @@ std::string Tree::ToIfElse(int index, bool predict_leaf_index) const {
   }
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
+  str_buf << std::setprecision(std::numeric_limits<double>::digits10 + 2);
   str_buf << "double PredictTree" << index;
   if (predict_leaf_index) {
     str_buf << "Leaf";
