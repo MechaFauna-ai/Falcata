@@ -11,6 +11,7 @@
 #include <Falcata/cuda/cuda_bagging.hpp>
 #endif  // USE_CUDA
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -217,7 +218,9 @@ class BaggingSampleStrategy : public SampleStrategy {
         if (average_bag_rate <= average_bag_rate_threshold
             && (train_data_->num_feature_groups() < group_threshold_usesubset)) {
           if (tmp_subset_ == nullptr || is_change_dataset) {
-            tmp_subset_.reset(new Dataset(bag_data_cnt_));
+            // at least one row, as GOSS does: bagging_fraction * num_data can round down to 0 on
+            // a small dataset, and the subset is resized to each bag's actual count anyway
+            tmp_subset_.reset(new Dataset(std::max<data_size_t>(1, bag_data_cnt_)));
             tmp_subset_->CopyFeatureMapperFrom(train_data_);
           }
           is_use_subset_ = true;
