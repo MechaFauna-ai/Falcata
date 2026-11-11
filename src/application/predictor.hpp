@@ -73,17 +73,13 @@ class Predictor {
     if (predict_leaf_index) {
       predict_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                          double* output) {
-        int tid = omp_get_thread_num();
         if (num_feature_ > kFeatureThreshold &&
             features.size() < KSparseThreshold) {
           auto buf = CopyToPredictMap(features);
           boosting_->PredictLeafIndexByMap(buf, output);
         } else {
-          CopyToPredictBuffer(predict_buf_[tid].data(), features);
           // get result for leaf index
-          boosting_->PredictLeafIndex(predict_buf_[tid].data(), output);
-          ClearPredictBuffer(predict_buf_[tid].data(), predict_buf_[tid].size(),
-                             features);
+          WithPredictBuffer(features, [&](const double* buf) { boosting_->PredictLeafIndex(buf, output); });
         }
       };
     } else if (predict_contrib) {
@@ -92,12 +88,8 @@ class Predictor {
       }
       predict_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                          double* output) {
-        int tid = omp_get_thread_num();
-        CopyToPredictBuffer(predict_buf_[tid].data(), features);
         // get feature importances
-        boosting_->PredictContrib(predict_buf_[tid].data(), output);
-        ClearPredictBuffer(predict_buf_[tid].data(), predict_buf_[tid].size(),
-                           features);
+        WithPredictBuffer(features, [&](const double* buf) { boosting_->PredictContrib(buf, output); });
       };
       predict_sparse_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                                 std::vector<std::unordered_map<int, double>>* output) {
@@ -110,32 +102,25 @@ class Predictor {
       if (is_raw_score) {
         predict_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                            double* output) {
-          int tid = omp_get_thread_num();
           if (num_feature_ > kFeatureThreshold &&
               features.size() < KSparseThreshold) {
             auto buf = CopyToPredictMap(features);
             boosting_->PredictRawByMap(buf, output, &early_stop_);
           } else {
-            CopyToPredictBuffer(predict_buf_[tid].data(), features);
-            boosting_->PredictRaw(predict_buf_[tid].data(), output,
-                                  &early_stop_);
-            ClearPredictBuffer(predict_buf_[tid].data(),
-                               predict_buf_[tid].size(), features);
+            WithPredictBuffer(features,
+                              [&](const double* buf) { boosting_->PredictRaw(buf, output, &early_stop_); });
           }
         };
       } else {
         predict_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                            double* output) {
-          int tid = omp_get_thread_num();
           if (num_feature_ > kFeatureThreshold &&
               features.size() < KSparseThreshold) {
             auto buf = CopyToPredictMap(features);
             boosting_->PredictByMap(buf, output, &early_stop_);
           } else {
-            CopyToPredictBuffer(predict_buf_[tid].data(), features);
-            boosting_->Predict(predict_buf_[tid].data(), output, &early_stop_);
-            ClearPredictBuffer(predict_buf_[tid].data(),
-                               predict_buf_[tid].size(), features);
+            WithPredictBuffer(features,
+                              [&](const double* buf) { boosting_->Predict(buf, output, &early_stop_); });
           }
         };
       }
@@ -257,6 +242,27 @@ class Predictor {
   }
 
  private:
+  /*!
+  * \brief Calls fun with a num_feature_-long dense buffer holding features (zero elsewhere).
+  *        The buffers are per OpenMP thread, sized with OMP_NUM_THREADS() at construction; a call
+  *        from a thread number beyond that (a caller's own parallel region, a later larger thread
+  *        count) uses a temporary buffer instead of indexing past them.
+  */
+  template <typename Fun>
+  void WithPredictBuffer(const std::vector<std::pair<int, double>>& features, const Fun& fun) {
+    const int tid = omp_get_thread_num();
+    if (tid >= 0 && tid < static_cast<int>(predict_buf_.size())) {
+      auto& buf = predict_buf_[tid];
+      CopyToPredictBuffer(buf.data(), features);
+      fun(buf.data());
+      ClearPredictBuffer(buf.data(), buf.size(), features);
+    } else {
+      std::vector<double> buf(num_feature_, 0.0);
+      CopyToPredictBuffer(buf.data(), features);
+      fun(buf.data());
+    }
+  }
+
   void CopyToPredictBuffer(double* pred_buf, const std::vector<std::pair<int, double>>& features) {
     for (const auto &feature : features) {
       if (feature.first < num_feature_) {
