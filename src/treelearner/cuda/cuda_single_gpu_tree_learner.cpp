@@ -17,6 +17,7 @@
 #include <array>
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -6902,7 +6903,14 @@ Tree* CUDASingleGPUTreeLearner::FitByExistingTree(const Tree* old_tree, const st
     cuda_leaf_gradient_stat_buffer_.Resize(buffer_size);
     cuda_leaf_hessian_stat_buffer_.Resize(buffer_size);
   }
-  return FitByExistingTree(old_tree, gradients, hessians);
+  Tree* tree = FitByExistingTree(old_tree, gradients, hessians);
+  // a linear tree's prediction is its leaf model, so the refit replaces that too (as the CPU LinearTreeLearner)
+  last_tree_is_linear_ = false;
+  if (config_->linear_tree && old_tree->is_linear()) {
+    RefitLinearCUDA(static_cast<CUDATree*>(tree), leaf_pred, gradients, hessians);
+    last_tree_is_linear_ = true;
+  }
+  return tree;
 }
 
 void CUDASingleGPUTreeLearner::ReduceLeafStat(
@@ -7480,6 +7488,117 @@ void CUDASingleGPUTreeLearner::CalculateLinearCUDA(
         tree, leaf, num_feat, xthx, xtg,
         leaf_feat_inner[leaf], train_data_, lambda,
         /*is_refit=*/false, /*decay_rate=*/0.0, /*shrinkage=*/0.0, /*old_coeff_idx=*/{});
+  }
+}
+
+void CUDASingleGPUTreeLearner::RefitLinearCUDA(CUDATree* tree, const std::vector<int>& leaf_pred,
+                                               const score_t* gradients, const score_t* hessians) const {
+  const int num_leaves = tree->num_leaves();
+  const data_size_t num_rows = static_cast<data_size_t>(leaf_pred.size());
+
+  // a leaf model is fitted on the leaf's complete rows; with a NaN in a split feature, a leaf without linear
+  // features counts none and keeps the constant fallback (CPU LinearTreeLearner::CalculateLinear<true>)
+  if (refit_contains_nan_.empty()) {
+    refit_contains_nan_.assign(train_data_->num_features(), -1);
+  }
+  auto contains_nan = [this](int inner) {
+    if (refit_contains_nan_[inner] < 0) {
+      refit_contains_nan_[inner] = 0;
+      if (train_data_->FeatureBinMapper(inner)->bin_type() == BinType::NumericalBin) {
+        const float* values = train_data_->raw_index(inner);
+        for (data_size_t i = 0; i < num_data_; ++i) {
+          if (std::isnan(values[i])) {
+            refit_contains_nan_[inner] = 1;
+            break;
+          }
+        }
+      }
+    }
+    return refit_contains_nan_[inner] == 1;
+  };
+  bool has_nan = false;
+  for (int i = 0; i < num_leaves - 1 && !has_nan; ++i) {
+    const int inner = train_data_->InnerFeatureIndex(tree->split_feature(i));
+    has_nan = inner >= 0 && contains_nan(inner);
+  }
+
+  // ---- per-leaf numeric features from the tree's own leaf models (refit path) ----
+  std::vector<std::vector<int>> leaf_feat_inner(num_leaves);
+  std::vector<std::vector<int>> leaf_old_coeff_idx(num_leaves);
+  std::vector<int> host_num_feat(num_leaves, 0);
+  std::vector<int> feat_offset(num_leaves + 1, 0);
+  std::vector<int> feat_col_flat;
+  for (int leaf = 0; leaf < num_leaves; ++leaf) {
+    std::vector<int> raw_features = tree->LeafFeatures(leaf);
+    std::sort(raw_features.begin(), raw_features.end());
+    raw_features.erase(std::unique(raw_features.begin(), raw_features.end()), raw_features.end());
+    for (size_t j = 0; j < raw_features.size(); ++j) {
+      // absent from the refit dataset (e.g. filtered as constant): skipped, as on the CPU
+      const int inner = train_data_->InnerFeatureIndex(raw_features[j]);
+      if (inner < 0) {
+        continue;
+      }
+      if (train_data_->FeatureBinMapper(inner)->bin_type() == BinType::NumericalBin) {
+        leaf_feat_inner[leaf].push_back(inner);
+        leaf_old_coeff_idx[leaf].push_back(static_cast<int>(j));
+        feat_col_flat.push_back(inner_feature_to_numeric_col_[inner]);
+      }
+    }
+    const int nf = static_cast<int>(leaf_feat_inner[leaf].size());
+    CHECK_LE(nf, 256);
+    host_num_feat[leaf] = nf;
+    feat_offset[leaf + 1] = feat_offset[leaf] + nf;
+  }
+
+  // ---- the refit rows grouped by leaf: ResetByLeafPred replaces only the row -> leaf map, not the windows ----
+  LinearGramWindows windows;
+  windows.start.assign(num_leaves, 0);
+  windows.num.assign(num_leaves, 0);
+  for (data_size_t i = 0; i < num_rows; ++i) {
+    ++windows.num[leaf_pred[i]];
+  }
+  for (int leaf = 1; leaf < num_leaves; ++leaf) {
+    windows.start[leaf] = windows.start[leaf - 1] + windows.num[leaf - 1];
+  }
+  std::vector<data_size_t> next(windows.start);
+  std::vector<data_size_t> indices(std::max<data_size_t>(num_rows, 1));
+  for (data_size_t i = 0; i < num_rows; ++i) {
+    indices[next[leaf_pred[i]]++] = i;
+  }
+  if (cuda_refit_linear_indices_.Size() < indices.size()) {
+    cuda_refit_linear_indices_.ResizeDiscard(indices.size());
+  }
+  if (num_rows > 0) {
+    CopyFromHostToCUDADevice<data_size_t>(cuda_refit_linear_indices_.RawData(), indices.data(),
+                                          static_cast<size_t>(num_rows), __FILE__, __LINE__);
+  }
+  windows.cuda_indices = cuda_refit_linear_indices_.RawData();
+
+  std::vector<double> h_gram;
+  std::vector<int> gram_offset;
+  std::vector<int> h_nonzero;
+  LaunchCalcLinearGramKernel(host_num_feat, feat_offset, feat_col_flat, gradients, hessians,
+                             &h_gram, &gram_offset, &h_nonzero, &windows);
+
+  const double lambda = config_->linear_lambda;
+  const double shrinkage = tree->shrinkage();
+  const double decay_rate = config_->refit_decay_rate;
+  for (int leaf = 0; leaf < num_leaves; ++leaf) {
+    const int num_feat = host_num_feat[leaf];
+    const int complete_rows = (has_nan && num_feat == 0) ? 0 : h_nonzero[leaf];
+    if (complete_rows < num_feat + 1) {
+      // too few complete rows: a constant leaf, decayed from the old constant (CPU refit branch)
+      const double old_const = tree->LeafConst(leaf);
+      tree->SetLeafConst(leaf, decay_rate * old_const + (1.0 - decay_rate) * tree->LeafOutput(leaf) * shrinkage);
+      tree->SetLeafCoeffs(leaf, std::vector<double>(num_feat, 0));
+      tree->SetLeafFeaturesInner(leaf, leaf_feat_inner[leaf]);
+      continue;
+    }
+    const double* xtg = h_gram.data() + gram_offset[leaf];
+    const double* xthx = xtg + num_feat + 1;
+    LinearLeafSolver::SolveAndStore(
+        tree, leaf, num_feat, xthx, xtg, leaf_feat_inner[leaf], train_data_, lambda,
+        /*is_refit=*/true, decay_rate, shrinkage, leaf_old_coeff_idx[leaf]);
   }
 }
 

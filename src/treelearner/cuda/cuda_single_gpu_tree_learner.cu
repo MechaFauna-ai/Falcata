@@ -793,47 +793,57 @@ __global__ void LinearAddScoreKernel(
 void CUDASingleGPUTreeLearner::LaunchCalcLinearGramKernel(
     const std::vector<int>& leaf_num_feat, const std::vector<int>& leaf_feat_offset,
     const std::vector<int>& leaf_feat_col, const score_t* gradients, const score_t* hessians,
-    std::vector<double>* gram, std::vector<int>* gram_offset, std::vector<int>* leaf_nonzero) {
+    std::vector<double>* gram, std::vector<int>* gram_offset, std::vector<int>* leaf_nonzero,
+    const LinearGramWindows* windows) const {
   const int num_leaves = static_cast<int>(leaf_num_feat.size());
   gram_offset->assign(num_leaves + 1, 0);
   leaf_nonzero->assign(num_leaves, 0);
-  // the leaf windows of the partition's index list. Both map-only final-level gates exclude linear trees (the host
-  // level loop's map_only and the device tree's prefetch_tree_end), so nothing is pending here today; the call
-  // only keeps the windows valid should a later change lift that exclusion (a no-op otherwise)
-  cuda_data_partition_->EnsureLevelPartitioned();
   std::vector<data_size_t> leaf_start(num_leaves), leaf_num(num_leaves);
-  CopyFromCUDADeviceToHost<data_size_t>(leaf_start.data(), cuda_data_partition_->cuda_leaf_data_start(),
-                                        num_leaves, __FILE__, __LINE__);
-  CopyFromCUDADeviceToHost<data_size_t>(leaf_num.data(), cuda_data_partition_->cuda_leaf_num_data(),
-                                        num_leaves, __FILE__, __LINE__);
-  const data_size_t root_rows = cuda_data_partition_->root_num_data();
-  if (FalcataVerifyEnabled()) {
-    // FALCATA_VERIFY=1: the windows hold every partition row once, each in the leaf the row -> leaf map names
-    std::vector<data_size_t> indices(root_rows > 0 ? root_rows : 1);
-    std::vector<int> map(num_data_ > 0 ? num_data_ : 1);
-    if (root_rows > 0) {
-      CopyFromCUDADeviceToHost<data_size_t>(indices.data(), cuda_data_partition_->cuda_data_indices(),
-                                            root_rows, __FILE__, __LINE__);
-    }
-    CopyFromCUDADeviceToHost<int>(map.data(), cuda_data_partition_->cuda_data_index_to_leaf_index(), num_data_,
-                                  __FILE__, __LINE__);
-    std::vector<uint8_t> seen(num_data_ > 0 ? num_data_ : 1, 0);
-    int64_t total = 0;
-    for (int leaf = 0; leaf < num_leaves; ++leaf) {
-      CHECK_GE(leaf_num[leaf], 0);
-      CHECK_GE(leaf_start[leaf], 0);
-      CHECK_LE(static_cast<int64_t>(leaf_start[leaf]) + leaf_num[leaf], static_cast<int64_t>(root_rows));
-      for (data_size_t j = 0; j < leaf_num[leaf]; ++j) {
-        const data_size_t row = indices[leaf_start[leaf] + j];
-        CHECK_GE(row, 0);
-        CHECK_LT(row, num_data_);
-        CHECK_EQ(map[row], leaf);
-        CHECK_EQ(seen[row], 0);
-        seen[row] = 1;
+  const data_size_t* cuda_indices = cuda_data_partition_->cuda_data_indices();
+  if (windows != nullptr) {
+    CHECK_EQ(windows->start.size(), static_cast<size_t>(num_leaves));
+    CHECK_EQ(windows->num.size(), static_cast<size_t>(num_leaves));
+    leaf_start = windows->start;
+    leaf_num = windows->num;
+    cuda_indices = windows->cuda_indices;
+  } else {
+    // the leaf windows of the partition's index list. Both map-only final-level gates exclude linear trees (the host
+    // level loop's map_only and the device tree's prefetch_tree_end), so nothing is pending here today; the call
+    // only keeps the windows valid should a later change lift that exclusion (a no-op otherwise)
+    cuda_data_partition_->EnsureLevelPartitioned();
+    CopyFromCUDADeviceToHost<data_size_t>(leaf_start.data(), cuda_data_partition_->cuda_leaf_data_start(),
+                                          num_leaves, __FILE__, __LINE__);
+    CopyFromCUDADeviceToHost<data_size_t>(leaf_num.data(), cuda_data_partition_->cuda_leaf_num_data(),
+                                          num_leaves, __FILE__, __LINE__);
+    const data_size_t root_rows = cuda_data_partition_->root_num_data();
+    if (FalcataVerifyEnabled()) {
+      // FALCATA_VERIFY=1: the windows hold every partition row once, each in the leaf the row -> leaf map names
+      std::vector<data_size_t> indices(root_rows > 0 ? root_rows : 1);
+      std::vector<int> map(num_data_ > 0 ? num_data_ : 1);
+      if (root_rows > 0) {
+        CopyFromCUDADeviceToHost<data_size_t>(indices.data(), cuda_data_partition_->cuda_data_indices(),
+                                              root_rows, __FILE__, __LINE__);
       }
-      total += leaf_num[leaf];
+      CopyFromCUDADeviceToHost<int>(map.data(), cuda_data_partition_->cuda_data_index_to_leaf_index(), num_data_,
+                                    __FILE__, __LINE__);
+      std::vector<uint8_t> seen(num_data_ > 0 ? num_data_ : 1, 0);
+      int64_t total = 0;
+      for (int leaf = 0; leaf < num_leaves; ++leaf) {
+        CHECK_GE(leaf_num[leaf], 0);
+        CHECK_GE(leaf_start[leaf], 0);
+        CHECK_LE(static_cast<int64_t>(leaf_start[leaf]) + leaf_num[leaf], static_cast<int64_t>(root_rows));
+        for (data_size_t j = 0; j < leaf_num[leaf]; ++j) {
+          const data_size_t row = indices[leaf_start[leaf] + j];
+          CHECK_GE(row, 0);
+          CHECK_LT(row, num_data_);
+          CHECK_EQ(map[row], leaf);
+          CHECK_EQ(seen[row], 0);
+          seen[row] = 1;
+        }
+        total += leaf_num[leaf];
+      }
+      CHECK_EQ(total, static_cast<int64_t>(root_rows));
     }
-    CHECK_EQ(total, static_cast<int64_t>(root_rows));
   }
   // per-leaf meta + chunk table (see CalcLinearGramChunkKernel)
   std::vector<int> meta(static_cast<size_t>(LINEAR_GRAM_META) * num_leaves, 0);
@@ -897,7 +907,7 @@ void CUDASingleGPUTreeLearner::LaunchCalcLinearGramKernel(
       LINEAR_GRAM_BLOCK * (static_cast<int>(sizeof(float)) * max_row_stride + 4 * static_cast<int>(sizeof(int))));
     CHECK_GE(stage_bytes, static_cast<int>(sizeof(float)) * max_row_stride + 4 * static_cast<int>(sizeof(int)));
     CalcLinearGramChunkKernel<<<num_chunk_blocks, LINEAR_GRAM_BLOCK, fixed_bytes + stage_bytes>>>(
-      cuda_linear_meta_.RawData(), cuda_linear_chunks_.RawData(), cuda_data_partition_->cuda_data_indices(),
+      cuda_linear_meta_.RawData(), cuda_linear_chunks_.RawData(), cuda_indices,
       cuda_raw_data_.RawData(), num_data_, gradients, hessians, cuda_linear_feat_col_.RawData(), stage_bytes,
       cuda_linear_partial_.RawData(), cuda_linear_chunk_count_.RawData());
   }

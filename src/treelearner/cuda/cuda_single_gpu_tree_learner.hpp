@@ -153,12 +153,25 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // coefficients and upload them, so the score kernel matches the tree exactly (as the CPU
   // LinearTreeLearner does by reading tree->LeafConst/LeafCoeffs at score time).
   void BuildAndUploadLinearScoreModel(const Tree* tree) const;
+  // Refit counterpart of CalculateLinearCUDA (the CPU LinearTreeLearner's is_refit branch): refit the
+  // tree's linear leaf models on the refit rows, which leaf_pred assigns to leaves.
+  void RefitLinearCUDA(CUDATree* tree, const std::vector<int>& leaf_pred, const score_t* gradients,
+                       const score_t* hessians) const;
+  // Leaf windows for the gram reduction in place of the data partition's: device row indices grouped by leaf,
+  // and per leaf its first position and row count in them.
+  struct LinearGramWindows {
+    const data_size_t* cuda_indices = nullptr;
+    std::vector<data_size_t> start;
+    std::vector<data_size_t> num;
+  };
   // Per-leaf XtHX (upper-triangle) + Xtg of the leaf windows, a fixed-order reduction (repeats bit for bit).
-  // gram holds, per leaf from gram_offset[leaf], its Xtg (nf + 1) then its XtHX upper triangle.
+  // gram holds, per leaf from gram_offset[leaf], its Xtg (nf + 1) then its XtHX upper triangle. The windows
+  // are the data partition's unless given.
   void LaunchCalcLinearGramKernel(
     const std::vector<int>& leaf_num_feat, const std::vector<int>& leaf_feat_offset,
     const std::vector<int>& leaf_feat_col, const score_t* gradients, const score_t* hessians,
-    std::vector<double>* gram, std::vector<int>* gram_offset, std::vector<int>* leaf_nonzero);
+    std::vector<double>* gram, std::vector<int>* gram_offset, std::vector<int>* leaf_nonzero,
+    const LinearGramWindows* windows = nullptr) const;
   // Launch the linear score-update kernel (score += const + sum coeff*rawfeat, NaN -> leaf_output).
   void LaunchLinearAddScoreKernel(
     const int* cuda_data_index_to_leaf_index, const double* cuda_leaf_const,
@@ -1179,14 +1192,18 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int num_numeric_features_ = 0;
   // inner feature index -> numeric column in cuda_raw_data_ (-1 if categorical)
   std::vector<int> inner_feature_to_numeric_col_;
-  // device scratch for the per-leaf gram reduction (grow-only, kept across trees)
-  CUDAVector<int> cuda_linear_meta_;
-  CUDAVector<int> cuda_linear_feat_col_;
-  CUDAVector<int> cuda_linear_chunks_;
-  CUDAVector<double> cuda_linear_partial_;
-  CUDAVector<int> cuda_linear_chunk_count_;
-  CUDAVector<double> cuda_linear_gram_;
-  CUDAVector<int> cuda_linear_nonzero_;
+  // device scratch for the per-leaf gram reduction (grow-only, kept across trees; refit, a const path, uses it too)
+  mutable CUDAVector<int> cuda_linear_meta_;
+  mutable CUDAVector<int> cuda_linear_feat_col_;
+  mutable CUDAVector<int> cuda_linear_chunks_;
+  mutable CUDAVector<double> cuda_linear_partial_;
+  mutable CUDAVector<int> cuda_linear_chunk_count_;
+  mutable CUDAVector<double> cuda_linear_gram_;
+  mutable CUDAVector<int> cuda_linear_nonzero_;
+  // linear refit: the refit rows grouped by leaf (grow-only), and per inner feature whether its raw values
+  // hold a NaN (-1 until first needed), as the CPU LinearTreeLearner's contains_nan_
+  mutable CUDAVector<data_size_t> cuda_refit_linear_indices_;
+  mutable std::vector<int8_t> refit_contains_nan_;
   // device copies of the fitted per-leaf linear model, used by the score kernel.
   // Rebuilt from the (post-shrinkage) tree at score time, so mutable/const-built.
   mutable CUDAVector<double> cuda_linear_leaf_const_;
