@@ -3845,6 +3845,32 @@ def test_forced_split_on_leaves_that_cannot_split(tmp_path, max_depth):
     assert np.all(np.isfinite(bst.predict(X)))
 
 
+@pytest.mark.parametrize("num_leaves", [2, 3])
+def test_forced_splits_beyond_num_leaves(tmp_path, num_leaves):
+    # Every forced split was applied regardless of num_leaves; with more forced
+    # splits than num_leaves - 1 the tree outgrew its data partition (ASan:
+    # heap-buffer-overflow in DataPartition::Split).
+    X, y = make_synthetic_regression(n_samples=500)
+    forced = {
+        "feature": 0,
+        "threshold": 0.0,
+        "left": {"feature": 1, "threshold": 0.0, "left": {"feature": 2, "threshold": 0.0}},
+        "right": {"feature": 1, "threshold": 0.0},
+    }
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps(forced))
+    params = {
+        "objective": "regression",
+        "verbose": -1,
+        "num_leaves": num_leaves,
+        "forcedsplits_filename": tmp_split_file,
+    }
+    bst = lgb.train(params, lgb.Dataset(X, y), num_boost_round=3)
+    df = bst.trees_to_dataframe()
+    assert df.groupby("tree_index")["split_feature"].apply(lambda s: s.notna().sum()).max() <= num_leaves - 1
+    assert np.all(np.isfinite(bst.predict(X)))
+
+
 def test_forced_split_missing_file(tmp_path):
     X, y = make_synthetic_regression()
     lgb_train = lgb.Dataset(X, y)
