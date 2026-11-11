@@ -49,6 +49,26 @@ class AtofPreciseTest : public testing::Test {
   }
 };
 
+// CHECK used to expand to a bare `if (...) Fatal(...);`, so with the
+// caller's semicolon `if (a) CHECK(b); else ...` did not compile (or, without
+// that semicolon, bound the else to the macro's if). It is a single
+// statement now.
+namespace Falcata {
+static int CheckInIfElse(bool take_if, bool check_ok) {
+  if (take_if)
+    CHECK(check_ok);
+  else
+    return 2;
+  return 1;
+}
+}  // namespace Falcata
+
+TEST(CheckMacro, IsASingleStatement) {
+  EXPECT_EQ(Falcata::CheckInIfElse(true, true), 1);
+  EXPECT_EQ(Falcata::CheckInIfElse(false, false), 2);
+  EXPECT_THROW(Falcata::CheckInIfElse(true, false), std::exception);
+}
+
 TEST_F(AtofPreciseTest, Basic) {
   AtofTestCase test_cases[] = {
       { "0", 0.0 },

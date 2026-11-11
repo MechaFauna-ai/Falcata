@@ -650,7 +650,7 @@ struct JsonParser final {
    * advance the input and return res. If not, flag an error.
    */
   Json expect(const string &expected, Json res) {
-    CHECK_NE(i, 0)
+    CHECK_NE(i, 0);
     i--;
     auto substr = string(str + i, std::min(expected.length(), str_len - i));
     if (substr == expected) {
