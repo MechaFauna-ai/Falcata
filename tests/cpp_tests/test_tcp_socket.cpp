@@ -3,6 +3,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
+// POSIX sockets and /proc/self/fd: Linux only
+#if defined(__linux__)
+
 #include <gtest/gtest.h>
 
 #include <Falcata/config.h>
@@ -26,6 +29,9 @@ namespace {
 int OpenDescriptors() {
   int count = 0;
   DIR* dir = opendir("/proc/self/fd");
+  if (dir == nullptr) {
+    return -1;
+  }
   while (readdir(dir) != nullptr) {
     ++count;
   }
@@ -86,3 +92,5 @@ TEST(TcpSocket, FailedLinkersSetupLeavesNoDescriptor) {
   EXPECT_EQ(OpenDescriptors(), before);
   close(holder);
 }
+
+#endif  // defined(__linux__)
