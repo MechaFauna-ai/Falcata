@@ -68,7 +68,7 @@ std::unique_ptr<VirtualFileWriter> VirtualFileWriter::Make(
 
 bool VirtualFileWriter::Exists(const std::string& filename) {
   LocalFile file(filename, "rb");
-  return file.Exists();
+  return file.Init();
 }
 
 }  // namespace Falcata

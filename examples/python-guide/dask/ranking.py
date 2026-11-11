@@ -28,11 +28,8 @@ if __name__ == "__main__":
     rows_in_part2 = X.shape[0] - rows_in_part1
     num_features = X.shape[1]
 
-    # make this array dense because we're splitting across
-    # a sparse boundary to partition the data
-    X = X.toarray()
-
-    dX = da.from_array(x=X, chunks=[(rows_in_part1, rows_in_part2), (num_features,)])
+    # Dask can slice CSR rows directly; keep the sparse feature matrix.
+    dX = da.from_array(x=X, chunks=[(rows_in_part1, rows_in_part2), (num_features,)], asarray=False)
     dy = da.from_array(
         x=y,
         chunks=[

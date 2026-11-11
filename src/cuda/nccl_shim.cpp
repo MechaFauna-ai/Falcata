@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 
 #include <mutex>
+#include <string>
 
 namespace Falcata {
 namespace NcclShim {
@@ -26,6 +27,8 @@ struct Fns {
   decltype(&::ncclGroupEnd) group_end = nullptr;
   decltype(&::ncclGetErrorString) get_error_string = nullptr;
   bool ok = false;
+  // why loading failed (empty when ok): the dynamic loader's message, or the symbols libnccl lacked
+  std::string error;
 };
 
 const Fns& Load() {
@@ -35,19 +38,33 @@ const Fns& Load() {
     // the soname first (searches the caller's RUNPATH, which the wheel points
     // at the nvidia-nccl-cu12 package, then the system paths), then the
     // unversioned name for dev setups
+    // (the handle stays open for the life of the process: the function pointers point into it)
     void* h = dlopen("libnccl.so.2", RTLD_NOW | RTLD_GLOBAL);
     if (h == nullptr) {
+      // keep the soname's error: it says whether the library is absent or failed to load (missing dependency,
+      // wrong architecture, ...)
+      const char* soname_error = dlerror();
+      fns.error = soname_error != nullptr ? soname_error : "libnccl.so.2 could not be loaded";
       h = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
     }
     if (h == nullptr) {
       return;
     }
-    fns.all_reduce = reinterpret_cast<decltype(fns.all_reduce)>(dlsym(h, "ncclAllReduce"));
-    fns.comm_init_rank = reinterpret_cast<decltype(fns.comm_init_rank)>(dlsym(h, "ncclCommInitRank"));
-    fns.get_unique_id = reinterpret_cast<decltype(fns.get_unique_id)>(dlsym(h, "ncclGetUniqueId"));
-    fns.group_start = reinterpret_cast<decltype(fns.group_start)>(dlsym(h, "ncclGroupStart"));
-    fns.group_end = reinterpret_cast<decltype(fns.group_end)>(dlsym(h, "ncclGroupEnd"));
-    fns.get_error_string = reinterpret_cast<decltype(fns.get_error_string)>(dlsym(h, "ncclGetErrorString"));
+    fns.error.clear();
+    const auto symbol = [h](const char* name) -> void* {
+      void* p = dlsym(h, name);
+      if (p == nullptr) {
+        fns.error += fns.error.empty() ? "libnccl does not export " : ", ";
+        fns.error += name;
+      }
+      return p;
+    };
+    fns.all_reduce = reinterpret_cast<decltype(fns.all_reduce)>(symbol("ncclAllReduce"));
+    fns.comm_init_rank = reinterpret_cast<decltype(fns.comm_init_rank)>(symbol("ncclCommInitRank"));
+    fns.get_unique_id = reinterpret_cast<decltype(fns.get_unique_id)>(symbol("ncclGetUniqueId"));
+    fns.group_start = reinterpret_cast<decltype(fns.group_start)>(symbol("ncclGroupStart"));
+    fns.group_end = reinterpret_cast<decltype(fns.group_end)>(symbol("ncclGroupEnd"));
+    fns.get_error_string = reinterpret_cast<decltype(fns.get_error_string)>(symbol("ncclGetErrorString"));
     fns.ok = fns.all_reduce && fns.comm_init_rank && fns.get_unique_id &&
              fns.group_start && fns.group_end && fns.get_error_string;
   });
@@ -57,9 +74,10 @@ const Fns& Load() {
 void FatalIfMissing(const Fns& fns) {
   if (!fns.ok) {
     Log::Fatal(
-        "multi-GPU training needs the NCCL library, and libnccl.so.2 was not "
-        "found. Install it with: pip install nvidia-nccl-cu12 (or pip install "
-        "'falcata[multigpu]').");
+        "multi-GPU training needs the NCCL library, and libnccl.so.2 could not "
+        "be used (%s). Install it with: pip install nvidia-nccl-cu12 (or pip "
+        "install 'falcata[multigpu]').",
+        fns.error.c_str());
   }
 }
 
@@ -102,7 +120,9 @@ ncclResult_t GroupEnd() {
 const char* GetErrorString(ncclResult_t result) {
   const Fns& fns = Load();
   if (!fns.ok) {
-    return "NCCL is not loaded (libnccl.so.2 not found)";
+    // fns is loaded once, so the message is fixed for the process
+    static const std::string message = "NCCL is not loaded (" + fns.error + ")";
+    return message.c_str();
   }
   return fns.get_error_string(result);
 }

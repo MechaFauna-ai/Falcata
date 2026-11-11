@@ -190,7 +190,15 @@ __global__ void ConvertOutputCUDAKernel_MulticlassSoftmax(
 
 const double* CUDAMulticlassSoftmax::LaunchConvertOutputCUDAKernel(
   const data_size_t num_data, const double* input, double* output) const {
-  const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_MULTICLASS - 1) / GET_GRADIENTS_BLOCK_SIZE_MULTICLASS;
+  // the grid covers the rows the caller passes; the softmax scratch is sized for the training rows (Init)
+  if (num_data > num_data_) {
+    Log::Fatal("CUDAMulticlassSoftmax::ConvertOutputCUDA: %d rows exceed the %d rows its scratch buffer holds",
+               num_data, num_data_);
+  }
+  if (num_data <= 0) {
+    return output;
+  }
+  const int num_blocks = (num_data + GET_GRADIENTS_BLOCK_SIZE_MULTICLASS - 1) / GET_GRADIENTS_BLOCK_SIZE_MULTICLASS;
   ConvertOutputCUDAKernel_MulticlassSoftmax<<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_MULTICLASS>>>(
     num_class_, num_data, input, cuda_softmax_buffer_.RawData(), output);
   return output;
