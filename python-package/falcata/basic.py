@@ -3831,7 +3831,8 @@ def _fil_run_device(model: Any, data: Any) -> Optional[Any]:
         data = data.astype(np.float32)
     try:
         return model.predict_proba(data) if model.is_classifier else model.predict(data)
-    except Exception:
+    except Exception as exc:
+        _log_warning(f"FIL prediction failed ({type(exc).__name__}: {exc}); using CPU predictor.")
         return None
 
 
@@ -3857,7 +3858,8 @@ def _fil_run_host_slabs(model: Any, data: np.ndarray) -> Optional[np.ndarray]:
             slab = slab.astype(np.float32)
         try:
             preds = model.predict_proba(slab) if model.is_classifier else model.predict(slab)
-        except Exception:
+        except Exception as exc:
+            _log_warning(f"FIL host prediction failed ({type(exc).__name__}: {exc}); using CPU predictor.")
             return None
         if not isinstance(preds, np.ndarray):
             import cupy  # noqa: PLC0415
@@ -5381,7 +5383,8 @@ class Booster:
                 device="gpu",
                 precision=None if precision == "native" else precision,
             )
-        except Exception:
+        except Exception as exc:
+            _log_warning(f"FIL conversion failed ({type(exc).__name__}: {exc}); using CPU predictor.")
             return None
 
     def _fil_predict(
