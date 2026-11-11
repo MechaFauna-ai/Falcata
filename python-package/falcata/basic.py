@@ -3874,6 +3874,7 @@ class Booster:
         self._handle = ctypes.c_void_p()
         self._network = False
         self.__need_reload_eval_info = True
+        self.__num_dataset = 0
         self._train_data_name = "training"
         self.__set_objective_to_none = False
         self.best_iteration = -1
