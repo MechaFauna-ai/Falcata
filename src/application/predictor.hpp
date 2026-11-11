@@ -209,9 +209,11 @@ class Predictor {
     }
     // function for parse data
     std::function<void(const char*, std::vector<std::pair<int, double>>*)> parser_fun;
-    double tmp_label;
-    parser_fun = [&parser, &feature_remapper, &tmp_label, need_adjust]
+    parser_fun = [&parser, &feature_remapper, need_adjust]
     (const char* buffer, std::vector<std::pair<int, double>>* feature) {
+      // per call: parser_fun runs on every OpenMP thread, so a shared label
+      // would be a data race (the label is not used for prediction)
+      double tmp_label = 0.0;
       parser->ParseOneLine(buffer, feature, &tmp_label);
       if (need_adjust) {
         int i = 0, j = static_cast<int>(feature->size());
