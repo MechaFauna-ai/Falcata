@@ -14,6 +14,7 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -514,7 +515,8 @@ inline std::string Join<int8_t>(const std::vector<int8_t>& strs, const char* del
 
 template<typename T>
 inline static std::string Join(const std::vector<T>& strs, size_t start, size_t end, const char* delimiter, const bool force_C_locale = false) {
-  if (end - start <= 0) {
+  // size_t: end - start would wrap for end < start, so compare directly
+  if (end <= start || strs.empty()) {
     return std::string("");
   }
   start = std::min(start, static_cast<size_t>(strs.size()) - 1);
