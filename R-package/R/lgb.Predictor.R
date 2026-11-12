@@ -447,6 +447,27 @@ Predictor <- R6::R6Class(
         }
       }
 
+      # Zero rows: length(preds) %% 0 is NA, which used to fail with "missing value where TRUE/FALSE needed".
+      # Return an empty result with the usual per-row width.
+      if (num_row == 0L) {
+        npred_one_row <- 0L
+        .Call(
+          FLC_BoosterCalcNumPredict_R
+          , private$handle
+          , 1L
+          , as.integer(rawscore)
+          , as.integer(predleaf)
+          , as.integer(predcontrib)
+          , as.integer(start_iteration)
+          , as.integer(num_iteration)
+          , npred_one_row
+        )
+        if (npred_one_row > 1L || predleaf || predcontrib) {
+          return(matrix(numeric(0L), nrow = 0L, ncol = npred_one_row))
+        }
+        return(numeric(0L))
+      }
+
       # Check if number of rows is strange (not a multiple of the dataset rows)
       if (length(preds) %% num_row != 0L) {
         stop(
