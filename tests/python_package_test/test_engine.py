@@ -3763,7 +3763,7 @@ def test_forced_split_negative_feature_index(tmp_path):
     X, y = make_synthetic_regression()
     tmp_split_file = tmp_path / "forced_split.json"
     tmp_split_file.write_text(json.dumps({"feature": -1, "threshold": 0.5}))
-    params = {"objective": "regression", "forcedsplits_filename": tmp_split_file, "verbose": -1}
+    params = {"objective": "regression", "forcedsplits_filename": tmp_split_file, "device_type": "cpu", "verbose": -1}
     with pytest.raises(lgb.basic.FalcataError, match="Forced splits file includes feature index -1"):
         lgb.train(params, lgb.Dataset(X, y))
 
@@ -3773,7 +3773,7 @@ def test_forced_split_malformed_file(tmp_path, content):
     X, y = make_synthetic_regression()
     tmp_split_file = tmp_path / "forced_split.json"
     tmp_split_file.write_text(content)
-    params = {"objective": "regression", "forcedsplits_filename": tmp_split_file, "verbose": -1}
+    params = {"objective": "regression", "forcedsplits_filename": tmp_split_file, "device_type": "cpu", "verbose": -1}
     with pytest.raises(lgb.basic.FalcataError, match="(?i)forced splits file"):
         lgb.train(params, lgb.Dataset(X, y))
 
@@ -3782,7 +3782,12 @@ def test_forced_split_reset_rejects_bad_file_and_keeps_training(tmp_path):
     X, y = make_synthetic_regression()
     bad = tmp_path / "bad.json"
     bad.write_text(json.dumps({"feature": -3, "threshold": 0.5}))
-    bst = lgb.train({"objective": "regression", "verbose": -1}, lgb.Dataset(X, y), 2, keep_training_booster=True)
+    bst = lgb.train(
+        {"objective": "regression", "device_type": "cpu", "verbose": -1},
+        lgb.Dataset(X, y),
+        2,
+        keep_training_booster=True,
+    )
     with pytest.raises(lgb.basic.FalcataError, match="Forced splits file includes feature index -3"):
         bst.reset_parameter({"forcedsplits_filename": str(bad)})
     # a missing file used to fail after the tree learner already pointed at the new config,
@@ -3808,7 +3813,7 @@ def test_forced_split_on_unused_feature_is_skipped(tmp_path, side):
         forced[side] = {"feature": 1, "threshold": 0.5}
     tmp_split_file = tmp_path / "forced_split.json"
     tmp_split_file.write_text(json.dumps(forced))
-    params = {"objective": "regression", "verbose": -1, "num_leaves": 7, "deterministic": True}
+    params = {"objective": "regression", "device_type": "cpu", "verbose": -1, "num_leaves": 7, "deterministic": True}
     bst = lgb.train({**params, "forcedsplits_filename": tmp_split_file}, lgb.Dataset(X, y), num_boost_round=3)
     preds = bst.predict(X)
     assert np.all(np.isfinite(preds))
@@ -3833,6 +3838,7 @@ def test_forced_split_on_leaves_that_cannot_split(tmp_path, max_depth):
     tmp_split_file.write_text(json.dumps({"feature": 5, "threshold": 0.3}))
     params = {
         "objective": "binary",
+        "device_type": "cpu",
         "verbose": -1,
         "bagging_fraction": 0.1,
         "bagging_freq": 1,
@@ -3861,6 +3867,7 @@ def test_forced_splits_beyond_num_leaves(tmp_path, num_leaves):
     tmp_split_file.write_text(json.dumps(forced))
     params = {
         "objective": "regression",
+        "device_type": "cpu",
         "verbose": -1,
         "num_leaves": num_leaves,
         "forcedsplits_filename": tmp_split_file,
@@ -3883,6 +3890,7 @@ def test_forced_splits_col_wise_equals_row_wise_with_feature_fraction(tmp_path, 
     params = {
         "objective": "multiclass",
         "num_class": 10,
+        "device_type": "cpu",
         "verbose": -1,
         "deterministic": True,
         "num_threads": 1,
@@ -3910,6 +3918,7 @@ def test_forced_split_on_feature_the_parent_could_not_split(tmp_path):
     tmp_split_file.write_text(json.dumps({"feature": 4, "threshold": 0.9, "right": {"feature": 1, "threshold": 0.56}}))
     params = {
         "objective": "binary",
+        "device_type": "cpu",
         "verbose": -1,
         "deterministic": True,
         "num_threads": 1,
