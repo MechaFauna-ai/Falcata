@@ -266,12 +266,23 @@ class Booster {
   void ResetTrainingData(const Dataset* train_data) {
     if (train_data != train_data_) {
       UNIQUE_LOCK(mutex_)
+      // build the new objective and metrics first and commit them only after GBDT accepted the data: GBDT
+      // rejects data with other bin mappers (Fatal), and it must then keep pointing at objects that still
+      // exist (replacing objective_fun_ up front freed the objective GBDT kept: use-after-free on the next
+      // iteration)
+      std::unique_ptr<ObjectiveFunction> objective(
+          ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
+      if (objective == nullptr) {
+        Log::Info("Using self-defined objective function");
+      } else {
+        objective->Init(train_data->metadata(), train_data->num_data());
+      }
+      auto train_metric = CreateMetrics(train_data);
+      boosting_->ResetTrainingData(train_data, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
       train_data_ = train_data;
       train_data_num_total_features_ = train_data_->num_total_features();
-      CreateObjectiveAndMetrics();
-      // reset the boosting
-      boosting_->ResetTrainingData(train_data_,
-                                   objective_fun_.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric_));
+      objective_fun_ = std::move(objective);
+      train_metric_ = std::move(train_metric);
     }
   }
 
