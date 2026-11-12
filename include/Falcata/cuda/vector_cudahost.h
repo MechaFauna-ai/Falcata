@@ -122,8 +122,19 @@ struct CHAllocator {
             _mm_free(p);
             return;
           #else
-            // CUDA (>= 11) reports pageable memory as unregistered, not as an error
-            CUDASUCCESS_OR_FATAL(ret);
+            // CUDA (>= 11) reports pageable memory as unregistered, not as an error. Without a usable device (no GPU
+            // visible, no driver) nothing can have been pinned: allocate fell back to _mm_malloc. Any other error
+            // leaves the kind of the pointer unknown: leak it rather than free it the wrong way. Never throw here:
+            // deallocate runs in destructors, often while an earlier CUDA error unwinds, and a throw there
+            // terminates the process.
+            (void)cudaGetLastError();
+            if (ret == cudaErrorNoDevice || ret == cudaErrorInsufficientDriver || ret == cudaErrorInitializationError) {
+              _mm_free(p);
+            } else {
+              Log::Warning("CHAllocator: cudaPointerGetAttributes failed (%s); not freeing a host buffer",
+                           cudaGetErrorString(ret));
+            }
+            return;
           #endif
         }
         if (attributes.type == cudaMemoryTypeHost) {
