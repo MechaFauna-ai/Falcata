@@ -35,6 +35,34 @@ Common::Timer global_timer;
 
 namespace {
 
+// The per-feature parameters are indexed by the raw feature index of the training data. A wrong size used to be a
+// bare CHECK, and an interaction_constraints index outside the features was read as a feature
+// (Dataset::InnerFeatureIndex out of bounds in ColSampler::GetByNode).
+void CheckPerFeatureParameters(const Config& config, const Dataset& train_data) {
+  const int num_features = train_data.num_total_features();
+  if (!config.monotone_constraints.empty() &&
+      config.monotone_constraints.size() != static_cast<size_t>(num_features)) {
+    Log::Fatal("monotone_constraints has %zu values, but the training data has %d features; give one per feature",
+               config.monotone_constraints.size(), num_features);
+  }
+  if (!config.feature_contri.empty() && config.feature_contri.size() != static_cast<size_t>(num_features)) {
+    Log::Fatal("feature_contri has %zu values, but the training data has %d features; give one per feature",
+               config.feature_contri.size(), num_features);
+  }
+  for (const auto& constraint : config.interaction_constraints_vector) {
+    for (const int feature : constraint) {
+      if (feature < 0 || feature >= num_features) {
+        Log::Fatal("interaction_constraints refers to feature %d, but the training data has %d features "
+                   "(indices 0 to %d)", feature, num_features, num_features - 1);
+      }
+    }
+  }
+}
+
+}  // namespace
+
+namespace {
+
 // Boosting divides the score-space error among iterations: on fixed training
 // data the mean gradient magnitude falls as trees fit it, on every objective
 // (logloss gradients are bounded by 1 but their healthy floor keeps sinking,
@@ -166,12 +194,7 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
                 const std::vector<const Metric*>& training_metrics) {
   CHECK_NOTNULL(train_data);
   train_data_ = train_data;
-  if (!config->monotone_constraints.empty()) {
-    CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->monotone_constraints.size());
-  }
-  if (!config->feature_contri.empty()) {
-    CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->feature_contri.size());
-  }
+  CheckPerFeatureParameters(*config, *train_data_);
   iter_ = 0;
   num_iteration_for_pred_ = 0;
   max_feature_idx_ = 0;
@@ -1083,11 +1106,8 @@ void GBDT::ResetConfig(const Config* config) {
   // A model-loaded booster (the default return of train()) has no training
   // data and no tree learner; per-feature checks and learner resets only
   // apply when they exist.
-  if (train_data_ != nullptr && !config->monotone_constraints.empty()) {
-    CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->monotone_constraints.size());
-  }
-  if (train_data_ != nullptr && !config->feature_contri.empty()) {
-    CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->feature_contri.size());
+  if (train_data_ != nullptr) {
+    CheckPerFeatureParameters(*config, *train_data_);
   }
   if (objective_function_ != nullptr && objective_function_->IsRenewTreeOutput() && !config->monotone_constraints.empty()) {
     Log::Fatal("Cannot use ``monotone_constraints`` in %s objective, please disable it.", objective_function_->GetName());
