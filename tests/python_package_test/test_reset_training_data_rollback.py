@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import falcata as flc
+from falcata.basic import _LIB, _safe_call
 
 
 def test_rejected_train_set_keeps_booster_usable():
@@ -48,8 +49,6 @@ def test_accepted_train_set_still_switches_data():
 def test_reset_with_merged_loaded_trees_fails_cleanly():
     # trees merged in from a loaded model cannot score a Dataset; the reset used to fail halfway through the
     # rescoring, after GBDT had switched to the new data (heap corruption on the next update)
-    from falcata.basic import _LIB, _safe_call
-
     rng = np.random.default_rng(2)
     X = rng.normal(size=(80, 3))
     y = X[:, 0]
