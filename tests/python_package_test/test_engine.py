@@ -2730,6 +2730,33 @@ def test_refit_with_one_tree_multiclass_classification():
     assert isinstance(model_refit, lgb.Booster)
 
 
+@pytest.mark.parametrize("num_leaves", [2, 7, 31])
+def test_refit_with_path_smooth_reproduces_the_trained_leaves(num_leaves):
+    # Refit with path_smooth used to read Tree::leaf_parent_, which a tree
+    # loaded from model text does not carry (a null dereference), and passed
+    # the parent's NODE INDEX where the parent's output belongs.
+    X, y = make_synthetic_regression(n_samples=2_000, n_features=5)
+    params = {
+        "objective": "regression",
+        "device_type": "cpu",
+        "verbose": -1,
+        "num_leaves": num_leaves,
+        "min_data_in_leaf": 5,
+        "path_smooth": 50.0,
+        "lambda_l2": 1.0,
+        "boost_from_average": False,
+        "deterministic": True,
+        "num_threads": 1,
+    }
+    model = lgb.train(params, lgb.Dataset(X, y), num_boost_round=1)
+    refit = model.refit(X, y, decay_rate=0.0)
+    trained = model.trees_to_dataframe()
+    refitted = refit.trees_to_dataframe()
+    is_leaf = trained["split_feature"].isna()
+    np.testing.assert_allclose(refitted.loc[is_leaf, "value"], trained.loc[is_leaf, "value"], rtol=1e-6, atol=1e-9)
+    assert np.all(np.isfinite(refit.predict(X)))
+
+
 def test_refit_dataset_params(rng):
     # check refit accepts dataset_params
     X, y = load_breast_cancer(return_X_y=True)
