@@ -102,7 +102,7 @@ class LinearTreeLearner: public TREE_LEARNER_TYPE {
         bool nan_found = false;
         for (int feat_ind = 0; feat_ind < num_feat; ++feat_ind) {
           float val = feat_ptr[offset + feat_ind][i];
-          if (std::isnan(val)) {
+          if (!std::isfinite(val)) {
             nan_found = true;
             break;
           }

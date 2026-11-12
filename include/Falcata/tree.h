@@ -679,7 +679,8 @@ inline double Tree::Predict(const double* feature_values) const {
       for (size_t i = 0; i < leaf_features_[leaf].size(); ++i) {
         int feat_raw = leaf_features_[leaf][i];
         double feat_val = feature_values[feat_raw];
-        if (std::isnan(feat_val)) {
+        // NaN or +-inf: the linear model cannot use it, the leaf's constant applies
+        if (!std::isfinite(feat_val)) {
           nan_found = true;
           break;
         } else {
@@ -711,7 +712,7 @@ inline double Tree::PredictByMap(const std::unordered_map<int, double>& feature_
       auto val_it = feature_values.find(feat);
       if (val_it != feature_values.end()) {
         double feat_val = val_it->second;
-        if (std::isnan(feat_val)) {
+        if (!std::isfinite(feat_val)) {
           nan_found = true;
           break;
         } else {
