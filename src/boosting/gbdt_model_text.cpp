@@ -180,7 +180,7 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
 
   pred_str_buf << "\t" << "int early_stop_round_counter = 0;" << '\n';
   pred_str_buf << "\t" << "std::memset(output, 0, sizeof(double) * num_tree_per_iteration_);" << '\n';
-  pred_str_buf << "\t" << "for (int i = 0; i < num_iteration_for_pred_; ++i) {" << '\n';
+  pred_str_buf << "\t" << "for (int i = 0; i < range.num_iteration; ++i) {" << '\n';
   pred_str_buf << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << '\n';
   pred_str_buf << "\t\t\t" << "output[k] += (*PredictTreePtr[i * num_tree_per_iteration_ + k])(features);" << '\n';
   pred_str_buf << "\t\t" << "}" << '\n';
@@ -192,7 +192,7 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   pred_str_buf << "\t\t" << "}" << '\n';
   pred_str_buf << "\t" << "}" << '\n';
 
-  str_buf << "void GBDT::PredictRaw(const double* features, double *output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "void GBDT::PredictRawInRange(const double* features, double *output, const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const {" << '\n';
   str_buf << pred_str_buf.str();
   str_buf << "}" << '\n';
   str_buf << '\n';
@@ -212,7 +212,7 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
 
   pred_str_buf_map << "\t" << "int early_stop_round_counter = 0;" << '\n';
   pred_str_buf_map << "\t" << "std::memset(output, 0, sizeof(double) * num_tree_per_iteration_);" << '\n';
-  pred_str_buf_map << "\t" << "for (int i = 0; i < num_iteration_for_pred_; ++i) {" << '\n';
+  pred_str_buf_map << "\t" << "for (int i = 0; i < range.num_iteration; ++i) {" << '\n';
   pred_str_buf_map << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << '\n';
   pred_str_buf_map << "\t\t\t" << "output[k] += (*PredictTreeByMapPtr[i * num_tree_per_iteration_ + k])(features);" << '\n';
   pred_str_buf_map << "\t\t" << "}" << '\n';
@@ -224,17 +224,17 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   pred_str_buf_map << "\t\t" << "}" << '\n';
   pred_str_buf_map << "\t" << "}" << '\n';
 
-  str_buf << "void GBDT::PredictRawByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "void GBDT::PredictRawByMapInRange(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const {" << '\n';
   str_buf << pred_str_buf_map.str();
   str_buf << "}" << '\n';
   str_buf << '\n';
 
   // Predict
-  str_buf << "void GBDT::Predict(const double* features, double *output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
-  str_buf << "\t" << "PredictRaw(features, output, early_stop);" << '\n';
-  str_buf << "\t" << "if (average_output_ && num_iteration_for_pred_ > 0) {" << '\n';
+  str_buf << "void GBDT::PredictInRange(const double* features, double *output, const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const {" << '\n';
+  str_buf << "\t" << "PredictRawInRange(features, output, early_stop, range);" << '\n';
+  str_buf << "\t" << "if (average_output_ && range.num_iteration > 0) {" << '\n';
   str_buf << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << '\n';
-  str_buf << "\t\t\t" << "output[k] /= num_iteration_for_pred_;" << '\n';
+  str_buf << "\t\t\t" << "output[k] /= range.num_iteration;" << '\n';
   str_buf << "\t\t" << "}" << '\n';
   str_buf << "\t" << "}" << '\n';
   str_buf << "\t" << "if (objective_function_ != nullptr) {" << '\n';
@@ -244,11 +244,11 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   str_buf << '\n';
 
   // PredictByMap
-  str_buf << "void GBDT::PredictByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
-  str_buf << "\t" << "PredictRawByMap(features, output, early_stop);" << '\n';
-  str_buf << "\t" << "if (average_output_ && num_iteration_for_pred_ > 0) {" << '\n';
+  str_buf << "void GBDT::PredictByMapInRange(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const {" << '\n';
+  str_buf << "\t" << "PredictRawByMapInRange(features, output, early_stop, range);" << '\n';
+  str_buf << "\t" << "if (average_output_ && range.num_iteration > 0) {" << '\n';
   str_buf << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << '\n';
-  str_buf << "\t\t\t" << "output[k] /= num_iteration_for_pred_;" << '\n';
+  str_buf << "\t\t\t" << "output[k] /= range.num_iteration;" << '\n';
   str_buf << "\t\t" << "}" << '\n';
   str_buf << "\t" << "}" << '\n';
   str_buf << "\t" << "if (objective_function_ != nullptr) {" << '\n';
@@ -272,8 +272,8 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   }
   str_buf << " };" << '\n' << '\n';
 
-  str_buf << "void GBDT::PredictLeafIndex(const double* features, double *output) const {" << '\n';
-  str_buf << "\t" << "int total_tree = num_iteration_for_pred_ * num_tree_per_iteration_;" << '\n';
+  str_buf << "void GBDT::PredictLeafIndexInRange(const double* features, double *output, const PredictRange& range) const {" << '\n';
+  str_buf << "\t" << "int total_tree = range.num_iteration * num_tree_per_iteration_;" << '\n';
   str_buf << "\t" << "for (int i = 0; i < total_tree; ++i) {" << '\n';
   str_buf << "\t\t" << "output[i] = (*PredictTreeLeafPtr[i])(features);" << '\n';
   str_buf << "\t" << "}" << '\n';
@@ -289,11 +289,31 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   }
   str_buf << " };" << '\n' << '\n';
 
-  str_buf << "void GBDT::PredictLeafIndexByMap(const std::unordered_map<int, double>& features, double* output) const {" << '\n';
-  str_buf << "\t" << "int total_tree = num_iteration_for_pred_ * num_tree_per_iteration_;" << '\n';
+  str_buf << "void GBDT::PredictLeafIndexByMapInRange(const std::unordered_map<int, double>& features, double* output, const PredictRange& range) const {" << '\n';
+  str_buf << "\t" << "int total_tree = range.num_iteration * num_tree_per_iteration_;" << '\n';
   str_buf << "\t" << "for (int i = 0; i < total_tree; ++i) {" << '\n';
   str_buf << "\t\t" << "output[i] = (*PredictTreeLeafByMapPtr[i])(features);" << '\n';
   str_buf << "\t" << "}" << '\n';
+  str_buf << "}" << '\n';
+
+  // the legacy entry points predict over the range set by the last InitPredict
+  str_buf << "void GBDT::PredictRaw(const double* features, double *output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "\t" << "PredictRawInRange(features, output, early_stop, InitializedPredictRange());" << '\n';
+  str_buf << "}" << '\n' << '\n';
+  str_buf << "void GBDT::PredictRawByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "\t" << "PredictRawByMapInRange(features, output, early_stop, InitializedPredictRange());" << '\n';
+  str_buf << "}" << '\n' << '\n';
+  str_buf << "void GBDT::Predict(const double* features, double *output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "\t" << "PredictInRange(features, output, early_stop, InitializedPredictRange());" << '\n';
+  str_buf << "}" << '\n' << '\n';
+  str_buf << "void GBDT::PredictByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "\t" << "PredictByMapInRange(features, output, early_stop, InitializedPredictRange());" << '\n';
+  str_buf << "}" << '\n' << '\n';
+  str_buf << "void GBDT::PredictLeafIndex(const double* features, double *output) const {" << '\n';
+  str_buf << "\t" << "PredictLeafIndexInRange(features, output, InitializedPredictRange());" << '\n';
+  str_buf << "}" << '\n' << '\n';
+  str_buf << "void GBDT::PredictLeafIndexByMap(const std::unordered_map<int, double>& features, double* output) const {" << '\n';
+  str_buf << "\t" << "PredictLeafIndexByMapInRange(features, output, InitializedPredictRange());" << '\n';
   str_buf << "}" << '\n';
 
   str_buf << "}  // namespace Falcata" << '\n';

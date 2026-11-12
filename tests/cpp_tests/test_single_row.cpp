@@ -9,6 +9,7 @@
 #include <Falcata/c_api.h>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -422,6 +423,53 @@ TEST(SingleRow, CSRFastLeafIndex) {
 
 TEST(SingleRow, CSRFastContribIterationWindow) {
     test_csr_fast_matches_mat(C_API_PREDICT_CONTRIB, 3, 7);
+}
+
+// A Predictor (FastConfig, or one cached by the C API) used to read its iteration range from state
+// shared by every prediction on the booster: a later prediction with another num_iteration changed the
+// range of a FastConfig made earlier, and two concurrent predictions with different ranges sized their
+// buffers for one range and filled them for the other. Each predictor now keeps its own range.
+TEST(SingleRow, FastConfigKeepsItsRangeAfterOtherPredictions) {
+    const int num_row = 200, num_col = 3;
+    std::vector<double> X(num_row * num_col);
+    std::vector<float> y(num_row);
+    for (int i = 0; i < num_row; ++i) {
+        for (int j = 0; j < num_col; ++j) {
+            X[i * num_col + j] = std::sin(0.37 * i + 1.3 * j);
+        }
+        y[i] = static_cast<float>(X[i * num_col] * 2.0);
+    }
+    DatasetHandle dataset;
+    ASSERT_EQ(0, FLC_DatasetCreateFromMat(X.data(), C_API_DTYPE_FLOAT64, num_row, num_col, 1,
+                                          "verbose=-1 min_data_in_bin=1", nullptr, &dataset));
+    ASSERT_EQ(0, FLC_DatasetSetField(dataset, "label", y.data(), num_row, C_API_DTYPE_FLOAT32));
+    BoosterHandle booster;
+    ASSERT_EQ(0, FLC_BoosterCreate(dataset, "objective=regression verbose=-1 num_threads=1", &booster));
+    int is_finished;
+    for (int i = 0; i < 10; ++i) {
+        ASSERT_EQ(0, FLC_BoosterUpdateOneIter(booster, &is_finished));
+    }
+
+    for (int predict_type : {C_API_PREDICT_RAW_SCORE, C_API_PREDICT_LEAF_INDEX, C_API_PREDICT_CONTRIB}) {
+        FastConfigHandle fast;
+        ASSERT_EQ(0, FLC_BoosterPredictForMatSingleRowFastInit(booster, predict_type, 0, -1, C_API_DTYPE_FLOAT64,
+                                                               num_col, "", &fast));
+        int64_t len = 0;
+        std::vector<double> before(64, 0.0), after(64, 0.0), other(64 * num_row, 0.0);
+        ASSERT_EQ(0, FLC_BoosterPredictForMatSingleRowFast(fast, X.data(), &len, before.data()));
+        int64_t full_len = len;
+        // another prediction on the same booster, over the first iteration only
+        ASSERT_EQ(0, FLC_BoosterPredictForMat(booster, X.data(), C_API_DTYPE_FLOAT64, 5, num_col, 1, predict_type,
+                                              0, 1, "", &len, other.data()));
+        ASSERT_EQ(0, FLC_BoosterPredictForMatSingleRowFast(fast, X.data(), &len, after.data()));
+        EXPECT_EQ(full_len, len) << "predict_type " << predict_type;
+        for (int64_t k = 0; k < full_len; ++k) {
+            EXPECT_EQ(before[k], after[k]) << "predict_type " << predict_type << " output " << k;
+        }
+        FLC_FastConfigFree(fast);
+    }
+    FLC_BoosterFree(booster);
+    FLC_DatasetFree(dataset);
 }
 
 // The vendored yamc mutexes only compiled for the members c_api.cpp happens

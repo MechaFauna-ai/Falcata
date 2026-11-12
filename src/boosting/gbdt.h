@@ -16,6 +16,7 @@
 
 #include <string>
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <fstream>
 #include <map>
@@ -340,6 +341,29 @@ class GBDT : public GBDTBase {
   void PredictContribByMap(const std::unordered_map<int, double>& features,
                            std::vector<std::unordered_map<int, double>>* output) const override;
 
+  void PredictRawInRange(const double* features, double* output, const PredictionEarlyStopInstance* early_stop,
+                         const PredictRange& range) const override;
+  void PredictRawByMapInRange(const std::unordered_map<int, double>& features, double* output,
+                              const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const override;
+  void PredictInRange(const double* features, double* output, const PredictionEarlyStopInstance* early_stop,
+                      const PredictRange& range) const override;
+  void PredictByMapInRange(const std::unordered_map<int, double>& features, double* output,
+                           const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const override;
+  void PredictLeafIndexInRange(const double* features, double* output, const PredictRange& range) const override;
+  void PredictLeafIndexByMapInRange(const std::unordered_map<int, double>& features, double* output,
+                                    const PredictRange& range) const override;
+  void PredictContribInRange(const double* features, double* output, const PredictRange& range) const override;
+  void PredictContribByMapInRange(const std::unordered_map<int, double>& features,
+                                  std::vector<std::unordered_map<int, double>>* output,
+                                  const PredictRange& range) const override;
+  /*! \brief the range set by the last InitPredict (the legacy, model-wide prediction state) */
+  inline PredictRange InitializedPredictRange() const {
+    PredictRange range;
+    range.start_iteration = start_iteration_for_pred_;
+    range.num_iteration = num_iteration_for_pred_;
+    return range;
+  }
+
   /*!
   * \brief Dump model to json format string
   * \param start_iteration The model will be saved start from
@@ -465,15 +489,23 @@ class GBDT : public GBDTBase {
   inline int NumberOfClasses() const override { return num_class_; }
 
   inline void InitPredict(int start_iteration, int num_iteration, bool is_pred_contrib) override {
-    num_iteration_for_pred_ = static_cast<int>(models_.size()) / num_tree_per_iteration_;
+    const PredictRange range = ResolvePredictRange(start_iteration, num_iteration, is_pred_contrib);
+    num_iteration_for_pred_ = range.num_iteration;
+    start_iteration_for_pred_ = range.start_iteration;
+  }
+
+  inline PredictRange ResolvePredictRange(int start_iteration, int num_iteration,
+                                          bool is_pred_contrib) const override {
+    PredictRange range;
+    const int total_iterations = static_cast<int>(models_.size()) / num_tree_per_iteration_;
     start_iteration = std::max(start_iteration, 0);
-    start_iteration = std::min(start_iteration, num_iteration_for_pred_);
+    start_iteration = std::min(start_iteration, total_iterations);
     if (num_iteration > 0) {
-      num_iteration_for_pred_ = std::min(num_iteration, num_iteration_for_pred_ - start_iteration);
+      range.num_iteration = std::min(num_iteration, total_iterations - start_iteration);
     } else {
-      num_iteration_for_pred_ = num_iteration_for_pred_ - start_iteration;
+      range.num_iteration = total_iterations - start_iteration;
     }
-    start_iteration_for_pred_ = start_iteration;
+    range.start_iteration = start_iteration;
 
     if (is_pred_contrib && leaf_value_dim_ > 1) {
       Log::Fatal(
@@ -492,7 +524,7 @@ class GBDT : public GBDTBase {
     if (is_pred_contrib && !models_initialized_) {
       std::lock_guard<std::mutex> lock(instance_mutex_);
       if (models_initialized_)
-        return;
+        return range;
 
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
       for (int i = 0; i < static_cast<int>(models_.size()); ++i) {
@@ -501,6 +533,7 @@ class GBDT : public GBDTBase {
 
       models_initialized_ = true;
     }
+    return range;
   }
 
   inline double GetLeafValue(int tree_idx, int leaf_idx) const override {
@@ -663,9 +696,9 @@ class GBDT : public GBDTBase {
   /*! \brief Parser config file content */
   std::string parser_config_str_ = "";
   /*! \brief Are the models initialized (passed RecomputeMaxDepth phase) */
-  bool models_initialized_ = false;
+  mutable std::atomic<bool> models_initialized_{false};
   /*! \brief Mutex for exclusive models initialization */
-  std::mutex instance_mutex_;
+  mutable std::mutex instance_mutex_;
 
 #ifdef USE_CUDA
   /*! \brief First order derivative of training data */

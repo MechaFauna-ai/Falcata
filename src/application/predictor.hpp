@@ -59,7 +59,9 @@ class Predictor {
       }
     }
 
-    boosting->InitPredict(start_iteration, num_iteration, predict_contrib);
+    // the range is resolved once and kept by this predictor: InitPredict would change the range shared by every
+    // prediction on the booster, so a later or concurrent prediction with another range would change this one
+    range_ = boosting->ResolvePredictRange(start_iteration, num_iteration, predict_contrib);
     boosting_ = boosting;
     num_pred_one_row_ = boosting_->NumPredictOneRow(start_iteration,
         num_iteration, predict_leaf_index, predict_contrib);
@@ -75,10 +77,10 @@ class Predictor {
         if (num_feature_ > kFeatureThreshold &&
             features.size() < KSparseThreshold) {
           auto buf = CopyToPredictMap(features);
-          boosting_->PredictLeafIndexByMap(buf, output);
+          boosting_->PredictLeafIndexByMapInRange(buf, output, range_);
         } else {
           // get result for leaf index
-          WithPredictBuffer(features, [&](const double* buf) { boosting_->PredictLeafIndex(buf, output); });
+          WithPredictBuffer(features, [&](const double* buf) { boosting_->PredictLeafIndexInRange(buf, output, range_); });
         }
       };
     } else if (predict_contrib) {
@@ -88,13 +90,13 @@ class Predictor {
       predict_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                          double* output) {
         // get feature importances
-        WithPredictBuffer(features, [&](const double* buf) { boosting_->PredictContrib(buf, output); });
+        WithPredictBuffer(features, [&](const double* buf) { boosting_->PredictContribInRange(buf, output, range_); });
       };
       predict_sparse_fun_ = [=](const std::vector<std::pair<int, double>>& features,
                                 std::vector<std::unordered_map<int, double>>* output) {
         auto buf = CopyToPredictMap(features);
         // get sparse feature importances
-        boosting_->PredictContribByMap(buf, output);
+        boosting_->PredictContribByMapInRange(buf, output, range_);
       };
 
     } else {
@@ -104,10 +106,10 @@ class Predictor {
           if (num_feature_ > kFeatureThreshold &&
               features.size() < KSparseThreshold) {
             auto buf = CopyToPredictMap(features);
-            boosting_->PredictRawByMap(buf, output, &early_stop_);
+            boosting_->PredictRawByMapInRange(buf, output, &early_stop_, range_);
           } else {
             WithPredictBuffer(features,
-                              [&](const double* buf) { boosting_->PredictRaw(buf, output, &early_stop_); });
+                              [&](const double* buf) { boosting_->PredictRawInRange(buf, output, &early_stop_, range_); });
           }
         };
       } else {
@@ -116,10 +118,10 @@ class Predictor {
           if (num_feature_ > kFeatureThreshold &&
               features.size() < KSparseThreshold) {
             auto buf = CopyToPredictMap(features);
-            boosting_->PredictByMap(buf, output, &early_stop_);
+            boosting_->PredictByMapInRange(buf, output, &early_stop_, range_);
           } else {
             WithPredictBuffer(features,
-                              [&](const double* buf) { boosting_->Predict(buf, output, &early_stop_); });
+                              [&](const double* buf) { boosting_->PredictInRange(buf, output, &early_stop_, range_); });
           }
         };
       }
@@ -348,6 +350,8 @@ class Predictor {
 
   /*! \brief Boosting model */
   const Boosting* boosting_;
+  /*! \brief iterations used by this predictor, fixed at construction */
+  Boosting::PredictRange range_;
   /*! \brief function for prediction */
   PredictFunction predict_fun_;
   PredictSparseFunction predict_sparse_fun_;
