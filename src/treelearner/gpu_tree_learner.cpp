@@ -458,7 +458,21 @@ void GPUTreeLearner::AllocateGPUMemory() {
     #endif
     OMP_LOOP_EX_END();
   }
-  OMP_THROW_EX();
+  // the pinned staging buffers below are released at the end of this function: release them before rethrowing too
+  const auto release_host4 = [&]() {
+    for (int i = 0; i < nthreads; ++i) {
+      queue_.enqueue_unmap_buffer(host4_bufs[i], host4_ptrs[i]);
+      host4_bufs[i] = boost::compute::buffer();
+      boost::alignment::aligned_free(host4_vecs[i]);
+    }
+  };
+  try {
+    OMP_THROW_EX();
+  } catch (...) {
+    queue_.finish();
+    release_host4();
+    throw;
+  }
   // working on the remaining (less than dword_features_) feature groups
   if (k != 0) {
     Feature4* host4 = host4_ptrs[0];
@@ -534,11 +548,7 @@ void GPUTreeLearner::AllocateGPUMemory() {
     }
   }
   // deallocate pinned space for feature copying
-  for (int i = 0; i < nthreads; ++i) {
-      queue_.enqueue_unmap_buffer(host4_bufs[i], host4_ptrs[i]);
-      host4_bufs[i] = boost::compute::buffer();
-      boost::alignment::aligned_free(host4_vecs[i]);
-  }
+  release_host4();
   // data transfer time
   std::chrono::duration<double, std::milli> end_time = std::chrono::steady_clock::now() - start_time;
   Log::Info("%d dense feature groups (%.2f MB) transferred to GPU in %f secs. %d sparse feature groups",
