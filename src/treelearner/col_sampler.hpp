@@ -77,8 +77,9 @@ class ColSampler {
 
   void ResetByTree() {
     if (need_reset_bytree_) {
-      std::memset(is_feature_used_.data(), 0,
-                  sizeof(int8_t) * is_feature_used_.size());
+      // std::fill, not memset: with no used features the vector is empty and data() may be
+      // null, which memset must not receive even for 0 bytes (UBSan: nonnull-attribute)
+      std::fill(is_feature_used_.begin(), is_feature_used_.end(), 0);
       used_feature_indices_ = random_.Sample(
           static_cast<int>(valid_feature_indices_.size()), used_cnt_bytree_);
       int omp_loop_size = static_cast<int>(used_feature_indices_.size());
@@ -110,7 +111,7 @@ class ColSampler {
     if (!need_reset_bytree_) {
       return;
     }
-    std::memset(is_feature_used_.data(), 0, sizeof(int8_t) * is_feature_used_.size());
+    std::fill(is_feature_used_.begin(), is_feature_used_.end(), 0);
     used_feature_indices_ = used_feature_indices;
     for (const int i : used_feature_indices_) {
       is_feature_used_[train_data_->InnerFeatureIndex(valid_feature_indices_[i])] = 1;
