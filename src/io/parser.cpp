@@ -166,7 +166,7 @@ int GetNumColFromLIBSVMFile(const char* filename, bool header) {
                          : cur_line.substr(space_pos + 1, colon_pos - space_pos - 1);
       int cur_idx = 0;
       if (colon_pos != std::string::npos) {
-        Common::Atoi(sub_str.c_str(), &cur_idx);
+        AtoiLibSVMIndex(sub_str.c_str(), &cur_idx);
       }
       if (cur_idx > max_col_idx) {
         max_col_idx = cur_idx;
