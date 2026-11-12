@@ -1211,7 +1211,10 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
          (!select_features_by_node_ || LevelFlowsTakeNodeMasks()) &&
          (cuda_best_split_finder_ == nullptr || !cuda_best_split_finder_->use_global_memory()) &&
          (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
-         (config_->num_leaves > 2 || QuantizedStump());
+         (config_->num_leaves > 2 || QuantizedStump()) &&
+         // a level's batched kernels put its split pairs on grid y (at most 65535 blocks): a budget of more than
+         // 2 * 65535 leaves can reach a level of 65536 pairs, so such trees take the per-split loop
+         config_->num_leaves <= 2 * 65535;
   if (!base) {
     return false;
   }
