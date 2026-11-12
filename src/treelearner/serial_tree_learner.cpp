@@ -250,7 +250,9 @@ Tree* SerialTreeLearner::Train(const score_t* gradients, const score_t *hessians
                 best_leaf_SplitInfo.left_count, best_leaf_SplitInfo.right_count);
       }
       // cannot split, quit
-      if (best_leaf_SplitInfo.gain <= 0.0) {
+      // !(gain > 0): a NaN gain (from non-finite gradients) is not a positive gain either; SplitInfo ranks it as
+      // kMinScore, so it can still win ArgMax over a leaf without any split candidate
+      if (!(best_leaf_SplitInfo.gain > 0.0)) {
         Log::Warning("No further splits with positive gain, best gain: %f", best_leaf_SplitInfo.gain);
         break;
       }
@@ -629,7 +631,9 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
       int best_leaf =
           static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(best_split_per_leaf_));
       const SplitInfo& best_leaf_SplitInfo = best_split_per_leaf_[best_leaf];
-      if (best_leaf_SplitInfo.gain <= 0.0) {
+      // !(gain > 0): a NaN gain (from non-finite gradients) is not a positive gain either; SplitInfo ranks it as
+      // kMinScore, so it can still win ArgMax over a leaf without any split candidate
+      if (!(best_leaf_SplitInfo.gain > 0.0)) {
         Log::Warning("No further splits with positive gain, best gain: %f",
                      best_leaf_SplitInfo.gain);
         return config_->num_leaves;
