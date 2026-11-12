@@ -244,3 +244,36 @@ test_that("lgb.convert_with_rules() should modify data.tables in-place", {
     resultDT <- conversion_result[["data"]]
     expect_identical(resultDT, testDT)
 })
+
+test_that("lgb.convert_with_rules() looks rules up by factor label, not by factor code", {
+    train_df <- data.frame(
+        f = factor(c("b", "c", "b", "a"))
+        , x = c(1.0, 2.0, 3.0, 4.0)
+    )
+    conversion <- lgb.convert_with_rules(train_df)
+    expect_identical(conversion$data[["f"]], c(2L, 3L, 2L, 1L))
+    # same labels, levels in another order and with one level missing
+    test_df <- data.frame(
+        f = factor(c("c", "b", "a", "c"), levels = c("c", "b", "a"))
+        , x = c(1.0, 2.0, 3.0, 4.0)
+    )
+    test_dt <- data.table::as.data.table(test_df)
+    for (input_data in list(test_df, test_dt)) {
+        converted <- lgb.convert_with_rules(input_data, rules = conversion$rules)$data
+        expect_identical(converted[["f"]], c(3L, 2L, 1L, 3L))
+    }
+    subset_df <- data.frame(f = factor(c("c", "c")))
+    converted <- lgb.convert_with_rules(subset_df, rules = conversion$rules["f"])$data
+    expect_identical(converted[["f"]], c(3L, 3L))
+})
+
+test_that("lgb.convert_with_rules() converts logical columns that hold TRUE and FALSE", {
+    test_df <- data.frame(l = c(TRUE, FALSE, NA, TRUE, FALSE))
+    test_dt <- data.table::as.data.table(test_df)
+    for (input_data in list(test_df, test_dt)) {
+        conversion <- lgb.convert_with_rules(input_data)
+        expect_identical(conversion$data[["l"]], c(1L, 0L, -1L, 1L, 0L))
+        converted <- lgb.convert_with_rules(data.frame(l = c(FALSE, TRUE)), rules = conversion$rules)$data
+        expect_identical(converted[["l"]], c(0L, 1L))
+    }
+})
