@@ -312,9 +312,22 @@ class RF : public GBDT {
    */
   void AddTreeToAveragedScores(const Tree* tree, const int cur_tree_id, const int num_averaged) {
     MultiplyScore(cur_tree_id, num_averaged);
-    train_score_updater_->AddScore(tree, cur_tree_id);
+    // A constant tree adds one value to every row: the scalar overload is exact and
+    // device-safe (a host Tree's own AddPredictionToScore must not be handed a CUDA score
+    // column). A 1-leaf linear tree goes through the updater, which scores linear trees on
+    // either device.
+    const bool constant = tree->num_leaves() == 1 && !tree->HasLinearMetadata();
+    if (constant) {
+      train_score_updater_->AddScore(tree->LeafOutput(0), cur_tree_id);
+    } else {
+      train_score_updater_->AddScore(tree, cur_tree_id);
+    }
     for (auto& score_updater : valid_score_updater_) {
-      score_updater->AddScore(tree, cur_tree_id);
+      if (constant) {
+        score_updater->AddScore(tree->LeafOutput(0), cur_tree_id);
+      } else {
+        score_updater->AddScore(tree, cur_tree_id);
+      }
     }
     MultiplyScore(cur_tree_id, 1.0 / (num_averaged + 1));
   }
