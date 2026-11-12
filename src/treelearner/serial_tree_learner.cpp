@@ -322,7 +322,21 @@ void SerialTreeLearner::BeforeTrain() {
   histogram_pool_.ResetMap();
 
   col_sampler_.ResetByTree();
-  train_data_->InitTrain(col_sampler_.is_feature_used_bytree(), share_state_.get());
+  if (forced_split_json_ != nullptr) {
+    // Forced splits are evaluated even on features feature_fraction left out of this tree
+    // (FindBestSplits adds them back), so the row-wise multi-value bin, which InitTrain
+    // narrows to the tree's features, has to keep them: their histograms were zero there,
+    // and row-wise training forced different splits than col-wise.
+    std::vector<int8_t> is_feature_used = col_sampler_.is_feature_used_bytree();
+    for (const int inner_feature : FindAllForceFeatures(*forced_split_json_)) {
+      if (inner_feature >= 0) {
+        is_feature_used[inner_feature] = 1;
+      }
+    }
+    train_data_->InitTrain(is_feature_used, share_state_.get());
+  } else {
+    train_data_->InitTrain(col_sampler_.is_feature_used_bytree(), share_state_.get());
+  }
   // initialize data partition
   data_partition_->Init();
 

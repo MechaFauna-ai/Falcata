@@ -3871,6 +3871,33 @@ def test_forced_splits_beyond_num_leaves(tmp_path, num_leaves):
     assert np.all(np.isfinite(bst.predict(X)))
 
 
+@pytest.mark.parametrize("feature_fraction", [0.1, 0.3])
+def test_forced_splits_col_wise_equals_row_wise_with_feature_fraction(tmp_path, feature_fraction):
+    # A forced split is evaluated even on a feature feature_fraction left out of
+    # the tree, but the row-wise multi-value bin was narrowed to the tree's
+    # features, so that feature's histogram was zero there: row-wise and
+    # col-wise training forced different splits.
+    X, y = load_digits(return_X_y=True)
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps({"feature": 21, "threshold": 8.0, "left": {"feature": 36, "threshold": 8.0}}))
+    params = {
+        "objective": "multiclass",
+        "num_class": 10,
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "num_leaves": 7,
+        "min_data_in_leaf": 5,
+        "feature_fraction": feature_fraction,
+        "forcedsplits_filename": tmp_split_file,
+    }
+    preds = [
+        lgb.train({**params, layout: True}, lgb.Dataset(X, y), num_boost_round=5).predict(X, raw_score=True)
+        for layout in ("force_col_wise", "force_row_wise")
+    ]
+    np.testing.assert_allclose(preds[0], preds[1], rtol=1e-9, atol=1e-12)
+
+
 def test_forced_split_missing_file(tmp_path):
     X, y = make_synthetic_regression()
     lgb_train = lgb.Dataset(X, y)
