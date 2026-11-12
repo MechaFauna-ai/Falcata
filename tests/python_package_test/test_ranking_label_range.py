@@ -20,7 +20,7 @@ def _data():
 def test_rank_xendcg_rejects_out_of_range_labels(bad):
     X, y = _data()
     y[3] = bad
-    params = {"objective": "rank_xendcg", "verbose": -1, "metric": "None"}
+    params = {"objective": "rank_xendcg", "device_type": "cpu", "verbose": -1, "metric": "None"}
     with pytest.raises(flc.basic.FalcataError, match="rank_xendcg: label must be in"):
         flc.train(params, flc.Dataset(X, y, group=[30, 30]), num_boost_round=2)
 
@@ -29,13 +29,13 @@ def test_rank_xendcg_rejects_out_of_range_labels(bad):
 def test_lambdarank_rejects_huge_labels(bad):
     X, y = _data()
     y[3] = bad
-    params = {"objective": "lambdarank", "verbose": -1}
+    params = {"objective": "lambdarank", "device_type": "cpu", "verbose": -1}
     with pytest.raises(flc.basic.FalcataError, match="is not less than the number of label mappings"):
         flc.train(params, flc.Dataset(X, y, group=[30, 30]), num_boost_round=2)
 
 
 def test_rank_xendcg_ordinary_labels_still_train():
     X, y = _data()
-    params = {"objective": "rank_xendcg", "verbose": -1, "metric": "None"}
+    params = {"objective": "rank_xendcg", "device_type": "cpu", "verbose": -1, "metric": "None"}
     bst = flc.train(params, flc.Dataset(X, y, group=[30, 30]), num_boost_round=3)
     assert np.all(np.isfinite(bst.predict(X)))

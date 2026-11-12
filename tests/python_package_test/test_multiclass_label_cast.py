@@ -15,7 +15,7 @@ def test_multiclass_out_of_int_range_label(bad, shown):
     X = rng.standard_normal((60, 3))
     y = rng.integers(0, 3, 60).astype(float)
     y[7] = bad
-    params = {"objective": "multiclass", "num_class": 3, "verbose": -1}
+    params = {"objective": "multiclass", "num_class": 3, "device_type": "cpu", "verbose": -1}
     with pytest.raises(flc.basic.FalcataError, match=rf"Label must be in \[0, 3\), but found {shown} in label"):
         flc.train(params, flc.Dataset(X, y), num_boost_round=2)
 
@@ -24,5 +24,7 @@ def test_multiclass_in_range_labels_still_train():
     rng = np.random.default_rng(0)
     X = rng.standard_normal((60, 3))
     y = rng.integers(0, 3, 60).astype(float)
-    bst = flc.train({"objective": "multiclass", "num_class": 3, "verbose": -1}, flc.Dataset(X, y), 2)
+    bst = flc.train(
+        {"objective": "multiclass", "num_class": 3, "device_type": "cpu", "verbose": -1}, flc.Dataset(X, y), 2
+    )
     assert np.all(np.isfinite(bst.predict(X)))
