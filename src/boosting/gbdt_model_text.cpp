@@ -140,6 +140,14 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
         "(leaf_value_dim=%d). Use native Falcata prediction instead.",
         leaf_value_dim_);
   }
+  // the generated code returns each leaf's constant output: a linear tree's per-leaf linear model would be dropped,
+  // and the converted model would silently predict something else
+  for (const auto& tree : models_) {
+    if (tree->is_linear()) {
+      Log::Fatal("if-else model export does not support linear trees (linear_tree=true). "
+                 "Use native Falcata prediction instead.");
+    }
+  }
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
 
