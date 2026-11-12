@@ -105,6 +105,9 @@ std::vector<std::string> ReadKLineFromFile(const char* filename, bool header, in
     Log::Fatal("Data file %s couldn't be read.", filename);
   }
   std::string read_str = std::string(buffer.data(), read_len);
+  if (read_str.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+    read_str.erase(0, 3);  // UTF-8 byte order mark, as TextReader skips it
+  }
   std::stringstream tmp_file(read_str);
   if (header) {
     if (!tmp_file.eof()) {
@@ -143,6 +146,9 @@ int GetNumColFromLIBSVMFile(const char* filename, bool header) {
     Log::Fatal("Data file %s couldn't be read.", filename);
   }
   std::string read_str = std::string(buffer.data(), read_len);
+  if (read_str.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+    read_str.erase(0, 3);  // UTF-8 byte order mark, as TextReader skips it
+  }
   std::stringstream tmp_file(read_str);
   if (header) {
     if (!tmp_file.eof()) {
