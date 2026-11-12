@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -438,9 +439,12 @@ class FeatureHistogram {
           CalculateSplittedLeafOutput<USE_MC, USE_L1, USE_MAX_OUTPUT, USE_SMOOTHING>(
               sum_right_gradients, sum_right_hessians, l1, l2, max_delta_step,
               constraints->RightToBasicConstraint(), smoothing, right_count, parent_output);
+      // A split that breaks the monotone order must never be taken. Returning 0 here (LightGBM's sentinel) is not
+      // enough: with path_smooth the parent's gain at its smoothed output can be negative, so min_gain_shift < 0
+      // and a gain of 0 passed the `current_gain <= min_gain_shift` test and the violating split was kept.
       if (((monotone_constraint > 0) && (left_output > right_output)) ||
           ((monotone_constraint < 0) && (left_output < right_output))) {
-        return 0;
+        return -std::numeric_limits<double>::infinity();
       }
       return GetLeafGainGivenOutput<USE_L1>(
                  sum_left_gradients, sum_left_hessians, l1, l2, left_output) +
