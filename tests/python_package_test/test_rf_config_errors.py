@@ -17,19 +17,35 @@ def _data():
 def test_rf_without_sampling_names_the_parameters():
     X, y = _data()
     with pytest.raises(flc.basic.FalcataError, match="boosting=rf needs each tree to see a sample"):
-        flc.train({"objective": "regression", "boosting": "rf", "verbose": -1}, flc.Dataset(X, y), 2)
+        flc.train(
+            {"objective": "regression", "boosting": "rf", "device_type": "cpu", "verbose": -1}, flc.Dataset(X, y), 2
+        )
 
 
 def test_rf_with_init_score_is_refused_clearly():
     X, y = _data()
-    params = {"objective": "regression", "boosting": "rf", "bagging_fraction": 0.5, "bagging_freq": 1, "verbose": -1}
+    params = {
+        "objective": "regression",
+        "boosting": "rf",
+        "bagging_fraction": 0.5,
+        "bagging_freq": 1,
+        "device_type": "cpu",
+        "verbose": -1,
+    }
     with pytest.raises(flc.basic.FalcataError, match="boosting=rf does not support init_score"):
         flc.train(params, flc.Dataset(X, y, init_score=np.zeros(100)), 2)
 
 
 def test_rf_reset_to_no_sampling_is_refused_clearly():
     X, y = _data()
-    params = {"objective": "regression", "boosting": "rf", "bagging_fraction": 0.5, "bagging_freq": 1, "verbose": -1}
+    params = {
+        "objective": "regression",
+        "boosting": "rf",
+        "bagging_fraction": 0.5,
+        "bagging_freq": 1,
+        "device_type": "cpu",
+        "verbose": -1,
+    }
     bst = flc.train(params, flc.Dataset(X, y), 2, keep_training_booster=True)
     with pytest.raises(flc.basic.FalcataError, match="boosting=rf needs each tree to see a sample"):
         bst.reset_parameter({"bagging_fraction": 1.0})
@@ -41,14 +57,25 @@ def test_rf_reset_to_no_sampling_is_refused_clearly():
 )
 def test_rf_valid_sampling_still_trains(sampling):
     X, y = _data()
-    bst = flc.train({"objective": "regression", "boosting": "rf", "verbose": -1, **sampling}, flc.Dataset(X, y), 2)
+    bst = flc.train(
+        {"objective": "regression", "boosting": "rf", "device_type": "cpu", "verbose": -1, **sampling},
+        flc.Dataset(X, y),
+        2,
+    )
     assert np.all(np.isfinite(bst.predict(X)))
 
 
 def test_rf_init_model_through_python_is_refused_clearly():
     # the Python package turns init_model into the new Dataset's init_score
     X, y = _data()
-    params = {"objective": "regression", "boosting": "rf", "bagging_fraction": 0.5, "bagging_freq": 1, "verbose": -1}
+    params = {
+        "objective": "regression",
+        "boosting": "rf",
+        "bagging_fraction": 0.5,
+        "bagging_freq": 1,
+        "device_type": "cpu",
+        "verbose": -1,
+    }
     bst = flc.train(params, flc.Dataset(X, y), 2)
     with pytest.raises(flc.basic.FalcataError, match="continuing an RF model that way is refused too"):
         flc.train(params, flc.Dataset(X, y), 2, init_model=bst)
