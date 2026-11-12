@@ -604,8 +604,10 @@ class Tree {
   std::vector<int> internal_count_;
   /*! \brief Depth for leaves */
   std::vector<int> leaf_depth_;
-  /*! \brief whether to keep track of ancestor nodes for each leaf (only needed when feature interactions are restricted) */
-  bool track_branch_features_;
+  /*! \brief whether to keep track of ancestor nodes for each leaf (only needed when feature interactions are restricted).
+   *  Initialized here because the model-string constructor does not set it, and copying a tree
+   *  (ShuffleModels, MergeFrom, refit) reads it. */
+  bool track_branch_features_ = false;
   /*! \brief Features on leaf's branch, original index */
   std::vector<std::vector<int>> branch_features_;
   double shrinkage_;

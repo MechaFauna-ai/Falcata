@@ -1094,6 +1094,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_tcp_socket.cpp
       tests/cpp_tests/test_text_reader.cpp
       tests/cpp_tests/test_threshold_dictionary_bounds.cpp
+      tests/cpp_tests/test_tree_copy.cpp
       tests/cpp_tests/test_xentropy_lambda.cpp
       tests/cpp_tests/testutils.cpp
     )

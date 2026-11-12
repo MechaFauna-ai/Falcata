@@ -781,6 +781,9 @@ Tree::Tree(const char* str, size_t* used_len) {
   if (num_leaves_ <= 0) {
     Log::Fatal("Tree model has invalid num_leaves=%d", num_leaves_);
   }
+  // a loaded tree is complete: it holds exactly the leaves it has (copies and
+  // CUDATree(const Tree*) carry this value along)
+  max_leaves_ = num_leaves_;
 
   if (key_vals.count("num_cat") <= 0) {
     Log::Fatal("Tree model should contain num_cat field");
