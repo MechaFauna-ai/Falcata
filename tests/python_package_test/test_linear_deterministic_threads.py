@@ -16,7 +16,14 @@ def test_linear_tree_deterministic_across_num_threads(objective):
     y = 2 * X[:, 0] + np.sin(X[:, 1]) + 0.1 * rng.standard_normal(5000)
     if objective == "binary":
         y = (y > 0).astype(float)
-    params = {"objective": objective, "linear_tree": True, "deterministic": True, "force_row_wise": True, "verbose": -1}
+    params = {
+        "objective": objective,
+        "linear_tree": True,
+        "deterministic": True,
+        "force_row_wise": True,
+        "device_type": "cpu",
+        "verbose": -1,
+    }
     preds = [
         flc.train({**params, "num_threads": t}, flc.Dataset(X, y), num_boost_round=10).predict(X, raw_score=True)
         for t in (1, 3, 5)
