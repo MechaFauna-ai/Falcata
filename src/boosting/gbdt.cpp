@@ -75,6 +75,10 @@ void CheckLeafOutputsAreFinite(const Tree* tree, int iter, int tree_id) {
 
 }  // namespace
 
+void GBDT::CheckTreeOutputsAreFinite(const Tree* tree, int iter, int tree_id) {
+  CheckLeafOutputsAreFinite(tree, iter, tree_id);
+}
+
 void GBDT::CheckGradientNormForDivergence(const score_t* gradients) {
   if (gradients == nullptr || num_data_ <= 0 || num_tree_per_iteration_ <= 0) {
     return;
