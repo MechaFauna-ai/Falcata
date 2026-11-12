@@ -184,7 +184,11 @@ void DatasetLoader::SetHeader(const char* filename) {
       ignore_features_.emplace(group_idx_);
     }
   }
-  if (config_.categorical_feature.size() > 0) {
+  // A binary dataset file carries its own categorical bin mappers (an index list is ignored
+  // there too) and has no header to resolve "name:" against: training from the .bin that
+  // save_binary wrote, with the same config, failed with "Could not find categorical_feature".
+  const bool binary_file = filename != nullptr && !CheckCanLoadFromBin(filename).empty();
+  if (config_.categorical_feature.size() > 0 && !binary_file) {
     if (Common::StartsWith(config_.categorical_feature, name_prefix)) {
       std::string names = config_.categorical_feature.substr(name_prefix.size());
       for (auto name : Common::Split(names.c_str(), ',')) {
