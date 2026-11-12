@@ -266,6 +266,9 @@ class Booster {
   void ResetTrainingData(const Dataset* train_data) {
     if (train_data != train_data_) {
       UNIQUE_LOCK(mutex_)
+      // a subset of the extended training Dataset has the same bin mappers as that Dataset, so GBDT would accept
+      // it, take its feature count, and only then fail in the stale tree learner
+      CheckTrainDataUnchanged();
       train_data_ = train_data;
       train_data_num_total_features_ = train_data_->num_total_features();
       CreateObjectiveAndMetrics();

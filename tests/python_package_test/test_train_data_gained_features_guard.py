@@ -1,4 +1,4 @@
-"""A Booster whose training Dataset gained features refuses resets, refits and new validation sets.
+"""A Booster whose training Dataset gained features refuses resets (parameters and training data), refits and new validation sets.
 
 FLC_DatasetAddFeaturesFrom on a Dataset a Booster trains on leaves the tree learner sized for
 the old features. Training already refuses ("The training Dataset gained features"), but a
@@ -48,3 +48,15 @@ def test_refit_and_add_valid_are_refused(booster_with_extended_data):
     assert "gained features" in _LIB.FLC_GetLastError().decode()
     with pytest.raises(flc.basic.FalcataError, match="gained features"):
         booster.add_valid(flc.Dataset(X, y, reference=train), "v")
+
+
+def test_reset_training_data_is_refused(booster_with_extended_data):
+    # a subset of the extended Dataset passes GBDT's bin-mapper check against the (equally extended) training
+    # Dataset, so the reset used to take the new feature count and then fail in the tree learner, leaving the
+    # Booster expecting 5 features: a FastConfig made for 3 then wrote contributions past its output buffer
+    X, y, train, booster = booster_with_extended_data
+    subset = train.subset(list(range(50))).construct()
+    rc = _LIB.FLC_BoosterResetTrainingData(booster._handle, subset._handle)
+    assert rc == -1
+    assert "gained features" in _LIB.FLC_GetLastError().decode()
+    assert booster.predict(X, pred_contrib=True).shape == (X.shape[0], X.shape[1] + 1)
