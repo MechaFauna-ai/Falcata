@@ -1504,11 +1504,13 @@ class _InnerPredictor:
         else:
             raise TypeError("Expected float32 or float64 type for data")
         out_indices = _cint32_array_to_numpy(cptr=out_ptr_indices, length=data_indices_len)
+        # one column per input feature plus the expected value, which sits at the model's feature count (with
+        # predict_disable_shape_check=True the input may have fewer columns than the model)
+        num_model_features = ctypes.c_int(0)
+        _safe_call(_LIB.FLC_BoosterGetNumFeature(self._handle, ctypes.byref(num_model_features)))
+        num_output_cols = max(cs.shape[1], num_model_features.value) + 1
         # break up indptr based on number of rows (note more than one matrix in multiclass case)
-        per_class_indptr_shape = cs.indptr.shape[0]
-        # for CSC there is extra column added
-        if not is_csr:
-            per_class_indptr_shape += 1
+        per_class_indptr_shape = cs.indptr.shape[0] if is_csr else num_output_cols + 1
         out_indptr_arrays = np.split(out_indptr, out_indptr.shape[0] / per_class_indptr_shape)
         # reformat output into a csr or csc matrix or list of csr or csc matrices
         cs_output_matrices = []
@@ -1518,8 +1520,7 @@ class _InnerPredictor:
             cs_indices = out_indices[offset + cs_indptr[0] : offset + matrix_indptr_len]
             cs_data = out_data[offset + cs_indptr[0] : offset + matrix_indptr_len]
             offset += matrix_indptr_len
-            # same shape as input csr or csc matrix except extra column for expected value
-            cs_shape = [cs.shape[0], cs.shape[1] + 1]
+            cs_shape = [cs.shape[0], num_output_cols]
             # note: make sure we copy data as it will be deallocated next
             if is_csr:
                 cs_output_matrices.append(scipy.sparse.csr_matrix((cs_data, cs_indices, cs_indptr), cs_shape))
