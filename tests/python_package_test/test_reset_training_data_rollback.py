@@ -43,3 +43,25 @@ def test_accepted_train_set_still_switches_data():
     booster.update(train_set=subset)
     assert booster.current_iteration() == 2
     assert np.all(np.isfinite(booster.predict(X)))
+
+
+def test_reset_with_merged_loaded_trees_fails_cleanly():
+    # trees merged in from a loaded model cannot score a Dataset; the reset used to fail halfway through the
+    # rescoring, after GBDT had switched to the new data (heap corruption on the next update)
+    from falcata.basic import _LIB, _safe_call
+
+    rng = np.random.default_rng(2)
+    X = rng.normal(size=(80, 3))
+    y = X[:, 0]
+    params = {"objective": "regression", "verbose": -1, "min_data_in_leaf": 2}
+    full = flc.Dataset(X, y, free_raw_data=False).construct()
+    booster = flc.Booster(params, full)
+    for _ in range(3):
+        booster.update()
+    loaded = flc.Booster(model_str=booster.model_to_string())
+    _safe_call(_LIB.FLC_BoosterMerge(booster._handle, loaded._handle))
+    booster.shuffle_models()  # moves loaded trees into the positions the reset rescores
+    with pytest.raises(flc.basic.FalcataError, match="training bin metadata"):
+        booster.update(train_set=full.subset(list(range(40))).construct())
+    booster.update()
+    assert np.all(np.isfinite(booster.predict(X)))

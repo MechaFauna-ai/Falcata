@@ -980,6 +980,20 @@ void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction*
   if (train_data != train_data_ && !train_data_->CheckAlign(*train_data)) {
     Log::Fatal("Cannot reset training data, since new training data has different bin mappers");
   }
+  if (train_data != train_data_) {
+    // the new training data is scored with every trained tree below, after GBDT has already taken the new
+    // objective and data: check up front that every such tree can score a Dataset (trees merged in from a loaded
+    // model cannot), so the reset fails before it changes anything
+    for (int i = 0; i < iter_; ++i) {
+      for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
+        const auto curr_tree = (i + num_init_iteration_) * num_tree_per_iteration_ + cur_tree_id;
+        if (static_cast<size_t>(curr_tree) < models_.size() && !models_[curr_tree]->HasDatasetScoringMetadata()) {
+          Log::Fatal("Cannot reset training data: tree %d has no training bin metadata (it was loaded or merged "
+                     "from a saved model), so it cannot score the new data", curr_tree);
+        }
+      }
+    }
+  }
 
   // check the incoming objective before taking it: a Fatal here must leave GBDT on its previous objective (the
   // caller still owns that one, and frees the rejected one while unwinding)

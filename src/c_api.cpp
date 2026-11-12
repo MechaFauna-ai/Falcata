@@ -278,7 +278,15 @@ class Booster {
         objective->Init(train_data->metadata(), train_data->num_data());
       }
       auto train_metric = CreateMetrics(train_data);
-      boosting_->ResetTrainingData(train_data, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
+      try {
+        boosting_->ResetTrainingData(train_data, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
+      } catch (...) {
+        // GBDT may fail after it took the new objective and metrics (a later step of the reset). It then points
+        // at either the old or the new objects, so keep both alive for the Booster's lifetime.
+        rejected_reset_objectives_.push_back(std::move(objective));
+        rejected_reset_metrics_.push_back(std::move(train_metric));
+        throw;
+      }
       train_data_ = train_data;
       train_data_num_total_features_ = train_data_->num_total_features();
       objective_fun_ = std::move(objective);
@@ -1042,6 +1050,9 @@ class Booster {
   Config config_;
   /*! \brief Metric for training data */
   std::vector<std::unique_ptr<Metric>> train_metric_;
+  /*! \brief objectives and metrics of failed ResetTrainingData calls, which GBDT may still point at */
+  std::vector<std::unique_ptr<ObjectiveFunction>> rejected_reset_objectives_;
+  std::vector<std::vector<std::unique_ptr<Metric>>> rejected_reset_metrics_;
   /*! \brief Metrics for validation data */
   std::vector<std::vector<std::unique_ptr<Metric>>> valid_metrics_;
   /*! \brief Validation data, one per valid_metrics_ entry (their metrics are rebuilt when the objective changes) */

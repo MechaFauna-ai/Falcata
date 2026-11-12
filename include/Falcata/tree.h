@@ -365,6 +365,14 @@ class Tree {
    * back a tree that has not had its leaf features and coefficients rebuilt
    * yet, so anything that reads them must ask this first rather than trusting
    * the flag. */
+  inline bool HasDatasetScoringMetadata() const {
+    // what AddPredictionToScore(const Dataset*, ...) needs: the inner split features and bin thresholds a trained
+    // tree has and a tree loaded from a model string or file lacks (a constant tree needs neither)
+    return num_leaves_ <= 1 ||
+           (split_feature_inner_.size() >= static_cast<size_t>(num_leaves_ - 1) &&
+            threshold_in_bin_.size() >= static_cast<size_t>(num_leaves_ - 1));
+  }
+
   inline bool HasLinearMetadata() const {
     return is_linear_ &&
            static_cast<int>(leaf_features_inner_.size()) >= num_leaves_ &&
