@@ -1050,6 +1050,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_byte_buffer.cpp
       tests/cpp_tests/test_c_api_error.cpp
       tests/cpp_tests/test_chunked_array.cpp
+      tests/cpp_tests/test_cli_refit_feature_count.cpp
       tests/cpp_tests/test_colwise_iterators.cpp
       tests/cpp_tests/test_common.cpp
       tests/cpp_tests/test_csc_row_iterator.cpp
@@ -1100,7 +1101,8 @@ if(BUILD_CPP_TEST)
   if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /permissive-")
   endif()
-  add_executable(testfalcata ${CPP_TEST_SOURCES})
+  # the CLI Application (src/main.cpp only adds main()), for tests of CLI tasks
+  add_executable(testfalcata ${CPP_TEST_SOURCES} src/application/application.cpp)
   target_link_libraries(testfalcata PRIVATE falcata_objs falcata_capi_objs nanoarrow_static GTest::GTest)
   if(USE_CUDA)
     target_sources(
