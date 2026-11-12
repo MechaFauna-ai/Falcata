@@ -2233,6 +2233,29 @@ def test_contribs():
     )
 
 
+def test_contribs_after_further_training(rng):
+    # pred_contrib computed each tree's depth only on the first contribution prediction; trees trained (or
+    # merged) afterwards had none, and the next pred_contrib failed CHECK_GE(max_depth_, 0)
+    X = rng.normal(size=(300, 4))
+    y = X[:, 0] + X[:, 1] ** 2
+    params = {"objective": "regression", "verbose": -1}
+    bst = lgb.Booster(params, lgb.Dataset(X, y))
+    for _ in range(3):
+        bst.update()
+    bst.predict(X[:5], pred_contrib=True)
+    for _ in range(3):
+        bst.update()
+    contribs = bst.predict(X[:5], pred_contrib=True)
+    np.testing.assert_allclose(contribs.sum(axis=1), bst.predict(X[:5], raw_score=True))
+    np.testing.assert_allclose(contribs, lgb.Booster(model_str=bst.model_to_string()).predict(X[:5], pred_contrib=True))
+
+    other = lgb.train(params, lgb.Dataset(X, y), num_boost_round=2)
+    other.predict(X[:5], pred_contrib=True)
+    lgb.basic._safe_call(lgb.basic._LIB.FLC_BoosterMerge(other._handle, bst._handle))
+    merged = other.predict(X[:5], pred_contrib=True)
+    np.testing.assert_allclose(merged.sum(axis=1), other.predict(X[:5], raw_score=True))
+
+
 def test_contribs_sparse():
     n_features = 20
     n_samples = 100
