@@ -5898,6 +5898,12 @@ void CUDASingleGPUTreeLearner::TrainSelective(CUDATree* tree) {
 
 Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   const score_t* hessians, bool is_first_tree) {
+  if (train_data_->num_features() == 0) {
+    // no usable feature (all dropped by feature_pre_filter): nothing to split, and the device row data was never
+    // built. GBDT does not call Train then; RF (and its forest trainer) does, and gets a single-leaf tree, as from
+    // the CPU learner
+    return new Tree(2, false, false);
+  }
   MaybeInitColMajorFill();
   if (construct_saturation_floor_ > 0 &&
       FalcataPlan::Get().batch_construct_saturation_floor != construct_saturation_floor_) {
