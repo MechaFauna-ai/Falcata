@@ -887,7 +887,9 @@ void Metadata::LoadFromMemory(const void* memory, size_t memory_size) {
   // the claimed count, bounds the allocation
   const char* labels = reader.TakeArray(static_cast<size_t>(num_data_), sizeof(label_t), true);
   label_ = std::vector<label_t>(num_data_);
-  std::memcpy(label_.data(), labels, sizeof(label_t) * num_data_);
+  if (num_data_ > 0) {  // an empty vector's data() may be null
+    std::memcpy(label_.data(), labels, sizeof(label_t) * num_data_);
+  }
 
   if (num_weights_ > 0) {
     const char* weights = reader.TakeArray(static_cast<size_t>(num_weights_), sizeof(label_t), true);
