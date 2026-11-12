@@ -6,6 +6,7 @@ categorical split over large category ids writes the whole bitset) escaped
 the parallel region and called std::terminate, killing the process.
 """
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -44,6 +45,12 @@ _CHILD = textwrap.dedent(
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="needs /proc and RLIMIT_AS")
 def test_model_to_string_bad_alloc_is_a_clean_error():
-    proc = subprocess.run([sys.executable, "-c", _CHILD], capture_output=True, text=True, timeout=300, check=False)
+    # a fixed mmap threshold: glibc otherwise raises it after training frees
+    # its large buffers, and the saves could then reuse freed heap without
+    # ever reaching the address-space limit
+    env = dict(os.environ, MALLOC_MMAP_THRESHOLD_="131072")
+    proc = subprocess.run(
+        [sys.executable, "-c", _CHILD], capture_output=True, text=True, timeout=300, check=False, env=env
+    )
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "CLEAN" in proc.stdout, proc.stdout + proc.stderr[-2000:]
