@@ -50,7 +50,8 @@ class RF : public GBDT {
     } else if (train_data->metadata().init_score() != nullptr) {
       Log::Fatal("boosting=rf does not support init_score: a random forest averages its trees, so a "
                  "per-row starting score cannot be carried into the average. Train without init_score, "
-                 "or use boosting=gbdt");
+                 "or use boosting=gbdt. (The Python and R packages pass an init_model to a new Dataset as its "
+                 "init_score, so continuing an RF model that way is refused too; the CLI's input_model works.)");
     }
     CHECK_EQ(num_tree_per_iteration_, num_class_);
     // not shrinkage rate for the RF

@@ -43,3 +43,12 @@ def test_rf_valid_sampling_still_trains(sampling):
     X, y = _data()
     bst = flc.train({"objective": "regression", "boosting": "rf", "verbose": -1, **sampling}, flc.Dataset(X, y), 2)
     assert np.all(np.isfinite(bst.predict(X)))
+
+
+def test_rf_init_model_through_python_is_refused_clearly():
+    # the Python package turns init_model into the new Dataset's init_score
+    X, y = _data()
+    params = {"objective": "regression", "boosting": "rf", "bagging_fraction": 0.5, "bagging_freq": 1, "verbose": -1}
+    bst = flc.train(params, flc.Dataset(X, y), 2)
+    with pytest.raises(flc.basic.FalcataError, match="continuing an RF model that way is refused too"):
+        flc.train(params, flc.Dataset(X, y), 2, init_model=bst)
