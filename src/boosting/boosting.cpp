@@ -4,9 +4,12 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <Falcata/boosting.h>
+#include <Falcata/utils/file_io.h>
 
+#include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "dart.hpp"
 #include "gbdt.h"
@@ -17,6 +20,33 @@
 #endif  // USE_NCCL
 
 namespace Falcata {
+
+namespace {
+
+// Read a whole model file through the virtual reader (local or remote).
+std::vector<char> ReadWholeFile(const char* filename) {
+  auto reader = VirtualFileReader::Make(filename);
+  if (!reader->Init()) {
+    Log::Fatal("Could not open model file %s", filename);
+  }
+  std::vector<char> content;
+  std::vector<char> chunk(1 << 20);
+  size_t got = 0;
+  while ((got = reader->Read(chunk.data(), chunk.size())) > 0) {
+    content.insert(content.end(), chunk.data(), chunk.data() + got);
+  }
+  return content;
+}
+
+// FALB files start with the 4-byte magic "FALB" (falb.h); text models with "tree".
+bool IsFalbFile(const char* filename) {
+  auto reader = VirtualFileReader::Make(filename);
+  char magic[4] = {0, 0, 0, 0};
+  return reader->Init() && reader->Read(magic, sizeof(magic)) == sizeof(magic) &&
+         std::memcmp(magic, "FALB", sizeof(magic)) == 0;
+}
+
+}  // namespace
 
 std::string GetBoostingTypeFromModelFile(const char* filename) {
   TextReader<size_t> model_reader(filename, true);
@@ -83,6 +113,24 @@ Boosting* Boosting::CreateBoosting(const std::string& type, const char* filename
     }
   } else {
     std::unique_ptr<Boosting> ret;
+    // A FALB model file (save_model(..., format="falb")) loads like a text
+    // one, so every path that takes a model FILE -- init_model, the CLI's
+    // input_model, FLC_BoosterCreateFromModelfile -- accepts both formats.
+    if (IsFalbFile(filename)) {
+      #ifdef USE_CUDA
+      ret.reset(CreateBoosting(type, nullptr, device_type, num_gpu));
+      #else
+      ret.reset(CreateBoosting(type, nullptr, "", 1));
+      #endif  // USE_CUDA
+      if (ret == nullptr) {
+        Log::Fatal("Unknown boosting type %s", type.c_str());
+      }
+      const std::vector<char> content = ReadWholeFile(filename);
+      if (!ret->LoadModelFromBinary(content.data(), content.size())) {
+        Log::Fatal("Could not load the FALB model in %s", filename);
+      }
+      return ret.release();
+    }
     if (GetBoostingTypeFromModelFile(filename) == std::string("tree")) {
       #ifdef USE_CUDA
       ret.reset(CreateBoosting(type, nullptr, device_type, num_gpu));
