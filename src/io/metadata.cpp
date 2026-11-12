@@ -4,8 +4,10 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <Falcata/dataset.h>
+#include <Falcata/utils/bounded_reader.h>
 #include <Falcata/utils/common.h>
 
+#include <limits>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -869,40 +871,45 @@ void Metadata::CreateCUDAMetadata(const int gpu_device_id) {
 }
 #endif  // USE_CUDA
 
-void Metadata::LoadFromMemory(const void* memory) {
-  const char* mem_ptr = reinterpret_cast<const char*>(memory);
+void Metadata::LoadFromMemory(const void* memory, size_t memory_size) {
+  BoundedReader reader(reinterpret_cast<const char*>(memory), memory_size, "Binary dataset metadata");
 
-  num_data_ = *(reinterpret_cast<const data_size_t*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(num_data_));
-  num_weights_ = *(reinterpret_cast<const data_size_t*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(num_weights_));
-  num_queries_ = *(reinterpret_cast<const data_size_t*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(num_queries_));
-
-  if (!label_.empty()) {
-    label_.clear();
+  num_data_ = reader.ReadAligned<data_size_t>();
+  num_weights_ = reader.ReadAligned<data_size_t>();
+  num_queries_ = reader.ReadAligned<data_size_t>();
+  if (num_data_ < 0 || num_weights_ < 0 || num_queries_ < 0 ||
+      (num_weights_ > 0 && num_weights_ != num_data_) || num_queries_ == std::numeric_limits<data_size_t>::max()) {
+    Log::Fatal("Binary dataset metadata is corrupt: num_data=%d, num_weights=%d, num_queries=%d",
+               num_data_, num_weights_, num_queries_);
   }
+
+  // each array's bytes are taken before it is allocated: the buffer, not
+  // the claimed count, bounds the allocation
+  const char* labels = reader.TakeArray(static_cast<size_t>(num_data_), sizeof(label_t), true);
   label_ = std::vector<label_t>(num_data_);
-  std::memcpy(label_.data(), mem_ptr, sizeof(label_t) * num_data_);
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(label_t) * num_data_);
+  if (num_data_ > 0) {  // an empty vector's data() may be null
+    std::memcpy(label_.data(), labels, sizeof(label_t) * num_data_);
+  }
 
   if (num_weights_ > 0) {
-    if (!weights_.empty()) {
-      weights_.clear();
-    }
+    const char* weights = reader.TakeArray(static_cast<size_t>(num_weights_), sizeof(label_t), true);
     weights_ = std::vector<label_t>(num_weights_);
-    std::memcpy(weights_.data(), mem_ptr, sizeof(label_t) * num_weights_);
-    mem_ptr += VirtualFileWriter::AlignedSize(sizeof(label_t) * num_weights_);
+    std::memcpy(weights_.data(), weights, sizeof(label_t) * num_weights_);
     weight_load_from_file_ = true;
   }
   if (num_queries_ > 0) {
-    if (!query_boundaries_.empty()) {
-      query_boundaries_.clear();
-    }
+    const char* bounds = reader.TakeArray(static_cast<size_t>(num_queries_) + 1, sizeof(data_size_t), true);
     query_boundaries_ = std::vector<data_size_t>(num_queries_ + 1);
-    std::memcpy(query_boundaries_.data(), mem_ptr, sizeof(data_size_t) * (num_queries_ + 1));
-    mem_ptr += VirtualFileWriter::AlignedSize(sizeof(data_size_t) *
-                                              (num_queries_ + 1));
+    std::memcpy(query_boundaries_.data(), bounds, sizeof(data_size_t) * (num_queries_ + 1));
+    // the queries partition [0, num_data): every consumer indexes rows by them
+    if (query_boundaries_.front() != 0 || query_boundaries_.back() != num_data_) {
+      Log::Fatal("Binary dataset metadata is corrupt: query boundaries must run from 0 to num_data");
+    }
+    for (data_size_t i = 0; i < num_queries_; ++i) {
+      if (query_boundaries_[i + 1] < query_boundaries_[i]) {
+        Log::Fatal("Binary dataset metadata is corrupt: query boundaries must be non-decreasing");
+      }
+    }
     query_load_from_file_ = true;
   }
   CalculateQueryWeights();
