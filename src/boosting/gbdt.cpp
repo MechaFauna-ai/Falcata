@@ -404,7 +404,10 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
   if (linear_tree_) {
     // Refit visits every model leaf, even leaves reached by no refit rows.
     // The current training limit and largest predicted leaf can both be smaller.
-    int max_leaves = 0;
+    // keep room for the training limit too: InitLinear resizes the per-leaf linear workspaces, and a Booster that
+    // keeps training after an in-place refit grows trees up to num_leaves (heap-buffer-overflow in CalculateLinear
+    // when the refit models were smaller)
+    int max_leaves = config_->num_leaves;
     for (const auto& model : models_) {
       max_leaves = std::max(max_leaves, model->num_leaves());
     }
