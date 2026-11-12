@@ -504,10 +504,13 @@ class Booster {
 
   void AddValidData(const Dataset* valid_data) {
     UNIQUE_LOCK(mutex_)
+    // register the validation set only after GBDT accepted it: a rejected one (other bin mappers, ...) used to stay
+    // in valid_data_, so a later objective reset built metrics on it after the caller had freed the Dataset
+    // (heap-use-after-free) and GBDT and the Booster disagreed on the number of validation sets
+    auto metrics = CreateMetrics(valid_data);
+    boosting_->AddValidDataset(valid_data, Common::ConstPtrInVectorWrapper<Metric>(metrics));
     valid_data_.push_back(valid_data);
-    valid_metrics_.push_back(CreateMetrics(valid_data));
-    boosting_->AddValidDataset(valid_data,
-                               Common::ConstPtrInVectorWrapper<Metric>(valid_metrics_.back()));
+    valid_metrics_.push_back(std::move(metrics));
   }
 
   bool TrainOneIter() {
