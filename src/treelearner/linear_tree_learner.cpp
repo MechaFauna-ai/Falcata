@@ -208,6 +208,13 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
   tree->SetIsLinear(true);
   int num_leaves = tree->num_leaves();
   int num_threads = OMP_NUM_THREADS();
+  // the per-thread normal-equation buffers were sized for the thread count at InitLinear; a prediction on the same
+  // process (whose own num_threads sets the process-wide count) can raise it before the next iteration, and the
+  // loops below index the buffers by thread id (heap-buffer-overflow)
+  while (static_cast<int>(XTHX_by_thread_.size()) < num_threads) {
+    XTHX_by_thread_.push_back(XTHX_);
+    XTg_by_thread_.push_back(XTg_);
+  }
   if (is_first_tree) {
     for (int leaf_num = 0; leaf_num < num_leaves; ++leaf_num) {
       tree->SetLeafConst(leaf_num, tree->LeafOutput(leaf_num));
