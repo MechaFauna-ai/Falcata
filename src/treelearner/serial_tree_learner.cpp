@@ -38,6 +38,7 @@ void SerialTreeLearner::Init(const Dataset* train_data, bool is_constant_hessian
     Log::Fatal("Quantized training requires the CUDA tree learner in Falcata.");
   }
   train_data_ = train_data;
+  full_train_data_ = train_data;
   num_data_ = train_data_->num_data();
   num_features_ = train_data_->num_features();
   int max_cache_size = 0;
