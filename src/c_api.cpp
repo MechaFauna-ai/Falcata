@@ -401,15 +401,10 @@ class Booster {
     }
   }
 
-  /*! \brief Whether a reset map sets a parameter the objective or the metrics copy at construction */
-  static bool ResetsObjectiveOrMetricParameter(const std::unordered_map<std::string, std::string>& param) {
-    // the Objective and Metric parameters of docs/Parameters.rst; num_class and metric cannot change in a reset
-    static const char* const kNames[] = {
-        "objective_seed", "is_unbalance", "scale_pos_weight", "sigmoid", "boost_from_average", "reg_sqrt", "alpha",
-        "fair_c", "poisson_max_delta_step", "tweedie_variance_power", "lambdarank_truncation_level",
-        "lambdarank_norm", "label_gain", "lambdarank_position_bias_regularization", "eval_at", "multi_error_top_k",
-        "auc_mu_weights"};
-    for (const char* name : kNames) {
+  /*! \brief Whether a reset map sets one of the given parameters */
+  template <size_t N>
+  static bool ResetsAnyOf(const std::unordered_map<std::string, std::string>& param, const char* const (&names)[N]) {
+    for (const char* name : names) {
       if (param.count(name) > 0) {
         return true;
       }
@@ -485,9 +480,21 @@ class Booster {
     // The objective and the metrics are built from one config: a CUDA metric converts the score only through a
     // CUDA objective, so a new objective needs new metrics (train and every valid set) when it moves between the
     // device and the host (binary <-> cross_entropy, update(fobj=...) resetting the objective to "none").
-    // Both copy their parameters (alpha, sigmoid, scale_pos_weight, eval_at, ...) when they are built, so a reset of
-    // one of those rebuilds them too; otherwise the reset was silently ignored.
-    if (param.count("objective") || (train_data_ != nullptr && ResetsObjectiveOrMetricParameter(param))) {
+    // Both copy their parameters when they are built, so a reset of one of those rebuilds them too (otherwise the
+    // reset was silently ignored): an objective parameter rebuilds the objective and the metrics, a metric parameter
+    // only the metrics, so the objective keeps its state (ranking position biases, rank_xendcg generators). These
+    // are the Objective and Metric parameters of docs/Parameters.rst; num_class and metric cannot change in a reset.
+    static const char* const kObjectiveParameters[] = {
+        "objective_seed", "is_unbalance", "scale_pos_weight", "sigmoid", "boost_from_average", "reg_sqrt", "alpha",
+        "fair_c", "poisson_max_delta_step", "tweedie_variance_power", "lambdarank_truncation_level",
+        "lambdarank_norm", "label_gain", "lambdarank_position_bias_regularization"};
+    static const char* const kMetricParameters[] = {"eval_at", "multi_error_top_k", "auc_mu_weights"};
+    // a model-loaded booster has no objective or metrics to rebuild: its parameter resets only update config_
+    const bool rebuild_objective =
+        param.count("objective") > 0 || (train_data_ != nullptr && ResetsAnyOf(param, kObjectiveParameters));
+    const bool rebuild_metrics =
+        rebuild_objective || (train_data_ != nullptr && ResetsAnyOf(param, kMetricParameters));
+    if (rebuild_metrics) {
       // recreating the objective requires training data to initialize
       // against; a model-loaded booster has none
       if (train_data_ == nullptr) {
@@ -495,12 +502,14 @@ class Booster {
       }
       // build and initialize everything first (objective and metric Init can Fatal), so a Fatal here leaves the
       // booster and GBDT on the previous objective and metrics
-      std::unique_ptr<ObjectiveFunction> objective(
-          ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
-      if (objective == nullptr) {
-        Log::Info("Using self-defined objective function");
-      } else {
-        objective->Init(train_data_->metadata(), train_data_->num_data());
+      std::unique_ptr<ObjectiveFunction> objective;
+      if (rebuild_objective) {
+        objective.reset(ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
+        if (objective == nullptr) {
+          Log::Info("Using self-defined objective function");
+        } else {
+          objective->Init(train_data_->metadata(), train_data_->num_data());
+        }
       }
       auto train_metric = CreateMetrics(train_data_);
       std::vector<std::vector<std::unique_ptr<Metric>>> valid_metrics;
@@ -508,11 +517,14 @@ class Booster {
         valid_metrics.push_back(CreateMetrics(valid_data));
       }
       // then commit: the new objects replace the old ones only after GBDT holds the new pointers
-      boosting_->ResetTrainingData(train_data_, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
+      boosting_->ResetTrainingData(train_data_, rebuild_objective ? objective.get() : objective_fun_.get(),
+                                   Common::ConstPtrInVectorWrapper<Metric>(train_metric));
       for (size_t i = 0; i < valid_metrics.size(); ++i) {
         boosting_->ResetValidMetrics(static_cast<int>(i), Common::ConstPtrInVectorWrapper<Metric>(valid_metrics[i]));
       }
-      objective_fun_ = std::move(objective);
+      if (rebuild_objective) {
+        objective_fun_ = std::move(objective);
+      }
       train_metric_ = std::move(train_metric);
       valid_metrics_ = std::move(valid_metrics);
     }

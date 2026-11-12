@@ -91,3 +91,23 @@ def test_reset_objective_parameter_on_loaded_model():
     # a model-loaded booster has no objective to rebuild; the reset only updates its config, as before
     loaded.reset_parameter({"alpha": 0.5})
     np.testing.assert_array_equal(loaded.predict(x), booster.predict(x))
+
+
+@pytest.mark.parametrize("objective", ["lambdarank", "rank_xendcg"])
+def test_reset_metric_parameter_keeps_objective_state(objective):
+    rng = np.random.default_rng(5)
+    x = rng.normal(size=(600, 4))
+    y = np.clip(np.round(x[:, 0] + 1), 0, 3)
+    position = np.tile(np.arange(20), 30)
+    params = {**BASE, "objective": objective, "metric": "ndcg", "eval_at": [1, 3], "objective_seed": 4}
+
+    def boosted(reset):
+        booster = flc.Booster(params, flc.Dataset(x, y, group=[20] * 30, position=position))
+        for i in range(6):
+            if reset and i == 3:
+                # evaluation only: the objective (position biases, rank_xendcg generators) must carry on as is
+                booster.reset_parameter({"eval_at": [2]})
+            booster.update()
+        return booster.predict(x, raw_score=True)
+
+    np.testing.assert_array_equal(boosted(reset=True), boosted(reset=False))

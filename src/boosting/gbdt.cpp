@@ -310,6 +310,13 @@ void GBDT::ResetValidMetrics(int valid_idx, const std::vector<const Metric*>& va
   // the early-stopping state (best_iter_, best_score_, best_msg_) is sized by the metric count
   CHECK_EQ(valid_metrics.size(), valid_metrics_[valid_idx].size());
   valid_metrics_[valid_idx] = valid_metrics;
+  // the rebuilt metrics may measure something else (a new objective, eval_at, ...): early stopping restarts from
+  // the next evaluation instead of comparing against best scores of the old definition
+  if (static_cast<size_t>(valid_idx) < best_score_.size()) {
+    std::fill(best_score_[valid_idx].begin(), best_score_[valid_idx].end(), kMinScore);
+    std::fill(best_iter_[valid_idx].begin(), best_iter_[valid_idx].end(), 0);
+    std::fill(best_msg_[valid_idx].begin(), best_msg_[valid_idx].end(), std::string());
+  }
 }
 
 void GBDT::AddValidDataset(const Dataset* valid_data,
