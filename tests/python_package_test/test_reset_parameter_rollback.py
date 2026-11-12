@@ -16,7 +16,14 @@ def test_failed_reset_keeps_training_on_the_previous_config(goss):
     rng = np.random.default_rng(0)
     X = rng.standard_normal((500, 5))
     y = X[:, 0] + 0.1 * rng.standard_normal(500)
-    params = {"objective": "regression", "verbose": -1, "deterministic": True, "num_threads": 1, **goss}
+    params = {
+        "objective": "regression",
+        "device_type": "cpu",
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        **goss,
+    }
     bst = flc.train(params, flc.Dataset(X, y), 2, keep_training_booster=True)
     with pytest.raises(flc.basic.FalcataError, match="Cannot use bagging in GOSS"):
         bst.reset_parameter({"bagging_fraction": 0.5, "bagging_freq": 1, "lambda_l2": 3.0})
@@ -35,7 +42,7 @@ def test_goss_resets_after_sampling_started(first_reset_fails):
     rng = np.random.default_rng(0)
     X = rng.standard_normal((500, 5))
     y = X[:, 0] + 0.1 * rng.standard_normal(500)
-    params = {"objective": "regression", "data_sample_strategy": "goss", "verbose": -1}
+    params = {"objective": "regression", "data_sample_strategy": "goss", "device_type": "cpu", "verbose": -1}
     bst = flc.train(params, flc.Dataset(X, y), 15, keep_training_booster=True)
     if first_reset_fails:
         with pytest.raises(flc.basic.FalcataError, match="Cannot use bagging in GOSS"):
