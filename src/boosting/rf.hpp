@@ -40,20 +40,17 @@ class RF : public GBDT {
 
   void Init(const Config* config, const Dataset* train_data, const ObjectiveFunction* objective_function,
     const std::vector<const Metric*>& training_metrics) override {
-    if (config->data_sample_strategy == std::string("bagging")) {
-      CHECK((config->bagging_freq > 0 && config->bagging_fraction < 1.0f && config->bagging_fraction > 0.0f) ||
-            (config->feature_fraction < 1.0f && config->feature_fraction > 0.0f));
-    } else {
-      CHECK_EQ(config->data_sample_strategy, std::string("goss"));
-    }
+    CheckSamplingConfig(*config);
     GBDT::Init(config, train_data, objective_function, training_metrics);
 
     if (num_init_iteration_ > 0) {
       for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
         MultiplyScore(cur_tree_id, 1.0f / num_init_iteration_);
       }
-    } else {
-      CHECK_EQ(train_data->metadata().init_score(), nullptr);
+    } else if (train_data->metadata().init_score() != nullptr) {
+      Log::Fatal("boosting=rf does not support init_score: a random forest averages its trees, so a "
+                 "per-row starting score cannot be carried into the average. Train without init_score, "
+                 "or use boosting=gbdt");
     }
     CHECK_EQ(num_tree_per_iteration_, num_class_);
     // not shrinkage rate for the RF
@@ -66,13 +63,23 @@ class RF : public GBDT {
     }
   }
 
-  void ResetConfig(const Config* config) override {
-    if (config->data_sample_strategy == std::string("bagging")) {
-      CHECK((config->bagging_freq > 0 && config->bagging_fraction < 1.0f && config->bagging_fraction > 0.0f) ||
-            (config->feature_fraction < 1.0f && config->feature_fraction > 0.0f));
-    } else {
-      CHECK_EQ(config->data_sample_strategy, std::string("goss"));
+  /*! \brief A random forest needs each tree to see a different sample of rows or features */
+  static void CheckSamplingConfig(const Config& config) {
+    if (config.data_sample_strategy == std::string("bagging")) {
+      const bool row_bagging = config.bagging_freq > 0 && config.bagging_fraction < 1.0f && config.bagging_fraction > 0.0f;
+      const bool feature_bagging = config.feature_fraction < 1.0f && config.feature_fraction > 0.0f;
+      if (!row_bagging && !feature_bagging) {
+        Log::Fatal("boosting=rf needs each tree to see a sample: set bagging_freq > 0 with 0 < bagging_fraction < 1, "
+                   "or 0 < feature_fraction < 1 (got bagging_freq=%d, bagging_fraction=%g, feature_fraction=%g)",
+                   config.bagging_freq, config.bagging_fraction, config.feature_fraction);
+      }
+    } else if (config.data_sample_strategy != std::string("goss")) {
+      Log::Fatal("boosting=rf does not support data_sample_strategy=%s", config.data_sample_strategy.c_str());
     }
+  }
+
+  void ResetConfig(const Config* config) override {
+    CheckSamplingConfig(*config);
     // the rounds grown ahead were grown under the old config: dropped (and the slots take the new one below)
     ResetForest(true);
     GBDT::ResetConfig(config);
