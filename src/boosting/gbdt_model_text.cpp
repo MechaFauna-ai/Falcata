@@ -512,6 +512,26 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
   if (std::memchr(buffer, '\0', len) != nullptr) {
     Log::Fatal("Model file is corrupt: the model text contains a NUL byte");
   }
+  // tree_sizes counts the bytes of each tree block as written, with '\n'
+  // line ends. A model file that went through a CRLF conversion (Windows
+  // editors, git autocrlf) has an extra '\r' per line, so every offset is
+  // off and the load failed with "expect a tree here". Parse the text with
+  // its "\r\n" pairs folded back to "\n".
+  std::string lf_text;
+  {
+    static const char kCrlf[] = {'\r', '\n'};
+    const char* crlf = std::search(buffer, buffer + len, kCrlf, kCrlf + 2);
+    if (crlf != buffer + len) {
+      lf_text.reserve(len);
+      for (size_t i = 0; i < len; ++i) {
+        if (!(buffer[i] == '\r' && i + 1 < len && buffer[i + 1] == '\n')) {
+          lf_text.push_back(buffer[i]);
+        }
+      }
+      buffer = lf_text.data();
+      len = lf_text.size();
+    }
+  }
   auto c_str = buffer;
   auto p = c_str;
   auto end = p + len;
