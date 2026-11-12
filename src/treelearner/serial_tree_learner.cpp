@@ -324,6 +324,11 @@ void SerialTreeLearner::BeforeTrain() {
   col_sampler_.ResetByTree();
   train_data_->InitTrain(col_sampler_.is_feature_used_bytree(), share_state_.get());
   // initialize data partition
+  // an in-place refit (FitByExistingTree with leaf predictions) re-sized the partition to the refit tree's leaves;
+  // training trees grow up to num_leaves again
+  if (data_partition_->num_leaves() != config_->num_leaves) {
+    data_partition_->ResetLeaves(config_->num_leaves);
+  }
   data_partition_->Init();
 
   constraints_->Reset();
