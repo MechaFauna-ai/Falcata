@@ -42,3 +42,17 @@ def test_rf_linear_tree_multiclass_tiny_data_trains():
     assert pred.shape == (5, 3)
     assert np.isfinite(pred).all()
     np.testing.assert_allclose(pred.sum(axis=1), 1.0)
+
+
+def test_refit_linear_model_with_constant_trees():
+    # every tree is constant (min_data_in_leaf larger than the data), and a
+    # linear model's constant trees are plain trees; refit read their
+    # (missing) per-leaf feature lists and segfaulted
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((200, 3))
+    y = x[:, 0]
+    params = {"verbose": -1, "num_threads": 1, "objective": "huber", "min_data_in_leaf": 100000, "linear_tree": True}
+    booster = flc.train(params, flc.Dataset(x, label=y), num_boost_round=2)
+    refitted = booster.refit(x, y, decay_rate=0.5)
+    pred = refitted.predict(x)
+    assert np.isfinite(pred).all()
