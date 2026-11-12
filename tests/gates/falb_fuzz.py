@@ -129,7 +129,9 @@ def mutate(rng, blob):
         entry = 32 + 40 * int(rng.integers(0, count))
         off, fmt = _ENTRY_FIELDS[int(rng.integers(0, len(_ENTRY_FIELDS)))]
         width = 8 if fmt == "<Q" else 4
-        value = int(rng.choice([*_BOUNDARY, len(b), len(b) - 1, int(rng.integers(0, 2**31))])) % (2 ** (8 * width))
+        # index the list: rng.choice would coerce 2**63-1 / 2**64-1 to float64
+        values = [*_BOUNDARY, len(b), len(b) - 1, int(rng.integers(0, 2**31))]
+        value = values[int(rng.integers(0, len(values)))] % (2 ** (8 * width))
         struct.pack_into(fmt, b, entry + off, value)
         return bytes(b)
     if kind == 5 and count:  # a word inside an uncompressed section payload
@@ -137,7 +139,8 @@ def mutate(rng, blob):
         codec, _shuffle, start, stored = struct.unpack_from("<IIQQ", b, entry + 8)
         if codec == 0 and stored >= 4 and start + stored <= len(b):
             pos = start + 4 * int(rng.integers(0, stored // 4))
-            value = int(rng.choice([0, 1, 2**31 - 1, 2**31, 2**32 - 1, 255, 65535, int(rng.integers(0, 2**32))]))
+            values = [0, 1, 2**31 - 1, 2**31, 2**32 - 1, 255, 65535, int(rng.integers(0, 2**32))]
+            value = values[int(rng.integers(0, len(values)))]
             struct.pack_into("<I", b, pos, value)
             return bytes(b)
     # kind == 3 (and the fallback): splice -- copy a random chunk over another
