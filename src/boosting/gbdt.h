@@ -79,6 +79,17 @@ class GBDT : public GBDTBase {
       merged_models.push_back(tree.get());
     }
     CheckLeafValueDimensions(merged_models);
+    // the merged trees are scored as this model's iterations and over this model's feature vector: a model
+    // with another number of trees per iteration would be summed into the wrong outputs, and one with more
+    // features would read past the prediction buffer (heap-buffer-overflow)
+    if (other_gbdt->num_tree_per_iteration_ != num_tree_per_iteration_) {
+      Log::Fatal("Cannot merge a model with %d trees per iteration into one with %d",
+                 other_gbdt->num_tree_per_iteration_, num_tree_per_iteration_);
+    }
+    if (other_gbdt->max_feature_idx_ > max_feature_idx_) {
+      Log::Fatal("Cannot merge a model with %d features into one with %d",
+                 other_gbdt->max_feature_idx_ + 1, max_feature_idx_ + 1);
+    }
 
     // tmp move to other vector
     auto original_models = std::move(models_);
