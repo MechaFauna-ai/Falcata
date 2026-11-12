@@ -47,6 +47,9 @@ struct LocalFile : VirtualFileReader, VirtualFileWriter {
   }
 
   size_t Write(const void* buffer, size_t bytes) {
+    if (bytes == 0) {
+      return 0;  // an empty array may hand over a null data(), which fwrite must not get
+    }
     return fwrite(buffer, bytes, 1, file_) == 1 ? bytes : 0;
   }
 

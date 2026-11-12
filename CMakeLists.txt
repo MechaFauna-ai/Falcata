@@ -1086,6 +1086,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_predictor_threads.cpp
       tests/cpp_tests/test_quantized_index.cpp
       tests/cpp_tests/test_random.cpp
+      tests/cpp_tests/test_save_binary_no_features.cpp
       tests/cpp_tests/test_serialize.cpp
       tests/cpp_tests/test_single_row.cpp
       tests/cpp_tests/test_split_info.cpp
