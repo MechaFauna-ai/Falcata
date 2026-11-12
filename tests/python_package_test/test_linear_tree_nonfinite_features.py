@@ -19,7 +19,14 @@ def test_linear_tree_with_non_finite_feature_values(bad, objective):
     if objective == "binary":
         y = (y > 0).astype(float)
     X[rng.random(2000) < 0.05, 1] = bad
-    params = {"objective": objective, "linear_tree": True, "deterministic": True, "num_threads": 2, "verbose": -1}
+    params = {
+        "objective": objective,
+        "linear_tree": True,
+        "deterministic": True,
+        "num_threads": 2,
+        "device_type": "cpu",
+        "verbose": -1,
+    }
     bst = flc.train(params, flc.Dataset(X, y), num_boost_round=10)
     raw = bst.predict(X, raw_score=True)
     assert np.all(np.isfinite(raw))
@@ -33,7 +40,9 @@ def test_linear_tree_prediction_with_inf_uses_the_leaf_constant():
     rng = np.random.default_rng(1)
     X = rng.standard_normal((1000, 3))
     y = 3 * X[:, 0] + 0.1 * rng.standard_normal(1000)
-    bst = flc.train({"objective": "regression", "linear_tree": True, "verbose": -1}, flc.Dataset(X, y), 3)
+    bst = flc.train(
+        {"objective": "regression", "linear_tree": True, "device_type": "cpu", "verbose": -1}, flc.Dataset(X, y), 3
+    )
     row = X[:1].copy()
     row[0, 0] = np.inf
     pred = bst.predict(row)
@@ -48,7 +57,7 @@ def test_linear_tree_prediction_matches_training_scores(bad):
     X = rng.standard_normal((1500, 3))
     y = 2 * X[:, 0] + X[:, 1] + 0.1 * rng.standard_normal(1500)
     X[rng.random(1500) < 0.05, 1] = bad
-    params = {"objective": "regression", "linear_tree": True, "metric": "l2", "verbose": -1}
+    params = {"objective": "regression", "linear_tree": True, "metric": "l2", "device_type": "cpu", "verbose": -1}
     ds = flc.Dataset(X, y)
     evals = {}
     bst = flc.train(
