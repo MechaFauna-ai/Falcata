@@ -85,7 +85,7 @@ class GOSSStrategy : public SampleStrategy {
     }
   }
 
-  void ResetSampleConfig(const Config* config, bool /*is_change_dataset*/) override {
+  void ResetSampleConfig(const Config* config, bool is_change_dataset) override {
     // Cannot use bagging in GOSS
     config_ = config;
     need_resize_gradients_ = false;
@@ -112,8 +112,14 @@ class GOSSStrategy : public SampleStrategy {
     if (config_->top_rate + config_->other_rate <= 0.5) {
       auto bag_data_cnt = static_cast<data_size_t>((config_->top_rate + config_->other_rate) * num_data_);
       bag_data_cnt = std::max(1, bag_data_cnt);
-      tmp_subset_.reset(new Dataset(bag_data_cnt));
-      tmp_subset_->CopyFeatureMapperFrom(train_data_);
+      // Keep an existing subset across a parameter reset, as bagging does: once GOSS has
+      // sampled, the tree learner holds it as its training data, and replacing it here
+      // left the learner on a freed Dataset until the next Bagging call (a second reset in
+      // between read freed memory). Each Bagging call resizes it to the drawn count.
+      if (tmp_subset_ == nullptr || is_change_dataset) {
+        tmp_subset_.reset(new Dataset(bag_data_cnt));
+        tmp_subset_->CopyFeatureMapperFrom(train_data_);
+      }
       is_use_subset_ = true;
     }
     // flag to not bagging first
