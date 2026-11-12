@@ -118,7 +118,7 @@ class LibSVMParser: public Parser {
       str = Common::SkipSpaceAndTab(str);
       if (*str == ':') {
         ++str;
-        str = Common::Atof(str, &val);
+        str = atof_(str, &val);  // honour precise_float_parser like the label and the CSV/TSV parsers
         out_features->emplace_back(idx, val);
       } else {
         Log::Fatal("Input format error when parsing as LibSVM");
