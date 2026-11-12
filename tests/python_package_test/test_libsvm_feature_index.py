@@ -2,7 +2,9 @@
 
 A ``-1:value`` token used to index the per-feature sample arrays at -1
 (heap-buffer-overflow under ASan), and an index past the int range overflowed
-the integer parser (UBSan signed overflow) and wrapped around.
+the integer parser (UBSan signed overflow) and wrapped around. An index with
+trailing garbage was cut at the garbage by the column counter, so ``1000000000~00:1``
+made the loader allocate tens of GB.
 """
 
 import pytest
@@ -17,6 +19,10 @@ import falcata as flc
         ("-7:2", "LibSVM feature index -7 is negative"),
         ("2147483647:1", "is too large"),
         ("99999999999:1", "is too large"),
+        # trailing garbage: the column counter used to read this as index 1e9 and size the
+        # per-feature arrays for a billion features (tens of GB) before the line parser ran
+        ("1000000000~00:1", "LibSVM feature index 1000000000~00 is not an integer"),
+        ("3x:1", "LibSVM feature index 3x is not an integer"),
     ],
 )
 def test_libsvm_bad_feature_index_is_rejected(tmp_path, token, message):

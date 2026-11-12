@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -50,6 +51,12 @@ inline const char* AtoiLibSVMIndex(const char* p, int* out) {
   *out = static_cast<int>(value);
   while (*p == ' ') {
     ++p;
+  }
+  // the index must end at its ':' (or at the end of the substring the column counter passes): with trailing
+  // garbage ("1000000000~00:1") the column counter took the digits before the garbage as the index and sized
+  // the per-feature arrays for a billion features (tens of GB) before the line parser rejected the token
+  if (*p != ':' && *p != '\0' && *p != '\t') {
+    Log::Fatal("LibSVM feature index %s is not an integer", std::string(start, std::strcspn(start, ": \t")).c_str());
   }
   return p;
 }
