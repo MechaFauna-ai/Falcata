@@ -31,6 +31,27 @@
 
 namespace Falcata {
 
+namespace {
+
+// Metadata accepts any multiple of #data labels (column-major, for multi-target objectives), but every objective
+// other than multi_regression reads only the first #data of them: a 2-D y passed by mistake silently trained on its
+// first column. Custom objectives (nullptr) get the labels through their own code and are left alone.
+void CheckSingleTargetLabels(const ObjectiveFunction* objective_function, const Dataset* data, const char* what) {
+  if (objective_function == nullptr || data == nullptr ||
+      std::string(objective_function->GetName()) == std::string("multi_regression")) {
+    return;
+  }
+  const size_t num_labels = data->metadata().label_size();
+  const size_t num_data = static_cast<size_t>(data->num_data());
+  if (num_labels != num_data) {
+    Log::Fatal("The %s data has %zu labels for %zu rows; objective=%s takes one label per row "
+               "(only objective=multi_regression takes num_data * num_class labels)",
+               what, num_labels, num_data, objective_function->GetName());
+  }
+}
+
+}  // namespace
+
 Common::Timer global_timer;
 
 namespace {
@@ -165,6 +186,7 @@ GBDT::~GBDT() {
 void GBDT::Init(const Config* config, const Dataset* train_data, const ObjectiveFunction* objective_function,
                 const std::vector<const Metric*>& training_metrics) {
   CHECK_NOTNULL(train_data);
+  CheckSingleTargetLabels(objective_function, train_data, "training");
   train_data_ = train_data;
   if (!config->monotone_constraints.empty()) {
     CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->monotone_constraints.size());
@@ -317,6 +339,7 @@ void GBDT::AddValidDataset(const Dataset* valid_data,
   if (!train_data_->CheckAlign(*valid_data)) {
     Log::Fatal("Cannot add validation data, since it has different bin mappers with training data");
   }
+  CheckSingleTargetLabels(objective_function_, valid_data, "validation");
   // for a validation dataset, we need its score and metric
   auto new_score_updater =
     #ifdef USE_CUDA
@@ -980,6 +1003,7 @@ void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction*
   if (train_data != train_data_ && !train_data_->CheckAlign(*train_data)) {
     Log::Fatal("Cannot reset training data, since new training data has different bin mappers");
   }
+  CheckSingleTargetLabels(objective_function, train_data, "training");
 
   // check the incoming objective before taking it: a Fatal here must leave GBDT on its previous objective (the
   // caller still owns that one, and frees the rejected one while unwinding)
