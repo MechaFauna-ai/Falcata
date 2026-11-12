@@ -13,7 +13,7 @@ import falcata as flc
 def test_reset_parameter_without_usable_features(col_row):
     X = np.full((40, 2), 3.25)
     y = np.arange(40.0)
-    params = {"objective": "regression", "verbose": -1, **col_row}
+    params = {"objective": "regression", "device_type": "cpu", "verbose": -1, **col_row}
     bst = flc.train(
         params,
         flc.Dataset(X, y),
@@ -26,7 +26,12 @@ def test_reset_parameter_without_usable_features(col_row):
 def test_booster_reset_parameter_without_usable_features():
     X = np.full((40, 2), 3.25)
     y = np.arange(40.0)
-    bst = flc.train({"objective": "regression", "verbose": -1}, flc.Dataset(X, y), 1, keep_training_booster=True)
+    bst = flc.train(
+        {"objective": "regression", "device_type": "cpu", "verbose": -1},
+        flc.Dataset(X, y),
+        1,
+        keep_training_booster=True,
+    )
     bst.reset_parameter({"lambda_l2": 1.0, "learning_rate": 0.05})
     bst.update()
     assert np.all(np.isfinite(bst.predict(X)))
