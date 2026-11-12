@@ -1110,6 +1110,17 @@ static int32_t CheckedRowCount(int64_t nrow, const char* what) {
   return static_cast<int32_t>(nrow);
 }
 
+// The streaming push functions write rows [start_row, start_row + nrow) of a Dataset allocated for num_data rows:
+// a range outside it wrote past the bins (heap-buffer-overflow).
+static void CheckPushRowRange(const Dataset* dataset, int64_t start_row, int64_t nrow) {
+  const int64_t num_data = dataset->num_data();
+  // compare against the remaining rows, so a huge start_row (CSR takes an int64_t) cannot overflow the check
+  if (start_row < 0 || nrow < 0 || start_row > num_data || nrow > num_data - start_row) {
+    Log::Fatal("Cannot push %s rows at start_row %s: the Dataset has %d rows", std::to_string(nrow).c_str(),
+               std::to_string(start_row).c_str(), dataset->num_data());
+  }
+}
+
 // One iterator per column of a CSC matrix, built by a prediction thread on its first row; out of line so the
 // per-row check in the prediction loop stays a single compare.
 #if defined(__GNUC__)
@@ -1429,6 +1440,7 @@ int FLC_DatasetPushRows(DatasetHandle dataset,
                          int32_t start_row) {
   API_BEGIN();
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
+  CheckPushRowRange(p_dataset, start_row, nrow);
   auto get_row_fun = RowFunctionFromDenseMatrix(data, nrow, ncol, data_type, 1);
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
@@ -1468,6 +1480,7 @@ int FLC_DatasetPushRowsWithMetadata(DatasetHandle dataset,
     Log::Fatal("data cannot be null.");
   }
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
+  CheckPushRowRange(p_dataset, start_row, nrow);
   auto get_row_fun = RowFunctionFromDenseMatrix(data, nrow, ncol, data_type, 1);
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
@@ -1509,6 +1522,7 @@ int FLC_DatasetPushRowsByCSR(DatasetHandle dataset,
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
   int32_t nrow = CheckedRowCount(nindptr - 1, "CSR rows to push");
+  CheckPushRowRange(p_dataset, start_row, nrow);
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
@@ -1552,6 +1566,7 @@ int FLC_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
   int32_t nrow = CheckedRowCount(nindptr - 1, "CSR rows to push");
+  CheckPushRowRange(p_dataset, start_row, nrow);
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
