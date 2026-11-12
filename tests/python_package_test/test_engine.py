@@ -4257,6 +4257,7 @@ def test_trees_to_dataframe_linear_single_leaf(boost_from_average):
         "min_data_in_leaf": 100,
         "boost_from_average": boost_from_average,
         "feature_pre_filter": False,
+        "device_type": "cpu",
         "verbose": -1,
     }
     bst = lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=3)
