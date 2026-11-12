@@ -150,6 +150,7 @@ int GetNumColFromLIBSVMFile(const char* filename, bool header) {
     }
   }
   int max_col_idx = 0;
+  bool has_feature = false;
   int max_line_idx = 0;
   const int stop_round = 1 << 7;
   const int max_line = 1 << 13;
@@ -167,6 +168,7 @@ int GetNumColFromLIBSVMFile(const char* filename, bool header) {
       int cur_idx = 0;
       if (colon_pos != std::string::npos) {
         Common::Atoi(sub_str.c_str(), &cur_idx);
+        has_feature = true;
       }
       if (cur_idx > max_col_idx) {
         max_col_idx = cur_idx;
@@ -179,7 +181,11 @@ int GetNumColFromLIBSVMFile(const char* filename, bool header) {
       break;
     }
   }
-  CHECK_GT(max_col_idx, 0);
+  // a file whose only feature is index 0 is valid (max_col_idx 0, one column); only a file without any
+  // "index:value" token has no feature (this used to be CHECK_GT(max_col_idx, 0), which rejected the former)
+  if (!has_feature) {
+    Log::Fatal("LibSVM data file %s has no feature (no index:value token in its first lines)", filename);
+  }
   return max_col_idx;
 }
 
