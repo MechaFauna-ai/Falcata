@@ -171,3 +171,10 @@ def test_invalid_max_feature_idx_is_refused(tmp_path, model_text, value):
     end = model_text.index("\n", start)
     bad = model_text[:start] + f"max_feature_idx={value}" + model_text[end:]
     assert "REFUSED" in _run(tmp_path, bad)
+
+
+def test_objective_with_more_classes_than_the_model_is_refused(tmp_path, model_text):
+    start = model_text.index("objective=")
+    end = model_text.index("\n", start)
+    bad = model_text[:start] + "objective=multiclass num_class:5" + model_text[end:]
+    assert "REFUSED" in _run(tmp_path, bad)

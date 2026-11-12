@@ -638,6 +638,13 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
     auto str = key_vals["objective"];
     loaded_objective_.reset(ObjectiveFunction::CreateObjectiveFunction(ParseObjectiveAlias(str)));
     objective_function_ = loaded_objective_.get();
+    // the objective converts num_class outputs in place; one that converts
+    // more (e.g. "multiclass num_class:5" in a num_class=3 model) overruns
+    // the caller's prediction buffer
+    if (objective_function_ != nullptr && objective_function_->NumPredictOneRow() != num_class_) {
+      Log::Fatal("Model metadata is inconsistent: the objective '%s' predicts %d outputs but num_class=%d",
+                 str.c_str(), objective_function_->NumPredictOneRow(), num_class_);
+    }
   }
 
   if (!key_vals.count("tree_sizes")) {
