@@ -17,7 +17,7 @@ import falcata as flc
 def test_feature_fraction_without_usable_features(extra):
     X = np.full((50, 3), 2.0)
     y = np.arange(50.0)
-    params = {"objective": "regression", "feature_fraction": 0.5, "verbose": -1, **extra}
+    params = {"objective": "regression", "feature_fraction": 0.5, "device_type": "cpu", "verbose": -1, **extra}
     bst = flc.train(params, flc.Dataset(X, y), num_boost_round=3)
     preds = bst.predict(X)
     assert np.all(np.isfinite(preds))
