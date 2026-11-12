@@ -731,6 +731,8 @@ class GBDT : public GBDTBase {
   std::string loaded_parameter_;
   /*! \brief loaded from FALB without the structural-stats section */
   bool falb_without_stats_ = false;
+  /*! \brief loaded from FALB without the diagnostics section: every split_gain reads 0 */
+  bool falb_without_diagnostics_ = false;
   std::vector<int8_t> monotone_constraints_;
   Json forced_splits_json_;
   bool linear_tree_;

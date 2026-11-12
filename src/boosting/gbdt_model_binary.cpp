@@ -1108,6 +1108,9 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
   // stats section would produce NaN/Inf contributions rather than fail. Record
   // it and refuse loudly at the point of use.
   falb_without_stats_ = !has_stats;
+  // without diagnostics every split_gain is 0, and split importance counts
+  // only splits with a positive gain: it would report zero for every feature
+  falb_without_diagnostics_ = !has_diag;
   return true;
 }
 
