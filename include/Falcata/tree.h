@@ -679,7 +679,9 @@ inline double Tree::Predict(const double* feature_values) const {
       for (size_t i = 0; i < leaf_features_[leaf].size(); ++i) {
         int feat_raw = leaf_features_[leaf][i];
         double feat_val = feature_values[feat_raw];
-        if (std::isnan(feat_val)) {
+        // NaN, +-inf, or beyond the float range: the leaf's constant applies, as in training,
+        // where the linear features are read from a float copy (1e300 is inf there)
+        if (!std::isfinite(static_cast<float>(feat_val))) {
           nan_found = true;
           break;
         } else {
@@ -711,7 +713,7 @@ inline double Tree::PredictByMap(const std::unordered_map<int, double>& feature_
       auto val_it = feature_values.find(feat);
       if (val_it != feature_values.end()) {
         double feat_val = val_it->second;
-        if (std::isnan(feat_val)) {
+        if (!std::isfinite(static_cast<float>(feat_val))) {
           nan_found = true;
           break;
         } else {

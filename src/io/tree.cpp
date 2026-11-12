@@ -150,7 +150,7 @@ int Tree::SplitCategorical(int leaf, int feature, int real_feature, const uint32
     const float** data_ptr = feat_ptr[node].data();                           \
     for (size_t j = 0; j < leaf_features_inner_[node].size(); ++j) {          \
        float feat_val = data_ptr[j][(data_idx)];                              \
-       if (std::isnan(feat_val)) {                                            \
+       if (!std::isfinite(feat_val)) {                                        \
           nan_found = true;                                                   \
           break;                                                              \
        }                                                                      \

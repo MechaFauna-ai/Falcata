@@ -41,14 +41,16 @@ template <typename TREE_LEARNER_TYPE>
 void LinearTreeLearner<TREE_LEARNER_TYPE>::InitLinear(const Dataset* train_data, const int max_leaves) {
   leaf_map_ = std::vector<int>(train_data->num_data(), -1);
   contains_nan_ = std::vector<int8_t>(train_data->num_features(), 0);
-  // identify features containing nans
+  // identify features containing values a linear model cannot use: NaN, and +-inf (an input
+  // beyond the float range, e.g. 1e300, is +-inf in the raw float copy). Such rows take the
+  // leaf's constant, at fit and at score time, as NaN always did.
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int feat = 0; feat < train_data->num_features(); ++feat) {
     auto bin_mapper = this->train_data_->FeatureBinMapper(feat);
     if (bin_mapper->bin_type() == BinType::NumericalBin) {
       const float* feat_ptr = this->train_data_->raw_index(feat);
       for (int i = 0; i < train_data->num_data(); ++i) {
-        if (std::isnan(feat_ptr[i])) {
+        if (!std::isfinite(feat_ptr[i])) {
           contains_nan_[feat] = 1;
           break;
         }
@@ -303,7 +305,7 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
       for (int feat = 0; feat < num_feat; ++feat) {
         if (HAS_NAN) {
           float val = raw_data_ptr[leaf_num][feat][i];
-          if (std::isnan(val)) {
+          if (!std::isfinite(val)) {
             nan_found = true;
             break;
           }
