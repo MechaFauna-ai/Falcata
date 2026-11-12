@@ -28,10 +28,7 @@ class ColSampler {
         fraction_bynode_(config->feature_fraction_bynode),
         seed_(config->feature_fraction_seed),
         random_(config->feature_fraction_seed) {
-    for (auto constraint : config->interaction_constraints_vector) {
-      std::unordered_set<int> constraint_set(constraint.begin(), constraint.end());
-      interaction_constraints_.push_back(constraint_set);
-    }
+    SetInteractionConstraints(config);
   }
 
   static int GetCnt(size_t total_cnt, double fraction) {
@@ -58,6 +55,8 @@ class ColSampler {
   void SetConfig(const Config* config) {
     fraction_bytree_ = config->feature_fraction;
     fraction_bynode_ = config->feature_fraction_bynode;
+    // reset_parameter can change interaction_constraints too; a copy made only at construction kept the old ones
+    SetInteractionConstraints(config);
     is_feature_used_.resize(train_data_->num_features(), 1);
     // seed is changed
     if (seed_ != config->feature_fraction_seed) {
@@ -305,6 +304,13 @@ class ColSampler {
   std::vector<int> valid_feature_indices_;
   /*! \brief interaction constraints index in original (raw data) features */
   std::vector<std::unordered_set<int>> interaction_constraints_;
+
+  void SetInteractionConstraints(const Config* config) {
+    interaction_constraints_.clear();
+    for (const auto& constraint : config->interaction_constraints_vector) {
+      interaction_constraints_.emplace_back(constraint.begin(), constraint.end());
+    }
+  }
 };
 
 }  // namespace Falcata
