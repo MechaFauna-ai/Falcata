@@ -31,7 +31,7 @@ class StringArray {
  public:
     StringArray(size_t num_elements, size_t string_size)
       : _string_size(string_size),
-        _array(num_elements + 1, nullptr) {
+        _array(_checked_slot_count(num_elements), nullptr) {
         _allocate_strings(num_elements, string_size);
     }
 
@@ -104,6 +104,15 @@ class StringArray {
      * @param index index of the element
      * @return bool true if within bounds
      */
+    // num_elements + 1 slots (a trailing nullptr): a count that would wrap that sum (a negative Java long arrives as
+    // a huge size_t) used to make a 0-slot vector, and the allocation loop then wrote past it
+    static size_t _checked_slot_count(size_t num_elements) {
+        if (num_elements >= std::vector<char*>().max_size()) {
+            throw std::bad_alloc();
+        }
+        return num_elements + 1;
+    }
+
     bool _in_bounds(size_t index) noexcept {
         return index < get_num_elements();
     }
@@ -119,9 +128,14 @@ class StringArray {
      * @param string_size The size of each string in the array.
      */
     void _allocate_strings(size_t num_elements, size_t string_size) {
+        if (string_size == static_cast<size_t>(-1)) {
+            // string_size + 1 would wrap to a 0-byte slot that setitem() then accepts any string into
+            throw std::bad_alloc();
+        }
         for (size_t i = 0; i < num_elements; ++i) {
             // Leave space for \0 terminator:
-            _array[i] = new (std::nothrow) char[string_size + 1];
+            // value-initialized: a slot read before it is set is the empty string, not uninitialized memory
+            _array[i] = new (std::nothrow) char[string_size + 1]();
 
             // Check memory allocation:
             if (!_array[i]) {
