@@ -2202,6 +2202,10 @@ void PushClearIfEmpty(std::vector<T>* dest, const size_t dest_len,
 }
 
 void Dataset::AddFeaturesFrom(Dataset* other) {
+  if (other == this) {
+    // the merge appends other's per-feature vectors to this one's while iterating them
+    Log::Fatal("Cannot add features from a Dataset to itself");
+  }
   if (other->num_data_ != num_data_) {
     Log::Fatal(
         "Cannot add features from other Dataset with a different number of "
