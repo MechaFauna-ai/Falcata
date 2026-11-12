@@ -417,8 +417,11 @@ void SerialTreeLearner::FindBestSplits(const Tree* tree, const std::set<int>* fo
   std::vector<int8_t> is_feature_used(num_features_, 0);
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 256) if (num_features_ >= 512)
   for (int feature_index = 0; feature_index < num_features_; ++feature_index) {
-    if (!col_sampler_.is_feature_used_bytree()[feature_index] && (force_features == nullptr || force_features->find(feature_index) == force_features->end())) continue;
-    if (parent_leaf_histogram_array_ != nullptr
+    const bool is_forced = force_features != nullptr && force_features->find(feature_index) != force_features->end();
+    if (!col_sampler_.is_feature_used_bytree()[feature_index] && !is_forced) continue;
+    // a feature the parent could not split on is skipped (no histogram is built for it), except
+    // a forced-split feature: ForceSplits reads its histogram whatever the parent found
+    if (!is_forced && parent_leaf_histogram_array_ != nullptr
         && !parent_leaf_histogram_array_[feature_index].is_splittable()) {
       smaller_leaf_histogram_array_[feature_index].set_is_splittable(false);
       continue;

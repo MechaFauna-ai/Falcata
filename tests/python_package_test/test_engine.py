@@ -3898,6 +3898,31 @@ def test_forced_splits_col_wise_equals_row_wise_with_feature_fraction(tmp_path, 
     np.testing.assert_allclose(preds[0], preds[1], rtol=1e-9, atol=1e-12)
 
 
+def test_forced_split_on_feature_the_parent_could_not_split(tmp_path):
+    # min_sum_hessian_in_leaf leaves no ordinary split at the root, so FindBestSplits
+    # marked every feature unsplittable there and built no child histogram for them;
+    # the forced split on the right child then read an unbuilt histogram in col-wise
+    # mode (row-wise builds all columns at once), and the two layouts built different trees.
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((500, 6))
+    y = (X[:, 0] + 0.5 * rng.standard_normal(500) > 0).astype(float)
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps({"feature": 4, "threshold": 0.9, "right": {"feature": 1, "threshold": 0.56}}))
+    params = {
+        "objective": "binary",
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "min_sum_hessian_in_leaf": 100,
+        "forcedsplits_filename": tmp_split_file,
+    }
+    models = [
+        lgb.train({**params, layout: True}, lgb.Dataset(X, y), num_boost_round=5)
+        for layout in ("force_col_wise", "force_row_wise")
+    ]
+    np.testing.assert_array_equal(models[0].predict(X, raw_score=True), models[1].predict(X, raw_score=True))
+
+
 def test_forced_split_missing_file(tmp_path):
     X, y = make_synthetic_regression()
     lgb_train = lgb.Dataset(X, y)
