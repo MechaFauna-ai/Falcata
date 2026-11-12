@@ -4219,10 +4219,18 @@ class Booster:
         self : Booster
             Booster without Datasets.
         """
+        if self.__dict__.get("train_set") is not None:
+            # The native training booster keeps pointers to its Datasets, which are freed with them: detach it
+            # first by reloading the model (as ``train()`` does with ``keep_training_booster=False``), so a later
+            # update(), reset_parameter() or eval_train() fails cleanly instead of reading the freed Datasets.
+            self.model_from_string(self.model_to_string(num_iteration=-1))
+        self._drop_datasets()
+        return self
+
+    def _drop_datasets(self) -> None:
         self.__dict__.pop("train_set", None)
         self.__dict__.pop("valid_sets", None)
         self.__num_dataset = 0
-        return self
 
     def _free_buffer(self) -> "Booster":
         self.__inner_predict_buffer = []
@@ -4233,7 +4241,7 @@ class Booster:
         """Replace the native model and invalidate state tied to the old handle."""
         old_handle = self._handle
         self._handle = new_handle
-        self.free_dataset()
+        self._drop_datasets()
         self._free_buffer()
         self._invalidate_fil_cache()
         if old_handle:
