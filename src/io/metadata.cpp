@@ -833,7 +833,10 @@ void Metadata::CalculateQueryWeights() {
     for (data_size_t j = query_boundaries_[i]; j < query_boundaries_[i + 1]; ++j) {
       query_weights_[i] += weights_[j];
     }
-    query_weights_[i] /= (query_boundaries_[i + 1] - query_boundaries_[i]);
+    // an empty query keeps weight 0 (0 / 0 made the weighted ranking metrics NaN)
+    if (query_boundaries_[i + 1] > query_boundaries_[i]) {
+      query_weights_[i] /= (query_boundaries_[i + 1] - query_boundaries_[i]);
+    }
   }
 }
 

@@ -183,6 +183,11 @@ class LambdarankNDCG : public RankingObjective {
                                       const label_t* label, const double* score,
                                       score_t* lambdas,
                                       score_t* hessians) const override {
+    // an empty query (a zero group count) has no documents to rank; the code below
+    // reads its best-ranked document
+    if (cnt <= 0) {
+      return;
+    }
     // get max DCG on current query
     const double inverse_max_dcg = inverse_max_dcgs_[query_id];
     // initialize with zero
