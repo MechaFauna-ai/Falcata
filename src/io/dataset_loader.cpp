@@ -8,13 +8,16 @@
 
 #include <Falcata/network.h>
 #include <Falcata/utils/array_args.h>
+#include <Falcata/utils/bounded_reader.h>
 #include <Falcata/utils/json11.h>
 #include <Falcata/utils/log.h>
 #include <Falcata/utils/openmp_wrapper.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -427,11 +430,12 @@ Dataset* DatasetLoader::LoadFromSerializedReference(const char* binary_data, siz
   mem_ptr += size_of_version;
 
   require(sizeof(size_t), "header size");
-  size_t size_of_header = *(reinterpret_cast<const size_t*>(mem_ptr));
+  size_t size_of_header;
+  std::memcpy(&size_of_header, mem_ptr, sizeof(size_of_header));  // mem_ptr need not be aligned
   mem_ptr += sizeof(size_t);
 
   require(size_of_header, "header");
-  LoadHeaderFromMemory(dataset.get(), mem_ptr);
+  LoadHeaderFromMemory(dataset.get(), mem_ptr, size_of_header);
   dataset->num_data_ = num_data;  // update to the given num_data
   mem_ptr += size_of_header;
 
@@ -439,10 +443,14 @@ Dataset* DatasetLoader::LoadFromSerializedReference(const char* binary_data, siz
   for (int i = 0; i < dataset->num_groups_; ++i) {
     // read feature size
     require(sizeof(size_t), "feature group size");
-    const size_t size_of_feature = *(reinterpret_cast<const size_t*>(mem_ptr));
+    size_t size_of_feature;
+    std::memcpy(&size_of_feature, mem_ptr, sizeof(size_of_feature));
     mem_ptr += sizeof(size_t);
     require(size_of_feature, "feature group");
-    dataset->feature_groups_.emplace_back(std::unique_ptr<FeatureGroup>(new FeatureGroup(mem_ptr, num_data, i)));
+    dataset->feature_groups_.emplace_back(
+        std::unique_ptr<FeatureGroup>(new FeatureGroup(mem_ptr, size_of_feature, num_data, i)));
+    dataset->feature_groups_.back()->CheckAgainstHeader(
+        i, dataset->group_feature_cnt_[i], dataset->group_bin_boundaries_[i + 1] - dataset->group_bin_boundaries_[i]);
     mem_ptr += size_of_feature;
   }
   dataset->feature_groups_.shrink_to_fit();
@@ -477,6 +485,26 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
   if (!reader->Init()) {
     Log::Fatal("Could not read binary data from %s", bin_filename);
   }
+  // Section sizes come from the file: never allocate more than the file can
+  // hold, so a corrupt size fails cleanly instead of exhausting memory. The
+  // size is only known for local files; other readers keep the short-read
+  // checks below.
+  size_t file_bytes_left = std::numeric_limits<size_t>::max();
+  {
+    std::ifstream probe(bin_filename, std::ios::binary | std::ios::ate);
+    if (probe) {
+      file_bytes_left = static_cast<size_t>(probe.tellg());
+    }
+  }
+  auto consume = [&file_bytes_left, bin_filename](size_t bytes, const char* what) {
+    if (bytes > file_bytes_left) {
+      Log::Fatal("Binary file %s is truncated or corrupt: %s claims %zu bytes, %zu left",
+                 bin_filename, what, bytes, file_bytes_left);
+    }
+    if (file_bytes_left != std::numeric_limits<size_t>::max()) {
+      file_bytes_left -= bytes;
+    }
+  };
 
   // buffer to read binary file
   size_t buffer_size = 16 * 1024 * 1024;
@@ -490,9 +518,10 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
   if (read_cnt < sizeof(char) * size_of_token) {
     Log::Fatal("Binary file error: token has the wrong size");
   }
-  if (std::string(buffer.data()) != std::string(Dataset::binary_file_token)) {
+  if (std::string(buffer.data(), size_of_token) != std::string(Dataset::binary_file_token)) {
     Log::Fatal("Input file is not Falcata binary file");
   }
+  consume(read_cnt, "the token");
 
   // read size of header
   read_cnt = reader->Read(buffer.data(), sizeof(size_t));
@@ -500,8 +529,10 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
   if (read_cnt != sizeof(size_t)) {
     Log::Fatal("Binary file error: header has the wrong size");
   }
+  consume(sizeof(size_t), "the header size");
 
   size_t size_of_head = *(reinterpret_cast<size_t*>(buffer.data()));
+  consume(size_of_head, "the header");
 
   // re-allocate space if not enough
   if (size_of_head > buffer_size) {
@@ -516,7 +547,7 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
   }
   // get header
   const char* mem_ptr = buffer.data();
-  LoadHeaderFromMemory(dataset.get(), mem_ptr);
+  LoadHeaderFromMemory(dataset.get(), mem_ptr, size_of_head);
 
   // read size of meta data
   read_cnt = reader->Read(buffer.data(), sizeof(size_t));
@@ -524,8 +555,10 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
   if (read_cnt != sizeof(size_t)) {
     Log::Fatal("Binary file error: meta data has the wrong size");
   }
+  consume(sizeof(size_t), "the metadata size");
 
   size_t size_of_metadata = *(reinterpret_cast<size_t*>(buffer.data()));
+  consume(size_of_metadata, "the metadata");
 
   // re-allocate space if not enough
   if (size_of_metadata > buffer_size) {
@@ -539,7 +572,11 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
     Log::Fatal("Binary file error: meta data is incorrect");
   }
   // load meta data
-  dataset->metadata_.LoadFromMemory(buffer.data());
+  dataset->metadata_.LoadFromMemory(buffer.data(), size_of_metadata);
+  if (dataset->metadata_.label_size() != static_cast<size_t>(dataset->num_data_)) {
+    Log::Fatal("Binary file %s is corrupt: the header has %d rows, the metadata %zu",
+               bin_filename, dataset->num_data_, dataset->metadata_.label_size());
+  }
 
   *num_global_data = dataset->num_data_;
   used_data_indices->clear();
@@ -586,7 +623,9 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
     if (read_cnt != sizeof(size_t)) {
       Log::Fatal("Binary file error: feature %d has the wrong size", i);
     }
+    consume(sizeof(size_t), "a feature group size");
     size_t size_of_feature = *(reinterpret_cast<size_t*>(buffer.data()));
+    consume(size_of_feature, "a feature group");
     // re-allocate space if not enough
     if (size_of_feature > buffer_size) {
       buffer_size = size_of_feature;
@@ -599,9 +638,11 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
       Log::Fatal("Binary file error: feature %d is incorrect, read count: %zu", i, read_cnt);
     }
     dataset->feature_groups_.emplace_back(std::unique_ptr<FeatureGroup>(
-      new FeatureGroup(buffer.data(),
+      new FeatureGroup(buffer.data(), size_of_feature,
                        *num_global_data,
                        *used_data_indices, i)));
+    dataset->feature_groups_.back()->CheckAgainstHeader(
+        i, dataset->group_feature_cnt_[i], dataset->group_bin_boundaries_[i + 1] - dataset->group_bin_boundaries_[i]);
   }
   dataset->feature_groups_.shrink_to_fit();
 
@@ -812,128 +853,121 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
 
 // ---- private functions ----
 
-void DatasetLoader::LoadHeaderFromMemory(Dataset* dataset, const char* buffer) {
-  // get header
-  const char* mem_ptr = buffer;
-  dataset->num_data_ = *(reinterpret_cast<const data_size_t*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->num_data_));
-  dataset->num_features_ = *(reinterpret_cast<const int*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->num_features_));
-  dataset->num_total_features_ = *(reinterpret_cast<const int*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->num_total_features_));
-  dataset->label_idx_ = *(reinterpret_cast<const int*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->label_idx_));
-  dataset->max_bin_ = *(reinterpret_cast<const int*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->max_bin_));
-  dataset->bin_construct_sample_cnt_ = *(reinterpret_cast<const int*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->bin_construct_sample_cnt_));
-  dataset->min_data_in_bin_ = *(reinterpret_cast<const int*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->min_data_in_bin_));
-  dataset->use_missing_ = *(reinterpret_cast<const bool*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->use_missing_));
-  dataset->zero_as_missing_ = *(reinterpret_cast<const bool*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->zero_as_missing_));
-  dataset->has_raw_ = *(reinterpret_cast<const bool*>(mem_ptr));
-
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->has_raw_));
-  const int* tmp_feature_map = reinterpret_cast<const int*>(mem_ptr);
-  dataset->used_feature_map_.clear();
-  for (int i = 0; i < dataset->num_total_features_; ++i) {
-    dataset->used_feature_map_.push_back(tmp_feature_map[i]);
+void DatasetLoader::LoadHeaderFromMemory(Dataset* dataset, const char* buffer, size_t size) {
+  // The header comes from a file or buffer that may be truncated or corrupt:
+  // every field is read through a bounded cursor and every count and index
+  // is checked before it sizes an array or indexes one.
+  BoundedReader reader(buffer, size, "Binary dataset header");
+  auto read_ints = [&reader](int count, bool aligned) {
+    std::vector<int> out(static_cast<size_t>(count));
+    const char* bytes = reader.TakeArray(static_cast<size_t>(count), sizeof(int), aligned);
+    if (count > 0) std::memcpy(out.data(), bytes, sizeof(int) * out.size());
+    return out;
+  };
+  dataset->num_data_ = reader.ReadAligned<data_size_t>();
+  dataset->num_features_ = reader.ReadAligned<int>();
+  dataset->num_total_features_ = reader.ReadAligned<int>();
+  dataset->label_idx_ = reader.ReadAligned<int>();
+  dataset->max_bin_ = reader.ReadAligned<int>();
+  dataset->bin_construct_sample_cnt_ = reader.ReadAligned<int>();
+  dataset->min_data_in_bin_ = reader.ReadAligned<int>();
+  dataset->use_missing_ = reader.ReadAlignedBool();
+  dataset->zero_as_missing_ = reader.ReadAlignedBool();
+  dataset->has_raw_ = reader.ReadAlignedBool();
+  if (dataset->num_data_ < 0 || dataset->num_total_features_ < 0 || dataset->num_features_ < 0 ||
+      dataset->num_features_ > dataset->num_total_features_) {
+    Log::Fatal("Binary dataset header is corrupt: num_data=%d, num_features=%d, num_total_features=%d",
+               dataset->num_data_, dataset->num_features_, dataset->num_total_features_);
   }
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(int) * dataset->num_total_features_);
+  const int num_features = dataset->num_features_;
+  const int num_total_features = dataset->num_total_features_;
+
+  dataset->used_feature_map_ = read_ints(num_total_features, true);
   // num_groups
-  dataset->num_groups_ = *(reinterpret_cast<const int*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(dataset->num_groups_));
-  // real_feature_idx_
-  const int* tmp_ptr_real_feature_idx_ = reinterpret_cast<const int*>(mem_ptr);
-  dataset->real_feature_idx_.clear();
-  for (int i = 0; i < dataset->num_features_; ++i) {
-    dataset->real_feature_idx_.push_back(tmp_ptr_real_feature_idx_[i]);
+  dataset->num_groups_ = reader.ReadAligned<int>();
+  const int num_groups = dataset->num_groups_;
+  if (num_groups < 0 || num_groups > num_features || (num_features > 0 && num_groups == 0)) {
+    Log::Fatal("Binary dataset header is corrupt: %d feature groups for %d features", num_groups, num_features);
   }
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(int) * dataset->num_features_);
-  // feature2group
-  const int* tmp_ptr_feature2group = reinterpret_cast<const int*>(mem_ptr);
-  dataset->feature2group_.clear();
-  for (int i = 0; i < dataset->num_features_; ++i) {
-    dataset->feature2group_.push_back(tmp_ptr_feature2group[i]);
-  }
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(int) * dataset->num_features_);
-  // feature2subfeature
-  const int* tmp_ptr_feature2subfeature = reinterpret_cast<const int*>(mem_ptr);
-  dataset->feature2subfeature_.clear();
-  for (int i = 0; i < dataset->num_features_; ++i) {
-    dataset->feature2subfeature_.push_back(tmp_ptr_feature2subfeature[i]);
-  }
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(int) * dataset->num_features_);
+  // real_feature_idx_, feature2group, feature2subfeature
+  dataset->real_feature_idx_ = read_ints(num_features, true);
+  dataset->feature2group_ = read_ints(num_features, true);
+  dataset->feature2subfeature_ = read_ints(num_features, true);
   // group_bin_boundaries
-  const uint64_t* tmp_ptr_group_bin_boundaries = reinterpret_cast<const uint64_t*>(mem_ptr);
   dataset->group_bin_boundaries_.clear();
-  for (int i = 0; i < dataset->num_groups_ + 1; ++i) {
-    dataset->group_bin_boundaries_.push_back(tmp_ptr_group_bin_boundaries[i]);
+  const char* boundaries = reader.TakeArray(static_cast<size_t>(num_groups) + 1, sizeof(uint64_t), false);
+  for (int i = 0; i < num_groups + 1; ++i) {
+    uint64_t boundary;
+    std::memcpy(&boundary, boundaries + sizeof(uint64_t) * i, sizeof(boundary));
+    dataset->group_bin_boundaries_.push_back(boundary);
   }
-  mem_ptr += sizeof(uint64_t) * (dataset->num_groups_ + 1);
+  // group_feature_start_, group_feature_cnt_
+  dataset->group_feature_start_ = read_ints(num_groups, true);
+  dataset->group_feature_cnt_ = read_ints(num_groups, true);
 
-  // group_feature_start_
-  const int* tmp_ptr_group_feature_start = reinterpret_cast<const int*>(mem_ptr);
-  dataset->group_feature_start_.clear();
-  for (int i = 0; i < dataset->num_groups_; ++i) {
-    dataset->group_feature_start_.push_back(tmp_ptr_group_feature_start[i]);
+  // the cross-references between those arrays
+  for (int i = 0; i < num_total_features; ++i) {
+    const int inner = dataset->used_feature_map_[i];
+    if (inner < -1 || inner >= num_features) {
+      Log::Fatal("Binary dataset header is corrupt: feature %d maps to inner feature %d", i, inner);
+    }
   }
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(int) * (dataset->num_groups_));
-
-  // group_feature_cnt_
-  const int* tmp_ptr_group_feature_cnt = reinterpret_cast<const int*>(mem_ptr);
-  dataset->group_feature_cnt_.clear();
-  for (int i = 0; i < dataset->num_groups_; ++i) {
-    dataset->group_feature_cnt_.push_back(tmp_ptr_group_feature_cnt[i]);
+  for (int g = 0; g < num_groups; ++g) {
+    const int start = dataset->group_feature_start_[g];
+    const int cnt = dataset->group_feature_cnt_[g];
+    if (start < 0 || cnt < 1 || start > num_features - cnt) {
+      Log::Fatal("Binary dataset header is corrupt: group %d covers features [%d, %d+%d)", g, start, start, cnt);
+    }
+    if (dataset->group_bin_boundaries_[g + 1] < dataset->group_bin_boundaries_[g]) {
+      Log::Fatal("Binary dataset header is corrupt: group bin boundaries must be non-decreasing");
+    }
   }
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(int) * (dataset->num_groups_));
+  for (int i = 0; i < num_features; ++i) {
+    const int real = dataset->real_feature_idx_[i];
+    const int group = dataset->feature2group_[i];
+    const int sub = dataset->feature2subfeature_[i];
+    if (real < 0 || real >= num_total_features || group < 0 || group >= num_groups || sub < 0 ||
+        sub >= dataset->group_feature_cnt_[group]) {
+      Log::Fatal("Binary dataset header is corrupt: inner feature %d (real %d, group %d, sub-feature %d)",
+                 i, real, group, sub);
+    }
+  }
 
   if (!config_.max_bin_by_feature.empty()) {
     CHECK_EQ(static_cast<size_t>(dataset->num_total_features_), config_.max_bin_by_feature.size());
     CHECK_GT(*(std::min_element(config_.max_bin_by_feature.begin(), config_.max_bin_by_feature.end())), 1);
     dataset->max_bin_by_feature_.resize(dataset->num_total_features_);
     dataset->max_bin_by_feature_.assign(config_.max_bin_by_feature.begin(), config_.max_bin_by_feature.end());
+    reader.TakeArray(static_cast<size_t>(num_total_features), sizeof(int32_t), true);
   } else {
-    const int32_t* tmp_ptr_max_bin_by_feature = reinterpret_cast<const int32_t*>(mem_ptr);
-    dataset->max_bin_by_feature_.clear();
-    for (int i = 0; i < dataset->num_total_features_; ++i) {
-      dataset->max_bin_by_feature_.push_back(tmp_ptr_max_bin_by_feature[i]);
-    }
+    dataset->max_bin_by_feature_ = read_ints(num_total_features, true);
   }
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(int32_t) * (dataset->num_total_features_));
   if (ArrayArgs<int32_t>::CheckAll(dataset->max_bin_by_feature_, -1)) {
     dataset->max_bin_by_feature_.clear();
   }
 
   // get feature names
   dataset->feature_names_.clear();
-  for (int i = 0; i < dataset->num_total_features_; ++i) {
-    int str_len = *(reinterpret_cast<const int*>(mem_ptr));
-    mem_ptr += VirtualFileWriter::AlignedSize(sizeof(int));
-    std::stringstream str_buf;
-    auto tmp_arr = reinterpret_cast<const char*>(mem_ptr);
-    for (int j = 0; j < str_len; ++j) {
-      char tmp_char = tmp_arr[j];
-      str_buf << tmp_char;
+  for (int i = 0; i < num_total_features; ++i) {
+    const int str_len = reader.ReadAligned<int>();
+    if (str_len < 0) {
+      Log::Fatal("Binary dataset header is corrupt: feature name %d has length %d", i, str_len);
     }
-    mem_ptr += VirtualFileWriter::AlignedSize(sizeof(char) * str_len);
-    dataset->feature_names_.emplace_back(str_buf.str());
+    const char* name = reader.TakeArray(static_cast<size_t>(str_len), sizeof(char), true);
+    dataset->feature_names_.emplace_back(name, static_cast<size_t>(str_len));
   }
   // get forced_bin_bounds_
-  dataset->forced_bin_bounds_ = std::vector<std::vector<double>>(dataset->num_total_features_, std::vector<double>());
-  for (int i = 0; i < dataset->num_total_features_; ++i) {
-    int num_bounds = *(reinterpret_cast<const int*>(mem_ptr));
-    mem_ptr += VirtualFileWriter::AlignedSize(sizeof(int));
-    dataset->forced_bin_bounds_[i] = std::vector<double>();
-    const double* tmp_ptr_forced_bounds =
-      reinterpret_cast<const double*>(mem_ptr);
-    for (int j = 0; j < num_bounds; ++j) {
-      double bound = tmp_ptr_forced_bounds[j];
-      dataset->forced_bin_bounds_[i].push_back(bound);
+  dataset->forced_bin_bounds_ = std::vector<std::vector<double>>(num_total_features, std::vector<double>());
+  for (int i = 0; i < num_total_features; ++i) {
+    const int num_bounds = reader.ReadAligned<int>();
+    if (num_bounds < 0) {
+      Log::Fatal("Binary dataset header is corrupt: feature %d has %d forced bin bounds", i, num_bounds);
     }
-    mem_ptr += num_bounds * sizeof(double);
+    const char* bounds = reader.TakeArray(static_cast<size_t>(num_bounds), sizeof(double), false);
+    dataset->forced_bin_bounds_[i].resize(static_cast<size_t>(num_bounds));
+    if (num_bounds > 0) {
+      std::memcpy(dataset->forced_bin_bounds_[i].data(), bounds, sizeof(double) * num_bounds);
+    }
   }
 }
 

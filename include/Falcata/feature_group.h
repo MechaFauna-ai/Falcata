@@ -9,6 +9,7 @@
 
 #include <Falcata/bin.h>
 #include <Falcata/meta.h>
+#include <Falcata/utils/bounded_reader.h>
 #include <Falcata/utils/random.h>
 
 #include <cstdint>
@@ -119,11 +120,13 @@ class FeatureGroup {
    * \param group_id Id of group
    */
   FeatureGroup(const void* memory,
+               size_t memory_size,
                data_size_t num_all_data,
                const std::vector<data_size_t>& local_used_indices,
                int group_id) {
     // Load the definition schema first
-    const char* memory_ptr = LoadDefinitionFromMemory(memory, group_id);
+    const char* memory_ptr = LoadDefinitionFromMemory(memory, memory_size, group_id);
+    const size_t data_size = memory_size - static_cast<size_t>(memory_ptr - reinterpret_cast<const char*>(memory));
 
     // Allocate memory for the data
     data_size_t num_data = num_all_data;
@@ -132,14 +135,49 @@ class FeatureGroup {
     }
     AllocateBins(num_data);
 
-    // Now load the actual data
+    // Now load the actual data. The bins were sized from num_all_data, so
+    // the group must hold at least that much bin data for the copy below.
     if (is_multi_val_) {
+      size_t remaining = data_size;
       for (int i = 0; i < num_feature_; ++i) {
+        const size_t used = RequireBinBytes(multi_bin_data_[i].get(), memory_ptr, num_all_data,
+                                            local_used_indices, remaining);
         multi_bin_data_[i]->LoadFromMemory(memory_ptr, local_used_indices);
-        memory_ptr += multi_bin_data_[i]->SizesInByte();
+        memory_ptr += used;
+        remaining -= used;
       }
     } else {
+      RequireBinBytes(bin_data_.get(), memory_ptr, num_all_data, local_used_indices, data_size);
       bin_data_->LoadFromMemory(memory_ptr, local_used_indices);
+    }
+    CheckLoadedBins(group_id);
+  }
+
+  /*!
+   * \brief After loading untrusted bin data: every stored bin must index the
+   *        histogram it feeds, or training reads past it.
+   */
+  void CheckLoadedBins(int group_id) const {
+    if (is_multi_val_) {
+      for (int i = 0; i < num_feature_; ++i) {
+        const uint32_t limit = static_cast<uint32_t>(bin_mappers_[i]->num_bin()) +
+                               (bin_mappers_[i]->GetMostFreqBin() == 0 ? 0 : 1);
+        if (multi_bin_data_[i]->MaxStoredBin() >= limit) {
+          Log::Fatal("Binary dataset is corrupt: feature group %d stores a bin beyond its %u bins", group_id, limit);
+        }
+      }
+    } else if (bin_data_->MaxStoredBin() >= static_cast<uint32_t>(num_total_bin_)) {
+      Log::Fatal("Binary dataset is corrupt: feature group %d stores a bin beyond its %d bins", group_id,
+                 num_total_bin_);
+    }
+  }
+
+  /*! \brief Check the dataset header's view of this group matches what was loaded. */
+  void CheckAgainstHeader(int group_id, int feature_cnt, uint64_t bin_cnt) const {
+    if (num_feature_ != feature_cnt || static_cast<uint64_t>(num_total_bin_) != bin_cnt) {
+      Log::Fatal("Binary dataset is corrupt: group %d holds %d features and %d bins, the header says %d and %llu",
+                 group_id, num_feature_, num_total_bin_, feature_cnt,
+                 static_cast<unsigned long long>(bin_cnt));  // NOLINT(runtime/int): %llu format
     }
   }
 
@@ -149,8 +187,8 @@ class FeatureGroup {
    * \param num_data Number of data
    * \param group_id Id of group
    */
-  FeatureGroup(const void* memory, data_size_t num_data, int group_id) {
-    LoadDefinitionFromMemory(memory, group_id);
+  FeatureGroup(const void* memory, size_t memory_size, data_size_t num_data, int group_id) {
+    LoadDefinitionFromMemory(memory, memory_size, group_id);
     AllocateBins(num_data);
   }
 
@@ -162,24 +200,24 @@ class FeatureGroup {
    * \param memory Pointer of memory
    * \param group_id Id of group
    */
-  const char* LoadDefinitionFromMemory(const void* memory, int group_id) {
-    const char* memory_ptr = reinterpret_cast<const char*>(memory);
+  const char* LoadDefinitionFromMemory(const void* memory, size_t memory_size, int group_id) {
+    BoundedReader reader(reinterpret_cast<const char*>(memory), memory_size, "Serialized feature group");
     // get is_sparse
-    is_multi_val_ = *(reinterpret_cast<const bool*>(memory_ptr));
-    memory_ptr += VirtualFileWriter::AlignedSize(sizeof(is_multi_val_));
-    is_dense_multi_val_ = *(reinterpret_cast<const bool*>(memory_ptr));
-    memory_ptr += VirtualFileWriter::AlignedSize(sizeof(is_dense_multi_val_));
-    is_sparse_ = *(reinterpret_cast<const bool*>(memory_ptr));
-    memory_ptr += VirtualFileWriter::AlignedSize(sizeof(is_sparse_));
-    num_feature_ = *(reinterpret_cast<const int*>(memory_ptr));
-    memory_ptr += VirtualFileWriter::AlignedSize(sizeof(num_feature_));
+    is_multi_val_ = reader.ReadAlignedBool();
+    is_dense_multi_val_ = reader.ReadAlignedBool();
+    is_sparse_ = reader.ReadAlignedBool();
+    num_feature_ = reader.ReadAligned<int>();
+    if (num_feature_ < 1) {
+      Log::Fatal("Binary dataset is corrupt: feature group %d has %d features", group_id, num_feature_);
+    }
 
     // get bin mapper(s)
     bin_mappers_.clear();
     for (int i = 0; i < num_feature_; ++i) {
-      bin_mappers_.emplace_back(new BinMapper(memory_ptr));
-      memory_ptr += bin_mappers_[i]->SizesInByte();
+      bin_mappers_.emplace_back(new BinMapper());
+      reader.Take(bin_mappers_[i]->CopyFrom(reader.pos(), reader.Remaining()));
     }
+    const char* memory_ptr = reader.pos();
 
     bin_offsets_.clear();
     int offset = 1;
@@ -205,6 +243,22 @@ class FeatureGroup {
     }
 
     return memory_ptr;
+  }
+
+  /*!
+   * \brief Fail cleanly unless `available` bytes hold the serialized data of
+   *        `bin`. A dense bin is a fixed-size copy of num_all_data rows; a
+   *        sparse one starts with its value count, which must fit as well.
+   */
+  static size_t RequireBinBytes(const Bin* bin, const char* memory, data_size_t num_all_data,
+                                const std::vector<data_size_t>& local_used_indices,
+                                size_t available) {
+    for (const data_size_t idx : local_used_indices) {
+      if (idx < 0 || idx >= num_all_data) {
+        Log::Fatal("Used row index %d is outside the %d rows of the binary dataset", idx, num_all_data);
+      }
+    }
+    return bin->SerializedSize(memory, available, num_all_data);
   }
 
   /*!

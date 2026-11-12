@@ -48,7 +48,7 @@ class DatasetLoader {
                                                         const std::unordered_set<int>& categorical_features);
 
  private:
-  void LoadHeaderFromMemory(Dataset* dataset, const char* buffer);
+  void LoadHeaderFromMemory(Dataset* dataset, const char* buffer, size_t size);
 
   Dataset* LoadFromBinFile(const char* data_filename, const char* bin_filename, int rank, int num_machines, int* num_global_data, std::vector<data_size_t>* used_data_indices);
 

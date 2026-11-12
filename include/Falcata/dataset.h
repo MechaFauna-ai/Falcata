@@ -71,8 +71,9 @@ class Metadata {
   /*!
   * \brief Initial with binary memory
   * \param memory Pointer to memory
+  * \param memory_size Bytes available at memory
   */
-  void LoadFromMemory(const void* memory);
+  void LoadFromMemory(const void* memory, size_t memory_size);
   /*! \brief Destructor */
   ~Metadata();
 
