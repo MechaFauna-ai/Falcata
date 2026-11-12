@@ -16,6 +16,22 @@
 
 namespace Falcata {
 /*!
+* \brief Fail when a label cannot index the num_class scores of a row. Multiclass metrics index the
+*        per-row scores (and AUC-mu its per-class tables) by the label, and a validation set's labels
+*        are not checked by the objective.
+*/
+inline void CheckMulticlassMetricLabels(const std::string& metric_name, const label_t* label,
+                                        data_size_t num_data, int num_class) {
+  for (data_size_t i = 0; i < num_data; ++i) {
+    const double value = static_cast<double>(label[i]);
+    if (!(value >= 0.0 && value < static_cast<double>(num_class))) {
+      Log::Fatal("Metric %s: label must be in [0, %d), but found %g at row %d",
+                 metric_name.c_str(), num_class, value, i);
+    }
+  }
+}
+
+/*!
 * \brief Metric for multiclass task.
 * Use static class "PointWiseLossCalculator" to calculate loss point-wise
 */
@@ -34,6 +50,7 @@ class MulticlassMetric: public Metric {
     num_data_ = num_data;
     // get label
     label_ = metadata.label();
+    CheckMulticlassMetricLabels(name_.back(), label_, num_data_, num_class_);
     // get weights
     weights_ = metadata.weights();
     if (weights_ == nullptr) {
@@ -197,6 +214,7 @@ class AucMuMetric : public Metric {
 
     num_data_ = num_data;
     label_ = metadata.label();
+    CheckMulticlassMetricLabels(name_.back(), label_, num_data_, num_class_);
 
     // get weights
     weights_ = metadata.weights();
