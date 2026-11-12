@@ -929,6 +929,25 @@ void PushDataToMultiValBin(
   }
 }
 
+// A sparse multi-value bin picks its row index type (uint16/uint32/size_t) from the sparse rate of
+// the bin-construction SAMPLE. When the sample underestimates the entries (a small
+// bin_construct_sample_cnt, or a sample that missed the dense part of a column), the pushed
+// entries do not fit: rebuild once, sized from the exact count.
+void RebuildIfIndexTooNarrow(data_size_t num_data, const std::vector<uint32_t>& most_freq_bins,
+                             const std::vector<uint32_t>& offsets,
+                             std::vector<std::vector<std::unique_ptr<BinIterator>>>* iters,
+                             std::unique_ptr<MultiValBin>* bin) {
+  uint64_t num_entries = 0;
+  if ((*bin)->PushedEntriesFit(&num_entries)) {
+    return;
+  }
+  const double per_row = static_cast<double>(num_entries) / std::max<data_size_t>(1, num_data);
+  Log::Debug("Sparse multi-value bin: %s entries outgrow the estimated index type, rebuilding",
+             std::to_string(num_entries).c_str());
+  bin->reset(MultiValBin::CreateMultiValSparseBin(num_data, (*bin)->num_bin(), per_row));
+  PushDataToMultiValBin(num_data, most_freq_bins, offsets, iters, bin->get());
+}
+
 MultiValBin* Dataset::GetMultiBinFromSparseFeatures(const std::vector<uint32_t>& offsets) const {
   Common::FunctionTimer fun_time("Dataset::GetMultiBinFromSparseFeatures",
                                  global_timer);
@@ -969,6 +988,7 @@ MultiValBin* Dataset::GetMultiBinFromSparseFeatures(const std::vector<uint32_t>&
   ret.reset(MultiValBin::CreateMultiValBin(num_data_, offsets.back(),
                                            num_feature, sum_sparse_rate, offsets));
   PushDataToMultiValBin(num_data_, most_freq_bins, offsets, &iters, ret.get());
+  RebuildIfIndexTooNarrow(num_data_, most_freq_bins, offsets, &iters, &ret);
   ret->FinishLoad();
   return ret.release();
 }
@@ -1021,6 +1041,7 @@ MultiValBin* Dataset::GetMultiBinFromAllFeatures(const std::vector<uint32_t>& of
       num_data_, offsets.back(), static_cast<int>(most_freq_bins.size()),
       1.0 - sum_dense_ratio, offsets, sparse_threshold));
   PushDataToMultiValBin(num_data_, most_freq_bins, offsets, &iters, ret.get());
+  RebuildIfIndexTooNarrow(num_data_, most_freq_bins, offsets, &iters, &ret);
   ret->FinishLoad();
   return ret.release();
 }
