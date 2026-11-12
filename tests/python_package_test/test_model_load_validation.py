@@ -163,3 +163,11 @@ def test_empty_objective_is_refused(tmp_path, model_text):
 def test_malformed_parameter_line_is_ignored(tmp_path, model_text):
     bad = model_text.replace("\nparameters:\n", "\nparameters:\nx\n[\n", 1)
     assert "LOADED" in _run(tmp_path, bad)
+
+
+@pytest.mark.parametrize("value", ["-5", "2147483647"])
+def test_invalid_max_feature_idx_is_refused(tmp_path, model_text, value):
+    start = model_text.index("max_feature_idx=")
+    end = model_text.index("\n", start)
+    bad = model_text[:start] + f"max_feature_idx={value}" + model_text[end:]
+    assert "REFUSED" in _run(tmp_path, bad)

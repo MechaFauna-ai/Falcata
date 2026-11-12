@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <sstream>
 #include <unordered_map>
@@ -587,6 +588,10 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
   // get max_feature_idx first
   if (key_vals.count("max_feature_idx")) {
     Common::Atoi(key_vals["max_feature_idx"].c_str(), &max_feature_idx_);
+    // every consumer works with max_feature_idx_ + 1 features
+    if (max_feature_idx_ < -1 || max_feature_idx_ == std::numeric_limits<int>::max()) {
+      Log::Fatal("Model file has invalid max_feature_idx=%d", max_feature_idx_);
+    }
   } else {
     Log::Fatal("Model file doesn't specify max_feature_idx");
     return false;
