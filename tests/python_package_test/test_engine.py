@@ -4244,6 +4244,31 @@ def test_linear_single_leaf():
     assert log_loss(y_train, y_pred) < 0.661
 
 
+@pytest.mark.parametrize("boost_from_average", [True, False])
+def test_trees_to_dataframe_linear_single_leaf(boost_from_average):
+    # A 1-leaf linear tree dumps leaf_const/leaf_features/leaf_coeff next to
+    # leaf_value and leaf_count, but no leaf_index or leaf_weight; the
+    # single-node check compared the exact key set, so it read leaf_weight
+    # and raised KeyError.
+    X, y = make_synthetic_regression(n_samples=50)
+    params = {
+        "objective": "regression",
+        "linear_tree": True,
+        "min_data_in_leaf": 100,
+        "boost_from_average": boost_from_average,
+        "feature_pre_filter": False,
+        "device_type": "cpu",
+        "verbose": -1,
+    }
+    bst = lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=3)
+    assert "leaf_const" in bst.dump_model()["tree_info"][0]["tree_structure"]
+    df = bst.trees_to_dataframe()
+    assert len(df) == bst.num_trees()
+    assert df["split_feature"].isna().all()
+    np.testing.assert_array_equal(df["node_index"], [f"{i}-L0" for i in range(bst.num_trees())])
+    assert df["weight"].isna().all()
+
+
 def test_linear_raises_informative_errors_on_unsupported_params():
     X, y = make_synthetic_regression()
     with pytest.raises(lgb.basic.FalcataError, match="Cannot use regression_l1 objective when fitting linear trees"):

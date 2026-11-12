@@ -4405,7 +4405,9 @@ class Booster:
                 return feature_name
 
             def _is_single_node_tree(tree: Dict[str, Any]) -> bool:
-                return set(tree.keys()) == {"leaf_value", "leaf_count"}
+                # a 1-leaf tree's root carries no leaf_index (nor leaf_weight); a linear one
+                # also carries leaf_const / leaf_features / leaf_coeff
+                return not _is_split_node(tree) and "leaf_index" not in tree
 
             # Create the node record, and populate universal data members
             node: Dict[str, Union[int, str, None]] = OrderedDict()
