@@ -1695,3 +1695,32 @@ def test_libsvm_label_only_row_does_not_add_features(tmp_path, label, row):
     ds = lgb.Dataset(str(path), params={"min_data_in_bin": 1, "verbose": -1}).construct()
     assert ds.num_feature() == 3
     assert ds.num_data() == len(lines)
+
+
+def test_booster_merge_rejects_incompatible_models(rng):
+    # FLC_BoosterMerge appended the other model's trees whatever their shape: trees of a model with more features
+    # read past the prediction buffer (heap-buffer-overflow), and trees of a model with another number of trees per
+    # iteration were summed into the wrong outputs
+    def train(X, y, **params):
+        return lgb.train({"objective": "regression", "verbose": -1, **params}, lgb.Dataset(X, y), num_boost_round=2)
+
+    X2 = rng.normal(size=(200, 2))
+    base = train(X2, X2[:, 0])
+    expected = base.predict(X2)
+
+    def merge(other):
+        return lgb.basic._LIB.FLC_BoosterMerge(base._handle, other._handle)
+
+    X8 = rng.normal(size=(200, 8))
+    assert merge(train(X8, X8[:, 7])) == -1
+    assert "with 8 features into one with 2" in lgb.basic._LIB.FLC_GetLastError().decode()
+    multiclass = train(X2, rng.integers(0, 3, size=200), objective="multiclass", num_class=3)
+    assert merge(multiclass) == -1
+    assert "3 trees per iteration into one with 1" in lgb.basic._LIB.FLC_GetLastError().decode()
+    np.testing.assert_allclose(base.predict(X2), expected)
+
+    # a compatible model (here one using fewer features) still merges
+    X1 = X2[:, :1]
+    narrower = train(X1, X1[:, 0])
+    assert merge(narrower) == 0
+    np.testing.assert_allclose(base.predict(X2), expected + narrower.predict(X1))
