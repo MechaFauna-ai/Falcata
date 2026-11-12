@@ -314,6 +314,10 @@ void GBDT::ResetValidMetrics(int valid_idx, const std::vector<const Metric*>& va
 
 void GBDT::AddValidDataset(const Dataset* valid_data,
                            const std::vector<const Metric*>& valid_metrics) {
+  // a model-loaded booster (or one whose Datasets were freed) has no training data to align with
+  if (train_data_ == nullptr) {
+    Log::Fatal("Cannot add validation data to a Booster without training data");
+  }
   if (!train_data_->CheckAlign(*valid_data)) {
     Log::Fatal("Cannot add validation data, since it has different bin mappers with training data");
   }
