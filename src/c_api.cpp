@@ -1273,6 +1273,9 @@ int FLC_GetSampleCount(int32_t num_total_row,
   if (out == nullptr) {
     Log::Fatal("FLC_GetSampleCount output is nullptr");
   }
+  if (num_total_row < 0) {
+    Log::Fatal("FLC_GetSampleCount: num_total_row (%d) is negative", num_total_row);
+  }
   auto param = Config::Str2Map(parameters);
   Config config;
   config.Set(param);
@@ -1291,12 +1294,17 @@ int FLC_SampleIndices(int32_t num_total_row,
   if (out == nullptr) {
     Log::Fatal("FLC_SampleIndices output is nullptr");
   }
+  if (num_total_row < 0) {
+    Log::Fatal("FLC_SampleIndices: num_total_row (%d) is negative", num_total_row);
+  }
   auto param = Config::Str2Map(parameters);
   Config config;
   config.Set(param);
 
   auto sample_indices = CreateSampleIndices(num_total_row, config);
-  memcpy(out, sample_indices.data(), sizeof(int32_t) * sample_indices.size());
+  if (!sample_indices.empty()) {  // an empty vector's data() may be null, which memcpy must not get
+    memcpy(out, sample_indices.data(), sizeof(int32_t) * sample_indices.size());
+  }
   *out_len = static_cast<int32_t>(sample_indices.size());
   API_END();
 }
