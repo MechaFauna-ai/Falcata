@@ -77,6 +77,16 @@ yamc::shared_lock<yamc::alternate::shared_mutex> lock(&mtx);
 
 const int PREDICTOR_TYPES = 4;
 
+// predict_type selects the kind of output and so its length (FLC_BoosterCalcNumPredict): an unknown value used to
+// predict as C_API_PREDICT_NORMAL silently
+static void CheckPredictType(int predict_type) {
+  if (predict_type != C_API_PREDICT_NORMAL && predict_type != C_API_PREDICT_RAW_SCORE &&
+      predict_type != C_API_PREDICT_LEAF_INDEX && predict_type != C_API_PREDICT_CONTRIB) {
+    Log::Fatal("Unknown predict_type %d (expected C_API_PREDICT_NORMAL, C_API_PREDICT_RAW_SCORE, "
+               "C_API_PREDICT_LEAF_INDEX or C_API_PREDICT_CONTRIB)", predict_type);
+  }
+}
+
 // Single row predictor to abstract away caching logic
 class SingleRowPredictorInner {
  public:
@@ -84,6 +94,7 @@ class SingleRowPredictorInner {
   int64_t num_pred_in_one_row;
 
   SingleRowPredictorInner(int predict_type, Boosting* boosting, const Config& config, int start_iter, int num_iter) {
+    CheckPredictType(predict_type);
     bool is_predict_leaf = false;
     bool is_raw_score = false;
     bool predict_contrib = false;
@@ -580,6 +591,7 @@ class Booster {
   }
 
   std::shared_ptr<Predictor> CreatePredictor(int start_iteration, int num_iteration, int predict_type, int ncol, const Config& config) const {
+    CheckPredictType(predict_type);
     if (!config.predict_disable_shape_check && ncol != boosting_->MaxFeatureIdx() + 1) {
       Log::Fatal("The number of features in data (%d) is not the same as it was in training data (%d).\n" \
                  "You can set ``predict_disable_shape_check=true`` to discard this error, but please be aware what you are doing.", ncol, boosting_->MaxFeatureIdx() + 1);
@@ -875,6 +887,7 @@ class Booster {
                int data_has_header, const Config& config,
                const char* result_filename) const {
     SHARED_LOCK(mutex_)
+    CheckPredictType(predict_type);
     bool is_predict_leaf = false;
     bool is_raw_score = false;
     bool predict_contrib = false;
@@ -898,6 +911,7 @@ class Booster {
                       int data_has_header, const Config& config, std::vector<double>* out_result,
                       int64_t* out_num_row) const {
     SHARED_LOCK(mutex_)
+    CheckPredictType(predict_type);
     Predictor predictor(boosting_.get(), start_iteration, num_iteration, predict_type == C_API_PREDICT_RAW_SCORE,
                         predict_type == C_API_PREDICT_LEAF_INDEX, predict_type == C_API_PREDICT_CONTRIB,
                         config.pred_early_stop, config.pred_early_stop_freq, config.pred_early_stop_margin);
@@ -3388,6 +3402,7 @@ int FLC_BoosterCalcNumPredict(BoosterHandle handle,
                                int64_t* out_len) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
+  Falcata::CheckPredictType(predict_type);
   *out_len = static_cast<int64_t>(num_row) * ref_booster->GetBoosting()->NumPredictOneRow(start_iteration,
     num_iteration, predict_type == C_API_PREDICT_LEAF_INDEX, predict_type == C_API_PREDICT_CONTRIB);
   API_END();
