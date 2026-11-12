@@ -202,6 +202,7 @@ class Booster {
 
     train_data_ = train_data;
     train_data_num_total_features_ = train_data_->num_total_features();
+    train_data_field_version_ = train_data_->field_version();
     CreateObjectiveAndMetrics();
     // initialize the boosting
     // tree_learner=feature doubles as the CUDA multi-GPU feature-parallel
@@ -268,6 +269,7 @@ class Booster {
       UNIQUE_LOCK(mutex_)
       train_data_ = train_data;
       train_data_num_total_features_ = train_data_->num_total_features();
+      train_data_field_version_ = train_data_->field_version();
       CreateObjectiveAndMetrics();
       // reset the boosting
       boosting_->ResetTrainingData(train_data_,
@@ -497,6 +499,10 @@ class Booster {
       objective_fun_ = std::move(objective);
       train_metric_ = std::move(train_metric);
       valid_metrics_ = std::move(valid_metrics);
+      train_data_field_version_ = train_data_->field_version();
+      for (size_t i = 0; i < valid_data_.size(); ++i) {
+        valid_data_field_versions_[i] = valid_data_[i]->field_version();
+      }
     }
 
     boosting_->ResetConfig(&config_);
@@ -505,6 +511,7 @@ class Booster {
   void AddValidData(const Dataset* valid_data) {
     UNIQUE_LOCK(mutex_)
     valid_data_.push_back(valid_data);
+    valid_data_field_versions_.push_back(valid_data->field_version());
     valid_metrics_.push_back(CreateMetrics(valid_data));
     boosting_->AddValidDataset(valid_data,
                                Common::ConstPtrInVectorWrapper<Metric>(valid_metrics_.back()));
@@ -513,6 +520,7 @@ class Booster {
   bool TrainOneIter() {
     UNIQUE_LOCK(mutex_)
     CheckTrainDataUnchanged();
+    RebuildObjectiveIfTrainFieldsChanged();
     return boosting_->TrainOneIter(nullptr, nullptr);
   }
 
@@ -524,6 +532,7 @@ class Booster {
   bool TrainOneIter(const score_t* gradients, const score_t* hessians) {
     UNIQUE_LOCK(mutex_)
     CheckTrainDataUnchanged();
+    RebuildObjectiveIfTrainFieldsChanged();
     return boosting_->TrainOneIter(gradients, hessians);
   }
 
@@ -535,6 +544,41 @@ class Booster {
                  "create a new Booster to train on the extended Dataset",
                  train_data_->num_total_features(), train_data_num_total_features_);
     }
+  }
+
+  // The objective and the training metrics hold pointers into the training Dataset's metadata (labels, weights,
+  // query boundaries). FLC_DatasetSetField on that Dataset after the Booster was created reallocates them: a new
+  // group layout left lambdarank reading the freed query boundaries (heap-use-after-free), and new or cleared
+  // weights were silently ignored. Rebuild both from the current metadata before training on it.
+  void RebuildObjectiveIfTrainFieldsChanged() {
+    // validation metrics hold pointers into their own Dataset's metadata the same way (NDCG read freed query
+    // boundaries after a validation Dataset's group was set)
+    for (size_t i = 0; i < valid_data_.size(); ++i) {
+      if (valid_data_[i]->field_version() != valid_data_field_versions_[i]) {
+        auto metrics = CreateMetrics(valid_data_[i]);
+        boosting_->ResetValidMetrics(static_cast<int>(i), Common::ConstPtrInVectorWrapper<Metric>(metrics));
+        valid_metrics_[i] = std::move(metrics);
+        valid_data_field_versions_[i] = valid_data_[i]->field_version();
+      }
+    }
+    if (train_data_ == nullptr || train_data_->field_version() == train_data_field_version_) {
+      return;
+    }
+    if (boosting_->LeafValueDim() > 1) {
+      // GBDT::ResetTrainingData refuses vector-leaf models, so their objective keeps its metadata (as before)
+      return;
+    }
+    std::unique_ptr<ObjectiveFunction> objective(
+        ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
+    if (objective != nullptr) {
+      objective->Init(train_data_->metadata(), train_data_->num_data());
+    }
+    auto train_metric = CreateMetrics(train_data_);
+    // same Dataset: GBDT only takes the new objective and metrics (after its checks, so a Fatal leaves the old ones)
+    boosting_->ResetTrainingData(train_data_, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
+    objective_fun_ = std::move(objective);
+    train_metric_ = std::move(train_metric);
+    train_data_field_version_ = train_data_->field_version();
   }
 
   void RollbackOneIter() {
@@ -1022,6 +1066,10 @@ class Booster {
   // nullptr for a model-loaded Booster: the filename constructor never
   // attaches training data
   const Dataset* train_data_ = nullptr;
+  /*! \brief train_data_->field_version() when the objective and training metrics were built from its metadata */
+  uint64_t train_data_field_version_ = 0;
+  /*! \brief valid_data_[i]->field_version() when valid_metrics_[i] were built */
+  std::vector<uint64_t> valid_data_field_versions_;
   /*! \brief train_data_->num_total_features() when the boosting was set up on it */
   int train_data_num_total_features_ = 0;
   std::unique_ptr<Boosting> boosting_;

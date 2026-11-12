@@ -1504,6 +1504,7 @@ bool Dataset::SetFieldFromArrow(const char* field_name, struct ArrowArrayStream*
   } else {
     return false;
   }
+  ++field_version_;
   return true;
 }
 
@@ -1522,6 +1523,7 @@ bool Dataset::SetFieldFromArrow(const char* field_name, int64_t n_chunks,
   } else {
     return false;
   }
+  ++field_version_;
   return true;
 }
 #endif  // LGB_R_BUILD
@@ -1545,6 +1547,7 @@ bool Dataset::SetFloatField(const char* field_name, const float* field_data,
   } else {
     return false;
   }
+  ++field_version_;
   return true;
 }
 
@@ -1557,6 +1560,7 @@ bool Dataset::SetDoubleField(const char* field_name, const double* field_data,
   } else {
     return false;
   }
+  ++field_version_;
   return true;
 }
 
@@ -1571,6 +1575,7 @@ bool Dataset::SetIntField(const char* field_name, const int* field_data,
   } else {
     return false;
   }
+  ++field_version_;
   return true;
 }
 
