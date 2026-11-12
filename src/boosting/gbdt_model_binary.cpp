@@ -20,6 +20,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -169,6 +170,20 @@ namespace {
  *  own codebook. Entries are the trees' own doubles copied verbatim, which
  *  makes the encoding exact by construction -- no grid to fall off, hence no
  *  whole-model raw-f64 fallback for refit or text-edited models. */
+// Orders NaN after every number, all NaNs alike. std::less<double> is not a
+// strict weak ordering once a NaN threshold is present (every comparison with
+// it is false), and the set/map below then merge it with an unrelated value:
+// a model with a NaN threshold -- it loads from text, where the split simply
+// sends every value right -- predicted differently after a FALB round trip.
+// Finite values keep their order, so the bytes of ordinary models are unchanged.
+struct ThresholdLess {
+  bool operator()(double a, double b) const {
+    if (std::isnan(a)) return false;
+    if (std::isnan(b)) return true;
+    return a < b;
+  }
+};
+
 class ThresholdDictionary {
  public:
   void Build(const std::vector<std::unique_ptr<Tree>>& models, int start,
@@ -220,8 +235,8 @@ class ThresholdDictionary {
  private:
   // std::map keeps a deterministic (sorted) order, so the same model always
   // produces byte-identical output
-  std::vector<std::set<double>> per_feature_;
-  std::vector<std::map<double, uint32_t>> index_;
+  std::vector<std::set<double, ThresholdLess>> per_feature_;
+  std::vector<std::map<double, uint32_t, ThresholdLess>> index_;
   std::vector<uint32_t> offsets_;
   std::vector<double> values_;
   size_t max_per_feature_ = 0;
