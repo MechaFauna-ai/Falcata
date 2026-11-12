@@ -52,8 +52,11 @@ class RF : public GBDT {
       for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
         MultiplyScore(cur_tree_id, 1.0f / num_init_iteration_);
       }
-    } else {
-      CHECK_EQ(train_data->metadata().init_score(), nullptr);
+    } else if (train_data->metadata().init_score() != nullptr) {
+      // RF averages its trees from a fixed starting score (boost_from_average); a per-row init_score would be
+      // averaged in with them. This used to be a bare CHECK, which reported only the failed expression.
+      Log::Fatal("boosting=rf does not support init_score (on the training Dataset); "
+                 "remove the init_score or use another boosting type");
     }
     CHECK_EQ(num_tree_per_iteration_, num_class_);
     // not shrinkage rate for the RF
