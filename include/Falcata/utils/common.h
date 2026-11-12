@@ -68,6 +68,11 @@ using json11_internal_lightgbm::Json;
 */
 static void C_stringstream(std::stringstream &ss) {
   ss.imbue(std::locale::classic());
+  // An insertion that fails to allocate only sets badbit by default, and the
+  // stream then drops everything after it: a model serialized under memory
+  // pressure came back truncated with no error. With badbit in the mask the
+  // original exception (std::bad_alloc) propagates instead.
+  ss.exceptions(std::ios::badbit);
 }
 
 inline static std::string Trim(std::string str) {
