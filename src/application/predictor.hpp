@@ -218,6 +218,11 @@ class Predictor {
       }
       const auto& fnames = boosting_->FeatureNames();
       for (int i = 0; i < static_cast<int>(fnames.size()); ++i) {
+        // a header naming more columns than the data lines hold cannot place the extra names
+        if (header_mapper.count(fnames[i]) > 0 &&
+            header_mapper.at(fnames[i]) >= static_cast<int>(feature_remapper.size())) {
+          header_mapper.erase(fnames[i]);
+        }
         if (header_mapper.count(fnames[i]) <= 0) {
           Log::Warning("Feature (%s) is missed in data file. If it is weight/query/group/ignore_column, you can ignore this warning.", fnames[i].c_str());
         } else {
@@ -241,8 +246,12 @@ class Predictor {
       parser->ParseOneLine(buffer, feature, &tmp_label);
       if (need_adjust) {
         int i = 0, j = static_cast<int>(feature->size());
+        const int num_remapped = static_cast<int>(feature_remapper.size());
         while (i < j) {
-          if (feature_remapper[(*feature)[i].first] >= 0) {
+          // a line with more fields than the header has columns past the remapper; drop them,
+          // like the columns the model does not use
+          const int idx = (*feature)[i].first;
+          if (idx >= 0 && idx < num_remapped && feature_remapper[idx] >= 0) {
             (*feature)[i].first = feature_remapper[(*feature)[i].first];
             ++i;
           } else {
