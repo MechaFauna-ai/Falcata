@@ -857,7 +857,19 @@ class HistogramPool {
   void ResetConfig(const Dataset* train_data, const Config* config) {
     CHECK_GT(train_data->num_features(), 0);
     const Config* old_config = feature_metas_[0].config;
+    // SetFeatureInfo reseeds every feature's extra_trees generator; with an unchanged extra_seed, carry the streams
+    // on, so a reset that changes nothing does not replay the thresholds the first trees drew
+    std::vector<Random> rands;
+    if (old_config->extra_seed == config->extra_seed) {
+      rands.reserve(feature_metas_.size());
+      for (const auto& meta : feature_metas_) {
+        rands.push_back(meta.rand);
+      }
+    }
     SetFeatureInfo<false, true>(train_data, config, &feature_metas_);
+    for (size_t i = 0; i < rands.size(); ++i) {
+      feature_metas_[i].rand = rands[i];
+    }
     // if need to reset the function pointers
     if (old_config->lambda_l1 != config->lambda_l1 ||
         old_config->monotone_constraints != config->monotone_constraints ||

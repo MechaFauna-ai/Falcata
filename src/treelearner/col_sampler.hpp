@@ -72,7 +72,8 @@ class ColSampler {
       used_cnt_bytree_ =
           GetCnt(valid_feature_indices_.size(), fraction_bytree_);
     }
-    ResetByTree();
+    // no ResetByTree() here: every tree draws its sample in BeforeTrain, and an extra draw at a parameter reset
+    // advanced the feature_fraction stream, so even a reset that changes nothing gave later trees other features
   }
 
   void ResetByTree() {
