@@ -59,12 +59,12 @@ def _push_csr(handle, X, start_row):
 
 
 @pytest.mark.parametrize("push", [_push_dense, _push_csr])
-@pytest.mark.parametrize(("start_row", "nrow"), [(45, 10), (50, 1), (-1, 5)])
+@pytest.mark.parametrize(("start_row", "nrow"), [(45, 10), (50, 1), (-1, 5), (2**31 - 1, 1)])
 def test_push_outside_the_dataset_is_rejected(push, start_row, nrow):
     X, ref, handle = _reference_and_target(50)
     try:
         assert push(handle, X[:nrow], start_row) == -1
-        assert "Cannot push rows" in _LIB.FLC_GetLastError().decode()
+        assert "Cannot push" in _LIB.FLC_GetLastError().decode()
     finally:
         _safe_call(_LIB.FLC_DatasetFree(handle))
 
@@ -78,5 +78,15 @@ def test_push_inside_the_dataset_still_works(push):
         n = ctypes.c_int()
         _safe_call(_LIB.FLC_DatasetGetNumData(handle, ctypes.byref(n)))
         assert n.value == 50
+    finally:
+        _safe_call(_LIB.FLC_DatasetFree(handle))
+
+
+def test_csr_push_at_int64_max_start_row_is_rejected():
+    # the CSR variant takes an int64_t start_row: the check must not overflow on it
+    X, ref, handle = _reference_and_target(50)
+    try:
+        assert _push_csr(handle, X[:1], 2**63 - 1) == -1
+        assert "Cannot push" in _LIB.FLC_GetLastError().decode()
     finally:
         _safe_call(_LIB.FLC_DatasetFree(handle))

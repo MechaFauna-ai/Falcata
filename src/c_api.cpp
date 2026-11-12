@@ -1113,9 +1113,11 @@ static int32_t CheckedRowCount(int64_t nrow, const char* what) {
 // The streaming push functions write rows [start_row, start_row + nrow) of a Dataset allocated for num_data rows:
 // a range outside it wrote past the bins (heap-buffer-overflow).
 static void CheckPushRowRange(const Dataset* dataset, int64_t start_row, int64_t nrow) {
-  if (start_row < 0 || nrow < 0 || start_row + nrow > static_cast<int64_t>(dataset->num_data())) {
-    Log::Fatal("Cannot push rows [%s, %s): the Dataset has %d rows", std::to_string(start_row).c_str(),
-               std::to_string(start_row + nrow).c_str(), dataset->num_data());
+  const int64_t num_data = dataset->num_data();
+  // compare against the remaining rows, so a huge start_row (CSR takes an int64_t) cannot overflow the check
+  if (start_row < 0 || nrow < 0 || start_row > num_data || nrow > num_data - start_row) {
+    Log::Fatal("Cannot push %s rows at start_row %s: the Dataset has %d rows", std::to_string(nrow).c_str(),
+               std::to_string(start_row).c_str(), dataset->num_data());
   }
 }
 
