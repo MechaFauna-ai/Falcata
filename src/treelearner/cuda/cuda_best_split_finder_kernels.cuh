@@ -697,6 +697,9 @@ __device__ void FindBestSplitsForLeafKernelInner(
   uint32_t threshold_value = 0;
   __shared__ int rand_threshold;
   if (USE_RAND && threadIdx.x == 0) {
+    // a feature of two bins has the one threshold 0 (the CPU's default); left unset, the shared value was whatever
+    // the slot held before, so extra_trees trees on such features changed from run to run
+    rand_threshold = 0;
     if (task->num_bin - 2 > 0) {
       rand_threshold = cuda_random->NextInt(0, task->num_bin - 2);
     }
@@ -1061,6 +1064,9 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
   uint32_t threshold_value = 0;
   __shared__ int rand_threshold;
   if (USE_RAND && threadIdx.x == 0) {
+    // a feature of two bins has the one threshold 0 (the CPU's default); left unset, the shared value was whatever
+    // the slot held before, so extra_trees trees on such features changed from run to run
+    rand_threshold = 0;
     if (task->num_bin - 2 > 0) {
       rand_threshold = cuda_random->NextInt(0, task->num_bin - 2);
     }
@@ -2325,6 +2331,9 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
   uint32_t local_best_pos = 0;
   __shared__ int rand_threshold;
   if (USE_RAND && threadIdx.x == 0) {
+    // a feature of two bins has the one threshold 0 (the CPU's default); left unset, the shared value was whatever
+    // the slot held before, so extra_trees trees on such features changed from run to run
+    rand_threshold = 0;
     if (task->num_bin - 2 > 0) {
       rand_threshold = cuda_random->NextInt(0, task->num_bin - 2);
     }
