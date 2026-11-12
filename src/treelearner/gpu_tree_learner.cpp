@@ -376,8 +376,11 @@ void GPUTreeLearner::AllocateGPUMemory() {
                     0, num_data_ * sizeof(Feature4)));
   }
   // building Feature4 bundles; each thread handles dword_features_ features
+  // (a Log::Fatal inside the parallel region must reach the caller as an exception, not std::terminate)
+  OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int i = 0; i < static_cast<int>(dense_feature_group_map_.size() / dword_features_); ++i) {
+    OMP_LOOP_EX_BEGIN();
     int tid = omp_get_thread_num();
     Feature4* host4 = host4_ptrs[tid];
     auto dense_ind = dense_feature_group_map_.begin() + i * dword_features_;
@@ -453,7 +456,9 @@ void GPUTreeLearner::AllocateGPUMemory() {
     }
     printf("\n");
     #endif
+    OMP_LOOP_EX_END();
   }
+  OMP_THROW_EX();
   // working on the remaining (less than dword_features_) feature groups
   if (k != 0) {
     Feature4* host4 = host4_ptrs[0];
