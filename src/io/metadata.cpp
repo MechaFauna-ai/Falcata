@@ -6,6 +6,9 @@
 #include <Falcata/dataset.h>
 #include <Falcata/utils/common.h>
 
+#include <cinttypes>
+#include <cstdint>
+#include <limits>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -599,13 +602,22 @@ void Metadata::SetQueriesFromIterator(It first, It last) {
     return;
   }
 
-  data_size_t sum = 0;
-  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) reduction(+:sum)
+  // a negative count would make the query boundaries go backwards (the ranking objectives
+  // and metrics then index outside the data); sum in 64 bits so the check cannot wrap
+  int64_t sum = 0;
+  data_size_t num_negative = 0;
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) reduction(+:sum, num_negative)
   for (data_size_t i = 0; i < static_cast<data_size_t>(last - first); ++i) {
     sum += first[i];
+    if (first[i] < 0) {
+      ++num_negative;
+    }
+  }
+  if (num_negative > 0) {
+    Log::Fatal("Query counts must be non-negative (%i negative)", num_negative);
   }
   if (num_data_ != sum) {
-    Log::Fatal("Sum of query counts (%i) differs from the length of #data (%i)", num_data_, sum);
+    Log::Fatal("Sum of query counts (%" PRId64 ") differs from the length of #data (%i)", sum, num_data_);
   }
   num_queries_ = last - first;
 
@@ -816,6 +828,12 @@ void Metadata::LoadQueryBoundaries() {
   for (size_t i = 0; i < reader.Lines().size(); ++i) {
     int tmp_cnt;
     Common::Atoi(reader.Lines()[i].c_str(), &tmp_cnt);
+    if (tmp_cnt < 0) {
+      Log::Fatal("Query count %i on line %zu of %s is negative", tmp_cnt, i + 1, query_filename.c_str());
+    }
+    if (tmp_cnt > std::numeric_limits<data_size_t>::max() - query_boundaries_[i]) {
+      Log::Fatal("Query counts in %s sum past the int range", query_filename.c_str());
+    }
     query_boundaries_[i + 1] = query_boundaries_[i] + static_cast<data_size_t>(tmp_cnt);
   }
   query_load_from_file_ = true;
@@ -826,6 +844,11 @@ void Metadata::CalculateQueryWeights() {
     return;
   }
   query_weights_.clear();
+  if (static_cast<size_t>(query_boundaries_[num_queries_]) != weights_.size()) {
+    // a .query file and a .weight file of different lengths: averaging would read past the
+    // weights, and the size checks against the data report the mismatch once it is known
+    return;
+  }
   Log::Info("Calculating query weights...");
   query_weights_ = std::vector<label_t>(num_queries_);
   for (data_size_t i = 0; i < num_queries_; ++i) {
