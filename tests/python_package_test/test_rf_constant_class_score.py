@@ -113,3 +113,26 @@ def test_rf_without_usable_features(bagging_fraction):
     }
     bst = flc.train(params, flc.Dataset(X, y), num_boost_round=5)
     np.testing.assert_allclose(bst.predict(X), y.mean())
+
+
+@pytest.mark.parametrize("objective", ["regression", "fair", "multiclass", "gamma"])
+def test_rf_all_zero_weights_matches_gbdt_outcome(objective):
+    # With every weight 0, RF's root Newton step is 0/0 and the model predicted
+    # NaN; GBDT trains (or, for gamma, stops with its non-finite leaf error).
+    # RF now does the same as GBDT, and never writes a NaN model.
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((300, 4))
+    y = rng.integers(0, 3, 300).astype(float) if objective == "multiclass" else np.abs(rng.standard_normal(300)) + 0.5
+    base = {"objective": objective, "bagging_fraction": 0.5, "bagging_freq": 1, "verbose": -1}
+    if objective == "multiclass":
+        base["num_class"] = 3
+
+    def outcome(boosting):
+        try:
+            bst = flc.train({**base, "boosting": boosting}, flc.Dataset(X, y, weight=np.zeros(300)), 5)
+        except flc.basic.FalcataError as e:
+            return "error: non-finite leaf" if "non-finite leaf output" in str(e) else f"error: {e}"
+        assert np.all(np.isfinite(bst.predict(X)))
+        return "trained"
+
+    assert outcome("rf") == outcome("gbdt")

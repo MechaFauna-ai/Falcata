@@ -539,6 +539,9 @@ class GBDT : public GBDTBase {
   inline std::string ParserConfigStr() const override {return parser_config_str_;}
 
  protected:
+  /*! \brief Stop training on a non-finite leaf output (a diverged or degenerate tree), as TrainOneIter does */
+  static void CheckTreeOutputsAreFinite(const Tree* tree, int iter, int tree_id);
+
   /*! \brief Validate per-tree output dimensions after model loading. */
   void ValidateLeafValueDimensions();
   int CheckLeafValueDimensions(const std::vector<const Tree*>& models) const;

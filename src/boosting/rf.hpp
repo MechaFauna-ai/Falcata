@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <string>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <deque>
 #include <fstream>
@@ -207,6 +208,11 @@ class RF : public GBDT {
         grown = global_bag_data_cnt > 0 && train_data_->num_features() > 0;
         if (grown) {
           new_tree.reset(tree_learner_->Train(grad, hess, false));
+          if (new_tree->num_leaves() == 1 && !std::isfinite(new_tree->LeafOutput(0))) {
+            // a root that could not split and has no hessian mass (e.g. every in-bag weight
+            // 0): its Newton step is 0/0, so it takes no step and carries the class bias alone
+            new_tree->SetLeafOutput(0, 0.0);
+          }
         }
       }
 
@@ -232,6 +238,9 @@ class RF : public GBDT {
           new_tree->AddBias(init_scores_[cur_tree_id]);
         }
         // update score
+        // as GBDT: a non-finite leaf (e.g. every in-bag weight 0, so 0/0) stops training with
+        // an error instead of writing a model that predicts NaN
+        CheckTreeOutputsAreFinite(new_tree.get(), iter_, cur_tree_id);
         const int num_averaged = iter_ + num_init_iteration_;
         if (new_tree->num_leaves() <= 1) {
           FlushDeferredTrainTrees();
@@ -258,6 +267,7 @@ class RF : public GBDT {
         // after the first round pulled the average toward 0 (an absent class's probability
         // grew with num_iterations).
         new_tree->AsConstantTree(objective_function_->BoostFromScore(cur_tree_id), num_data_);
+        CheckTreeOutputsAreFinite(new_tree.get(), iter_, cur_tree_id);
         FlushDeferredTrainTrees();
         AddTreeToAveragedScores(new_tree.get(), cur_tree_id, iter_ + num_init_iteration_);
       }
