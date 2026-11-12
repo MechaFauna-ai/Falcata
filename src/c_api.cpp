@@ -266,6 +266,7 @@ class Booster {
   void ResetTrainingData(const Dataset* train_data) {
     if (train_data != train_data_) {
       UNIQUE_LOCK(mutex_)
+      RequireTrainData("reset its training data");
       train_data_ = train_data;
       train_data_num_total_features_ = train_data_->num_total_features();
       CreateObjectiveAndMetrics();
@@ -504,6 +505,7 @@ class Booster {
 
   void AddValidData(const Dataset* valid_data) {
     UNIQUE_LOCK(mutex_)
+    RequireTrainData("add validation data");
     valid_data_.push_back(valid_data);
     valid_metrics_.push_back(CreateMetrics(valid_data));
     boosting_->AddValidDataset(valid_data,
@@ -512,6 +514,7 @@ class Booster {
 
   bool TrainOneIter() {
     UNIQUE_LOCK(mutex_)
+    RequireTrainData("train");
     CheckTrainDataUnchanged();
     return boosting_->TrainOneIter(nullptr, nullptr);
   }
@@ -523,6 +526,7 @@ class Booster {
 
   bool TrainOneIter(const score_t* gradients, const score_t* hessians) {
     UNIQUE_LOCK(mutex_)
+    RequireTrainData("train");
     CheckTrainDataUnchanged();
     return boosting_->TrainOneIter(gradients, hessians);
   }
@@ -534,6 +538,14 @@ class Booster {
       Log::Fatal("The training Dataset gained features (%d, was %d) after this Booster was created on it; "
                  "create a new Booster to train on the extended Dataset",
                  train_data_->num_total_features(), train_data_num_total_features_);
+    }
+  }
+
+  // A Booster loaded from a model (FLC_BoosterCreateFromModelfile, FLC_BoosterLoadModelFromString, ...) has no
+  // training data, objective or training config: the GBDT methods that use them dereferenced null pointers.
+  void RequireTrainData(const char* operation) const {
+    if (train_data_ == nullptr) {
+      Log::Fatal("Cannot %s: this Booster has no training data (it was loaded from a model)", operation);
     }
   }
 
@@ -906,7 +918,17 @@ class Booster {
   }
 
   void GetPredictAt(int data_idx, double* out_result, int64_t* out_len) const {
+    if (data_idx == 0) {
+      RequireTrainData("get the training scores");
+    }
     boosting_->GetPredictAt(data_idx, out_result, out_len);
+  }
+
+  int64_t GetNumPredictAt(int data_idx) const {
+    if (data_idx == 0) {
+      RequireTrainData("get the training scores");
+    }
+    return boosting_->GetNumPredictAt(data_idx);
   }
 
   void SaveModelToFile(int start_iteration, int num_iteration, int feature_importance_type, const char* filename) const {
@@ -3307,8 +3329,7 @@ int FLC_BoosterGetNumPredict(BoosterHandle handle,
                               int data_idx,
                               int64_t* out_len) {
   API_BEGIN();
-  auto boosting = reinterpret_cast<Booster*>(handle)->GetBoosting();
-  *out_len = boosting->GetNumPredictAt(data_idx);
+  *out_len = reinterpret_cast<Booster*>(handle)->GetNumPredictAt(data_idx);
   API_END();
 }
 
