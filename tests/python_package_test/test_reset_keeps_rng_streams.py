@@ -82,3 +82,26 @@ def _split_features(node):
     if "split_feature" not in node:
         return set()
     return {node["split_feature"]} | _split_features(node["left_child"]) | _split_features(node["right_child"])
+
+
+@pytest.mark.parametrize("drop_rate", [1e-9, 0.3])
+def test_dart_reset_keeps_drop_state(drop_rate):
+    # DART's ResetConfig zeroed the total tree weight: the next iteration divided by zero and dropped every earlier
+    # tree (up to max_drop) even with a negligible drop_rate, and the drop stream restarted
+    x, y = _data()
+    params = {**BASE, "boosting": "dart", "drop_rate": drop_rate, "skip_drop": 0.0}
+
+    def boosted(with_reset):
+        booster = flc.Booster(params, flc.Dataset(x, y))
+        for i in range(10):
+            if with_reset and i == 5:
+                booster.reset_parameter({"verbose": -1})
+            booster.update()
+        return booster
+
+    with_reset, without_reset = boosted(with_reset=True), boosted(with_reset=False)
+    np.testing.assert_array_equal(with_reset.predict(x), without_reset.predict(x))
+    if drop_rate < 1e-6:
+        # nothing is ever dropped: every tree keeps its learning-rate shrinkage
+        shrinkage = [tree["shrinkage"] for tree in with_reset.dump_model()["tree_info"]]
+        np.testing.assert_allclose(shrinkage[1:], 0.1)
