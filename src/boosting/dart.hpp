@@ -48,9 +48,15 @@ class DART: public GBDT {
   }
 
   void ResetConfig(const Config* config) override {
+    const int old_drop_seed = config_->drop_seed;
     GBDT::ResetConfig(config);
-    random_for_drop_ = Random(config_->drop_seed);
-    sum_weight_ = 0.0f;
+    // sum_weight_ is the total weight of the trees already in the model (tree_weight_ keeps them): zeroing it made
+    // the next DroppingTrees divide by zero, so every tree got an infinite drop probability and up to max_drop trees
+    // were dropped whatever drop_rate. The drop stream restarts only for a new drop_seed, so a reset that changes
+    // nothing leaves the trees grown after it unchanged.
+    if (config_->drop_seed != old_drop_seed) {
+      random_for_drop_ = Random(config_->drop_seed);
+    }
   }
 
   /*!
