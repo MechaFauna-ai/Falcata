@@ -158,6 +158,11 @@ Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::Train(const score_t* gradients, cons
 template <typename TREE_LEARNER_TYPE>
 Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::FitByExistingTree(const Tree* old_tree, const score_t* gradients, const score_t *hessians) const {
   auto tree = TREE_LEARNER_TYPE::FitByExistingTree(old_tree, gradients, hessians);
+  if (!old_tree->is_linear()) {
+    // a linear model's constant (no-split) trees are plain trees: they have
+    // no per-leaf feature lists, so refit them like any plain tree
+    return tree;
+  }
   bool has_nan = false;
   if (any_nan_) {
     for (int i = 0; i < tree->num_leaves() - 1 ; ++i) {
