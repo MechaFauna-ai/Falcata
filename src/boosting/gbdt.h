@@ -70,6 +70,15 @@ class GBDT : public GBDTBase {
   */
   void MergeFrom(const Boosting* other) override {
     auto other_gbdt = reinterpret_cast<const GBDT*>(other);
+    std::vector<const Tree*> merged_models;
+    merged_models.reserve(other_gbdt->models_.size() + models_.size());
+    for (const auto& tree : other_gbdt->models_) {
+      merged_models.push_back(tree.get());
+    }
+    for (const auto& tree : models_) {
+      merged_models.push_back(tree.get());
+    }
+    CheckLeafValueDimensions(merged_models);
     // the merged trees are scored as this model's iterations and over this model's feature vector: a model
     // with another number of trees per iteration would be summed into the wrong outputs, and one with more
     // features would read past the prediction buffer (heap-buffer-overflow)
@@ -81,15 +90,6 @@ class GBDT : public GBDTBase {
       Log::Fatal("Cannot merge a model with %d features into one with %d",
                  other_gbdt->max_feature_idx_ + 1, max_feature_idx_ + 1);
     }
-    std::vector<const Tree*> merged_models;
-    merged_models.reserve(other_gbdt->models_.size() + models_.size());
-    for (const auto& tree : other_gbdt->models_) {
-      merged_models.push_back(tree.get());
-    }
-    for (const auto& tree : models_) {
-      merged_models.push_back(tree.get());
-    }
-    CheckLeafValueDimensions(merged_models);
 
     // tmp move to other vector
     auto original_models = std::move(models_);
