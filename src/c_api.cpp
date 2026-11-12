@@ -403,6 +403,7 @@ class Booster {
 
   void ResetConfig(const char* parameters) {
     UNIQUE_LOCK(mutex_)
+    CheckTrainDataUnchanged();
     auto param = Config::Str2Map(parameters);
     // Config::Set reads an unset device_type as "auto" (cuda when a GPU is usable), and a reset's map holds only the
     // reset keys: carry the booster's device, or a reset of a device_type=cpu booster would build CUDA objects (an
@@ -504,6 +505,7 @@ class Booster {
 
   void AddValidData(const Dataset* valid_data) {
     UNIQUE_LOCK(mutex_)
+    CheckTrainDataUnchanged();
     valid_data_.push_back(valid_data);
     valid_metrics_.push_back(CreateMetrics(valid_data));
     boosting_->AddValidDataset(valid_data,
@@ -518,6 +520,7 @@ class Booster {
 
   void Refit(const int32_t* leaf_preds, int32_t nrow, int32_t ncol) {
     UNIQUE_LOCK(mutex_)
+    CheckTrainDataUnchanged();
     boosting_->RefitTree(leaf_preds, nrow, ncol);
   }
 
@@ -528,7 +531,9 @@ class Booster {
   }
 
   // The tree learner sized itself for the training Dataset's features when it was set up; features added to that
-  // Dataset afterwards (FLC_DatasetAddFeaturesFrom) would be read through those stale sizes.
+  // Dataset afterwards (FLC_DatasetAddFeaturesFrom) would be read through those stale sizes. Every operation that
+  // reaches the tree learner or the training Dataset's bin mappers checks this: training, parameter resets (the
+  // histogram pool re-reads the feature metadata: heap-use-after-free), refit and adding validation data.
   void CheckTrainDataUnchanged() const {
     if (train_data_ != nullptr && train_data_->num_total_features() != train_data_num_total_features_) {
       Log::Fatal("The training Dataset gained features (%d, was %d) after this Booster was created on it; "
