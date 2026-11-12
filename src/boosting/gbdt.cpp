@@ -398,6 +398,17 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
   CHECK_GT(nrow * ncol, 0);
   CHECK_EQ(static_cast<size_t>(num_data_), nrow);
   CHECK_EQ(models_.size(), ncol);
+  // validate every leaf index before refitting any tree: the check used to sit inside the OpenMP loop below, where a
+  // failing CHECK terminated the process, and it let negative indices through to the data partition
+  for (size_t i = 0; i < nrow; ++i) {
+    for (size_t model_index = 0; model_index < ncol; ++model_index) {
+      const int leaf = tree_leaf_prediction[i * ncol + model_index];
+      if (leaf < 0 || leaf >= models_[model_index]->num_leaves()) {
+        Log::Fatal("Leaf prediction %d (row %zu, tree %zu) is outside the tree's %d leaves", leaf, i, model_index,
+                   models_[model_index]->num_leaves());
+      }
+    }
+  }
 
   int num_iterations = static_cast<int>(models_.size() / num_tree_per_iteration_);
   std::vector<int> leaf_pred(num_data_);
@@ -418,7 +429,6 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
       for (int i = 0; i < num_data_; ++i) {
         leaf_pred[i] = tree_leaf_prediction[i * ncol + model_index];
-        CHECK_LT(leaf_pred[i], models_[model_index]->num_leaves());
       }
       size_t offset = static_cast<size_t>(tree_id) * num_data_;
       auto grad = gradients_pointer_ + offset;
