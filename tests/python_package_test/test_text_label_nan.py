@@ -30,6 +30,7 @@ def test_nan_label_from_file_matches_numpy(tmp_path, boosting):
         "bagging_freq": 1,
         "deterministic": True,
         "num_threads": 1,
+        "device_type": "cpu",
         "verbose": -1,
     }
     from_file = flc.train(params, flc.Dataset(str(path), params={"label_column": 0}), 5)
@@ -46,7 +47,7 @@ def test_nan_weight_column_from_file_matches_numpy(tmp_path):
     w = rng.random(200)
     w[7] = np.nan
     path = _write(tmp_path, np.column_stack([y, w, X]), "train.csv")
-    params = {"objective": "binary", "deterministic": True, "num_threads": 1, "verbose": -1}
+    params = {"objective": "binary", "deterministic": True, "num_threads": 1, "device_type": "cpu", "verbose": -1}
     from_file = flc.train(params, flc.Dataset(str(path), params={"label_column": 0, "weight_column": 0}), 5)
     from_numpy = flc.train(params, flc.Dataset(X, y, weight=w), 5)
     # weight_column does not count the label column; the weight keeps its slot in the file model's input
@@ -60,6 +61,6 @@ def test_nan_label_from_file_with_auc_mu(tmp_path):
     y = rng.integers(0, 3, 150).astype(float)
     y[0] = np.nan
     path = _write(tmp_path, np.column_stack([y, X]), "train.csv")
-    params = {"objective": "multiclass", "num_class": 3, "metric": "auc_mu", "verbose": -1}
+    params = {"objective": "multiclass", "num_class": 3, "metric": "auc_mu", "device_type": "cpu", "verbose": -1}
     bst = flc.train(params, flc.Dataset(str(path), params={"label_column": 0}), 3)
     assert np.all(np.isfinite(bst.predict(X)))
