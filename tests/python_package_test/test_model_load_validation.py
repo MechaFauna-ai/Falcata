@@ -178,3 +178,43 @@ def test_objective_with_more_classes_than_the_model_is_refused(tmp_path, model_t
     end = model_text.index("\n", start)
     bad = model_text[:start] + "objective=multiclass num_class:5" + model_text[end:]
     assert "REFUSED" in _run(tmp_path, bad)
+
+
+_LINEAR_HEAD = (
+    "tree\nversion=v4\nnum_class=1\nnum_tree_per_iteration=1\nlabel_index=0\nmax_feature_idx=0\n"
+    "objective=regression\nfeature_names=f0\nfeature_infos=[-1:1]\n\n"
+)
+
+
+def test_huge_array_count_is_refused_before_allocating(tmp_path):
+    # a linear leaf claiming 2**26 features: the parser sized the
+    # leaf_features array from that count (256 MiB here, up to 8 GiB) before
+    # finding the string holds one value
+    tree = (
+        "Tree=0\nnum_leaves=1\nnum_cat=0\nsplit_feature=\nsplit_gain=\nthreshold=\ndecision_type=\n"
+        "left_child=\nright_child=\nleaf_value=0.5\nleaf_weight=0\nleaf_count=0\ninternal_value=\n"
+        "internal_weight=\ninternal_count=\nis_linear=1\nleaf_const=0.5\nnum_features=67108864\n"
+        "leaf_features=0\nleaf_coeff=1\nshrinkage=1\n\n"
+    )
+    path = tmp_path / "model.txt"
+    path.write_text(_LINEAR_HEAD + tree + "end of trees\n", encoding="utf-8")
+    child = textwrap.dedent(
+        """
+        import resource, sys
+        import falcata as flc
+        before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        try:
+            flc.Booster(model_file=sys.argv[1])
+            print("LOADED")
+        except flc.basic.FalcataError as err:
+            print("REFUSED", err)
+        print("GROWN_MB", (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) / 1024)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", child, str(path)], capture_output=True, text=True, timeout=120, check=False
+    )
+    assert proc.returncode == 0, proc.stderr[-1500:]
+    assert "REFUSED" in proc.stdout, proc.stdout
+    if sys.platform.startswith("linux"):  # ru_maxrss is KiB there
+        assert float(proc.stdout.split("GROWN_MB")[1]) < 128, proc.stdout

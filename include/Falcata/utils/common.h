@@ -463,6 +463,11 @@ inline static std::vector<T> StringToArrayFast(const std::string& str, int n) {
   if (n == 0) {
     return std::vector<T>();
   }
+  // values are separated, so a string of length L holds at most (L + 1) / 2:
+  // check before sizing the array, since n comes from the (untrusted) model
+  if (n < 0 || static_cast<size_t>(n) > (str.size() + 1) / 2) {
+    Log::Fatal("Malformed model file: not enough values in string for array of size %d", n);
+  }
   auto p_str = str.c_str();
   auto p_end = p_str + str.size();
   __StringToTHelperFast<T, std::is_floating_point<T>::value> helper;
@@ -1182,6 +1187,11 @@ template<typename T>
 inline static std::vector<T> StringToArrayFast(const std::string& str, int n) {
   if (n == 0) {
     return std::vector<T>();
+  }
+  // values are separated, so a string of length L holds at most (L + 1) / 2:
+  // check before sizing the array, since n comes from the (untrusted) model
+  if (n < 0 || static_cast<size_t>(n) > (str.size() + 1) / 2) {
+    Log::Fatal("Malformed model file: not enough values in string for array of size %d", n);
   }
   auto p_str = str.c_str();
   auto p_end = p_str + str.size();
