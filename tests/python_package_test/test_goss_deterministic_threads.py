@@ -18,7 +18,14 @@ def test_goss_deterministic_across_num_threads(goss, objective):
         y = X[:, 0] + rng.standard_normal(7000)
     else:
         y = np.digitize(X[:, 0] + 0.5 * rng.standard_normal(7000), [-1, 0, 1]).astype(float)
-    params = {"objective": objective, "deterministic": True, "force_row_wise": True, "verbose": -1, **goss}
+    params = {
+        "objective": objective,
+        "deterministic": True,
+        "force_row_wise": True,
+        "device_type": "cpu",
+        "verbose": -1,
+        **goss,
+    }
     if objective != "regression":
         params["num_class"] = 4
     preds = [
