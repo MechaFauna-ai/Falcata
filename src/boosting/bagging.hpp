@@ -232,6 +232,9 @@ class BaggingSampleStrategy : public SampleStrategy {
         need_resize_gradients_ = true;
       }
     } else {
+      // keep pointing at the current config: GBDT::ResetConfig frees the previous one, and the next reset that
+      // enables bagging compares against config_ above (heap-use-after-free)
+      config_ = config;
       bag_data_cnt_ = num_data_;
       bag_data_indices_.clear();
       #ifdef USE_CUDA
