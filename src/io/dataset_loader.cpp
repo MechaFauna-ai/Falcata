@@ -859,8 +859,9 @@ void DatasetLoader::LoadHeaderFromMemory(Dataset* dataset, const char* buffer, s
   // is checked before it sizes an array or indexes one.
   BoundedReader reader(buffer, size, "Binary dataset header");
   auto read_ints = [&reader](int count, bool aligned) {
-    std::vector<int> out(static_cast<size_t>(count));
+    // take the bytes first: the buffer, not the claimed count, bounds the allocation
     const char* bytes = reader.TakeArray(static_cast<size_t>(count), sizeof(int), aligned);
+    std::vector<int> out(static_cast<size_t>(count));
     if (count > 0) std::memcpy(out.data(), bytes, sizeof(int) * out.size());
     return out;
   };

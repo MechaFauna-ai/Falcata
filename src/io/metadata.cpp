@@ -883,19 +883,21 @@ void Metadata::LoadFromMemory(const void* memory, size_t memory_size) {
                num_data_, num_weights_, num_queries_);
   }
 
-  label_ = std::vector<label_t>(num_data_);
+  // each array's bytes are taken before it is allocated: the buffer, not
+  // the claimed count, bounds the allocation
   const char* labels = reader.TakeArray(static_cast<size_t>(num_data_), sizeof(label_t), true);
+  label_ = std::vector<label_t>(num_data_);
   std::memcpy(label_.data(), labels, sizeof(label_t) * num_data_);
 
   if (num_weights_ > 0) {
-    weights_ = std::vector<label_t>(num_weights_);
     const char* weights = reader.TakeArray(static_cast<size_t>(num_weights_), sizeof(label_t), true);
+    weights_ = std::vector<label_t>(num_weights_);
     std::memcpy(weights_.data(), weights, sizeof(label_t) * num_weights_);
     weight_load_from_file_ = true;
   }
   if (num_queries_ > 0) {
-    query_boundaries_ = std::vector<data_size_t>(num_queries_ + 1);
     const char* bounds = reader.TakeArray(static_cast<size_t>(num_queries_) + 1, sizeof(data_size_t), true);
+    query_boundaries_ = std::vector<data_size_t>(num_queries_ + 1);
     std::memcpy(query_boundaries_.data(), bounds, sizeof(data_size_t) * (num_queries_ + 1));
     // the queries partition [0, num_data): every consumer indexes rows by them
     if (query_boundaries_.front() != 0 || query_boundaries_.back() != num_data_) {
