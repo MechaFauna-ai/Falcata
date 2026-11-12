@@ -46,3 +46,27 @@ def test_rescoring_after_a_stump_first_iteration(objective):
     valid = flc.Dataset(X, y, reference=train)
     bst.add_valid(valid, "v")
     np.testing.assert_allclose(bst._Booster__inner_predict(data_idx=1), bst.predict(X), atol=1e-10)
+
+
+@pytest.mark.parametrize("uniform_drop", [False, True])
+def test_dart_continues_after_a_stump_first_iteration(uniform_drop):
+    # DART keeps one weight per counted iteration; the kept stump iteration needs one too,
+    # or the next dropping step reads tree_weight_[0] of an empty vector
+    X, y = _data(0)
+    params = {
+        "objective": "regression",
+        "boosting": "dart",
+        "drop_rate": 0.9,
+        "skip_drop": 0.0,
+        "uniform_drop": uniform_drop,
+        "min_data_in_leaf": 700,
+        "feature_pre_filter": False,
+        "verbose": -1,
+        "device_type": "cpu",
+    }
+    bst = flc.Booster(params, flc.Dataset(X, y, params=params))
+    assert bst.update()
+    bst.reset_parameter({"min_data_in_leaf": 20})
+    for _ in range(5):
+        bst.update()
+    assert np.all(np.isfinite(bst.predict(X)))
