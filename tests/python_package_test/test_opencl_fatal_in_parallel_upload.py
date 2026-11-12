@@ -20,7 +20,15 @@ def test_opencl_reset_to_sparse_bins_raises():
     X = rng.standard_normal((10000, 20))
     X[rng.random(X.shape) < 0.7] = 0.0
     y = X[:, 0] + 0.3 * rng.standard_normal(10000)
-    params = {"objective": "regression", "device_type": "gpu", "num_leaves": 7, "num_threads": 8, "verbose": -1}
+    # max_bin=15: the 4-bit (Dense4bitsBin) upload path, whose bundles are built in the parallel loop
+    params = {
+        "objective": "regression",
+        "device_type": "gpu",
+        "max_bin": 15,
+        "num_leaves": 7,
+        "num_threads": 8,
+        "verbose": -1,
+    }
     train = flc.Dataset(X[:6000], y[:6000], params=params, free_raw_data=False)
     booster = flc.Booster(params, train)
     for _ in range(3):
