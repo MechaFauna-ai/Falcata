@@ -28,6 +28,7 @@ def _params(objective, linear_tree):
         "bagging_freq": 1,
         "linear_tree": linear_tree,
         "num_threads": 1,
+        "device_type": "cpu",
         "verbose": -1,
     }
     if objective != "binary":
@@ -90,6 +91,7 @@ def test_rf_empty_bag_keeps_predictions_finite(objective):
             "bagging_freq": 1,
             "bagging_seed": seed,
             "min_data_in_leaf": 1,
+            "device_type": "cpu",
             "verbose": -1,
         }
         bst = flc.train(params, flc.Dataset(X, y), num_boost_round=10)
@@ -109,6 +111,7 @@ def test_rf_without_usable_features(bagging_fraction):
         "boosting": "rf",
         "bagging_fraction": bagging_fraction,
         "bagging_freq": 1,
+        "device_type": "cpu",
         "verbose": -1,
     }
     bst = flc.train(params, flc.Dataset(X, y), num_boost_round=5)
@@ -123,7 +126,7 @@ def test_rf_all_zero_weights_matches_gbdt_outcome(objective):
     rng = np.random.default_rng(0)
     X = rng.standard_normal((300, 4))
     y = rng.integers(0, 3, 300).astype(float) if objective == "multiclass" else np.abs(rng.standard_normal(300)) + 0.5
-    base = {"objective": objective, "bagging_fraction": 0.5, "bagging_freq": 1, "verbose": -1}
+    base = {"objective": objective, "bagging_fraction": 0.5, "bagging_freq": 1, "device_type": "cpu", "verbose": -1}
     if objective == "multiclass":
         base["num_class"] = 3
 
