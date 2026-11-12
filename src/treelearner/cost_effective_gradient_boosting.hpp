@@ -37,12 +37,15 @@ class CostEfficientGradientBoosting {
 
   void Init() {
     auto train_data = tree_learner_->train_data_;
+    const size_t num_splits = static_cast<size_t>(tree_learner_->config_->num_leaves) * train_data->num_features();
     if (!init_) {
-      splits_per_leaf_.resize(
-          static_cast<size_t>(tree_learner_->config_->num_leaves) *
-          train_data->num_features());
+      splits_per_leaf_.resize(num_splits);
       is_feature_used_in_split_.clear();
       is_feature_used_in_split_.resize(train_data->num_features());
+    } else if (splits_per_leaf_.size() < num_splits) {
+      // a reset_parameter that raised num_leaves calls Init() again: the per-leaf split cache must cover the new
+      // leaves, which DeltaGain indexes by leaf (heap-buffer-overflow)
+      splits_per_leaf_.resize(num_splits);
     }
 
     if (!tree_learner_->config_->cegb_penalty_feature_coupled.empty() &&
