@@ -656,6 +656,12 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
     }
     add_section(kSecStats, kDTypeBytes, std::move(w), 8);
   }
+  // A model loaded from FALB without diagnostics has no real split gains:
+  // writing its 0 placeholders as a diagnostics section would make the copy
+  // look as if they were measured (pickle always asks for diagnostics).
+  if (falb_without_diagnostics_) {
+    with_diagnostics = false;
+  }
   if (with_diagnostics) {
     ByteWriter w;
     for (int i = start_model; i < num_used_model; ++i) {
@@ -1108,6 +1114,9 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
   // stats section would produce NaN/Inf contributions rather than fail. Record
   // it and refuse loudly at the point of use.
   falb_without_stats_ = !has_stats;
+  // without diagnostics every split_gain is 0, and split importance counts
+  // only splits with a positive gain: it would report zero for every feature
+  falb_without_diagnostics_ = !has_diag;
   return true;
 }
 

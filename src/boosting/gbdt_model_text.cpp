@@ -504,6 +504,7 @@ void GBDT::ValidateLeafValueDimensions() {
 bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
   // use serialized string to restore this object
   models_.clear();
+  falb_without_diagnostics_ = false;
   // A serialized model is text and never contains a NUL byte. The line
   // cursors below advance across '\n'/'\r' only, and GetLine/SkipNewLine
   // both stop AT a NUL without consuming it -- so a NUL inside [buffer,
@@ -750,7 +751,9 @@ std::vector<double> GBDT::FeatureImportance(int num_iteration, int importance_ty
   if (importance_type == 0) {
     for (int iter = 0; iter < num_used_model; ++iter) {
       for (int split_idx = 0; split_idx < models_[iter]->num_leaves() - 1; ++split_idx) {
-        if (models_[iter]->split_gain(split_idx) > 0) {
+        // a FALB file saved without diagnostics has no split gains (all read
+        // 0): count every split rather than none
+        if (falb_without_diagnostics_ || models_[iter]->split_gain(split_idx) > 0) {
 #ifdef DEBUG
           CHECK_GE(models_[iter]->split_feature(split_idx), 0);
 #endif
