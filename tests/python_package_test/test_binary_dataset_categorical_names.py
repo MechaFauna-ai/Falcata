@@ -25,6 +25,7 @@ def test_binary_dataset_with_categorical_feature_names(tmp_path):
         "categorical_feature": "name:f3",
         "deterministic": True,
         "num_threads": 1,
+        "device_type": "cpu",
         "verbose": -1,
     }
     text_ds = flc.Dataset(str(csv), params=params)
