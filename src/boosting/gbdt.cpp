@@ -202,8 +202,7 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
     }
     std::stringstream buffer;
     buffer << forced_splits_file.rdbuf();
-    std::string err;
-    forced_splits_json_ = Json::parse(buffer.str(), &err);
+    forced_splits_json_ = ParseForcedSplits(buffer.str(), config->forcedsplits_filename);
   }
 
   objective_function_ = objective_function;
@@ -266,7 +265,7 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
   parser_config_str_ = train_data_->parser_config_str();
 
   // check that forced splits does not use feature indices larger than dataset size
-  CheckForcedSplitFeatures();
+  CheckForcedSplitFeatures(forced_splits_json_);
 
   // if need bagging, create buffer
   data_sample_strategy_->ResetSampleConfig(config_.get(), true);
@@ -285,15 +284,30 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
   }
 }
 
-void GBDT::CheckForcedSplitFeatures() {
+Json GBDT::ParseForcedSplits(const std::string& content, const std::string& filename) {
+  std::string err;
+  Json forced_splits = Json::parse(content, &err);
+  if (!err.empty()) {
+    Log::Fatal("Could not parse forced splits file %s: %s", filename.c_str(), err.c_str());
+  }
+  if (!forced_splits.is_object()) {
+    Log::Fatal("Forced splits file %s must hold a JSON object (the root split)", filename.c_str());
+  }
+  return forced_splits;
+}
+
+void GBDT::CheckForcedSplitFeatures(const Json& forced_splits) const {
+  if (forced_splits.is_null()) {
+    return;
+  }
   std::queue<Json> forced_split_nodes;
-  forced_split_nodes.push(forced_splits_json_);
+  forced_split_nodes.push(forced_splits);
   while (!forced_split_nodes.empty()) {
     Json node = forced_split_nodes.front();
     forced_split_nodes.pop();
     const int feature_index = node["feature"].int_value();
-    if (feature_index > max_feature_idx_) {
-      Log::Fatal("Forced splits file includes feature index %d, but maximum feature index in dataset is %d",
+    if (feature_index < 0 || feature_index > max_feature_idx_) {
+      Log::Fatal("Forced splits file includes feature index %d, but feature indices in dataset are 0 to %d",
         feature_index, max_feature_idx_);
     }
     if (node.object_items().count("left") > 0) {
@@ -1080,6 +1094,24 @@ void GBDT::ResetConfig(const Config* config) {
       (tree_learner_ == nullptr || train_data_ == nullptr)) {
     Log::Fatal("forcedsplits_filename can only be changed for a booster with training data");
   }
+  // Read and validate a changed forced splits file before any state changes: the tree
+  // learner and the sample strategy keep a pointer to new_config, which a failure further
+  // down would free (heap-use-after-free on the next update).
+  const bool forced_splits_changed =
+      config_.get() != nullptr && config_->forcedsplits_filename != new_config->forcedsplits_filename;
+  Json new_forced_splits;
+  if (forced_splits_changed && !new_config->forcedsplits_filename.empty()) {
+    // Forced splits are a training-time tree-learner setting. The C API
+    // rejects enabling them on a loaded model before committing its config.
+    std::ifstream forced_splits_file(new_config->forcedsplits_filename.c_str());
+    if (forced_splits_file.fail()) {
+      Log::Fatal("Could not open %s", new_config->forcedsplits_filename.c_str());
+    }
+    std::stringstream buffer;
+    buffer << forced_splits_file.rdbuf();
+    new_forced_splits = ParseForcedSplits(buffer.str(), new_config->forcedsplits_filename);
+    CheckForcedSplitFeatures(new_forced_splits);
+  }
   // A model-loaded booster (the default return of train()) has no training
   // data and no tree learner; per-feature checks and learner resets only
   // apply when they exist.
@@ -1118,25 +1150,10 @@ void GBDT::ResetConfig(const Config* config) {
       ResetGradientBuffers();
     }
   }
-  if (config_.get() != nullptr && config_->forcedsplits_filename != new_config->forcedsplits_filename) {
-    // Forced splits are a training-time tree-learner setting. The C API
-    // rejects enabling them on a loaded model before committing its config.
-    if (!new_config->forcedsplits_filename.empty()) {
-      std::ifstream forced_splits_file(
-          new_config->forcedsplits_filename.c_str());
-      if (forced_splits_file.fail()) {
-        Log::Fatal("Could not open %s", new_config->forcedsplits_filename.c_str());
-      }
-      std::stringstream buffer;
-      buffer << forced_splits_file.rdbuf();
-      std::string err;
-      forced_splits_json_ = Json::parse(buffer.str(), &err);
-      tree_learner_->SetForcedSplit(&forced_splits_json_);
-    } else {
-      forced_splits_json_ = Json();
-      if (tree_learner_ != nullptr) {
-        tree_learner_->SetForcedSplit(nullptr);
-      }
+  if (forced_splits_changed) {
+    forced_splits_json_ = std::move(new_forced_splits);
+    if (tree_learner_ != nullptr) {
+      tree_learner_->SetForcedSplit(forced_splits_json_.is_null() ? nullptr : &forced_splits_json_);
     }
   }
   config_.reset(new_config.release());

@@ -322,7 +322,21 @@ void SerialTreeLearner::BeforeTrain() {
   histogram_pool_.ResetMap();
 
   col_sampler_.ResetByTree();
-  train_data_->InitTrain(col_sampler_.is_feature_used_bytree(), share_state_.get());
+  if (forced_split_json_ != nullptr) {
+    // Forced splits are evaluated even on features feature_fraction left out of this tree
+    // (FindBestSplits adds them back), so the row-wise multi-value bin, which InitTrain
+    // narrows to the tree's features, has to keep them: their histograms were zero there,
+    // and row-wise training forced different splits than col-wise.
+    std::vector<int8_t> is_feature_used = col_sampler_.is_feature_used_bytree();
+    for (const int inner_feature : FindAllForceFeatures(*forced_split_json_)) {
+      if (inner_feature >= 0) {
+        is_feature_used[inner_feature] = 1;
+      }
+    }
+    train_data_->InitTrain(is_feature_used, share_state_.get());
+  } else {
+    train_data_->InitTrain(col_sampler_.is_feature_used_bytree(), share_state_.get());
+  }
   // initialize data partition
   data_partition_->Init();
 
@@ -403,8 +417,11 @@ void SerialTreeLearner::FindBestSplits(const Tree* tree, const std::set<int>* fo
   std::vector<int8_t> is_feature_used(num_features_, 0);
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 256) if (num_features_ >= 512)
   for (int feature_index = 0; feature_index < num_features_; ++feature_index) {
-    if (!col_sampler_.is_feature_used_bytree()[feature_index] && (force_features == nullptr || force_features->find(feature_index) == force_features->end())) continue;
-    if (parent_leaf_histogram_array_ != nullptr
+    const bool is_forced = force_features != nullptr && force_features->find(feature_index) != force_features->end();
+    if (!col_sampler_.is_feature_used_bytree()[feature_index] && !is_forced) continue;
+    // a feature the parent could not split on is skipped (no histogram is built for it), except
+    // a forced-split feature: ForceSplits reads its histogram whatever the parent found
+    if (!is_forced && parent_leaf_histogram_array_ != nullptr
         && !parent_leaf_histogram_array_[feature_index].is_splittable()) {
       smaller_leaf_histogram_array_[feature_index].set_is_splittable(false);
       continue;
@@ -537,9 +554,18 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
   // Histogram construction require parent features.
   std::set<int> force_split_features = FindAllForceFeatures(*forced_split_json_);
   while (!q.empty()) {
-    if (BeforeFindBestSplit(tree, *left_leaf, *right_leaf)) {
-      FindBestSplits(tree, &force_split_features);
+    if (tree->num_leaves() >= config_->num_leaves) {
+      // num_leaves leaves already: the tree (and the data partition) has no room for another
+      // split, so the remaining forced splits are dropped
+      break;
     }
+    if (!BeforeFindBestSplit(tree, *left_leaf, *right_leaf)) {
+      // The leaves cannot be split (max_depth reached, or too few rows, e.g. a small bag):
+      // their histograms were not prepared, so no forced split can be evaluated on them.
+      abort_last_forced_split = true;
+      break;
+    }
+    FindBestSplits(tree, &force_split_features);
 
     // then, compute own splits
     SplitInfo left_split;
@@ -549,6 +575,13 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
       const int left_feature = left["feature"].int_value();
       const double left_threshold_double = left["threshold"].number_value();
       const int left_inner_feature_index = train_data_->InnerFeatureIndex(left_feature);
+      if (left_inner_feature_index < 0) {
+        // The feature exists but the dataset dropped it (constant, or filtered when the
+        // dataset was built): it has no bins to split on, so this forced split cannot be applied.
+        WarnUnusedForcedSplitFeature(left_feature);
+        abort_last_forced_split = true;
+        break;
+      }
       const uint32_t left_threshold = train_data_->BinThreshold(
               left_inner_feature_index, left_threshold_double);
       auto leaf_histogram_array = (left_smaller) ? smaller_leaf_histogram_array_ : larger_leaf_histogram_array_;
@@ -571,6 +604,11 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
       const int right_feature = right["feature"].int_value();
       const double right_threshold_double = right["threshold"].number_value();
       const int right_inner_feature_index = train_data_->InnerFeatureIndex(right_feature);
+      if (right_inner_feature_index < 0) {
+        WarnUnusedForcedSplitFeature(right_feature);
+        abort_last_forced_split = true;
+        break;
+      }
       const uint32_t right_threshold = train_data_->BinThreshold(
               right_inner_feature_index, right_threshold_double);
       auto leaf_histogram_array = (left_smaller) ? larger_leaf_histogram_array_ : smaller_leaf_histogram_array_;
@@ -645,6 +683,14 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
   return result_count;
 }
 
+void SerialTreeLearner::WarnUnusedForcedSplitFeature(int feature) {
+  if (warned_unused_forced_split_features_.insert(feature).second) {
+    Log::Warning("Forced split on feature %d is skipped: the training data does not use that feature "
+                 "(it is constant or was filtered out), so the remaining splits are found normally",
+                 feature);
+  }
+}
+
 std::set<int> SerialTreeLearner::FindAllForceFeatures(Json force_split_leaf_setting) {
   std::set<int> force_features;
   std::queue<Json> force_split_leaves;
@@ -657,7 +703,9 @@ std::set<int> SerialTreeLearner::FindAllForceFeatures(Json force_split_leaf_sett
 
     const int feature_index = split_leaf["feature"].int_value();
     const int feature_inner_index = train_data_->InnerFeatureIndex(feature_index);
-    force_features.insert(feature_inner_index);
+    if (feature_inner_index >= 0) {
+      force_features.insert(feature_inner_index);
+    }
 
     if (split_leaf.object_items().count("left") > 0) {
       force_split_leaves.push(split_leaf["left"]);

@@ -62,7 +62,10 @@ class GBDT : public GBDTBase {
   /*!
   * \brief Traverse the tree of forced splits and check that all indices are less than the number of features.
   */
-  void CheckForcedSplitFeatures();
+  void CheckForcedSplitFeatures(const Json& forced_splits) const;
+
+  /*! \brief Parse a forced splits file, failing on malformed JSON or a non-object root */
+  static Json ParseForcedSplits(const std::string& content, const std::string& filename);
 
   /*!
   * \brief Merge model from other boosting object. Will insert to the front of current boosting object
