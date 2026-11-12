@@ -7223,7 +7223,7 @@ void CUDASingleGPUTreeLearner::RenewDiscretizedTreeLeaves(CUDATree* cuda_tree) {
     gradients_, hessians_, cuda_tree,
     cuda_leaf_gradient_stat_buffer_.RawData(),
     cuda_leaf_hessian_stat_buffer_.RawData());
-  LaunchCalcLeafValuesGivenGradStat(cuda_tree, cuda_data_partition_->cuda_data_indices());
+  LaunchCalcLeafValuesGivenGradStat(cuda_tree);
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 

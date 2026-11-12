@@ -488,35 +488,28 @@ void CUDASingleGPUTreeLearner::LaunchConstructBitsetForCategoricalSplitKernel(
   CUDAConstructBitset<int, false>(best_split_info, num_cat_threshold_, cuda_bitset_, cuda_bitset_len_);
 }
 
-void CUDASingleGPUTreeLearner::LaunchCalcLeafValuesGivenGradStat(
-  CUDATree* cuda_tree, const data_size_t* num_data_in_leaf) {
-  #define CalcRefitLeafOutputKernel_ARGS \
-    cuda_tree->num_leaves(), cuda_leaf_gradient_stat_buffer_.RawData(), cuda_leaf_hessian_stat_buffer_.RawData(), num_data_in_leaf, \
-    cuda_tree->cuda_leaf_parent(), cuda_tree->cuda_left_child(), cuda_tree->cuda_right_child(), \
-    config_->lambda_l1, config_->lambda_l2, config_->path_smooth, config_->max_delta_step, \
-    1.0f, config_->refit_decay_rate, cuda_tree->cuda_leaf_value_ref()
-  const bool use_l1 = config_->lambda_l1 > 0.0f;
-  const bool use_smoothing = config_->path_smooth > 0.0f;
-  const int num_block = (cuda_tree->num_leaves() + CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE - 1) / CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE;
-  if (!use_l1) {
-    if (!use_smoothing) {
-      CalcRefitLeafOutputKernel<false, false>
-        <<<num_block, CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE>>>(CalcRefitLeafOutputKernel_ARGS);
-    } else {
-      CalcRefitLeafOutputKernel<false, true>
-        <<<num_block, CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE>>>(CalcRefitLeafOutputKernel_ARGS);
-    }
-  } else {
-    if (!use_smoothing) {
-      CalcRefitLeafOutputKernel<true, false>
-        <<<num_block, CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE>>>(CalcRefitLeafOutputKernel_ARGS);
-    } else {
-      CalcRefitLeafOutputKernel<true, true>
-        <<<num_block, CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE>>>(CalcRefitLeafOutputKernel_ARGS);
-    }
+// quant_train_renew_leaf: each leaf's output from the full-precision gradient sums of its rows, as the CPU
+// GradientDiscretizer::RenewIntGradTreeOutput computes it (L1 and max_delta_step, no path smoothing, no decay). The
+// tree is not shrunk yet: GBDT applies the learning rate afterwards.
+__global__ void RenewLeafOutputKernel(const int num_leaves, const double* leaf_grad_stat_buffer,
+                                      const double* leaf_hess_stat_buffer, const double lambda_l1,
+                                      const double lambda_l2, const double max_delta_step, double* leaf_value) {
+  const int leaf_index = static_cast<int>(threadIdx.x + blockIdx.x * blockDim.x);
+  if (leaf_index < num_leaves) {
+    const double output = CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(
+      leaf_grad_stat_buffer[leaf_index], leaf_hess_stat_buffer[leaf_index], lambda_l1, lambda_l2, 0.0,
+      max_delta_step, 0, 0.0);
+    // a leaf without rows (0 / 0) keeps a zero output instead of NaN
+    leaf_value[leaf_index] = isnan(output) ? 0.0 : output;
   }
+}
 
-  #undef CalcRefitLeafOutputKernel_ARGS
+void CUDASingleGPUTreeLearner::LaunchCalcLeafValuesGivenGradStat(CUDATree* cuda_tree) {
+  const int num_block = (cuda_tree->num_leaves() + CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE - 1) /
+                        CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE;
+  RenewLeafOutputKernel<<<num_block, CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE>>>(
+    cuda_tree->num_leaves(), cuda_leaf_gradient_stat_buffer_.RawData(), cuda_leaf_hessian_stat_buffer_.RawData(),
+    config_->lambda_l1, config_->lambda_l2, config_->max_delta_step, cuda_tree->cuda_leaf_value_ref());
 }
 
 // ---- linear tree ----
