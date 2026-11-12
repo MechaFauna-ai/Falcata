@@ -373,6 +373,12 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
                                     bool with_diagnostics,
                                     bool f32_leaves,
                                     int compress_level) const {
+  // A model loaded from FALB without diagnostics has no real split gains:
+  // writing its 0 placeholders as a diagnostics section would make the copy
+  // look as if they were measured (pickle always asks for diagnostics).
+  if (falb_without_diagnostics_) {
+    with_diagnostics = false;
+  }
   // ---- tree range (mirrors SaveModelToString's slicing) ----
   int num_used_model = static_cast<int>(models_.size());
   const int total_iteration = num_used_model / num_tree_per_iteration_;

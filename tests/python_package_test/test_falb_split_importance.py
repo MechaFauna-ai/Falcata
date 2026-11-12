@@ -25,3 +25,13 @@ def booster():
 def test_split_importance_survives_falb(booster, kwargs):
     loaded = flc.Booster(model_bin=booster.model_to_binary(**kwargs))
     np.testing.assert_array_equal(loaded.feature_importance("split"), booster.feature_importance("split"))
+
+
+def test_split_importance_survives_pickling_a_lean_falb_model(booster):
+    import pickle
+
+    lean = flc.Booster(model_bin=booster.model_to_binary())
+    restored = pickle.loads(pickle.dumps(lean))  # pickle asks for diagnostics
+    np.testing.assert_array_equal(restored.feature_importance("split"), booster.feature_importance("split"))
+    again = flc.Booster(model_bin=lean.model_to_binary(with_diagnostics=True))
+    np.testing.assert_array_equal(again.feature_importance("split"), booster.feature_importance("split"))
