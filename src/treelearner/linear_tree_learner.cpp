@@ -117,7 +117,9 @@ Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::Train(const score_t* gradients, cons
     while (true) {
       int best_leaf = static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(this->best_split_per_leaf_));
       const SplitInfo& best_leaf_SplitInfo = this->best_split_per_leaf_[best_leaf];
-      if (best_leaf_SplitInfo.gain <= 0.0) {
+      // !(gain > 0): a NaN gain (from non-finite gradients) is not a positive gain either; SplitInfo ranks it as
+      // kMinScore, so it can still win ArgMax over a leaf without any split candidate
+      if (!(best_leaf_SplitInfo.gain > 0.0)) {
         Log::Warning("No further splits with positive gain, best gain: %f", best_leaf_SplitInfo.gain);
         break;
       }
