@@ -23,14 +23,16 @@ def test_gamma_metrics_name_themselves(metric, bad):
     X, y = _data()
     y[4] = bad
     with pytest.raises(flc.basic.FalcataError, match=f"Metric {metric} requires positive labels, but found {int(bad)}"):
-        flc.train({"objective": "regression", "metric": metric, "verbose": -1}, flc.Dataset(X, y), 2)
+        flc.train(
+            {"objective": "regression", "metric": metric, "device_type": "cpu", "verbose": -1}, flc.Dataset(X, y), 2
+        )
 
 
 @pytest.mark.parametrize("alpha", [1.0, 1.5, 7.0])  # alpha <= 0 is refused by the config check
 def test_quantile_alpha_out_of_range(alpha):
     X, y = _data()
     with pytest.raises(flc.basic.FalcataError, match="objective=quantile requires 0 < alpha < 1"):
-        flc.train({"objective": "quantile", "alpha": alpha, "verbose": -1}, flc.Dataset(X, y), 2)
+        flc.train({"objective": "quantile", "alpha": alpha, "device_type": "cpu", "verbose": -1}, flc.Dataset(X, y), 2)
 
 
 def test_valid_gamma_metric_and_quantile_still_train():
@@ -38,7 +40,13 @@ def test_valid_gamma_metric_and_quantile_still_train():
     evals = {}
     ds = flc.Dataset(X, y)
     flc.train(
-        {"objective": "quantile", "alpha": 0.3, "metric": ["gamma", "gamma_deviance"], "verbose": -1},
+        {
+            "objective": "quantile",
+            "alpha": 0.3,
+            "metric": ["gamma", "gamma_deviance"],
+            "device_type": "cpu",
+            "verbose": -1,
+        },
         ds,
         3,
         valid_sets=[ds],
