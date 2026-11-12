@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cinttypes>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -144,7 +145,10 @@ struct SingleRowPredictor {
              int predict_type,
              Boosting *boosting,
              int start_iter,
-             int num_iter) : config(Config::Str2Map(parameters)), data_type(data_type), num_cols(num_cols), single_row_predictor_inner(predict_type, boosting, config, start_iter, num_iter), booster_mutex(booster_mutex) {
+             int num_iter) : config(Config::Str2Map(parameters)), data_type(data_type), num_cols(num_cols),
+                             single_row_predictor_inner(new SingleRowPredictorInner(predict_type, boosting, config, start_iter, num_iter)),
+                             booster_mutex(booster_mutex), boosting_(boosting), predict_type_(predict_type),
+                             start_iter_(start_iter), num_iter_(num_iter) {
     if (!config.predict_disable_shape_check && num_cols != boosting->MaxFeatureIdx() + 1) {
       Log::Fatal("The number of features in data (%d) is not the same as it was in training data (%d).\n"\
                  "You can set ``predict_disable_shape_check=true`` to discard this error, but please be aware what you are doing.", num_cols, boosting->MaxFeatureIdx() + 1);
@@ -156,10 +160,24 @@ struct SingleRowPredictor {
     UNIQUE_LOCK(single_row_predictor_mutex)
     yamc::shared_lock<yamc::alternate::shared_mutex> booster_shared_lock(booster_mutex);
 
-    auto one_row = get_row_fun(0);
-    single_row_predictor_inner.predict_function(one_row, out_result);
+    // The predictor resolved its iterations when this FastConfig was made. If the booster has since gained or
+    // lost trees (training, rollback, merge), resolve them again: a rollback would otherwise leave it reading
+    // freed trees. The output size the caller sized its buffer for must not change, though.
+    if (!single_row_predictor_inner->IsPredictorEqual(config, start_iter_, num_iter_, boosting_)) {
+      std::unique_ptr<SingleRowPredictorInner> fresh(
+          new SingleRowPredictorInner(predict_type_, boosting_, config, start_iter_, num_iter_));
+      if (fresh->num_pred_in_one_row != single_row_predictor_inner->num_pred_in_one_row) {
+        Log::Fatal("The booster changed since this FastConfig was created, so a prediction now has %" PRId64
+                   " outputs instead of %" PRId64 ". Create a new FastConfig.",
+                   fresh->num_pred_in_one_row, single_row_predictor_inner->num_pred_in_one_row);
+      }
+      single_row_predictor_inner = std::move(fresh);
+    }
 
-    *out_len = single_row_predictor_inner.num_pred_in_one_row;
+    auto one_row = get_row_fun(0);
+    single_row_predictor_inner->predict_function(one_row, out_result);
+
+    *out_len = single_row_predictor_inner->num_pred_in_one_row;
   }
 
  public:
@@ -168,10 +186,16 @@ struct SingleRowPredictor {
   const int32_t num_cols;
 
  private:
-  SingleRowPredictorInner single_row_predictor_inner;
+  // replaced (under single_row_predictor_mutex) when the booster's trees change, see Predict
+  mutable std::unique_ptr<SingleRowPredictorInner> single_row_predictor_inner;
 
   // Prevent the booster from being modified while we have a predictor relying on it during prediction
   yamc::alternate::shared_mutex *booster_mutex;
+
+  Boosting* boosting_;
+  const int predict_type_;
+  const int start_iter_;
+  const int num_iter_;
 
   // If several threads try to predict at the same time using the same SingleRowPredictor
   // we want them to still provide correct values, so the mutex is necessary due to the shared

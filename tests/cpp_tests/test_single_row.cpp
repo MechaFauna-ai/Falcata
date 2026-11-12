@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include <Falcata/utils/yamc/alternate_shared_mutex.hpp>
@@ -468,6 +469,27 @@ TEST(SingleRow, FastConfigKeepsItsRangeAfterOtherPredictions) {
         }
         FLC_FastConfigFree(fast);
     }
+
+    // A FastConfig made before the booster changed resolves its iterations again: after a rollback it used to
+    // read the freed trees. A FastConfig whose output size would change (leaf indices) refuses to predict.
+    FastConfigHandle fast_raw, fast_leaf;
+    ASSERT_EQ(0, FLC_BoosterPredictForMatSingleRowFastInit(booster, C_API_PREDICT_RAW_SCORE, 0, -1,
+                                                           C_API_DTYPE_FLOAT64, num_col, "", &fast_raw));
+    ASSERT_EQ(0, FLC_BoosterPredictForMatSingleRowFastInit(booster, C_API_PREDICT_LEAF_INDEX, 0, -1,
+                                                           C_API_DTYPE_FLOAT64, num_col, "", &fast_leaf));
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_EQ(0, FLC_BoosterRollbackOneIter(booster));
+    }
+    int64_t len = 0;
+    std::vector<double> fast_out(64, 0.0), batch_out(64, 0.0);
+    ASSERT_EQ(0, FLC_BoosterPredictForMatSingleRowFast(fast_raw, X.data(), &len, fast_out.data()));
+    ASSERT_EQ(0, FLC_BoosterPredictForMat(booster, X.data(), C_API_DTYPE_FLOAT64, 1, num_col, 1,
+                                          C_API_PREDICT_RAW_SCORE, 0, -1, "", &len, batch_out.data()));
+    EXPECT_EQ(batch_out[0], fast_out[0]);
+    EXPECT_EQ(-1, FLC_BoosterPredictForMatSingleRowFast(fast_leaf, X.data(), &len, fast_out.data()));
+    EXPECT_NE(std::string(FLC_GetLastError()).find("Create a new FastConfig"), std::string::npos);
+    FLC_FastConfigFree(fast_raw);
+    FLC_FastConfigFree(fast_leaf);
     FLC_BoosterFree(booster);
     FLC_DatasetFree(dataset);
 }
