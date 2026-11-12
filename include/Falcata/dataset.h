@@ -12,6 +12,7 @@
 #include <Falcata/meta.h>
 #include <Falcata/train_share_states.h>
 #include <Falcata/utils/byte_buffer.h>
+#include <Falcata/utils/common.h>
 #include <Falcata/utils/openmp_wrapper.h>
 #include <Falcata/utils/random.h>
 #include <Falcata/utils/text_reader.h>
@@ -167,7 +168,8 @@ class Metadata {
   * \param value Label value of this record
   */
   inline void SetLabelAt(data_size_t idx, label_t value) {
-    label_[idx] = value;
+    // as SetLabel: a NaN label is 0, +-inf is clamped (the text loaders set labels one by one)
+    label_[idx] = Common::AvoidInf(value);
   }
 
   /*!
@@ -176,7 +178,8 @@ class Metadata {
   * \param value Weight value of this record
   */
   inline void SetWeightAt(data_size_t idx, label_t value) {
-    weights_[idx] = value;
+    // as SetWeights and the .weight file loader
+    weights_[idx] = Common::AvoidInf(value);
   }
 
   /*!
