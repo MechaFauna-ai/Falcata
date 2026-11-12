@@ -489,14 +489,17 @@ class GBDT : public GBDTBase {
           "NaN/Inf rather than wrong-but-plausible. Re-save the model with "
           "save_model(..., with_stats=True) (or format='txt').");
     }
-    if (is_pred_contrib && !models_initialized_) {
+    if (is_pred_contrib) {
       std::lock_guard<std::mutex> lock(instance_mutex_);
-      if (models_initialized_)
-        return;
-
+      // The first contribution prediction computes every tree's depth (a depth read from a model file is not
+      // trusted). Later ones compute it for the trees added since (further training, a merge), which have none:
+      // they would otherwise fail CHECK_GE(max_depth_, 0) in Tree::PredictContrib.
+      const bool all_trees = !models_initialized_;
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
       for (int i = 0; i < static_cast<int>(models_.size()); ++i) {
-        models_[i]->RecomputeMaxDepth();
+        if (all_trees || !models_[i]->HasMaxDepth()) {
+          models_[i]->RecomputeMaxDepth();
+        }
       }
 
       models_initialized_ = true;

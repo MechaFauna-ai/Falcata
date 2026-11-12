@@ -347,6 +347,8 @@ class Tree {
   }
 
   void RecomputeMaxDepth();
+  /*! \brief Whether the maximum depth is known (computed by RecomputeMaxDepth or read from a FALB model) */
+  inline bool HasMaxDepth() const { return max_depth_ >= 0; }
 
   int NextLeafId() const { return num_leaves_; }
 
