@@ -499,6 +499,10 @@ class Booster {
       objective_fun_ = std::move(objective);
       train_metric_ = std::move(train_metric);
       valid_metrics_ = std::move(valid_metrics);
+      train_data_field_version_ = train_data_->field_version();
+      for (size_t i = 0; i < valid_data_.size(); ++i) {
+        valid_data_field_versions_[i] = valid_data_[i]->field_version();
+      }
     }
 
     boosting_->ResetConfig(&config_);
@@ -507,6 +511,7 @@ class Booster {
   void AddValidData(const Dataset* valid_data) {
     UNIQUE_LOCK(mutex_)
     valid_data_.push_back(valid_data);
+    valid_data_field_versions_.push_back(valid_data->field_version());
     valid_metrics_.push_back(CreateMetrics(valid_data));
     boosting_->AddValidDataset(valid_data,
                                Common::ConstPtrInVectorWrapper<Metric>(valid_metrics_.back()));
@@ -546,6 +551,16 @@ class Booster {
   // group layout left lambdarank reading the freed query boundaries (heap-use-after-free), and new or cleared
   // weights were silently ignored. Rebuild both from the current metadata before training on it.
   void RebuildObjectiveIfTrainFieldsChanged() {
+    // validation metrics hold pointers into their own Dataset's metadata the same way (NDCG read freed query
+    // boundaries after a validation Dataset's group was set)
+    for (size_t i = 0; i < valid_data_.size(); ++i) {
+      if (valid_data_[i]->field_version() != valid_data_field_versions_[i]) {
+        auto metrics = CreateMetrics(valid_data_[i]);
+        boosting_->ResetValidMetrics(static_cast<int>(i), Common::ConstPtrInVectorWrapper<Metric>(metrics));
+        valid_metrics_[i] = std::move(metrics);
+        valid_data_field_versions_[i] = valid_data_[i]->field_version();
+      }
+    }
     if (train_data_ == nullptr || train_data_->field_version() == train_data_field_version_) {
       return;
     }
@@ -1053,6 +1068,8 @@ class Booster {
   const Dataset* train_data_ = nullptr;
   /*! \brief train_data_->field_version() when the objective and training metrics were built from its metadata */
   uint64_t train_data_field_version_ = 0;
+  /*! \brief valid_data_[i]->field_version() when valid_metrics_[i] were built */
+  std::vector<uint64_t> valid_data_field_versions_;
   /*! \brief train_data_->num_total_features() when the boosting was set up on it */
   int train_data_num_total_features_ = 0;
   std::unique_ptr<Boosting> boosting_;

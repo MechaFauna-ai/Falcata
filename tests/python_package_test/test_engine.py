@@ -5695,3 +5695,20 @@ def test_set_field_after_booster_creation(rng, change):
 
     reference = lgb.train(params, lgb.Dataset(X, y, **after), num_boost_round=3)
     np.testing.assert_allclose(bst.predict(X), reference.predict(X))
+
+
+def test_set_field_on_validation_set_after_add_valid(rng):
+    # the validation metrics kept pointers into the validation Dataset's metadata: a new group layout left NDCG
+    # reading the freed query boundaries (heap-use-after-free)
+    X = rng.normal(size=(120, 3))
+    y = rng.integers(0, 4, size=120)
+    params = {"objective": "lambdarank", "metric": "ndcg", "eval_at": [3], "verbose": -1, "num_threads": 1}
+    train = lgb.Dataset(X, y, group=[60, 60], free_raw_data=False)
+    valid = lgb.Dataset(X, y, group=[30, 30, 60], reference=train, free_raw_data=False)
+    bst = lgb.Booster(params, train)
+    bst.add_valid(valid, "valid")
+    bst.update()
+    valid.set_group([10] * 12)
+    bst.update()
+    reference = lgb.Dataset(X, y, group=[10] * 12, reference=train)
+    assert bst.eval_valid()[0][2] == pytest.approx(bst.eval(reference, "reference")[0][2])
