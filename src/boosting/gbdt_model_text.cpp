@@ -519,7 +519,8 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
   // its "\r\n" pairs folded back to "\n".
   std::string lf_text;
   {
-    const char* crlf = std::search(buffer, buffer + len, "\r\n", "\r\n" + 2);
+    static const char kCrlf[] = {'\r', '\n'};
+    const char* crlf = std::search(buffer, buffer + len, kCrlf, kCrlf + 2);
     if (crlf != buffer + len) {
       lf_text.reserve(len);
       for (size_t i = 0; i < len; ++i) {
