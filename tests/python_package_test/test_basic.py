@@ -1,4 +1,5 @@
 # coding: utf-8
+import ctypes
 import filecmp
 import numbers
 import pickle
@@ -1695,3 +1696,40 @@ def test_libsvm_label_only_row_does_not_add_features(tmp_path, label, row):
     ds = lgb.Dataset(str(path), params={"min_data_in_bin": 1, "verbose": -1}).construct()
     assert ds.num_feature() == 3
     assert ds.num_data() == len(lines)
+
+
+def test_booster_loaded_from_model_refuses_training_operations(rng):
+    # a Booster loaded from a model has no training data, objective or training config: training, adding
+    # validation data, resetting the training data and reading the training scores dereferenced null pointers
+    X = rng.normal(size=(100, 3))
+    y = X[:, 0]
+    trained = lgb.train({"objective": "regression", "verbose": -1}, lgb.Dataset(X, y), num_boost_round=3)
+    loaded = lgb.Booster(model_str=trained.model_to_string())
+    lib = lgb.basic._LIB
+
+    def last_error():
+        return lib.FLC_GetLastError().decode()
+
+    is_finished = ctypes.c_int(0)
+    assert lib.FLC_BoosterUpdateOneIter(loaded._handle, ctypes.byref(is_finished)) == -1
+    assert "has no training data" in last_error()
+    grad = np.zeros(100, dtype=np.float32)
+    grad_ptr = grad.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+    assert lib.FLC_BoosterUpdateOneIterCustom(loaded._handle, grad_ptr, grad_ptr, ctypes.byref(is_finished)) == -1
+    assert "has no training data" in last_error()
+    out_len = ctypes.c_int64(0)
+    assert lib.FLC_BoosterGetNumPredict(loaded._handle, 0, ctypes.byref(out_len)) == -1
+    assert "has no training data" in last_error()
+    out = np.zeros(100)
+    assert (
+        lib.FLC_BoosterGetPredict(
+            loaded._handle, 0, ctypes.byref(out_len), out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        )
+        == -1
+    )
+    data = lgb.Dataset(X, y).construct()
+    assert lib.FLC_BoosterAddValidData(loaded._handle, data._handle) == -1
+    assert "has no training data" in last_error()
+    assert lib.FLC_BoosterResetTrainingData(loaded._handle, data._handle) == -1
+    assert "has no training data" in last_error()
+    np.testing.assert_allclose(loaded.predict(X), trained.predict(X))
