@@ -1059,9 +1059,12 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
         }
       }
       const size_t n_thr = static_cast<size_t>(cat_boundaries.back());
-      std::vector<uint32_t> cat_threshold(n_thr);
+      // View range-checks the section before the vector is sized: the last
+      // boundary is a file field, and allocating first let a corrupt one ask
+      // for up to 8 GiB
       const auto p = ct_r.View<uint32_t>(
           rec.cat_threshold_offset * sizeof(uint32_t), n_thr, "cat_threshold");
+      std::vector<uint32_t> cat_threshold(n_thr);
       p.CopyTo(cat_threshold.data());
       TreeIO::SetCategorical(tree.get(), std::move(cat_boundaries), std::move(cat_threshold));
     }
