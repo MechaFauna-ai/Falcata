@@ -796,6 +796,12 @@ class Dataset {
   bool SetFieldFromArrow(const char* field_name, int64_t n_chunks,
                          struct ArrowArray* chunks, struct ArrowSchema* schema);
 
+  /*!
+  * \brief Number of times the metadata fields were set. An objective or metric built from this Dataset's metadata
+  *        holds pointers into it (labels, weights, query boundaries), so it must be rebuilt once this changes.
+  */
+  inline uint64_t field_version() const { return field_version_; }
+
   FALCATA_EXPORT bool SetFloatField(const char* field_name, const float* field_data, data_size_t num_element);
 
   FALCATA_EXPORT bool SetDoubleField(const char* field_name, const double* field_data, data_size_t num_element);
@@ -1203,6 +1209,8 @@ class Dataset {
   std::vector<std::vector<float>> raw_data_;
   bool wait_for_manual_finish_ = false;
   int omp_max_threads_ = -1;
+  /*! \brief Incremented by every Set*Field call (label, weight, group, ...), see field_version() */
+  uint64_t field_version_ = 0;
   bool has_raw_ = false;
   /*! map feature (inner index) to its index in the list of numeric (non-categorical) features */
   std::vector<int> numeric_feature_map_;

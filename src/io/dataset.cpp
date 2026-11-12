@@ -1491,6 +1491,7 @@ void Dataset::CopySubrowToDevice(const Dataset* fullset,
 
 #ifndef LGB_R_BUILD
 bool Dataset::SetFieldFromArrow(const char* field_name, struct ArrowArrayStream* stream) {
+  ++field_version_;
   std::string name(field_name);
   name = Common::Trim(name);
   if (name == std::string("label") || name == std::string("target")) {
@@ -1509,6 +1510,7 @@ bool Dataset::SetFieldFromArrow(const char* field_name, struct ArrowArrayStream*
 
 bool Dataset::SetFieldFromArrow(const char* field_name, int64_t n_chunks,
                                 struct ArrowArray* chunks, struct ArrowSchema* schema) {
+  ++field_version_;
   std::string name(field_name);
   name = Common::Trim(name);
   if (name == std::string("label") || name == std::string("target")) {
@@ -1528,6 +1530,7 @@ bool Dataset::SetFieldFromArrow(const char* field_name, int64_t n_chunks,
 
 bool Dataset::SetFloatField(const char* field_name, const float* field_data,
                             data_size_t num_element) {
+  ++field_version_;
   std::string name(field_name);
   name = Common::Trim(name);
   if (name == std::string("label") || name == std::string("target")) {
@@ -1550,6 +1553,7 @@ bool Dataset::SetFloatField(const char* field_name, const float* field_data,
 
 bool Dataset::SetDoubleField(const char* field_name, const double* field_data,
                              data_size_t num_element) {
+  ++field_version_;
   std::string name(field_name);
   name = Common::Trim(name);
   if (name == std::string("init_score")) {
@@ -1562,6 +1566,7 @@ bool Dataset::SetDoubleField(const char* field_name, const double* field_data,
 
 bool Dataset::SetIntField(const char* field_name, const int* field_data,
                           data_size_t num_element) {
+  ++field_version_;
   std::string name(field_name);
   name = Common::Trim(name);
   if (name == std::string("query") || name == std::string("group")) {

@@ -5663,3 +5663,35 @@ def test_finite_training_is_unaffected_by_the_divergence_guard(rng):
     booster = lgb.train(params, train_set, num_boost_round=100)
     assert booster.num_trees() == 100
     assert np.isfinite(booster.predict(X)).all()
+
+
+@pytest.mark.parametrize("change", ["group", "add_weight", "clear_weight"])
+def test_set_field_after_booster_creation(rng, change):
+    # the objective kept pointers into the training Dataset's metadata from Booster creation: a new group layout
+    # left lambdarank reading the freed query boundaries (heap-use-after-free) and new or cleared weights were
+    # ignored. Changing a field before training must train like a Booster created with the final metadata.
+    X = rng.normal(size=(120, 3))
+    params = {"verbose": -1, "num_threads": 1, "deterministic": True, "min_data_in_leaf": 5}
+    weight = rng.uniform(0.5, 2.0, size=120)
+    if change == "group":
+        params["objective"] = "lambdarank"
+        y = rng.integers(0, 4, size=120)
+        before, after = {"group": [30, 30, 60]}, {"group": [10] * 12}
+    else:
+        params["objective"] = "regression"
+        y = X[:, 0] + rng.normal(size=120)
+        before, after = ({}, {"weight": weight}) if change == "add_weight" else ({"weight": weight}, {})
+
+    changed = lgb.Dataset(X, y, free_raw_data=False, **before)
+    bst = lgb.Booster(params, changed)
+    if change == "group":
+        changed.set_group(after["group"])
+    elif change == "add_weight":
+        changed.set_weight(after["weight"])
+    else:
+        changed.set_field("weight", None)  # set_weight(None) does not reach the native Dataset
+    for _ in range(3):
+        bst.update()
+
+    reference = lgb.train(params, lgb.Dataset(X, y, **after), num_boost_round=3)
+    np.testing.assert_allclose(bst.predict(X), reference.predict(X))
