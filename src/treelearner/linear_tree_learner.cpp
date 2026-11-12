@@ -287,7 +287,11 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
     }
   }
   OMP_INIT_EX();
-#pragma omp parallel num_threads(OMP_NUM_THREADS()) if (this->num_data_ > 1024)
+  // Each thread sums its rows into its own X^T H X and X^T g, and the per-thread sums are added
+  // afterwards: the floating-point grouping follows the thread count. deterministic=true promises
+  // the same model for any num_threads, so it sums all rows on one thread.
+  const bool parallel_rows = this->num_data_ > 1024 && !this->config_->deterministic;
+#pragma omp parallel num_threads(OMP_NUM_THREADS()) if (parallel_rows)
   {
     std::vector<float> curr_row(max_num_features + 1);
     int tid = omp_get_thread_num();
