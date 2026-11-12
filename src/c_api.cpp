@@ -549,6 +549,10 @@ class Booster {
     if (train_data_ == nullptr || train_data_->field_version() == train_data_field_version_) {
       return;
     }
+    if (boosting_->LeafValueDim() > 1) {
+      // GBDT::ResetTrainingData refuses vector-leaf models, so their objective keeps its metadata (as before)
+      return;
+    }
     std::unique_ptr<ObjectiveFunction> objective(
         ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
     if (objective != nullptr) {
