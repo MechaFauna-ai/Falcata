@@ -1,15 +1,18 @@
 """FALB parser fuzz gate: a model file is untrusted input.
 
-Structure-aware mutations of valid FALB files -- truncations, byte flips, and
-header-focused overwrites -- fed to the loader in child processes. Every
-mutation must either load successfully or raise a clean error; a child killed
-by a signal (segfault, abort) fails the gate with the exact repro.
+Structure-aware mutations of valid FALB files -- truncations, byte flips,
+header-focused overwrites, boundary values in section-table fields and in
+uncompressed section payloads -- fed to the loader in child processes, which
+then predict (normal, raw, leaf, contrib) and re-serialize every model that
+loads. Every mutation must either load and run or raise a clean error; a child
+killed by a signal (segfault, abort) fails the gate with the exact repro.
 
   python tests/gates/falb_fuzz.py [--seconds N] [--seed N]
 """
 
 import argparse
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -28,15 +31,36 @@ CRASH_DIR = Path(__file__).resolve().parent / "falb_fixtures" / "crashes"
 
 _WORKER = r"""
 import sys
+import numpy as np
 import falcata as flc
 
+# a loaded model must also be USABLE without crashing: most loader defects
+# (cyclic or out-of-range children, bad bitset indices, inconsistent output
+# metadata) only show once something walks the trees
+X = np.array([[0.0, np.nan, -1.5, 3.0, 1e30, 7.0, 2.0, -0.0]] * 2)
 for path in sys.argv[1:]:
     try:
-        flc.Booster(model_file=path)
+        booster = flc.Booster(model_file=path)
+        x = X[:, : booster.num_feature()] if booster.num_feature() <= X.shape[1] else np.zeros((2, booster.num_feature()))
+        for kw in ({}, {"raw_score": True}, {"pred_leaf": True}, {"pred_contrib": True}):
+            try:
+                booster.predict(x, **kw)
+            except Exception:
+                pass
+        for use in (booster.dump_model, booster.model_to_string, booster.model_to_binary):
+            try:
+                use()
+            except Exception:
+                pass
     except Exception:
         pass  # clean refusal is a correct outcome
     print("OK", path, flush=True)
 """
+
+#: a 40-byte section table entry: (field offset, struct format) for dtype,
+#: codec, shuffle, offset, stored_len, raw_len (see FALB::SectionEntry)
+_ENTRY_FIELDS = [(4, "<I"), (8, "<I"), (12, "<I"), (16, "<Q"), (24, "<Q"), (32, "<Q")]
+_BOUNDARY = [0, 1, 2, 7, 255, 256, 65535, 65536, 2**31 - 1, 2**31, 2**32 - 1, 2**32, 2**63 - 1, 2**64 - 1]
 
 
 def build_seed_files(tmp):
@@ -50,6 +74,10 @@ def build_seed_files(tmp):
         # the loader addresses by COUNT rather than by a stored offset: a
         # zero-node tree makes every one of those blocks a degenerate width
         ("constant", {"objective": "multiclass", "num_class": 3, "num_leaves": 15}, 0),
+        # uncompressed sections: payload words can then be hit directly
+        # (kind 5), and f32 leaves exercise the other leaf dtype
+        ("raw-cat", {"objective": "regression", "num_leaves": 31}, 2),
+        ("raw-f32", {"objective": "binary", "num_leaves": 31}, 0),
     ]:
         rng = np.random.default_rng(7)
         x = rng.standard_normal((2000, 6))
@@ -62,6 +90,8 @@ def build_seed_files(tmp):
             # class 2 never occurs, so its per-class trees find no gain and
             # come back constant every round while classes 0 and 1 grow
             y = (x[:, 1] > 0).astype(float)
+        if name == "raw-f32":
+            y = (y > np.median(y)).astype(float)
         # explicit cpu: the fuzzer tests the PARSER, and cpu-trained seed
         # files keep every mutated load off the GPU -- immune to whatever
         # state the preceding gates left the device in
@@ -69,8 +99,11 @@ def build_seed_files(tmp):
         ds = flc.Dataset(x, label=y, params=p, categorical_feature=list(range(cats)) or "auto")
         bst = flc.train(p, ds, num_boost_round=8)
         f = tmp / f"{name}.falb"
-        full = name == "constant"
-        bst.save_model(str(f), format="falb", with_stats=full, with_diagnostics=full)
+        full = name in ("constant", "raw-cat")
+        extra = {"compress_level": 0} if name.startswith("raw") else {}
+        if name == "raw-f32":
+            extra["f32_leaves"] = True
+        bst.save_model(str(f), format="falb", with_stats=full, with_diagnostics=full, **extra)
         files.append(f.read_bytes())
     return files
 
@@ -78,7 +111,7 @@ def build_seed_files(tmp):
 def mutate(rng, blob):
     """One structure-aware mutation of a valid FALB byte string."""
     b = bytearray(blob)
-    kind = rng.integers(0, 4)
+    kind = rng.integers(0, 6)
     if kind == 0:  # truncate anywhere (including inside the header)
         return bytes(b[: rng.integers(1, len(b))])
     if kind == 1:  # header assault: the first 64 bytes hold magic/version/offsets
@@ -90,8 +123,25 @@ def mutate(rng, blob):
             i = rng.integers(0, len(b))
             b[i] ^= 1 << rng.integers(0, 8)
         return bytes(b)
-    # kind == 3: splice -- copy a random chunk over another region (breaks
-    # section sizes/offsets while keeping plausible content)
+    count = struct.unpack_from("<I", b, 24)[0] if len(b) >= 32 else 0
+    count = min(count, max(0, (len(b) - 32) // 40))
+    if kind == 4 and count:  # one section-table field set to a boundary value
+        entry = 32 + 40 * int(rng.integers(0, count))
+        off, fmt = _ENTRY_FIELDS[int(rng.integers(0, len(_ENTRY_FIELDS)))]
+        width = 8 if fmt == "<Q" else 4
+        value = int(rng.choice([*_BOUNDARY, len(b), len(b) - 1, int(rng.integers(0, 2**31))])) % (2 ** (8 * width))
+        struct.pack_into(fmt, b, entry + off, value)
+        return bytes(b)
+    if kind == 5 and count:  # a word inside an uncompressed section payload
+        entry = 32 + 40 * int(rng.integers(0, count))
+        codec, _shuffle, start, stored = struct.unpack_from("<IIQQ", b, entry + 8)
+        if codec == 0 and stored >= 4 and start + stored <= len(b):
+            pos = start + 4 * int(rng.integers(0, stored // 4))
+            value = int(rng.choice([0, 1, 2**31 - 1, 2**31, 2**32 - 1, 255, 65535, int(rng.integers(0, 2**32))]))
+            struct.pack_into("<I", b, pos, value)
+            return bytes(b)
+    # kind == 3 (and the fallback): splice -- copy a random chunk over another
+    # region (breaks section sizes/offsets while keeping plausible content)
     n = int(rng.integers(4, 256))
     src = int(rng.integers(0, max(1, len(b) - n)))
     dst = int(rng.integers(0, max(1, len(b) - n)))
@@ -152,6 +202,7 @@ def main():
                     [sys.executable, "-c", _WORKER, *paths],
                     capture_output=True,
                     text=True,
+                    errors="replace",  # a refusal may quote raw bytes of the corrupt file
                     timeout=300,
                     check=False,
                 )
