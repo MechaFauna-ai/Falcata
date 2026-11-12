@@ -2738,6 +2738,7 @@ def test_refit_with_path_smooth_reproduces_the_trained_leaves(num_leaves):
     X, y = make_synthetic_regression(n_samples=2_000, n_features=5)
     params = {
         "objective": "regression",
+        "device_type": "cpu",
         "verbose": -1,
         "num_leaves": num_leaves,
         "min_data_in_leaf": 5,
