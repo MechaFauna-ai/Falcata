@@ -60,6 +60,12 @@ class DART: public GBDT {
     is_update_score_cur_iter_ = false;
     bool ret = GBDT::TrainOneIter(gradient, hessian);
     if (ret) {
+      // a stump-only FIRST iteration is kept and counted in iter_ (GBDT::TrainOneIter), so it
+      // needs its weight too: DroppingTrees indexes tree_weight_ by iteration
+      if (!config_->uniform_drop && static_cast<int>(tree_weight_.size()) < iter_) {
+        tree_weight_.push_back(shrinkage_rate_);
+        sum_weight_ += shrinkage_rate_;
+      }
       return ret;
     }
     // normalize

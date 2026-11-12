@@ -603,6 +603,12 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
       for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
         models_.pop_back();
       }
+    } else {
+      // The first iteration's constant trees stay as the model's starting score. Count
+      // them like any kept iteration (GetCurrentIteration counts models_): rescoring a new
+      // training or validation set (ResetTrainingData, AddValidDataset) adds iter_
+      // iterations, and a later update() after a parameter reset continues from here.
+      ++iter_;
     }
     return true;
   }
@@ -653,6 +659,8 @@ bool GBDT::VectorTrainOneIter() {
     Log::Warning("Stopped training because there are no more leaves that meet the split requirements");
     if (models_.size() > 1) {
       models_.pop_back();
+    } else {
+      ++iter_;  // the kept first iteration counts, as in TrainOneIter
     }
     return true;
   }
