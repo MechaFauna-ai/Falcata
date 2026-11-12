@@ -470,11 +470,26 @@ class RF : public GBDT {
     const bool bagging = config_->bagging_freq > 0 && config_->bagging_fraction < 1.0;
     const bool keyed_bags = !config_->bagging_by_query && config_->pos_bagging_fraction >= 1.0 &&
       config_->neg_bagging_fraction >= 1.0 && (!bagging || config_->bagging_freq == 1);
-    return plan.forest_batched && config_->device_type == std::string("cuda") && config_->num_gpu <= 1 &&
+    // a round's out-of-bag rows are scored after the group is grown, against the original columns (see
+    // RestoreTrainOriginalColumnView); with every column in each tree's view any slot's view serves as well
+    const bool oob_view = config_->feature_fraction >= 1.0 ||
+      (train_data_->has_cuda_column_data() && train_data_->cuda_column_data()->has_original_column_view());
+    return plan.forest_batched && config_->device_type == std::string("cuda") && config_->num_gpu <= 1 && oob_view &&
            boosting_on_gpu_ && config_->data_sample_strategy == std::string("bagging") && !config_->linear_tree &&
            config_->forcedsplits_filename.empty() && config_->tree_mode != std::string("vector_leaf") && !cegb &&
            !shared_stream_bynode && keyed_bags && !plan.compact_prefill &&
            CUDAForestTrainer::Supports(tree_learner_.get());
+  }
+
+  /*! \brief Put the train data's original per-column view back when a packed per-tree view is in force */
+  void RestoreTrainOriginalColumnView() const {
+    if (!train_data_->has_cuda_column_data()) {
+      return;
+    }
+    CUDAColumnData* columns = const_cast<CUDAColumnData*>(train_data_->cuda_column_data());
+    if (columns->packed_column_view_active() && columns->has_original_column_view()) {
+      columns->RestoreOriginalColumnView();
+    }
   }
 
   /*!
@@ -523,6 +538,10 @@ class RF : public GBDT {
           // GBDT::UpdateScore with the tree's own learner and bag
           train_score_updater_->AddScore(learner, new_tree.get(), cur_tree_id);
           if (round.bag != nullptr && num_data_ - round.bag_cnt > 0) {
+            // The out-of-bag traversal reads the packed per-tree column view when one is in force, taking it for this
+            // tree's own view. Here it is the view of the last tree the group grew, which under feature_fraction
+            // leaves this tree's columns null (illegal memory access): score against the original columns instead.
+            RestoreTrainOriginalColumnView();
             train_score_updater_->AddScore(new_tree.get(), round.bag + round.bag_cnt, num_data_ - round.bag_cnt,
                                            cur_tree_id);
           }
