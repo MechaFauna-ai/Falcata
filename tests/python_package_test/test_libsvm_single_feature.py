@@ -35,5 +35,5 @@ def test_single_feature_libsvm_trains(tmp_path, all_rows_have_the_feature):
 def test_libsvm_without_features_is_rejected(tmp_path):
     path = tmp_path / "none.svm"
     path.write_text("1\n0\n1\n")
-    with pytest.raises(flc.basic.FalcataError):
+    with pytest.raises(flc.basic.FalcataError, match="has no feature"):
         flc.Dataset(str(path), params={"verbose": -1}).construct()
