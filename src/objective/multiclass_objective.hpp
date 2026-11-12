@@ -59,6 +59,10 @@ class MulticlassSoftmax: public ObjectiveFunction {
     class_init_probs_.resize(num_class_, 0.0);
     double sum_weight = 0.0;
     for (int i = 0; i < num_data_; ++i) {
+      // range first: casting a label beyond int (or inf) to int is undefined behaviour
+      if (!(label_[i] > -1.0f && label_[i] < static_cast<label_t>(num_class_))) {
+        Log::Fatal("Label must be in [0, %d), but found %g in label", num_class_, static_cast<double>(label_[i]));
+      }
       label_int_[i] = static_cast<int>(label_[i]);
       if (label_int_[i] < 0 || label_int_[i] >= num_class_) {
         Log::Fatal("Label must be in [0, %d), but found %d in label", num_class_, label_int_[i]);
