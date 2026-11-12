@@ -401,6 +401,22 @@ class Booster {
     }
   }
 
+  /*! \brief Whether a reset map sets a parameter the objective or the metrics copy at construction */
+  static bool ResetsObjectiveOrMetricParameter(const std::unordered_map<std::string, std::string>& param) {
+    // the Objective and Metric parameters of docs/Parameters.rst; num_class and metric cannot change in a reset
+    static const char* const kNames[] = {
+        "objective_seed", "is_unbalance", "scale_pos_weight", "sigmoid", "boost_from_average", "reg_sqrt", "alpha",
+        "fair_c", "poisson_max_delta_step", "tweedie_variance_power", "lambdarank_truncation_level",
+        "lambdarank_norm", "label_gain", "lambdarank_position_bias_regularization", "eval_at", "multi_error_top_k",
+        "auc_mu_weights"};
+    for (const char* name : kNames) {
+      if (param.count(name) > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void ResetConfig(const char* parameters) {
     UNIQUE_LOCK(mutex_)
     auto param = Config::Str2Map(parameters);
@@ -469,7 +485,9 @@ class Booster {
     // The objective and the metrics are built from one config: a CUDA metric converts the score only through a
     // CUDA objective, so a new objective needs new metrics (train and every valid set) when it moves between the
     // device and the host (binary <-> cross_entropy, update(fobj=...) resetting the objective to "none").
-    if (param.count("objective")) {
+    // Both copy their parameters (alpha, sigmoid, scale_pos_weight, eval_at, ...) when they are built, so a reset of
+    // one of those rebuilds them too; otherwise the reset was silently ignored.
+    if (param.count("objective") || (train_data_ != nullptr && ResetsObjectiveOrMetricParameter(param))) {
       // recreating the objective requires training data to initialize
       // against; a model-loaded booster has none
       if (train_data_ == nullptr) {

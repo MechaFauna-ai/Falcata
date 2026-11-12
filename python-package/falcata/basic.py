@@ -4570,6 +4570,8 @@ class Booster:
                     _c_str(params_str),
                 )
             )
+            # a reset can rebuild the metrics (objective, eval_at, ...), changing their number and names
+            self.__need_reload_eval_info = True
         self.params.update(params)
         return self
 
