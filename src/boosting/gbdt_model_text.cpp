@@ -372,13 +372,20 @@ std::string GBDT::SaveModelToString(int start_iteration, int num_iteration, int 
   std::vector<std::string> tree_strs(num_used_model - start_model);
   std::vector<size_t> tree_sizes(num_used_model - start_model);
   // output tree models
+  // An exception escaping an OpenMP region calls std::terminate, and a tree
+  // string can be huge (a categorical bitset over large category ids), so a
+  // std::bad_alloc here must reach the API boundary as an error.
+  OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int i = start_model; i < num_used_model; ++i) {
+    OMP_LOOP_EX_BEGIN();
     const int idx = i - start_model;
     tree_strs[idx] = "Tree=" + std::to_string(idx) + '\n';
     tree_strs[idx] += models_[i]->ToString() + '\n';
     tree_sizes[idx] = tree_strs[idx].size();
+    OMP_LOOP_EX_END();
   }
+  OMP_THROW_EX();
 
   ss << "tree_sizes=" << CommonC::Join(tree_sizes, " ") << '\n';
   ss << '\n';
