@@ -117,10 +117,10 @@ class NDCGMetric:public Metric {
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) firstprivate(tmp_dcg)
       for (data_size_t i = 0; i < num_queries_; ++i) {
         const int tid = omp_get_thread_num();
-        // if all doc in this query are all negative, let its NDCG=1
+        // if all doc in this query are all negative, let its NDCG=1 (weighted like any other query)
         if (inverse_max_dcgs_[i][0] <= 0.0f) {
           for (size_t j = 0; j < eval_at_.size(); ++j) {
-            result_buffer_[tid][j] += 1.0f;
+            result_buffer_[tid][j] += query_weights_[i];
           }
         } else {
           // calculate DCG
