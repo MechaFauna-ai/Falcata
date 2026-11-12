@@ -26,6 +26,9 @@ except flc.basic.FalcataError as error:
 
 def test_cuda_without_a_visible_device_raises():
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
-    result = subprocess.run([sys.executable, "-c", _PROGRAM], env=env, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(
+        [sys.executable, "-c", _PROGRAM], check=False, env=env, capture_output=True, text=True, timeout=300
+    )
     assert result.returncode == 0, result.stderr[-2000:]
-    assert "raised:" in result.stdout and "no CUDA-capable device" in result.stdout
+    assert "raised:" in result.stdout
+    assert "no CUDA-capable device" in result.stdout
