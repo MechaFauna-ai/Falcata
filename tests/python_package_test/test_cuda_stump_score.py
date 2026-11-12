@@ -40,7 +40,8 @@ def _trained_booster():
     for _ in range(6):
         booster.update()
     num_leaves = [tree["num_leaves"] for tree in booster.dump_model()["tree_info"]]
-    assert min(num_leaves[:3]) > 1 and min(num_leaves) == 1, f"the fixture must produce later stumps: {num_leaves}"
+    assert min(num_leaves[:3]) > 1, f"the fixture must split in the first iteration: {num_leaves}"
+    assert min(num_leaves) == 1, f"the fixture must produce later stumps: {num_leaves}"
     return booster, train, X, y
 
 
