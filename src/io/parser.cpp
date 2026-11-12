@@ -213,6 +213,19 @@ DataType GetDataType(const char* filename, bool header,
       type = DataType::TSV;
     } else if (comma_cnt == comma_cnt2 && comma_cnt > 0) {
       type = DataType::CSV;
+    } else if (comma_cnt == 0 && tab_cnt == 0 && comma_cnt2 == 0 && tab_cnt2 == 0) {
+      // label-only lines are LibSVM rows without any nonzero feature (common in sparse data): when the first two
+      // rows are such rows, look for an index:value token further down instead of rejecting the file
+      for (size_t i = 2; i < num_lines; ++i) {
+        GetStatistic(lines[i].c_str(), &comma_cnt2, &tab_cnt2, &colon_cnt2);
+        if (comma_cnt2 > 0 || tab_cnt2 > 0) {
+          break;
+        }
+        if (colon_cnt2 > 0) {
+          type = DataType::LIBSVM;
+          break;
+        }
+      }
     }
     if (type == DataType::TSV || type == DataType::CSV) {
       // valid the type
