@@ -20,6 +20,6 @@ def test_bagging_fraction_below_one_row(bagging):
     rng = np.random.default_rng(0)
     X = rng.standard_normal((7, 3))
     y = np.array([0, 1, 0, 1, 1, 0, 1], dtype=float)
-    params = {"objective": "binary", "min_data_in_leaf": 1, "verbose": -1, **bagging}
+    params = {"objective": "binary", "min_data_in_leaf": 1, "device_type": "cpu", "verbose": -1, **bagging}
     bst = flc.train(params, flc.Dataset(X, y), num_boost_round=5)
     assert np.all(np.isfinite(bst.predict(X)))
