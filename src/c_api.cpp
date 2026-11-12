@@ -774,7 +774,10 @@ class Booster {
     auto pred_sparse_fun = predictor->GetPredictSparseFunction();
     bool is_col_ptr_int32 = false;
     bool is_data_float32 = false;
-    int num_output_cols = ncol + 1;
+    // one column per input feature plus the expected value, which sits at the model's feature count: with
+    // predict_disable_shape_check the input may have fewer columns than the model, and the contributions of
+    // the model's last features and the expected value were counted past the end of column_sizes
+    int num_output_cols = std::max(ncol, boosting_->MaxFeatureIdx() + 1) + 1;
     int col_ptr_size = (num_output_cols + 1) * num_matrices;
     if (col_ptr_type == C_API_DTYPE_INT32) {
       *out_col_ptr = new int32_t[col_ptr_size];

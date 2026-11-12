@@ -14,7 +14,7 @@ from shutil import copyfile
 import numpy as np
 import psutil
 import pytest
-from scipy.sparse import csr_matrix, isspmatrix_csc, isspmatrix_csr
+from scipy.sparse import csc_matrix, csr_matrix, isspmatrix_csc, isspmatrix_csr
 from sklearn.datasets import load_svmlight_file, make_blobs, make_classification, make_multilabel_classification
 from sklearn.metrics import (
     average_precision_score,
@@ -2267,6 +2267,31 @@ def test_contribs_sparse():
         np.testing.assert_allclose(contribs_csc.toarray(), contribs_dense, rtol=1, atol=1e-12)
     else:
         np.testing.assert_allclose(contribs_csc.toarray(), contribs_dense)
+
+
+@pytest.mark.parametrize("sparse_format", ["csr", "csc"])
+@pytest.mark.parametrize("objective", ["regression", "multiclass"])
+def test_contribs_sparse_fewer_columns_than_model(rng, sparse_format, objective):
+    # with predict_disable_shape_check=True, sparse pred_contrib sized its output by the input's columns: the
+    # contributions of the model's last features and the expected value (at the model's feature count) fell
+    # outside it (CSC: heap-buffer-overflow; CSR: a scipy matrix holding column indices past its shape)
+    X = rng.normal(size=(200, 4))
+    y = rng.integers(0, 3, size=200) if objective == "multiclass" else X.sum(axis=1)
+    params = {"objective": objective, "verbose": -1, "num_leaves": 7}
+    if objective == "multiclass":
+        params["num_class"] = 3
+    bst = lgb.train(params, lgb.Dataset(X, y), num_boost_round=5)
+    X_few = X[:30, :2]
+    X_few_sparse = csr_matrix(X_few) if sparse_format == "csr" else csc_matrix(X_few)
+    dense = bst.predict(X_few, pred_contrib=True, predict_disable_shape_check=True)
+    sparse = bst.predict(X_few_sparse, pred_contrib=True, predict_disable_shape_check=True)
+    if objective == "multiclass":
+        assert len(sparse) == 3
+        sparse = np.hstack([m.toarray() for m in sparse])
+    else:
+        assert sparse.shape == (30, 5)
+        sparse = sparse.toarray()
+    np.testing.assert_allclose(sparse, dense)
 
 
 def test_contribs_sparse_multiclass():
