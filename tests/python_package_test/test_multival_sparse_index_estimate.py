@@ -22,6 +22,7 @@ def test_underestimated_sparse_multival_bin_trains(extra):
         "feature_pre_filter": False,
         "deterministic": True,
         "num_threads": 2,
+        "device_type": "cpu",
         "verbose": -1,
         **extra,
     }
