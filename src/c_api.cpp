@@ -2975,6 +2975,13 @@ void DatasetCreateFromArrowChunkedArray(ArrowChunkedArray& chunked_array,
                                              static_cast<int>(chunked_array.get_length()),
                                              static_cast<int>(chunked_array.get_length())));
   } else {
+    // every Arrow field is pushed as the reference's column of the same index: a field past the
+    // reference's columns would index its feature maps out of bounds
+    const int reference_num_features = reinterpret_cast<const Dataset*>(reference)->num_total_features();
+    if (chunked_array.get_num_fields() != reference_num_features) {
+      Log::Fatal("The number of columns in the Arrow data (%s) is not the same as in the reference Dataset (%d)",
+                 std::to_string(chunked_array.get_num_fields()).c_str(), reference_num_features);
+    }
     ret.reset(new Dataset(static_cast<data_size_t>(chunked_array.get_length())));
     ret->CreateValid(reinterpret_cast<const Dataset*>(reference));
     if (ret->has_raw()) {
