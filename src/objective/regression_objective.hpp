@@ -483,7 +483,10 @@ class RegressionQuantileloss : public RegressionL2loss {
  public:
   explicit RegressionQuantileloss(const Config& config): RegressionL2loss(config) {
     alpha_ = static_cast<score_t>(config.alpha);
-    CHECK(alpha_ > 0 && alpha_ < 1);
+    if (!(alpha_ > 0 && alpha_ < 1)) {
+      Log::Fatal("objective=quantile requires 0 < alpha < 1 (the quantile to predict), but alpha=%g",
+                 config.alpha);
+    }
   }
 
   explicit RegressionQuantileloss(const std::vector<std::string>& strs): RegressionL2loss(strs) {

@@ -1050,6 +1050,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_byte_buffer.cpp
       tests/cpp_tests/test_c_api_error.cpp
       tests/cpp_tests/test_chunked_array.cpp
+      tests/cpp_tests/test_cli_refit_feature_count.cpp
       tests/cpp_tests/test_colwise_iterators.cpp
       tests/cpp_tests/test_common.cpp
       tests/cpp_tests/test_csc_row_iterator.cpp
@@ -1065,6 +1066,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_find_groups.cpp
       tests/cpp_tests/test_histogram_pool_move.cpp
       tests/cpp_tests/test_host_quantization.cpp
+      tests/cpp_tests/test_if_else_linear_tree.cpp
       tests/cpp_tests/test_init_score_layout.cpp
       tests/cpp_tests/test_int_histogram.cpp
       tests/cpp_tests/test_leaf_splits.cpp
@@ -1072,6 +1074,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_linkers.cpp
       tests/cpp_tests/test_linkers_sendrecv.cpp
       tests/cpp_tests/test_loaded_binary_objective.cpp
+      tests/cpp_tests/test_loaded_tree_copy.cpp
       tests/cpp_tests/test_loaded_tree_dataset_score.cpp
       tests/cpp_tests/test_log.cpp
       tests/cpp_tests/test_main.cpp
@@ -1086,6 +1089,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_predictor_threads.cpp
       tests/cpp_tests/test_quantized_index.cpp
       tests/cpp_tests/test_random.cpp
+      tests/cpp_tests/test_save_binary_no_features.cpp
       tests/cpp_tests/test_serialize.cpp
       tests/cpp_tests/test_single_row.cpp
       tests/cpp_tests/test_split_info.cpp
@@ -1100,7 +1104,8 @@ if(BUILD_CPP_TEST)
   if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /permissive-")
   endif()
-  add_executable(testfalcata ${CPP_TEST_SOURCES})
+  # the CLI Application (src/main.cpp only adds main()), for tests of CLI tasks
+  add_executable(testfalcata ${CPP_TEST_SOURCES} src/application/application.cpp)
   target_link_libraries(testfalcata PRIVATE falcata_objs falcata_capi_objs nanoarrow_static GTest::GTest)
   if(USE_CUDA)
     target_sources(
