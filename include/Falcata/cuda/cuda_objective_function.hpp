@@ -69,6 +69,8 @@ class CUDAObjectiveInterface: public HOST_OBJECTIVE, public NCCLInfo {
     }
   }
 
+  // all queries get gradients (a superset); bagging_by_query sampling is applied through the bag
+  // indices the tree learner receives
   void GetGradientsWithSampledQueries(const double* scores, const data_size_t /*num_sampled_queries*/, const data_size_t* /*sampled_query_indices*/, score_t* gradients, score_t* hessians) const override {
     LaunchGetGradientsKernel(scores, gradients, hessians);
     SynchronizeCUDADevice(__FILE__, __LINE__);

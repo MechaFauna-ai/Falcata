@@ -1308,6 +1308,8 @@ void Dataset::CopyFeatureMapperFrom(const Dataset* dataset) {
   num_features_ = dataset->num_features_;
   num_groups_ = dataset->num_groups_;
   has_raw_ = dataset->has_raw();
+  // numeric_feature_map_ is not copied here: CopySubrow/CopySubrowToDevice,
+  // which every caller runs next, copy it with the rows.
   // copy feature bin mapper data
   for (int i = 0; i < num_groups_; ++i) {
     feature_groups_.emplace_back(

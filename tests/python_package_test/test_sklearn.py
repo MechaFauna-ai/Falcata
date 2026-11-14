@@ -2054,6 +2054,7 @@ def test_negative_n_jobs(tmp_path):
 
 
 def test_default_n_jobs(tmp_path):
+    # n_jobs=None defaults to physical cores; negative n_jobs counts logical cores
     n_cores = joblib.cpu_count(only_physical_cores=True)
     X, y = load_breast_cancer(return_X_y=True)
     gbm = lgb.FalcataClassifier(n_estimators=2, verbose=-1, n_jobs=None).fit(X, y)

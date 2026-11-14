@@ -282,6 +282,7 @@ def _normalize_native_string(func: Callable[[str], None]) -> Callable[[str], Non
     @wraps(func)
     def wrapper(msg: str) -> None:
         nonlocal msg_normalized
+        # native Log::Write ends every message with a "\n" chunk, which flushes it
         if msg.strip() == "":
             msg = "".join(msg_normalized)
             msg_normalized = []
