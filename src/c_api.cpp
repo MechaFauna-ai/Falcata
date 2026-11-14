@@ -301,6 +301,9 @@ class Booster {
   void ResetTrainingData(const Dataset* train_data) {
     if (train_data != train_data_) {
       UNIQUE_LOCK(mutex_)
+      // a subset of the extended training Dataset has the same bin mappers as that Dataset, so GBDT would accept
+      // it, take its feature count, and only then fail in the stale tree learner
+      CheckTrainDataUnchanged();
       // build the new objective and metrics first and commit them only after GBDT accepted the data: GBDT
       // rejects data with other bin mappers (Fatal), and it must then keep pointing at objects that still
       // exist (replacing objective_fun_ up front freed the objective GBDT kept: use-after-free on the next
@@ -457,6 +460,7 @@ class Booster {
 
   void ResetConfig(const char* parameters) {
     UNIQUE_LOCK(mutex_)
+    CheckTrainDataUnchanged();
     auto param = Config::Str2Map(parameters);
     // Config::Set reads an unset device_type as "auto" (cuda when a GPU is usable), and a reset's map holds only the
     // reset keys: carry the booster's device, or a reset of a device_type=cpu booster would build CUDA objects (an
@@ -568,6 +572,7 @@ class Booster {
 
   void AddValidData(const Dataset* valid_data) {
     UNIQUE_LOCK(mutex_)
+    CheckTrainDataUnchanged();
     // register the validation set only after GBDT accepted it: a rejected one (other bin mappers, ...) used to stay
     // in valid_data_, so a later objective reset built metrics on it after the caller had freed the Dataset
     // (heap-use-after-free) and GBDT and the Booster disagreed on the number of validation sets
@@ -585,6 +590,7 @@ class Booster {
 
   void Refit(const int32_t* leaf_preds, int32_t nrow, int32_t ncol) {
     UNIQUE_LOCK(mutex_)
+    CheckTrainDataUnchanged();
     boosting_->RefitTree(leaf_preds, nrow, ncol);
   }
 
@@ -595,7 +601,9 @@ class Booster {
   }
 
   // The tree learner sized itself for the training Dataset's features when it was set up; features added to that
-  // Dataset afterwards (FLC_DatasetAddFeaturesFrom) would be read through those stale sizes.
+  // Dataset afterwards (FLC_DatasetAddFeaturesFrom) would be read through those stale sizes. Every operation that
+  // reaches the tree learner or the training Dataset's bin mappers checks this: training, parameter resets (the
+  // histogram pool re-reads the feature metadata: heap-use-after-free), refit and adding validation data.
   void CheckTrainDataUnchanged() const {
     if (train_data_ != nullptr && train_data_->num_total_features() != train_data_num_total_features_) {
       Log::Fatal("The training Dataset gained features (%d, was %d) after this Booster was created on it; "
