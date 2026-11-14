@@ -229,6 +229,28 @@ def test_regressor(executable):
     np.testing.assert_allclose(y_pred, reg.label_, rtol=0.2, atol=50.0)
 
 
+def test_rf_with_an_empty_local_bag(executable):
+    """RF skips growing a tree on an empty bag; with data-parallel learners the skip must be collective.
+
+    Worker 1 holds 10 rows, so at bagging_fraction=0.15 its local bag is often empty while worker 0's is not.
+    Skipping Train there alone left worker 0 waiting in the histogram Allreduce (a hang).
+    """
+    num_machines = 2
+    data = create_data(task="regression")
+    partitions = [data[:-10], data[-10:]]
+    train_params = {
+        "objective": "regression",
+        "boosting": "rf",
+        "bagging_fraction": 0.15,
+        "bagging_freq": 1,
+        "num_machines": num_machines,
+    }
+    reg = DistributedMockup(executable)
+    reg.fit(partitions, train_params)
+    y_pred = reg.predict(predict_config={})
+    assert np.all(np.isfinite(y_pred))
+
+
 def test_port_taken_before_the_worker_binds_is_retried(executable, monkeypatch):
     """Another process takes a worker's port between discovery and bind: training retries with fresh ports."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as thief:
