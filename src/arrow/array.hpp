@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -162,10 +163,14 @@ class ArrowChunkedArray {
     enum ArrowType type_;
     const struct ArrowSchema* schema_;
     std::vector<const struct ArrowArray*> chunks_;
+    // Shallow, non-owning copies of struct children re-based onto their parent's slice (see
+    // field()); chunks_ may point into them, so the view keeps them alive.
+    std::vector<std::shared_ptr<const struct ArrowArray>> slices_;
 
     View(enum ArrowType type, const struct ArrowSchema* schema,
-         std::vector<const struct ArrowArray*> chunks)
-        : type_(type), schema_(schema), chunks_(std::move(chunks)) {}
+         std::vector<const struct ArrowArray*> chunks,
+         std::vector<std::shared_ptr<const struct ArrowArray>> slices = {})
+        : type_(type), schema_(schema), chunks_(std::move(chunks)), slices_(std::move(slices)) {}
 
    public:
     explicit View(std::vector<View> views) {
@@ -180,6 +185,7 @@ class ArrowChunkedArray {
                      ArrowTypeString(it->type_), ArrowTypeString(type_));
         }
         chunks_.insert(chunks_.end(), it->chunks_.begin(), it->chunks_.end());
+        slices_.insert(slices_.end(), it->slices_.begin(), it->slices_.end());
       }
     }
 
@@ -201,17 +207,36 @@ class ArrowChunkedArray {
       }
 
       std::vector<const struct ArrowArray*> chunk_ptrs;
+      std::vector<std::shared_ptr<const struct ArrowArray>> slices;
       chunk_ptrs.reserve(chunks_.size());
       for (const auto& chunk : chunks_) {
         if (field_idx >= chunk->n_children) {
           Log::Fatal("Arrow chunk has %s children, fewer than its schema's %s",
                      std::to_string(chunk->n_children).c_str(), std::to_string(schema_->n_children).c_str());
         }
-        chunk_ptrs.push_back(chunk->children[field_idx]);
+        const struct ArrowArray* child = chunk->children[field_idx];
+        // Element i of a struct is element (parent offset + i) of each child: a sliced struct
+        // keeps its offset and length on the parent and leaves the children whole.
+        if (chunk->offset < 0 || chunk->length < 0 || child->length < chunk->offset + chunk->length) {
+          Log::Fatal("Arrow struct child %s has length %s, shorter than its parent's offset %s plus length %s",
+                     std::to_string(field_idx).c_str(), std::to_string(child->length).c_str(),
+                     std::to_string(chunk->offset).c_str(), std::to_string(chunk->length).c_str());
+        }
+        if (chunk->offset == 0 && child->length == chunk->length) {
+          chunk_ptrs.push_back(child);
+          continue;
+        }
+        auto slice = std::make_shared<struct ArrowArray>(*child);
+        slice->offset = child->offset + chunk->offset;
+        slice->length = chunk->length;
+        slice->release = nullptr;  // non-owning: the parent chunk still owns the buffers
+        slice->private_data = nullptr;
+        chunk_ptrs.push_back(slice.get());
+        slices.push_back(std::move(slice));
       }
 
       auto type = MakeSchemaView(schema_->children[field_idx]).type;
-      return View(type, schema_->children[field_idx], std::move(chunk_ptrs));
+      return View(type, schema_->children[field_idx], std::move(chunk_ptrs), std::move(slices));
     }
 
     /**

@@ -214,3 +214,76 @@ TEST(ArrowChunkedArrayTest, OffsetAndValidity) {
     EXPECT_EQ(it[4], 6);
   });
 }
+
+namespace {
+
+nanoarrow::UniqueArray MakeStructArray(ArrowSchema* schema, const std::vector<double>& dat0,
+                                       const std::vector<double>& dat1) {
+  nanoarrow::UniqueArray array;
+  EXPECT_EQ(ArrowArrayInitFromSchema(array.get(), schema, nullptr), NANOARROW_OK);
+  EXPECT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
+  for (size_t i = 0; i < dat0.size(); ++i) {
+    EXPECT_EQ(ArrowArrayAppendDouble(array->children[0], dat0[i]), NANOARROW_OK);
+    EXPECT_EQ(ArrowArrayAppendDouble(array->children[1], dat1[i]), NANOARROW_OK);
+    EXPECT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
+  }
+  EXPECT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
+  return array;
+}
+
+std::vector<double> ReadField(const ArrowChunkedArray& chunked_array, int64_t field_idx) {
+  std::vector<double> out;
+  chunked_array.view().field(field_idx).visit<double>([&](auto v) {
+    for (auto it = v.begin(); it != v.end(); ++it) out.push_back(*it);
+    EXPECT_EQ(v.end() - v.begin(), static_cast<int64_t>(out.size()));
+  });
+  return out;
+}
+
+}  // namespace
+
+TEST(ArrowChunkedArrayTest, SlicedStructFields) {
+  // A sliced struct keeps its offset and length on the parent and leaves its children whole, so
+  // element i of a field is element (parent offset + i) of the child. The fields used to be read
+  // with the child's own offset and length: the wrong rows, and more of them than the struct has.
+  auto schema = MakeStructSchema({NANOARROW_TYPE_DOUBLE, NANOARROW_TYPE_DOUBLE});
+  std::vector<nanoarrow::UniqueArray> chunks;
+  chunks.emplace_back(MakeStructArray(schema.get(), {0, 1, 2, 3, 4, 5}, {10, 11, 12, 13, 14, 15}));
+  chunks.back()->offset = 2;  // rows 2, 3, 4
+  chunks.back()->length = 3;
+  chunks.emplace_back(MakeStructArray(schema.get(), {6, 7, 8}, {16, 17, 18}));
+  chunks.back()->children[1]->offset = 1;  // the child's own slice adds to the parent's
+  chunks.back()->children[1]->length = 2;
+  chunks.back()->offset = 1;  // row 1 only: element 1 of child 0, element 2 of child 1's buffer
+  chunks.back()->length = 1;
+  ArrowChunkedArray chunked_array(MakeStream(std::move(schema), std::move(chunks)).get());
+
+  ASSERT_EQ(chunked_array.get_length(), 4);
+  EXPECT_EQ(ReadField(chunked_array, 0), (std::vector<double>{2, 3, 4, 7}));
+  EXPECT_EQ(ReadField(chunked_array, 1), (std::vector<double>{12, 13, 14, 18}));
+
+  // random access through a concatenated view of both fields (the init_score path)
+  std::vector<ArrowChunkedArray::View> fields = {chunked_array.view().field(0),
+                                                 chunked_array.view().field(1)};
+  ArrowChunkedArray::View(fields).visit<double>([](auto v) {
+    ASSERT_EQ(v.end() - v.begin(), 8);
+    EXPECT_EQ(v.begin()[3], 7);
+    EXPECT_EQ(v.begin()[7], 18);
+  });
+}
+
+TEST(ArrowChunkedArrayTest, StructChildShorterThanParentSlice) {
+  auto schema = MakeStructSchema({NANOARROW_TYPE_FLOAT, NANOARROW_TYPE_DOUBLE});
+  auto array = MakeStructArray(schema.get(), {0, 1, 2}, {10, 11, 12});
+  array->children[0]->length = 2;  // the parent's rows 1 and 2 need three elements
+  array->offset = 1;
+  array->length = 2;
+  // the deprecated chunk-list API takes ownership of the chunk and schema in place
+  struct ArrowArray chunk;
+  ArrowArrayMove(array.get(), &chunk);
+  struct ArrowSchema raw_schema;
+  ArrowSchemaMove(schema.get(), &raw_schema);
+  ArrowChunkedArray chunked_array(1, &chunk, &raw_schema);
+  EXPECT_THROW(chunked_array.view().field(0), std::exception);
+  EXPECT_EQ(ReadField(chunked_array, 1), (std::vector<double>{11, 12}));
+}
