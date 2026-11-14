@@ -758,6 +758,20 @@ def _c_float_array(data: np.ndarray) -> Tuple[_ctypes_float_ptr, int, np.ndarray
     return (ptr_data, type_data, data)  # return `data` to avoid the temporary copy is freed
 
 
+def _canonical_sparse(matrix: Any) -> Any:
+    """Return a CSR / CSC matrix in scipy's canonical format: sorted indices and no duplicate entries.
+
+    The C API walks each CSC column's row indices in order, and takes a duplicate entry once, where scipy
+    sums duplicates: a matrix outside the canonical format was trained on, or predicted for, as a different
+    matrix. A non-canonical matrix is copied, so the caller's matrix is left as it is.
+    """
+    if matrix.has_canonical_format:
+        return matrix
+    matrix = matrix.copy()
+    matrix.sum_duplicates()
+    return matrix
+
+
 def _c_int_array(data: np.ndarray) -> Tuple[_ctypes_int_ptr, int, np.ndarray]:
     """Get pointer of int numpy array / list."""
     if _is_1d_list(data):
@@ -1259,7 +1273,7 @@ class _InnerPredictor:
         elif isinstance(data, scipy.sparse.csr_matrix):
             # TODO: remove 'type: ignore[assignment]' when https://github.com/lightgbm-org/LightGBM/pull/6348 is resolved.
             preds, nrow = self.__pred_for_csr(  # type: ignore[assignment]
-                csr=data,
+                csr=_canonical_sparse(data),
                 start_iteration=start_iteration,
                 num_iteration=num_iteration,
                 predict_type=predict_type,
@@ -1267,7 +1281,7 @@ class _InnerPredictor:
         elif isinstance(data, scipy.sparse.csc_matrix):
             # TODO: remove 'type: ignore[assignment]' when https://github.com/lightgbm-org/LightGBM/pull/6348 is resolved.
             preds, nrow = self.__pred_for_csc(  # type: ignore[assignment]
-                csc=data,
+                csc=_canonical_sparse(data),
                 start_iteration=start_iteration,
                 num_iteration=num_iteration,
                 predict_type=predict_type,
@@ -2335,9 +2349,9 @@ class Dataset:
                 )
             )
         elif isinstance(data, scipy.sparse.csr_matrix):
-            self.__init_from_csr(csr=data, params_str=params_str, ref_dataset=ref_dataset)
+            self.__init_from_csr(csr=_canonical_sparse(data), params_str=params_str, ref_dataset=ref_dataset)
         elif isinstance(data, scipy.sparse.csc_matrix):
-            self.__init_from_csc(csc=data, params_str=params_str, ref_dataset=ref_dataset)
+            self.__init_from_csc(csc=_canonical_sparse(data), params_str=params_str, ref_dataset=ref_dataset)
         elif isinstance(data, np.ndarray):
             self.__init_from_np2d(mat=data, params_str=params_str, ref_dataset=ref_dataset)
         elif hasattr(data, "__cuda_array_interface__"):
