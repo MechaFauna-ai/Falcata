@@ -31,6 +31,13 @@ struct VirtualFileWriter : BinaryWriter {
   virtual bool Init() = 0;
 
   /*!
+   * \brief Flush and close the file
+   * \return True when every byte written reached the file: no earlier Write fell short and the
+   *         final flush succeeded (a full disk often fails only here, on the buffered tail)
+   */
+  virtual bool Close() = 0;
+
+  /*!
    * \brief Create appropriate writer for filename
    * \param filename Filename of the data
    * \return File writer instance

@@ -1716,6 +1716,9 @@ void Dataset::SaveBinaryFile(const char* bin_filename) {
         }
       }
     }
+    if (!writer->Close()) {
+      Log::Fatal("Cannot write binary data to %s (disk full or I/O error); the file is incomplete", bin_filename);
+    }
   }
 }
 
