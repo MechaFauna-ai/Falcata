@@ -70,6 +70,12 @@ class DART: public GBDT {
       // drop: the dropped trees were negated (Shrinkage(-1)) and taken out of the training score, and left like that
       // they would stay negated in the model.
       RestoreDroppedTrees();
+      // a stump-only FIRST iteration is kept and counted in iter_ (GBDT::TrainOneIter), so it
+      // needs its weight too: DroppingTrees indexes tree_weight_ by iteration
+      if (!config_->uniform_drop && static_cast<int>(tree_weight_.size()) < iter_) {
+        tree_weight_.push_back(shrinkage_rate_);
+        sum_weight_ += shrinkage_rate_;
+      }
       return ret;
     }
     // normalize
