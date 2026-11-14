@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -270,6 +271,13 @@ TEST(ArrowChunkedArrayTest, SlicedStructFields) {
     EXPECT_EQ(v.begin()[3], 7);
     EXPECT_EQ(v.begin()[7], 18);
   });
+
+  // a visitor copied out of visit() outlives the field view (the Arrow predict accessors)
+  std::function<double(int64_t)> accessor;
+  chunked_array.view().field(1).visit<double>([&](auto v) {
+    accessor = [v](int64_t i) { return v.begin()[i]; };
+  });
+  EXPECT_EQ(accessor(3), 18);
 }
 
 TEST(ArrowChunkedArrayTest, StructChildShorterThanParentSlice) {

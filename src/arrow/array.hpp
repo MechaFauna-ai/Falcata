@@ -255,27 +255,27 @@ class ArrowChunkedArray {
       // Switch on the schema type and construct the appropriate visitor
       switch (type_) {
         case NANOARROW_TYPE_INT8:
-          return f(Visitor<int8_t, OutputT>(chunks_));
+          return f(Visitor<int8_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_INT16:
-          return f(Visitor<int16_t, OutputT>(chunks_));
+          return f(Visitor<int16_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_INT32:
-          return f(Visitor<int32_t, OutputT>(chunks_));
+          return f(Visitor<int32_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_INT64:
-          return f(Visitor<int64_t, OutputT>(chunks_));
+          return f(Visitor<int64_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_UINT8:
-          return f(Visitor<uint8_t, OutputT>(chunks_));
+          return f(Visitor<uint8_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_UINT16:
-          return f(Visitor<uint16_t, OutputT>(chunks_));
+          return f(Visitor<uint16_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_UINT32:
-          return f(Visitor<uint32_t, OutputT>(chunks_));
+          return f(Visitor<uint32_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_UINT64:
-          return f(Visitor<uint64_t, OutputT>(chunks_));
+          return f(Visitor<uint64_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_FLOAT:
-          return f(Visitor<float, OutputT>(chunks_));
+          return f(Visitor<float, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_DOUBLE:
-          return f(Visitor<double, OutputT>(chunks_));
+          return f(Visitor<double, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_BOOL:
-          return f(Visitor<bool, OutputT>(chunks_));
+          return f(Visitor<bool, OutputT>(chunks_, slices_));
         default:
           Log::Fatal("Unsupported Arrow type: %s", ArrowTypeString(type_));
       }
@@ -293,8 +293,12 @@ class ArrowChunkedArray {
 
     std::vector<const struct ArrowArray*> chunks_;
     std::vector<int64_t> chunk_offsets_;
+    // keeps the view's re-based struct children alive for a visitor that outlives its view
+    std::vector<std::shared_ptr<const struct ArrowArray>> slices_;
 
-    explicit Visitor(std::vector<const struct ArrowArray*> chunks) : chunks_(chunks) {
+    Visitor(std::vector<const struct ArrowArray*> chunks,
+            std::vector<std::shared_ptr<const struct ArrowArray>> slices)
+        : chunks_(chunks), slices_(std::move(slices)) {
       // Derive chunk offsets
       chunk_offsets_.reserve(chunks.size() + 1);
       chunk_offsets_.push_back(0);
