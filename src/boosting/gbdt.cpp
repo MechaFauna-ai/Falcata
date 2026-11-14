@@ -510,6 +510,9 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
   // overflowed to inf and NaN. Start from the refit data's average as training does, and rebuild those trees as
   // training built them. A first tree without the bias keeps the learning rate as its shrinkage and is refit as before.
   std::vector<double> init_scores(num_tree_per_iteration_, 0.0);
+  // whether training added the bias to the tree: tracked apart from init_scores, since the refit data's average can
+  // be 0 while the tree still holds a bias and an unshrunk step
+  std::vector<bool> rebuild_first_tree(num_tree_per_iteration_, false);
   if (num_iterations > 0 && !linear_tree_ && config_->boosting == std::string("gbdt") && objective_function_ != nullptr &&
       !train_score_updater_->has_init_score() &&
       (config_->boost_from_average || train_data_->num_features() == 0)) {
@@ -517,10 +520,10 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
       if (std::fabs(models_[tree_id]->shrinkage() - 1.0) > kEpsilon) {
         continue;  // the learning rate as shrinkage: training added no bias to this tree
       }
-      const double init_score = ObtainAutomaticInitialScore(objective_function_, tree_id);
-      if (std::fabs(init_score) > kEpsilon) {
-        init_scores[tree_id] = init_score;
-        train_score_updater_->AddScore(init_score, tree_id);
+      rebuild_first_tree[tree_id] = true;
+      init_scores[tree_id] = ObtainAutomaticInitialScore(objective_function_, tree_id);
+      if (init_scores[tree_id] != 0.0) {
+        train_score_updater_->AddScore(init_scores[tree_id], tree_id);
       }
     }
   }
@@ -538,8 +541,8 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
       auto hess = hessians_pointer_ + offset;
       const Tree* old_tree = models_[model_index].get();
       auto new_tree = tree_learner_->FitByExistingTree(old_tree, leaf_pred, grad, hess);
-      const double init_score = iter == 0 ? init_scores[tree_id] : 0.0;
-      if (init_score != 0.0) {
+      if (iter == 0 && rebuild_first_tree[tree_id]) {
+        const double init_score = init_scores[tree_id];
         // The learner blended new = d * old + (1 - d) * step with the tree's shrinkage of 1. Training built the leaf
         // as init + learning_rate * step (init alone for a single-leaf tree), so the refit leaf is
         // d * old + (1 - d) * (init + learning_rate * step), which is linear in the learner's result.
@@ -560,7 +563,9 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
         }
         #endif  // USE_CUDA
         // the scores already hold init_score: add the tree's part on top of it
-        train_score_updater_->AddScore(-init_score, tree_id);
+        if (init_score != 0.0) {
+          train_score_updater_->AddScore(-init_score, tree_id);
+        }
       }
       train_score_updater_->AddScore(tree_learner_.get(), new_tree, tree_id);
       models_[model_index].reset(new_tree);

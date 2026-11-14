@@ -73,3 +73,21 @@ def test_refit_without_boost_from_average_is_unchanged():
     assert booster.dump_model()["tree_info"][0]["shrinkage"] == pytest.approx(0.1)
     refit = booster.refit(X, y, decay_rate=0.0)
     np.testing.assert_allclose(refit.predict(X), booster.predict(X), rtol=1e-9, atol=1e-9)
+
+
+def test_refit_onto_zero_average_labels_shrinks_the_first_tree():
+    # the first tree carries the bias of labels with mean ~150; refit labels whose average is exactly 0 (integers that
+    # cancel) still need its leaves rebuilt as 0 + learning_rate * step, not a full step
+    objective = {"objective": "regression"}
+    X, y = _data(objective)
+    booster = _train(objective, X, y)
+    rng = np.random.default_rng(1)
+    half = rng.integers(-50, 50, size=300).astype(float)
+    y0 = np.concatenate([half, -half])
+    rng.shuffle(y0)
+    assert np.sum(y0) == 0.0
+    refit = booster.refit(X, y0, decay_rate=0.0)
+    leaf = booster.predict(X, pred_leaf=True)[:, 0]
+    for i in np.unique(leaf):
+        # L2 at score 0: the Newton step is the leaf's mean label
+        np.testing.assert_allclose(refit.get_leaf_output(0, int(i)), 0.1 * np.mean(y0[leaf == i]), rtol=1e-6, atol=1e-9)
