@@ -703,6 +703,35 @@ class SparseBin : public Bin {
            VirtualFileWriter::AlignedSize(sizeof(VAL_T) * num_vals_);
   }
 
+  uint32_t MaxStoredBin() const override {
+    uint32_t max_bin = 0;
+    for (const auto v : vals_) {
+      max_bin = std::max(max_bin, static_cast<uint32_t>(v));
+    }
+    return max_bin;
+  }
+
+  size_t SerializedSize(const void* memory, size_t available, data_size_t num_all_data) const override {
+    const size_t head = VirtualFileWriter::AlignedSize(sizeof(data_size_t));
+    if (available < head) {
+      Log::Fatal("Binary dataset is corrupt: sparse bin header is truncated");
+    }
+    data_size_t num_vals = 0;
+    std::memcpy(&num_vals, memory, sizeof(num_vals));
+    // every stored value is a distinct row, and each delta byte advances at
+    // least one row, so more values than rows is corrupt
+    if (num_vals < 0 || num_vals > num_all_data + 1) {
+      Log::Fatal("Binary dataset is corrupt: sparse bin has %d values for %d rows", num_vals, num_all_data);
+    }
+    const size_t n = static_cast<size_t>(num_vals);
+    const size_t need = head + VirtualFileWriter::AlignedSize(n + 1) +
+                        VirtualFileWriter::AlignedSize(sizeof(VAL_T) * n);
+    if (need > available) {
+      Log::Fatal("Binary dataset is corrupt: sparse bin data needs %zu bytes, %zu left", need, available);
+    }
+    return need;
+  }
+
   void LoadFromMemory(
       const void* memory,
       const std::vector<data_size_t>& local_used_indices) override {

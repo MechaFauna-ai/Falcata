@@ -262,7 +262,7 @@ class CUDALeafSplits: public NCCLInfo {
   // Monotone-constraint-aware split gain. Mirrors the CPU
   // FeatureHistogram::GetSplitGains<USE_MC=true, ...> branch:
   //   * clamp both child outputs into the per-leaf [min,max]
-  //   * return 0 if the monotonicity relation between children is violated
+  //   * return -inf if the monotonicity relation between children is violated
   //   * otherwise return GetLeafGainGivenOutput(left)+GetLeafGainGivenOutput(right)
   // For a feature with monotone_constraint==0 and an unconstrained leaf
   // ([-DBL_MAX, +DBL_MAX]) this is mathematically identical to the non-MC
@@ -287,9 +287,11 @@ class CUDALeafSplits: public NCCLInfo {
     const double right_output = CalculateSplittedLeafOutputMC<USE_L1, USE_SMOOTHING>(
         sum_right_gradients, sum_right_hessians, l1, l2, path_smooth, max_delta_step, right_count,
         parent_output, constraint_min, constraint_max);
+    // -inf, not 0: with path_smooth min_gain_shift can be negative, and a 0 would then pass as a split (CPU
+    // FeatureHistogram::GetSplitGains has the same rule).
     if (((monotone_constraint > 0) && (left_output > right_output)) ||
         ((monotone_constraint < 0) && (left_output < right_output))) {
-      return 0;
+      return -INFINITY;
     }
     return GetLeafGainGivenOutput<USE_L1>(sum_left_gradients, sum_left_hessians, l1, l2, left_output) +
            GetLeafGainGivenOutput<USE_L1>(sum_right_gradients, sum_right_hessians, l1, l2, right_output);

@@ -37,6 +37,8 @@ class MultiValSparseBin : public MultiValBin {
       }
     }
     t_size_.resize(num_threads, 0);
+    t_pushed_.resize(num_threads, 0);
+    t_overflow_.resize(num_threads, 0);
     data_.resize(estimate_num_data / num_threads);
   }
 
@@ -55,9 +57,15 @@ class MultiValSparseBin : public MultiValBin {
   void PushOneRow(int tid, data_size_t idx,
                   const std::vector<uint32_t>& values) override {
     const int pre_alloc_size = 50;
-    if (values.size() > static_cast<size_t>(std::numeric_limits<INDEX_T>::max())) {
-      Log::Fatal("Sparse multi-value bin: row %d has %zu entries, more than its %zu-byte row index can count",
-                 idx, values.size(), sizeof(INDEX_T));
+    t_pushed_[tid] += values.size();
+    const uint64_t index_max = static_cast<uint64_t>(std::numeric_limits<INDEX_T>::max());
+    if (t_overflow_[tid] || static_cast<uint64_t>(t_size_[tid]) + values.size() > index_max) {
+      // The index type was chosen from an estimate of the entry count and is too narrow.
+      // Stop storing (the offsets would wrap); the dataset rebuilds the bin with a wider
+      // index from the exact count (PushedEntriesFit), and FinishLoad refuses this one.
+      t_overflow_[tid] = 1;
+      row_ptr_[idx + 1] = 0;
+      return;
     }
     row_ptr_[idx + 1] = static_cast<INDEX_T>(values.size());
     if (tid == 0) {
@@ -80,15 +88,23 @@ class MultiValSparseBin : public MultiValBin {
     }
   }
 
+  bool PushedEntriesFit(uint64_t* num_entries) const override {
+    uint64_t total = 0;
+    bool overflow = false;
+    for (size_t tid = 0; tid < t_pushed_.size(); ++tid) {
+      total += t_pushed_[tid];
+      overflow = overflow || t_overflow_[tid] != 0;
+    }
+    *num_entries = total;
+    return !overflow && total <= static_cast<uint64_t>(std::numeric_limits<INDEX_T>::max());
+  }
+
   void MergeData(const INDEX_T* sizes) {
     Common::FunctionTimer fun_time("MultiValSparseBin::MergeData", global_timer);
     // The index type was picked from an estimate of the entry count; rows that
     // hold more entries than it can count would wrap the offsets below.
     uint64_t total_entries = 0;
-    for (data_size_t i = 0; i < num_data_; ++i) {
-      total_entries += static_cast<uint64_t>(row_ptr_[i + 1]);
-    }
-    if (total_entries > static_cast<uint64_t>(std::numeric_limits<INDEX_T>::max())) {
+    if (!PushedEntriesFit(&total_entries)) {
       Log::Fatal("Sparse multi-value bin holds %s entries, more than its %zu-byte row index can count "
                  "(the index type was chosen from an estimated %.4f entries per row over %d rows)",
                  std::to_string(total_entries).c_str(), sizeof(INDEX_T), estimate_element_per_row_, num_data_);
@@ -116,6 +132,8 @@ class MultiValSparseBin : public MultiValBin {
   void FinishLoad() override {
     MergeData(t_size_.data());
     t_size_.clear();
+    t_pushed_.clear();
+    t_overflow_.clear();
     row_ptr_.shrink_to_fit();
     data_.shrink_to_fit();
     t_data_.clear();
@@ -477,6 +495,10 @@ class MultiValSparseBin : public MultiValBin {
   std::vector<std::vector<VAL_T, Common::AlignmentAllocator<VAL_T, 32>>>
       t_data_;
   std::vector<INDEX_T> t_size_;
+  /*! \brief entries pushed per thread, counted in 64 bits (they may exceed INDEX_T) */
+  std::vector<uint64_t> t_pushed_;
+  /*! \brief per thread: a push did not fit the INDEX_T row index */
+  std::vector<uint8_t> t_overflow_;
   std::vector<uint32_t> offsets_;
 
   MultiValSparseBin(const MultiValSparseBin<INDEX_T, VAL_T>& other)
@@ -487,6 +509,8 @@ class MultiValSparseBin : public MultiValBin {
         row_ptr_(other.row_ptr_),
         t_data_(other.t_data_),
         t_size_(other.t_size_),
+        t_pushed_(other.t_pushed_),
+        t_overflow_(other.t_overflow_),
         offsets_(other.offsets_) {}
 };
 

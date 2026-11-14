@@ -14,7 +14,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -155,6 +157,18 @@ class FeatureHistogram {
                                          double parent_output,
                                          SplitInfo* output);
 
+  /*!
+  * \brief Add to a split-side data count. Counts are estimated from hessians
+  *        (hess * num_data / sum_hessian): with negative or extreme weights the estimate is
+  *        meaningless and RoundInt saturates, so int sums could overflow (undefined
+  *        behaviour). Saturate at the data_size_t range instead; normal counts are unchanged.
+  */
+  static inline data_size_t SaturatingCount(data_size_t count, int64_t delta) {
+    const int64_t sum = static_cast<int64_t>(count) + delta;
+    return static_cast<data_size_t>(std::max<int64_t>(std::numeric_limits<data_size_t>::min(),
+                                                      std::min<int64_t>(std::numeric_limits<data_size_t>::max(), sum)));
+  }
+
   void GatherInfoForThreshold(double sum_gradient, double sum_hessian,
                               uint32_t threshold, data_size_t num_data,
                               double parent_output, SplitInfo* output) {
@@ -227,11 +241,11 @@ class FeatureHistogram {
           static_cast<data_size_t>(Common::RoundInt(hess * cnt_factor));
       sum_right_gradient += grad;
       sum_right_hessian += hess;
-      right_count += cnt;
+      right_count = SaturatingCount(right_count, cnt);
     }
     double sum_left_gradient = sum_gradient - sum_right_gradient;
     double sum_left_hessian = sum_hessian - sum_right_hessian;
-    data_size_t left_count = num_data - right_count;
+    data_size_t left_count = SaturatingCount(num_data, -static_cast<int64_t>(right_count));
     double current_gain =
         GetLeafGain<true, true, USE_SMOOTHING>(
             sum_left_gradient, sum_left_hessian, meta_->config->lambda_l1,
@@ -264,7 +278,7 @@ class FeatureHistogram {
         meta_->config->lambda_l1, meta_->config->lambda_l2,
         meta_->config->max_delta_step, meta_->config->path_smooth,
         right_count, parent_output);
-    output->right_count = num_data - left_count;
+    output->right_count = SaturatingCount(num_data, -static_cast<int64_t>(left_count));
     output->right_sum_gradient = sum_gradient - sum_left_gradient;
     output->right_sum_hessian = sum_hessian - sum_left_hessian - kEpsilon;
     output->gain = current_gain - min_gain_shift;
@@ -307,7 +321,7 @@ class FeatureHistogram {
 
     double l2 = meta_->config->lambda_l2;
     data_size_t left_count = cnt;
-    data_size_t right_count = num_data - left_count;
+    data_size_t right_count = SaturatingCount(num_data, -static_cast<int64_t>(left_count));
     double sum_left_hessian = hess + kEpsilon;
     double sum_right_hessian = sum_hessian - sum_left_hessian;
     double sum_left_gradient = grad;
@@ -438,9 +452,12 @@ class FeatureHistogram {
           CalculateSplittedLeafOutput<USE_MC, USE_L1, USE_MAX_OUTPUT, USE_SMOOTHING>(
               sum_right_gradients, sum_right_hessians, l1, l2, max_delta_step,
               constraints->RightToBasicConstraint(), smoothing, right_count, parent_output);
+      // A split that breaks the monotone order must never be taken. Returning 0 here (LightGBM's sentinel) is not
+      // enough: with path_smooth the parent's gain at its smoothed output can be negative, so min_gain_shift < 0
+      // and a gain of 0 passed the `current_gain <= min_gain_shift` test and the violating split was kept.
       if (((monotone_constraint > 0) && (left_output > right_output)) ||
           ((monotone_constraint < 0) && (left_output < right_output))) {
-        return 0;
+        return -std::numeric_limits<double>::infinity();
       }
       return GetLeafGainGivenOutput<USE_L1>(
                  sum_left_gradients, sum_left_hessians, l1, l2, left_output) +
@@ -521,13 +538,13 @@ class FeatureHistogram {
             static_cast<data_size_t>(Common::RoundInt(hess * cnt_factor));
         sum_right_gradient += grad;
         sum_right_hessian += hess;
-        right_count += cnt;
+        right_count = SaturatingCount(right_count, cnt);
         // if data not enough, or sum hessian too small
         if (right_count < meta_->config->min_data_in_leaf ||
             sum_right_hessian < meta_->config->min_sum_hessian_in_leaf) {
           continue;
         }
-        data_size_t left_count = num_data - right_count;
+        data_size_t left_count = SaturatingCount(num_data, -static_cast<int64_t>(right_count));
         // if data not enough
         if (left_count < meta_->config->min_data_in_leaf) {
           break;
@@ -602,7 +619,7 @@ class FeatureHistogram {
                 static_cast<data_size_t>(Common::RoundInt(hess * cnt_factor));
             sum_left_gradient -= grad;
             sum_left_hessian -= hess;
-            left_count -= cnt;
+            left_count = SaturatingCount(left_count, -static_cast<int64_t>(cnt));
           }
           t = -1;
         }
@@ -617,15 +634,14 @@ class FeatureHistogram {
         if (t >= 0) {
           sum_left_gradient += GET_GRAD(data_, t);
           sum_left_hessian += GET_HESS(data_, t);
-          left_count += static_cast<data_size_t>(
-              Common::RoundInt(GET_HESS(data_, t) * cnt_factor));
+          left_count = SaturatingCount(left_count, Common::RoundInt(GET_HESS(data_, t) * cnt_factor));
         }
         // if data not enough, or sum hessian too small
         if (left_count < meta_->config->min_data_in_leaf ||
             sum_left_hessian < meta_->config->min_sum_hessian_in_leaf) {
           continue;
         }
-        data_size_t right_count = num_data - left_count;
+        data_size_t right_count = SaturatingCount(num_data, -static_cast<int64_t>(left_count));
         // if data not enough
         if (right_count < meta_->config->min_data_in_leaf) {
           break;
@@ -693,9 +709,10 @@ class FeatureHistogram {
               sum_gradient - best_sum_left_gradient,
               sum_hessian - best_sum_left_hessian, meta_->config->lambda_l1,
               meta_->config->lambda_l2, meta_->config->max_delta_step,
-              best_right_constraints, meta_->config->path_smooth, num_data - best_left_count,
+              best_right_constraints, meta_->config->path_smooth,
+              SaturatingCount(num_data, -static_cast<int64_t>(best_left_count)),
               parent_output);
-      output->right_count = num_data - best_left_count;
+      output->right_count = SaturatingCount(num_data, -static_cast<int64_t>(best_left_count));
       output->right_sum_gradient = sum_gradient - best_sum_left_gradient;
       output->right_sum_hessian =
           sum_hessian - best_sum_left_hessian - kEpsilon;
@@ -855,9 +872,25 @@ class HistogramPool {
   }
 
   void ResetConfig(const Dataset* train_data, const Config* config) {
-    CHECK_GT(train_data->num_features(), 0);
+    if (train_data->num_features() == 0) {
+      // nothing to re-point: a dataset without usable features has no histograms (training
+      // makes constant trees), and a parameter reset must not fail on it
+      return;
+    }
     const Config* old_config = feature_metas_[0].config;
+    // SetFeatureInfo reseeds every feature's extra_trees generator; with an unchanged extra_seed, carry the streams
+    // on, so a reset that changes nothing does not replay the thresholds the first trees drew
+    std::vector<Random> rands;
+    if (old_config->extra_seed == config->extra_seed) {
+      rands.reserve(feature_metas_.size());
+      for (const auto& meta : feature_metas_) {
+        rands.push_back(meta.rand);
+      }
+    }
     SetFeatureInfo<false, true>(train_data, config, &feature_metas_);
+    for (size_t i = 0; i < rands.size(); ++i) {
+      feature_metas_[i].rand = rands[i];
+    }
     // if need to reset the function pointers
     if (old_config->lambda_l1 != config->lambda_l1 ||
         old_config->monotone_constraints != config->monotone_constraints ||

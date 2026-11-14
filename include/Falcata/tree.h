@@ -348,6 +348,15 @@ class Tree {
 
   void RecomputeMaxDepth();
 
+  /*!
+  * \brief Check a deserialized tree before anything walks it: children form
+  *        one tree rooted at node 0 (no cycle, no out-of-range or repeated
+  *        child), split features index inputs below num_features, categorical
+  *        splits name a valid bitset, and linear leaves use valid features.
+  *        Calls Log::Fatal on the first violation.
+  */
+  void CheckLoadedStructure(int num_features) const;
+
   int NextLeafId() const { return num_leaves_; }
 
   /*! \brief Get the linear model constant term (bias) of one leaf */
@@ -365,6 +374,14 @@ class Tree {
    * back a tree that has not had its leaf features and coefficients rebuilt
    * yet, so anything that reads them must ask this first rather than trusting
    * the flag. */
+  inline bool HasDatasetScoringMetadata() const {
+    // what AddPredictionToScore(const Dataset*, ...) needs: the inner split features and bin thresholds a trained
+    // tree has and a tree loaded from a model string or file lacks (a constant tree needs neither)
+    return num_leaves_ <= 1 ||
+           (split_feature_inner_.size() >= static_cast<size_t>(num_leaves_ - 1) &&
+            threshold_in_bin_.size() >= static_cast<size_t>(num_leaves_ - 1));
+  }
+
   inline bool HasLinearMetadata() const {
     return is_linear_ &&
            static_cast<int>(leaf_features_inner_.size()) >= num_leaves_ &&
@@ -558,9 +575,9 @@ class Tree {
   static double UnwoundPathSum(const PathElement *unique_path, int unique_depth, int path_index);
 
   /*! \brief Number of max leaves*/
-  int max_leaves_;
+  int max_leaves_ = 0;
   /*! \brief Number of current leaves*/
-  int num_leaves_;
+  int num_leaves_ = 0;
   // following values used for non-leaf node
   /*! \brief A non-leaf node's left child */
   std::vector<int> left_child_;
@@ -574,7 +591,7 @@ class Tree {
   std::vector<uint32_t> threshold_in_bin_;
   /*! \brief A non-leaf node's split threshold in feature value */
   std::vector<double> threshold_;
-  int num_cat_;
+  int num_cat_ = 0;
   std::vector<int> cat_boundaries_inner_;
   std::vector<uint32_t> cat_threshold_inner_;
   std::vector<int> cat_boundaries_;
@@ -605,13 +622,13 @@ class Tree {
   /*! \brief Depth for leaves */
   std::vector<int> leaf_depth_;
   /*! \brief whether to keep track of ancestor nodes for each leaf (only needed when feature interactions are restricted) */
-  bool track_branch_features_;
+  bool track_branch_features_ = false;
   /*! \brief Features on leaf's branch, original index */
   std::vector<std::vector<int>> branch_features_;
-  double shrinkage_;
-  int max_depth_;
+  double shrinkage_ = 1.0;
+  int max_depth_ = -1;
   /*! \brief Tree has linear model at each leaf */
-  bool is_linear_;
+  bool is_linear_ = false;
   /*! \brief coefficients of linear models on leaves */
   std::vector<std::vector<double>> leaf_coeff_;
   /*! \brief constant term (bias) of linear models on leaves */
@@ -622,7 +639,7 @@ class Tree {
   std::vector<std::vector<int>> leaf_features_inner_;
   #ifdef USE_CUDA
   /*! \brief Marks whether this tree is a CUDATree */
-  bool is_cuda_tree_;
+  bool is_cuda_tree_ = false;
   #endif  // USE_CUDA
 };
 
@@ -679,7 +696,9 @@ inline double Tree::Predict(const double* feature_values) const {
       for (size_t i = 0; i < leaf_features_[leaf].size(); ++i) {
         int feat_raw = leaf_features_[leaf][i];
         double feat_val = feature_values[feat_raw];
-        if (std::isnan(feat_val)) {
+        // NaN, +-inf, or beyond the float range: the leaf's constant applies, as in training,
+        // where the linear features are read from a float copy (1e300 is inf there)
+        if (!std::isfinite(static_cast<float>(feat_val))) {
           nan_found = true;
           break;
         } else {
@@ -711,7 +730,7 @@ inline double Tree::PredictByMap(const std::unordered_map<int, double>& feature_
       auto val_it = feature_values.find(feat);
       if (val_it != feature_values.end()) {
         double feat_val = val_it->second;
-        if (std::isnan(feat_val)) {
+        if (!std::isfinite(static_cast<float>(feat_val))) {
           nan_found = true;
           break;
         } else {

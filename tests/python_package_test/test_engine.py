@@ -14,7 +14,7 @@ from shutil import copyfile
 import numpy as np
 import psutil
 import pytest
-from scipy.sparse import csr_matrix, isspmatrix_csc, isspmatrix_csr
+from scipy.sparse import csc_matrix, csr_matrix, isspmatrix_csc, isspmatrix_csr
 from sklearn.datasets import load_svmlight_file, make_blobs, make_classification, make_multilabel_classification
 from sklearn.metrics import (
     average_precision_score,
@@ -2269,6 +2269,31 @@ def test_contribs_sparse():
         np.testing.assert_allclose(contribs_csc.toarray(), contribs_dense)
 
 
+@pytest.mark.parametrize("sparse_format", ["csr", "csc"])
+@pytest.mark.parametrize("objective", ["regression", "multiclass"])
+def test_contribs_sparse_fewer_columns_than_model(rng, sparse_format, objective):
+    # with predict_disable_shape_check=True, sparse pred_contrib sized its output by the input's columns: the
+    # contributions of the model's last features and the expected value (at the model's feature count) fell
+    # outside it (CSC: heap-buffer-overflow; CSR: a scipy matrix holding column indices past its shape)
+    X = rng.normal(size=(200, 4))
+    y = rng.integers(0, 3, size=200) if objective == "multiclass" else X.sum(axis=1)
+    params = {"objective": objective, "verbose": -1, "num_leaves": 7}
+    if objective == "multiclass":
+        params["num_class"] = 3
+    bst = lgb.train(params, lgb.Dataset(X, y), num_boost_round=5)
+    X_few = X[:30, :2]
+    X_few_sparse = csr_matrix(X_few) if sparse_format == "csr" else csc_matrix(X_few)
+    dense = bst.predict(X_few, pred_contrib=True, predict_disable_shape_check=True)
+    sparse = bst.predict(X_few_sparse, pred_contrib=True, predict_disable_shape_check=True)
+    if objective == "multiclass":
+        assert len(sparse) == 3
+        sparse = np.hstack([m.toarray() for m in sparse])
+    else:
+        assert sparse.shape == (30, 5)
+        sparse = sparse.toarray()
+    np.testing.assert_allclose(sparse, dense)
+
+
 def test_contribs_sparse_multiclass():
     n_features = 20
     n_samples = 100
@@ -2728,6 +2753,33 @@ def test_refit_with_one_tree_multiclass_classification():
     model = lgb.train(params, lgb_train, num_boost_round=1)
     model_refit = model.refit(X, y)
     assert isinstance(model_refit, lgb.Booster)
+
+
+@pytest.mark.parametrize("num_leaves", [2, 7, 31])
+def test_refit_with_path_smooth_reproduces_the_trained_leaves(num_leaves):
+    # Refit with path_smooth used to read Tree::leaf_parent_, which a tree
+    # loaded from model text does not carry (a null dereference), and passed
+    # the parent's NODE INDEX where the parent's output belongs.
+    X, y = make_synthetic_regression(n_samples=2_000, n_features=5)
+    params = {
+        "objective": "regression",
+        "device_type": "cpu",
+        "verbose": -1,
+        "num_leaves": num_leaves,
+        "min_data_in_leaf": 5,
+        "path_smooth": 50.0,
+        "lambda_l2": 1.0,
+        "boost_from_average": False,
+        "deterministic": True,
+        "num_threads": 1,
+    }
+    model = lgb.train(params, lgb.Dataset(X, y), num_boost_round=1)
+    refit = model.refit(X, y, decay_rate=0.0)
+    trained = model.trees_to_dataframe()
+    refitted = refit.trees_to_dataframe()
+    is_leaf = trained["split_feature"].isna()
+    np.testing.assert_allclose(refitted.loc[is_leaf, "value"], trained.loc[is_leaf, "value"], rtol=1e-6, atol=1e-9)
+    assert np.all(np.isfinite(refit.predict(X)))
 
 
 def test_refit_dataset_params(rng):
@@ -3759,6 +3811,179 @@ def test_forced_split_feature_indices(tmp_path):
         lgb.train(params, lgb_train)
 
 
+def test_forced_split_negative_feature_index(tmp_path):
+    X, y = make_synthetic_regression()
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps({"feature": -1, "threshold": 0.5}))
+    params = {"objective": "regression", "forcedsplits_filename": tmp_split_file, "device_type": "cpu", "verbose": -1}
+    with pytest.raises(lgb.basic.FalcataError, match="Forced splits file includes feature index -1"):
+        lgb.train(params, lgb.Dataset(X, y))
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+def test_forced_split_malformed_file(tmp_path, content):
+    X, y = make_synthetic_regression()
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(content)
+    params = {"objective": "regression", "forcedsplits_filename": tmp_split_file, "device_type": "cpu", "verbose": -1}
+    with pytest.raises(lgb.basic.FalcataError, match="(?i)forced splits file"):
+        lgb.train(params, lgb.Dataset(X, y))
+
+
+def test_forced_split_reset_rejects_bad_file_and_keeps_training(tmp_path):
+    X, y = make_synthetic_regression()
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"feature": -3, "threshold": 0.5}))
+    bst = lgb.train(
+        {"objective": "regression", "device_type": "cpu", "verbose": -1},
+        lgb.Dataset(X, y),
+        2,
+        keep_training_booster=True,
+    )
+    with pytest.raises(lgb.basic.FalcataError, match="Forced splits file includes feature index -3"):
+        bst.reset_parameter({"forcedsplits_filename": str(bad)})
+    # a missing file used to fail after the tree learner already pointed at the new config,
+    # which the failure then freed (heap-use-after-free on the next update under ASan)
+    with pytest.raises(lgb.basic.FalcataError, match="Could not open"):
+        bst.reset_parameter({"forcedsplits_filename": str(tmp_path / "missing.json")})
+    bst.update()
+    assert np.all(np.isfinite(bst.predict(X)))
+
+
+@pytest.mark.parametrize("side", ["root", "left", "right"])
+def test_forced_split_on_unused_feature_is_skipped(tmp_path, side):
+    # A constant column is dropped from the binned dataset, so it has no inner
+    # feature index. Forcing a split on it used to index the histogram arrays
+    # with -1 (heap-buffer-overflow, usually a segfault).
+    X, y = make_synthetic_regression()
+    X = X.copy()
+    X[:, 1] = 3.25
+    forced = {"feature": 0, "threshold": 0.0}
+    if side == "root":
+        forced = {"feature": 1, "threshold": 0.5}
+    else:
+        forced[side] = {"feature": 1, "threshold": 0.5}
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps(forced))
+    params = {"objective": "regression", "device_type": "cpu", "verbose": -1, "num_leaves": 7, "deterministic": True}
+    bst = lgb.train({**params, "forcedsplits_filename": tmp_split_file}, lgb.Dataset(X, y), num_boost_round=3)
+    preds = bst.predict(X)
+    assert np.all(np.isfinite(preds))
+    if side == "root":
+        # nothing can be forced, so the trees are the ordinary ones
+        plain = lgb.train(params, lgb.Dataset(X, y), num_boost_round=3)
+        np.testing.assert_array_equal(preds, plain.predict(X))
+    split_features = bst.trees_to_dataframe()["split_feature"].dropna()
+    assert "Column_1" not in set(split_features)
+
+
+@pytest.mark.parametrize("max_depth", [-1, 1])
+def test_forced_split_on_leaves_that_cannot_split(tmp_path, max_depth):
+    # A bag of 5 rows with min_data_in_leaf=5 cannot be split, so
+    # BeforeFindBestSplit prepared no histograms; ForceSplits evaluated the
+    # forced split anyway and read an uninitialized histogram array
+    # (ASan: member call on address 0xbebebebebebec03e; a segfault otherwise).
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((50, 8))
+    y = (X[:, 0] > 0).astype(float)
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps({"feature": 5, "threshold": 0.3}))
+    params = {
+        "objective": "binary",
+        "device_type": "cpu",
+        "verbose": -1,
+        "bagging_fraction": 0.1,
+        "bagging_freq": 1,
+        "num_leaves": 3,
+        "max_depth": max_depth,
+        "min_data_in_leaf": 5,
+        "forcedsplits_filename": tmp_split_file,
+    }
+    bst = lgb.train(params, lgb.Dataset(X, y), num_boost_round=10)
+    assert np.all(np.isfinite(bst.predict(X)))
+
+
+@pytest.mark.parametrize("num_leaves", [2, 3])
+def test_forced_splits_beyond_num_leaves(tmp_path, num_leaves):
+    # Every forced split was applied regardless of num_leaves; with more forced
+    # splits than num_leaves - 1 the tree outgrew its data partition (ASan:
+    # heap-buffer-overflow in DataPartition::Split).
+    X, y = make_synthetic_regression(n_samples=500)
+    forced = {
+        "feature": 0,
+        "threshold": 0.0,
+        "left": {"feature": 1, "threshold": 0.0, "left": {"feature": 2, "threshold": 0.0}},
+        "right": {"feature": 1, "threshold": 0.0},
+    }
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps(forced))
+    params = {
+        "objective": "regression",
+        "device_type": "cpu",
+        "verbose": -1,
+        "num_leaves": num_leaves,
+        "forcedsplits_filename": tmp_split_file,
+    }
+    bst = lgb.train(params, lgb.Dataset(X, y), num_boost_round=3)
+    df = bst.trees_to_dataframe()
+    assert df.groupby("tree_index")["split_feature"].apply(lambda s: s.notna().sum()).max() <= num_leaves - 1
+    assert np.all(np.isfinite(bst.predict(X)))
+
+
+@pytest.mark.parametrize("feature_fraction", [0.1, 0.3])
+def test_forced_splits_col_wise_equals_row_wise_with_feature_fraction(tmp_path, feature_fraction):
+    # A forced split is evaluated even on a feature feature_fraction left out of
+    # the tree, but the row-wise multi-value bin was narrowed to the tree's
+    # features, so that feature's histogram was zero there: row-wise and
+    # col-wise training forced different splits.
+    X, y = load_digits(return_X_y=True)
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps({"feature": 21, "threshold": 8.0, "left": {"feature": 36, "threshold": 8.0}}))
+    params = {
+        "objective": "multiclass",
+        "num_class": 10,
+        "device_type": "cpu",
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "num_leaves": 7,
+        "min_data_in_leaf": 5,
+        "feature_fraction": feature_fraction,
+        "forcedsplits_filename": tmp_split_file,
+    }
+    preds = [
+        lgb.train({**params, layout: True}, lgb.Dataset(X, y), num_boost_round=5).predict(X, raw_score=True)
+        for layout in ("force_col_wise", "force_row_wise")
+    ]
+    np.testing.assert_allclose(preds[0], preds[1], rtol=1e-9, atol=1e-12)
+
+
+def test_forced_split_on_feature_the_parent_could_not_split(tmp_path):
+    # min_sum_hessian_in_leaf leaves no ordinary split at the root, so FindBestSplits
+    # marked every feature unsplittable there and built no child histogram for them;
+    # the forced split on the right child then read an unbuilt histogram in col-wise
+    # mode (row-wise builds all columns at once), and the two layouts built different trees.
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((500, 6))
+    y = (X[:, 0] + 0.5 * rng.standard_normal(500) > 0).astype(float)
+    tmp_split_file = tmp_path / "forced_split.json"
+    tmp_split_file.write_text(json.dumps({"feature": 4, "threshold": 0.9, "right": {"feature": 1, "threshold": 0.56}}))
+    params = {
+        "objective": "binary",
+        "device_type": "cpu",
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "min_sum_hessian_in_leaf": 100,
+        "forcedsplits_filename": tmp_split_file,
+    }
+    models = [
+        lgb.train({**params, layout: True}, lgb.Dataset(X, y), num_boost_round=5)
+        for layout in ("force_col_wise", "force_row_wise")
+    ]
+    np.testing.assert_array_equal(models[0].predict(X, raw_score=True), models[1].predict(X, raw_score=True))
+
+
 def test_forced_split_missing_file(tmp_path):
     X, y = make_synthetic_regression()
     lgb_train = lgb.Dataset(X, y)
@@ -4242,6 +4467,31 @@ def test_linear_single_leaf():
     bst = lgb.train(params, train_data, num_boost_round=5)
     y_pred = bst.predict(X_train)
     assert log_loss(y_train, y_pred) < 0.661
+
+
+@pytest.mark.parametrize("boost_from_average", [True, False])
+def test_trees_to_dataframe_linear_single_leaf(boost_from_average):
+    # A 1-leaf linear tree dumps leaf_const/leaf_features/leaf_coeff next to
+    # leaf_value and leaf_count, but no leaf_index or leaf_weight; the
+    # single-node check compared the exact key set, so it read leaf_weight
+    # and raised KeyError.
+    X, y = make_synthetic_regression(n_samples=50)
+    params = {
+        "objective": "regression",
+        "linear_tree": True,
+        "min_data_in_leaf": 100,
+        "boost_from_average": boost_from_average,
+        "feature_pre_filter": False,
+        "device_type": "cpu",
+        "verbose": -1,
+    }
+    bst = lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=3)
+    assert "leaf_const" in bst.dump_model()["tree_info"][0]["tree_structure"]
+    df = bst.trees_to_dataframe()
+    assert len(df) == bst.num_trees()
+    assert df["split_feature"].isna().all()
+    np.testing.assert_array_equal(df["node_index"], [f"{i}-L0" for i in range(bst.num_trees())])
+    assert df["weight"].isna().all()
 
 
 def test_linear_raises_informative_errors_on_unsupported_params():

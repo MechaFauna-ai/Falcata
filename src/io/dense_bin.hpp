@@ -637,6 +637,25 @@ class DenseBin : public Bin {
     return VirtualFileWriter::AlignedSize(sizeof(VAL_T) * data_.size());
   }
 
+  uint32_t MaxStoredBin() const override {
+    uint32_t max_bin = 0;
+    for (const auto v : data_) {
+      const uint32_t value = IS_4BIT ? std::max<uint32_t>(v & 0xf, (v >> 4) & 0xf) : static_cast<uint32_t>(v);
+      max_bin = std::max(max_bin, value);
+    }
+    return max_bin;
+  }
+
+  size_t SerializedSize(const void*, size_t available, data_size_t num_all_data) const override {
+    const size_t n = static_cast<size_t>(num_all_data);
+    const size_t need = VirtualFileWriter::AlignedSize(IS_4BIT ? (n + 1) / 2 : sizeof(VAL_T) * n);
+    if (num_all_data < 0 || need > available) {
+      Log::Fatal("Binary dataset is corrupt: dense bin data of %d rows needs %zu bytes, %zu left",
+                 num_all_data, need, available);
+    }
+    return need;
+  }
+
   DenseBin<VAL_T, IS_4BIT>* Clone() override;
 
   const void* GetColWiseData(uint8_t* bit_type, bool* is_sparse, std::vector<BinIterator*>* bin_iterator, const int num_threads) const override;

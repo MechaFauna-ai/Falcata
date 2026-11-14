@@ -3419,18 +3419,33 @@ inline const PairJointLimits& PairJointDeviceLimits() {
   }
   PairJointLimits& limits = by_device[device];
   if (!limits.ready) {
-    cudaFuncAttributes attr_gather, attr_direct;
-    CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_gather, CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>));
-    CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_direct, CUDAConstructDiscretizedHistogramPairJointBatchedKernel<true>));
+    // Every instantiation launched with the shapes these limits bound: the host-launched gather and direct kernels,
+    // and the device-level gather and code-view kernels (cuda_plan key device_levels), which use the same block
+    // shape. Their register counts differ, and depend on the compiler (CUDA 13.2 gives the device-level kernels 72
+    // registers, so they cannot launch 1024 threads where the host-launched ones can).
+    using KernelFn = decltype(&CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>);
+    const KernelFn kernels[] = {
+      CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>,
+      CUDAConstructDiscretizedHistogramPairJointBatchedKernel<true>,
+      CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, false, true>,
+      CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, true, true>,
+    };
+    int regs = 1;
+    int max_threads = 1024;
+    for (const KernelFn kernel : kernels) {
+      cudaFuncAttributes attr;
+      CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr, kernel));
+      regs = std::max(regs, attr.numRegs);
+      max_threads = std::min(max_threads, attr.maxThreadsPerBlock);
+    }
     int regs_per_sm = 0;
     int threads_per_sm = 0;
     CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&regs_per_sm, cudaDevAttrMaxRegistersPerMultiprocessor, device));
     CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&threads_per_sm, cudaDevAttrMaxThreadsPerMultiProcessor, device));
-    const int regs = std::max(1, std::max(attr_gather.numRegs, attr_direct.numRegs));
     const int regs_per_warp = (regs * 32 + 255) / 256 * 256;
     limits.warps_by_regs = std::max(1, regs_per_sm / regs_per_warp);
     limits.warps_per_sm = std::max(1, threads_per_sm / 32);
-    limits.max_threads = std::min(attr_gather.maxThreadsPerBlock, attr_direct.maxThreadsPerBlock);
+    limits.max_threads = max_threads;
     limits.ready = true;
   }
   return limits;

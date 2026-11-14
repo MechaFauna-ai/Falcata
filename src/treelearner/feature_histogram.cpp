@@ -189,7 +189,7 @@ void FeatureHistogram::FindBestThresholdCategoricalInner(double sum_gradient,
           meta_->config->lambda_l1, l2, meta_->config->max_delta_step,
           constraints, 0, meta_->config->path_smooth, other_count, cnt, parent_output);
       // gain with split is worse than without split
-      if (current_gain <= min_gain_shift) {
+      if (!(current_gain > min_gain_shift)) {  // also skips a NaN gain
         continue;
       }
 
@@ -265,7 +265,7 @@ void FeatureHistogram::FindBestThresholdCategoricalInner(double sum_gradient,
           sum_right_hessian, meta_->config->lambda_l1, l2,
           meta_->config->max_delta_step, constraints, 0, meta_->config->path_smooth,
           left_count, right_count, parent_output);
-      if (current_gain <= min_gain_shift) {
+      if (!(current_gain > min_gain_shift)) {  // also skips a NaN gain
         continue;
       }
       is_splittable_ = true;
@@ -374,7 +374,7 @@ void FeatureHistogram::FindBestThresholdCategoricalInner(double sum_gradient,
             sum_right_hessian, meta_->config->lambda_l1, l2,
             meta_->config->max_delta_step, constraints, 0, meta_->config->path_smooth,
             left_count, right_count, parent_output);
-        if (current_gain <= min_gain_shift) {
+        if (!(current_gain > min_gain_shift)) {  // also skips a NaN gain
           continue;
         }
         is_splittable_ = true;
@@ -390,7 +390,10 @@ void FeatureHistogram::FindBestThresholdCategoricalInner(double sum_gradient,
     }
   }
 
-  if (is_splittable_) {
+  // best_threshold stays -1 if no candidate's gain beat kMinScore (e.g. NaN gains from
+  // non-finite gradients): there is no split to emit, and best_threshold + offset would
+  // index the category tables out of range
+  if (is_splittable_ && best_threshold >= 0) {
     output->left_output = CalculateSplittedLeafOutput<USE_MC, USE_L1, USE_MAX_OUTPUT, USE_SMOOTHING>(
         best_sum_left_gradient, best_sum_left_hessian,
         meta_->config->lambda_l1, l2, meta_->config->max_delta_step,

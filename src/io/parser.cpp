@@ -105,6 +105,9 @@ std::vector<std::string> ReadKLineFromFile(const char* filename, bool header, in
     Log::Fatal("Data file %s couldn't be read.", filename);
   }
   std::string read_str = std::string(buffer.data(), read_len);
+  if (read_str.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+    read_str.erase(0, 3);  // UTF-8 byte order mark, as TextReader skips it
+  }
   std::stringstream tmp_file(read_str);
   if (header) {
     if (!tmp_file.eof()) {
@@ -143,6 +146,9 @@ int GetNumColFromLIBSVMFile(const char* filename, bool header) {
     Log::Fatal("Data file %s couldn't be read.", filename);
   }
   std::string read_str = std::string(buffer.data(), read_len);
+  if (read_str.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+    read_str.erase(0, 3);  // UTF-8 byte order mark, as TextReader skips it
+  }
   std::stringstream tmp_file(read_str);
   if (header) {
     if (!tmp_file.eof()) {
@@ -166,7 +172,7 @@ int GetNumColFromLIBSVMFile(const char* filename, bool header) {
                          : cur_line.substr(space_pos + 1, colon_pos - space_pos - 1);
       int cur_idx = 0;
       if (colon_pos != std::string::npos) {
-        Common::Atoi(sub_str.c_str(), &cur_idx);
+        AtoiLibSVMIndex(sub_str.c_str(), &cur_idx);
       }
       if (cur_idx > max_col_idx) {
         max_col_idx = cur_idx;
@@ -213,6 +219,19 @@ DataType GetDataType(const char* filename, bool header,
       type = DataType::TSV;
     } else if (comma_cnt == comma_cnt2 && comma_cnt > 0) {
       type = DataType::CSV;
+    } else if (comma_cnt == 0 && tab_cnt == 0 && comma_cnt2 == 0 && tab_cnt2 == 0) {
+      // label-only lines are LibSVM rows without any nonzero feature (common in sparse data): when the first two
+      // rows are such rows, look for an index:value token further down instead of rejecting the file
+      for (size_t i = 2; i < num_lines; ++i) {
+        GetStatistic(lines[i].c_str(), &comma_cnt2, &tab_cnt2, &colon_cnt2);
+        if (comma_cnt2 > 0 || tab_cnt2 > 0) {
+          break;
+        }
+        if (colon_cnt2 > 0) {
+          type = DataType::LIBSVM;
+          break;
+        }
+      }
     }
     if (type == DataType::TSV || type == DataType::CSV) {
       // valid the type
