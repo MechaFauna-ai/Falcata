@@ -61,6 +61,26 @@ class SampleStrategy {
   virtual const data_size_t* sampled_query_indices() const { return nullptr; }
 
  protected:
+  /*!
+  * \brief Build the per-block row sampling generators from config_->bagging_seed.
+  *
+  * A parameter reset that keeps bagging_seed and the row count continues the current streams: restarting them made
+  * the iterations after any reset (even one that changes nothing) redraw the samples of the first iterations. A new
+  * bagging_seed, a new dataset (force) or a first call builds them afresh.
+  */
+  void ResetBaggingRands(bool force) {
+    const size_t num_blocks = static_cast<size_t>((num_data_ + bagging_rand_block_ - 1) / bagging_rand_block_);
+    if (!force && bagging_rands_.size() == num_blocks && bagging_rands_seed_ == config_->bagging_seed) {
+      return;
+    }
+    bagging_rands_.clear();
+    bagging_rands_.reserve(num_blocks);
+    for (size_t i = 0; i < num_blocks; ++i) {
+      bagging_rands_.emplace_back(config_->bagging_seed + static_cast<int>(i));
+    }
+    bagging_rands_seed_ = config_->bagging_seed;
+  }
+
   const Config* config_;
   const Dataset* train_data_;
   const ObjectiveFunction* objective_function_;
@@ -73,6 +93,8 @@ class SampleStrategy {
   bool balanced_bagging_;
   const int bagging_rand_block_ = 1024;
   std::vector<Random> bagging_rands_;
+  /*! \brief bagging_seed that bagging_rands_ was built from */
+  int bagging_rands_seed_ = 0;
   ParallelPartitionRunner<data_size_t, false> bagging_runner_;
   /*! \brief whether need to resize the gradient vectors */
   bool need_resize_gradients_;

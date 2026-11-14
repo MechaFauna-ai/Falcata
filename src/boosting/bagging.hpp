@@ -184,7 +184,8 @@ class BaggingSampleStrategy : public SampleStrategy {
       need_re_bagging_ = false;
       if (!is_change_dataset && !need_release_bag_ &&
         config_ != nullptr && config_->bagging_fraction == config->bagging_fraction && config_->bagging_freq == config->bagging_freq
-        && config_->pos_bagging_fraction == config->pos_bagging_fraction && config_->neg_bagging_fraction == config->neg_bagging_fraction) {
+        && config_->pos_bagging_fraction == config->pos_bagging_fraction && config_->neg_bagging_fraction == config->neg_bagging_fraction
+        && config_->bagging_seed == config->bagging_seed) {
         config_ = config;
         return;
       }
@@ -210,11 +211,7 @@ class BaggingSampleStrategy : public SampleStrategy {
         sampled_query_boundaries_thread_buffer_.resize(num_threads_, 0);
         bag_query_indices_.resize(num_data_);
       }
-      bagging_rands_.clear();
-      for (int i = 0;
-          i < (num_data_ + bagging_rand_block_ - 1) / bagging_rand_block_; ++i) {
-        bagging_rands_.emplace_back(config_->bagging_seed + i);
-      }
+      ResetBaggingRands(is_change_dataset);
 
       double average_bag_rate =
           (static_cast<double>(bag_data_cnt_) / num_data_) / config_->bagging_freq;
