@@ -109,8 +109,15 @@ void Linkers::ParseMachineList(const std::string& machines, const std::string& f
   for (auto& line : lines) {
     line = Common::Trim(line);
     if (line.find("rank=") != std::string::npos) {
+      // "rank=" alone used to read past the split result, and an out-of-range rank indexed the
+      // machine and topology arrays with it: take only a whole integer, range-checked below
       std::vector<std::string> str_after_split = Common::Split(line.c_str(), '=');
-      Common::Atoi(str_after_split[1].c_str(), &rank_);
+      int rank = -1;
+      if (str_after_split.size() != 2 ||
+          !Common::AtoiAndCheck(Common::Trim(str_after_split[1]).c_str(), &rank)) {
+        Log::Fatal("Invalid machine list entry '%s': expected rank=<integer>", line.c_str());
+      }
+      rank_ = rank;
       continue;
     }
     std::vector<std::string> str_after_split = Common::Split(line.c_str(), ' ');
@@ -147,6 +154,11 @@ void Linkers::ParseMachineList(const std::string& machines, const std::string& f
   if (client_ips_.size() != static_cast<size_t>(num_machines_)) {
     Log::Warning("World size is larger than the machine_list size, change world size to %zu", client_ips_.size());
     num_machines_ = static_cast<int>(client_ips_.size());
+  }
+  // -1 (the default) finds the local machine in the list
+  if (rank_ < -1 || rank_ >= num_machines_) {
+    Log::Fatal("The machine list gives rank=%d, outside [0, %d) for its %d machines", rank_,
+               num_machines_, num_machines_);
   }
 }
 

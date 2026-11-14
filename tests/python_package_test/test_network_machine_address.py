@@ -9,6 +9,7 @@ Linkers::ListenThread also spun forever on a peer that closed before sending
 its rank, and counted a duplicate rank as a new connection.
 """
 
+import ctypes
 import socket
 import struct
 import subprocess
@@ -141,3 +142,28 @@ def test_duplicate_rank_does_not_complete_the_handshake():
             proc.kill()
     assert proc.returncode == 0, out
     assert "network ready" in out
+
+
+@pytest.mark.parametrize(
+    ("rank_entry", "message"),
+    [
+        ("rank=", "Invalid machine list entry 'rank='"),  # used to read past the split result
+        ("rank=abc", "Invalid machine list entry 'rank=abc'"),
+        ("rank=1x", "Invalid machine list entry 'rank=1x'"),
+        ("rank=99999999999", "Invalid machine list entry"),
+        ("rank=-3", r"rank=-3, outside \[0, 2\)"),  # used to index the topology maps with -3
+        ("rank=2", r"rank=2, outside \[0, 2\)"),  # used to wait time_out, then fail on a socket
+    ],
+)
+def test_machine_list_rank_entry_is_validated(rank_entry, message):
+    ports = [_free_port(), _free_port()]
+    machines = f"127.0.0.1:{ports[0]},127.0.0.1:{ports[1]},{rank_entry}"
+    try:
+        with pytest.raises(FalcataError, match=message):
+            flc.basic._safe_call(
+                flc.basic._LIB.FLC_NetworkInit(
+                    flc.basic._c_str(machines), ctypes.c_int(ports[0]), ctypes.c_int(1), ctypes.c_int(2)
+                )
+            )
+    finally:
+        flc.basic._safe_call(flc.basic._LIB.FLC_NetworkFree())
