@@ -558,9 +558,9 @@ class Tree {
   static double UnwoundPathSum(const PathElement *unique_path, int unique_depth, int path_index);
 
   /*! \brief Number of max leaves*/
-  int max_leaves_;
+  int max_leaves_ = 0;
   /*! \brief Number of current leaves*/
-  int num_leaves_;
+  int num_leaves_ = 0;
   // following values used for non-leaf node
   /*! \brief A non-leaf node's left child */
   std::vector<int> left_child_;
@@ -574,7 +574,7 @@ class Tree {
   std::vector<uint32_t> threshold_in_bin_;
   /*! \brief A non-leaf node's split threshold in feature value */
   std::vector<double> threshold_;
-  int num_cat_;
+  int num_cat_ = 0;
   std::vector<int> cat_boundaries_inner_;
   std::vector<uint32_t> cat_threshold_inner_;
   std::vector<int> cat_boundaries_;
@@ -605,13 +605,13 @@ class Tree {
   /*! \brief Depth for leaves */
   std::vector<int> leaf_depth_;
   /*! \brief whether to keep track of ancestor nodes for each leaf (only needed when feature interactions are restricted) */
-  bool track_branch_features_;
+  bool track_branch_features_ = false;
   /*! \brief Features on leaf's branch, original index */
   std::vector<std::vector<int>> branch_features_;
-  double shrinkage_;
-  int max_depth_;
+  double shrinkage_ = 1.0;
+  int max_depth_ = -1;
   /*! \brief Tree has linear model at each leaf */
-  bool is_linear_;
+  bool is_linear_ = false;
   /*! \brief coefficients of linear models on leaves */
   std::vector<std::vector<double>> leaf_coeff_;
   /*! \brief constant term (bias) of linear models on leaves */
@@ -622,7 +622,7 @@ class Tree {
   std::vector<std::vector<int>> leaf_features_inner_;
   #ifdef USE_CUDA
   /*! \brief Marks whether this tree is a CUDATree */
-  bool is_cuda_tree_;
+  bool is_cuda_tree_ = false;
   #endif  // USE_CUDA
 };
 
