@@ -6395,6 +6395,11 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     LogDeviceTreeFallback();
   }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  // SerialTreeLearner::Split stores a split's gain with min_gain_to_split added back; the CUDA finders report it above
+  // the parent gain plus min_gain_to_split. Same model text and gain importance as the CPU learner.
+  if (config_->min_gain_to_split != 0.0) {
+    tree->AddSplitGainOffset(config_->min_gain_to_split);
+  }
   tree_in_progress_ = false;
   return tree.release();
 }
