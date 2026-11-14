@@ -324,6 +324,38 @@ TEST(RoundInt, RoundsHalfAwayFromZeroAndSaturates) {
   }
 }
 
+// A numerical bin's upper bound is just above the midpoint of the values on either side. For +inf, and for finite
+// values whose sum overflows, the midpoint overflowed and the two values shared a bin (with +inf the final +inf bin
+// stayed empty): a model could not split np.inf -- or the largest finite values -- off from the value next to them.
+TEST(BinMapper, InfAndHugeValuesGetTheirOwnBins) {
+  const double inf = std::numeric_limits<double>::infinity();
+  const double big = std::numeric_limits<double>::max();
+  for (const std::vector<double>& distinct : {std::vector<double>{1.0, 2.0, 3.0, inf},
+                                               std::vector<double>{1.0, 1e308, 1.7e308, big},
+                                               std::vector<double>{-big, -1.7e308, -1e308, -1.0},
+                                               std::vector<double>{-inf, -1.0, 1.0, inf}}) {
+    std::vector<double> values;
+    for (int i = 0; i < 40; ++i) {
+      values.insert(values.end(), distinct.begin(), distinct.end());
+    }
+    for (const int max_bin : {8, 255}) {
+      std::vector<double> work = values;
+      Falcata::BinMapper mapper;
+      mapper.FindBin(work.data(), static_cast<int>(work.size()), work.size(), max_bin, 1, 1, false,
+                     Falcata::BinType::NumericalBin, false, false, {});
+      ASSERT_LE(mapper.num_bin(), max_bin);
+      const auto& ub = mapper.bin_upper_bound();
+      for (size_t i = 1; i < ub.size(); ++i) {
+        EXPECT_LT(ub[i - 1], ub[i]) << distinct[1] << " " << i;
+      }
+      for (size_t i = 1; i < distinct.size(); ++i) {
+        EXPECT_LT(mapper.ValueToBin(distinct[i - 1]), mapper.ValueToBin(distinct[i])) << distinct[i - 1] << " "
+                                                                                     << distinct[i];
+      }
+    }
+  }
+}
+
 // Softmax read rec[0] / input[0] and ObtainMinMaxSum read w[0] and w[1] (the
 // even-count branch) without checking for an empty input.
 TEST(Softmax, EmptyInputIsANoOp) {
