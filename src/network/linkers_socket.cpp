@@ -313,6 +313,11 @@ void Linkers::ConnectToHigherRanks(const std::unordered_map<int, int>& need_conn
         std::this_thread::sleep_for(std::chrono::milliseconds(connect_fail_delay_time));
         connect_fail_delay_time = static_cast<int>(connect_fail_delay_time * connect_fail_retry_delay_factor);
       }
+      // out of retries: the linker stayed NULL and the first collective dereferenced it
+      if (!CheckLinker(out_rank)) {
+        Log::Fatal("Could not connect to rank %d at %s:%d after %d attempts", out_rank,
+                   client_ips_[out_rank].c_str(), client_ports_[out_rank], connect_fail_retry_cnt);
+      }
     }
   }
 }
