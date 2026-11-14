@@ -14,7 +14,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -155,6 +157,18 @@ class FeatureHistogram {
                                          double parent_output,
                                          SplitInfo* output);
 
+  /*!
+  * \brief Add to a split-side data count. Counts are estimated from hessians
+  *        (hess * num_data / sum_hessian): with negative or extreme weights the estimate is
+  *        meaningless and RoundInt saturates, so int sums could overflow (undefined
+  *        behaviour). Saturate at the data_size_t range instead; normal counts are unchanged.
+  */
+  static inline data_size_t SaturatingCount(data_size_t count, int64_t delta) {
+    const int64_t sum = static_cast<int64_t>(count) + delta;
+    return static_cast<data_size_t>(std::max<int64_t>(std::numeric_limits<data_size_t>::min(),
+                                                      std::min<int64_t>(std::numeric_limits<data_size_t>::max(), sum)));
+  }
+
   void GatherInfoForThreshold(double sum_gradient, double sum_hessian,
                               uint32_t threshold, data_size_t num_data,
                               double parent_output, SplitInfo* output) {
@@ -227,11 +241,11 @@ class FeatureHistogram {
           static_cast<data_size_t>(Common::RoundInt(hess * cnt_factor));
       sum_right_gradient += grad;
       sum_right_hessian += hess;
-      right_count += cnt;
+      right_count = SaturatingCount(right_count, cnt);
     }
     double sum_left_gradient = sum_gradient - sum_right_gradient;
     double sum_left_hessian = sum_hessian - sum_right_hessian;
-    data_size_t left_count = num_data - right_count;
+    data_size_t left_count = SaturatingCount(num_data, -static_cast<int64_t>(right_count));
     double current_gain =
         GetLeafGain<true, true, USE_SMOOTHING>(
             sum_left_gradient, sum_left_hessian, meta_->config->lambda_l1,
@@ -264,7 +278,7 @@ class FeatureHistogram {
         meta_->config->lambda_l1, meta_->config->lambda_l2,
         meta_->config->max_delta_step, meta_->config->path_smooth,
         right_count, parent_output);
-    output->right_count = num_data - left_count;
+    output->right_count = SaturatingCount(num_data, -static_cast<int64_t>(left_count));
     output->right_sum_gradient = sum_gradient - sum_left_gradient;
     output->right_sum_hessian = sum_hessian - sum_left_hessian - kEpsilon;
     output->gain = current_gain - min_gain_shift;
@@ -307,7 +321,7 @@ class FeatureHistogram {
 
     double l2 = meta_->config->lambda_l2;
     data_size_t left_count = cnt;
-    data_size_t right_count = num_data - left_count;
+    data_size_t right_count = SaturatingCount(num_data, -static_cast<int64_t>(left_count));
     double sum_left_hessian = hess + kEpsilon;
     double sum_right_hessian = sum_hessian - sum_left_hessian;
     double sum_left_gradient = grad;
@@ -521,13 +535,13 @@ class FeatureHistogram {
             static_cast<data_size_t>(Common::RoundInt(hess * cnt_factor));
         sum_right_gradient += grad;
         sum_right_hessian += hess;
-        right_count += cnt;
+        right_count = SaturatingCount(right_count, cnt);
         // if data not enough, or sum hessian too small
         if (right_count < meta_->config->min_data_in_leaf ||
             sum_right_hessian < meta_->config->min_sum_hessian_in_leaf) {
           continue;
         }
-        data_size_t left_count = num_data - right_count;
+        data_size_t left_count = SaturatingCount(num_data, -static_cast<int64_t>(right_count));
         // if data not enough
         if (left_count < meta_->config->min_data_in_leaf) {
           break;
@@ -602,7 +616,7 @@ class FeatureHistogram {
                 static_cast<data_size_t>(Common::RoundInt(hess * cnt_factor));
             sum_left_gradient -= grad;
             sum_left_hessian -= hess;
-            left_count -= cnt;
+            left_count = SaturatingCount(left_count, -static_cast<int64_t>(cnt));
           }
           t = -1;
         }
@@ -617,15 +631,14 @@ class FeatureHistogram {
         if (t >= 0) {
           sum_left_gradient += GET_GRAD(data_, t);
           sum_left_hessian += GET_HESS(data_, t);
-          left_count += static_cast<data_size_t>(
-              Common::RoundInt(GET_HESS(data_, t) * cnt_factor));
+          left_count = SaturatingCount(left_count, Common::RoundInt(GET_HESS(data_, t) * cnt_factor));
         }
         // if data not enough, or sum hessian too small
         if (left_count < meta_->config->min_data_in_leaf ||
             sum_left_hessian < meta_->config->min_sum_hessian_in_leaf) {
           continue;
         }
-        data_size_t right_count = num_data - left_count;
+        data_size_t right_count = SaturatingCount(num_data, -static_cast<int64_t>(left_count));
         // if data not enough
         if (right_count < meta_->config->min_data_in_leaf) {
           break;
@@ -693,9 +706,10 @@ class FeatureHistogram {
               sum_gradient - best_sum_left_gradient,
               sum_hessian - best_sum_left_hessian, meta_->config->lambda_l1,
               meta_->config->lambda_l2, meta_->config->max_delta_step,
-              best_right_constraints, meta_->config->path_smooth, num_data - best_left_count,
+              best_right_constraints, meta_->config->path_smooth,
+              SaturatingCount(num_data, -static_cast<int64_t>(best_left_count)),
               parent_output);
-      output->right_count = num_data - best_left_count;
+      output->right_count = SaturatingCount(num_data, -static_cast<int64_t>(best_left_count));
       output->right_sum_gradient = sum_gradient - best_sum_left_gradient;
       output->right_sum_hessian =
           sum_hessian - best_sum_left_hessian - kEpsilon;
