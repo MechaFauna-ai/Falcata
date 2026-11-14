@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <sstream>
 #include <unordered_map>
@@ -22,6 +23,36 @@
 namespace Falcata {
 
 const char* kModelVersion = "v4";
+
+namespace {
+
+// Quote a feature name as a JSON string. The dataset only rejects the JSON
+// structural characters in names, so a backslash or a control character
+// (a tab, say) can still reach the dump and would break the JSON or decode
+// to a different name.
+std::string JSONQuote(const std::string& s) {
+  static const char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(s.size() + 2);
+  out.push_back('"');
+  for (const char c : s) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    if (c == '"' || c == '\\') {
+      out.push_back('\\');
+      out.push_back(c);
+    } else if (u < 0x20) {
+      out += "\\u00";
+      out.push_back(kHex[u >> 4]);
+      out.push_back(kHex[u & 0xF]);
+    } else {
+      out.push_back(c);
+    }
+  }
+  out.push_back('"');
+  return out;
+}
+
+}  // namespace
 
 std::string GBDT::DumpModel(int start_iteration, int num_iteration, int feature_importance_type) const {
   std::stringstream str_buf;
@@ -40,8 +71,14 @@ std::string GBDT::DumpModel(int start_iteration, int num_iteration, int feature_
 
   str_buf << "\"average_output\":" << (average_output_ ? "true" : "false") << ",\n";
 
-  str_buf << "\"feature_names\":[\"" << CommonC::Join(feature_names_, "\",\"")
-          << "\"]," << '\n';
+  str_buf << "\"feature_names\":[";
+  for (size_t i = 0; i < feature_names_.size(); ++i) {
+    if (i > 0) {
+      str_buf << ",";
+    }
+    str_buf << JSONQuote(feature_names_[i]);
+  }
+  str_buf << "]," << '\n';
 
   str_buf << "\"monotone_constraints\":["
           << CommonC::Join(monotone_constraints_, ",") << "]," << '\n';
@@ -82,7 +119,7 @@ std::string GBDT::DumpModel(int start_iteration, int num_iteration, int feature_
     if (!first_obj) {
       str_buf << ",";
     }
-    str_buf << "\"" << feature_names_[i] << "\":";
+    str_buf << JSONQuote(feature_names_[i]) << ":";
     str_buf << json_str_buf.str();
     first_obj = false;
   }
@@ -124,7 +161,7 @@ std::string GBDT::DumpModel(int start_iteration, int num_iteration, int feature_
     if (i > 0) {
       str_buf << ",";
     }
-    str_buf << "\"" << pairs[i].second << "\":" << std::to_string(pairs[i].first);
+    str_buf << JSONQuote(pairs[i].second) << ":" << std::to_string(pairs[i].first);
   }
   str_buf << "}" << '\n';
 
@@ -139,6 +176,14 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
         "if-else model export does not support vector leaves "
         "(leaf_value_dim=%d). Use native Falcata prediction instead.",
         leaf_value_dim_);
+  }
+  // the generated code returns each leaf's constant output: a linear tree's per-leaf linear model would be dropped,
+  // and the converted model would silently predict something else
+  for (const auto& tree : models_) {
+    if (tree->is_linear()) {
+      Log::Fatal("if-else model export does not support linear trees (linear_tree=true). "
+                 "Use native Falcata prediction instead.");
+    }
   }
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
@@ -180,7 +225,7 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
 
   pred_str_buf << "\t" << "int early_stop_round_counter = 0;" << '\n';
   pred_str_buf << "\t" << "std::memset(output, 0, sizeof(double) * num_tree_per_iteration_);" << '\n';
-  pred_str_buf << "\t" << "for (int i = 0; i < num_iteration_for_pred_; ++i) {" << '\n';
+  pred_str_buf << "\t" << "for (int i = 0; i < range.num_iteration; ++i) {" << '\n';
   pred_str_buf << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << '\n';
   pred_str_buf << "\t\t\t" << "output[k] += (*PredictTreePtr[i * num_tree_per_iteration_ + k])(features);" << '\n';
   pred_str_buf << "\t\t" << "}" << '\n';
@@ -192,7 +237,7 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   pred_str_buf << "\t\t" << "}" << '\n';
   pred_str_buf << "\t" << "}" << '\n';
 
-  str_buf << "void GBDT::PredictRaw(const double* features, double *output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "void GBDT::PredictRawInRange(const double* features, double *output, const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const {" << '\n';
   str_buf << pred_str_buf.str();
   str_buf << "}" << '\n';
   str_buf << '\n';
@@ -212,7 +257,7 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
 
   pred_str_buf_map << "\t" << "int early_stop_round_counter = 0;" << '\n';
   pred_str_buf_map << "\t" << "std::memset(output, 0, sizeof(double) * num_tree_per_iteration_);" << '\n';
-  pred_str_buf_map << "\t" << "for (int i = 0; i < num_iteration_for_pred_; ++i) {" << '\n';
+  pred_str_buf_map << "\t" << "for (int i = 0; i < range.num_iteration; ++i) {" << '\n';
   pred_str_buf_map << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << '\n';
   pred_str_buf_map << "\t\t\t" << "output[k] += (*PredictTreeByMapPtr[i * num_tree_per_iteration_ + k])(features);" << '\n';
   pred_str_buf_map << "\t\t" << "}" << '\n';
@@ -224,17 +269,17 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   pred_str_buf_map << "\t\t" << "}" << '\n';
   pred_str_buf_map << "\t" << "}" << '\n';
 
-  str_buf << "void GBDT::PredictRawByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "void GBDT::PredictRawByMapInRange(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const {" << '\n';
   str_buf << pred_str_buf_map.str();
   str_buf << "}" << '\n';
   str_buf << '\n';
 
   // Predict
-  str_buf << "void GBDT::Predict(const double* features, double *output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
-  str_buf << "\t" << "PredictRaw(features, output, early_stop);" << '\n';
-  str_buf << "\t" << "if (average_output_ && num_iteration_for_pred_ > 0) {" << '\n';
+  str_buf << "void GBDT::PredictInRange(const double* features, double *output, const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const {" << '\n';
+  str_buf << "\t" << "PredictRawInRange(features, output, early_stop, range);" << '\n';
+  str_buf << "\t" << "if (average_output_ && range.num_iteration > 0) {" << '\n';
   str_buf << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << '\n';
-  str_buf << "\t\t\t" << "output[k] /= num_iteration_for_pred_;" << '\n';
+  str_buf << "\t\t\t" << "output[k] /= range.num_iteration;" << '\n';
   str_buf << "\t\t" << "}" << '\n';
   str_buf << "\t" << "}" << '\n';
   str_buf << "\t" << "if (objective_function_ != nullptr) {" << '\n';
@@ -244,11 +289,11 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   str_buf << '\n';
 
   // PredictByMap
-  str_buf << "void GBDT::PredictByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
-  str_buf << "\t" << "PredictRawByMap(features, output, early_stop);" << '\n';
-  str_buf << "\t" << "if (average_output_ && num_iteration_for_pred_ > 0) {" << '\n';
+  str_buf << "void GBDT::PredictByMapInRange(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const {" << '\n';
+  str_buf << "\t" << "PredictRawByMapInRange(features, output, early_stop, range);" << '\n';
+  str_buf << "\t" << "if (average_output_ && range.num_iteration > 0) {" << '\n';
   str_buf << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << '\n';
-  str_buf << "\t\t\t" << "output[k] /= num_iteration_for_pred_;" << '\n';
+  str_buf << "\t\t\t" << "output[k] /= range.num_iteration;" << '\n';
   str_buf << "\t\t" << "}" << '\n';
   str_buf << "\t" << "}" << '\n';
   str_buf << "\t" << "if (objective_function_ != nullptr) {" << '\n';
@@ -272,8 +317,8 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   }
   str_buf << " };" << '\n' << '\n';
 
-  str_buf << "void GBDT::PredictLeafIndex(const double* features, double *output) const {" << '\n';
-  str_buf << "\t" << "int total_tree = num_iteration_for_pred_ * num_tree_per_iteration_;" << '\n';
+  str_buf << "void GBDT::PredictLeafIndexInRange(const double* features, double *output, const PredictRange& range) const {" << '\n';
+  str_buf << "\t" << "int total_tree = range.num_iteration * num_tree_per_iteration_;" << '\n';
   str_buf << "\t" << "for (int i = 0; i < total_tree; ++i) {" << '\n';
   str_buf << "\t\t" << "output[i] = (*PredictTreeLeafPtr[i])(features);" << '\n';
   str_buf << "\t" << "}" << '\n';
@@ -289,11 +334,31 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   }
   str_buf << " };" << '\n' << '\n';
 
-  str_buf << "void GBDT::PredictLeafIndexByMap(const std::unordered_map<int, double>& features, double* output) const {" << '\n';
-  str_buf << "\t" << "int total_tree = num_iteration_for_pred_ * num_tree_per_iteration_;" << '\n';
+  str_buf << "void GBDT::PredictLeafIndexByMapInRange(const std::unordered_map<int, double>& features, double* output, const PredictRange& range) const {" << '\n';
+  str_buf << "\t" << "int total_tree = range.num_iteration * num_tree_per_iteration_;" << '\n';
   str_buf << "\t" << "for (int i = 0; i < total_tree; ++i) {" << '\n';
   str_buf << "\t\t" << "output[i] = (*PredictTreeLeafByMapPtr[i])(features);" << '\n';
   str_buf << "\t" << "}" << '\n';
+  str_buf << "}" << '\n';
+
+  // the legacy entry points predict over the range set by the last InitPredict
+  str_buf << "void GBDT::PredictRaw(const double* features, double *output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "\t" << "PredictRawInRange(features, output, early_stop, InitializedPredictRange());" << '\n';
+  str_buf << "}" << '\n' << '\n';
+  str_buf << "void GBDT::PredictRawByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "\t" << "PredictRawByMapInRange(features, output, early_stop, InitializedPredictRange());" << '\n';
+  str_buf << "}" << '\n' << '\n';
+  str_buf << "void GBDT::Predict(const double* features, double *output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "\t" << "PredictInRange(features, output, early_stop, InitializedPredictRange());" << '\n';
+  str_buf << "}" << '\n' << '\n';
+  str_buf << "void GBDT::PredictByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {" << '\n';
+  str_buf << "\t" << "PredictByMapInRange(features, output, early_stop, InitializedPredictRange());" << '\n';
+  str_buf << "}" << '\n' << '\n';
+  str_buf << "void GBDT::PredictLeafIndex(const double* features, double *output) const {" << '\n';
+  str_buf << "\t" << "PredictLeafIndexInRange(features, output, InitializedPredictRange());" << '\n';
+  str_buf << "}" << '\n' << '\n';
+  str_buf << "void GBDT::PredictLeafIndexByMap(const std::unordered_map<int, double>& features, double* output) const {" << '\n';
+  str_buf << "\t" << "PredictLeafIndexByMapInRange(features, output, InitializedPredictRange());" << '\n';
   str_buf << "}" << '\n';
 
   str_buf << "}  // namespace Falcata" << '\n';
@@ -372,13 +437,20 @@ std::string GBDT::SaveModelToString(int start_iteration, int num_iteration, int 
   std::vector<std::string> tree_strs(num_used_model - start_model);
   std::vector<size_t> tree_sizes(num_used_model - start_model);
   // output tree models
+  // An exception escaping an OpenMP region calls std::terminate, and a tree
+  // string can be huge (a categorical bitset over large category ids), so a
+  // std::bad_alloc here must reach the API boundary as an error.
+  OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int i = start_model; i < num_used_model; ++i) {
+    OMP_LOOP_EX_BEGIN();
     const int idx = i - start_model;
     tree_strs[idx] = "Tree=" + std::to_string(idx) + '\n';
     tree_strs[idx] += models_[i]->ToString() + '\n';
     tree_sizes[idx] = tree_strs[idx].size();
+    OMP_LOOP_EX_END();
   }
+  OMP_THROW_EX();
 
   ss << "tree_sizes=" << CommonC::Join(tree_sizes, " ") << '\n';
   ss << '\n';
@@ -447,14 +519,23 @@ bool GBDT::SaveModelToFile(int start_iteration, int num_iteration, int feature_i
 }
 
 int GBDT::CheckLeafValueDimensions(const std::vector<const Tree*>& models) const {
-  if (models.empty()) {
-    return 1;
-  }
+  // checked even without trees: every load divides by num_tree_per_iteration_
   if (num_tree_per_iteration_ <= 0 || num_class_ <= 0) {
     Log::Fatal(
         "Model has invalid output metadata: num_tree_per_iteration=%d, "
         "num_class=%d",
         num_tree_per_iteration_, num_class_);
+  }
+  if (models.empty()) {
+    // no tree fixes the leaf dimension; a zero-tree model still predicts
+    // num_tree_per_iteration outputs into a num_class-wide buffer
+    if (num_tree_per_iteration_ != num_class_ && num_tree_per_iteration_ != 1) {
+      Log::Fatal(
+          "Model metadata is inconsistent: num_tree_per_iteration=%d but "
+          "num_class=%d",
+          num_tree_per_iteration_, num_class_);
+    }
+    return 1;
   }
   if (models.size() % static_cast<size_t>(num_tree_per_iteration_) != 0) {
     Log::Fatal(
@@ -464,6 +545,14 @@ int GBDT::CheckLeafValueDimensions(const std::vector<const Tree*>& models) const
   }
 
   const int leaf_value_dim = models.front()->leaf_value_dim();
+  if (leaf_value_dim == 1 && num_tree_per_iteration_ != num_class_) {
+    // predictions are sized by num_class but each iteration writes one
+    // output per tree: a mismatch overflows the caller's buffer
+    Log::Fatal(
+        "Model metadata is inconsistent: num_tree_per_iteration=%d but "
+        "num_class=%d",
+        num_tree_per_iteration_, num_class_);
+  }
   for (size_t tree = 1; tree < models.size(); ++tree) {
     if (models[tree]->leaf_value_dim() != leaf_value_dim) {
       Log::Fatal(
@@ -495,6 +584,7 @@ void GBDT::ValidateLeafValueDimensions() {
   std::vector<const Tree*> model_trees;
   model_trees.reserve(models_.size());
   for (const auto& tree : models_) {
+    tree->CheckLoadedStructure(max_feature_idx_ + 1);
     model_trees.push_back(tree.get());
   }
   leaf_value_dim_ = CheckLeafValueDimensions(model_trees);
@@ -504,6 +594,7 @@ void GBDT::ValidateLeafValueDimensions() {
 bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
   // use serialized string to restore this object
   models_.clear();
+  falb_without_diagnostics_ = false;
   // A serialized model is text and never contains a NUL byte. The line
   // cursors below advance across '\n'/'\r' only, and GetLine/SkipNewLine
   // both stop AT a NUL without consuming it -- so a NUL inside [buffer,
@@ -511,6 +602,26 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
   // every line-scanning loop in this function.
   if (std::memchr(buffer, '\0', len) != nullptr) {
     Log::Fatal("Model file is corrupt: the model text contains a NUL byte");
+  }
+  // tree_sizes counts the bytes of each tree block as written, with '\n'
+  // line ends. A model file that went through a CRLF conversion (Windows
+  // editors, git autocrlf) has an extra '\r' per line, so every offset is
+  // off and the load failed with "expect a tree here". Parse the text with
+  // its "\r\n" pairs folded back to "\n".
+  std::string lf_text;
+  {
+    static const char kCrlf[] = {'\r', '\n'};
+    const char* crlf = std::search(buffer, buffer + len, kCrlf, kCrlf + 2);
+    if (crlf != buffer + len) {
+      lf_text.reserve(len);
+      for (size_t i = 0; i < len; ++i) {
+        if (!(buffer[i] == '\r' && i + 1 < len && buffer[i + 1] == '\n')) {
+          lf_text.push_back(buffer[i]);
+        }
+      }
+      buffer = lf_text.data();
+      len = lf_text.size();
+    }
   }
   auto c_str = buffer;
   auto p = c_str;
@@ -520,6 +631,13 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
     auto line_len = Common::GetLine(p);
     if (line_len > 0) {
       std::string cur_line(p, line_len);
+      // A model with no trees has no "Tree=" line to end the header, and the
+      // lines after "end of trees" are not header keys: a feature importance
+      // line for a feature named "a=b" reads "a=b=3" and must not be parsed
+      // as one. This is every FALB metadata block, which is a zero-tree model.
+      if (cur_line == "end of trees") {
+        break;
+      }
       if (!Common::StartsWith(cur_line, "Tree=")) {
         auto strs = Common::Split(cur_line.c_str(), '=');
         if (strs.size() == 1) {
@@ -569,6 +687,10 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
   // get max_feature_idx first
   if (key_vals.count("max_feature_idx")) {
     Common::Atoi(key_vals["max_feature_idx"].c_str(), &max_feature_idx_);
+    // every consumer works with max_feature_idx_ + 1 features
+    if (max_feature_idx_ < -1 || max_feature_idx_ == std::numeric_limits<int>::max()) {
+      Log::Fatal("Model file has invalid max_feature_idx=%d", max_feature_idx_);
+    }
   } else {
     Log::Fatal("Model file doesn't specify max_feature_idx");
     return false;
@@ -615,6 +737,13 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
     auto str = key_vals["objective"];
     loaded_objective_.reset(ObjectiveFunction::CreateObjectiveFunction(ParseObjectiveAlias(str)));
     objective_function_ = loaded_objective_.get();
+    // the objective converts num_class outputs in place; one that converts
+    // more (e.g. "multiclass num_class:5" in a num_class=3 model) overruns
+    // the caller's prediction buffer
+    if (objective_function_ != nullptr && objective_function_->NumPredictOneRow() != num_class_) {
+      Log::Fatal("Model metadata is inconsistent: the objective '%s' predicts %d outputs but num_class=%d",
+                 str.c_str(), objective_function_->NumPredictOneRow(), num_class_);
+    }
   }
 
   if (!key_vals.count("tree_sizes")) {
@@ -750,7 +879,9 @@ std::vector<double> GBDT::FeatureImportance(int num_iteration, int importance_ty
   if (importance_type == 0) {
     for (int iter = 0; iter < num_used_model; ++iter) {
       for (int split_idx = 0; split_idx < models_[iter]->num_leaves() - 1; ++split_idx) {
-        if (models_[iter]->split_gain(split_idx) > 0) {
+        // a FALB file saved without diagnostics has no split gains (all read
+        // 0): count every split rather than none
+        if (falb_without_diagnostics_ || models_[iter]->split_gain(split_idx) > 0) {
 #ifdef DEBUG
           CHECK_GE(models_[iter]->split_feature(split_idx), 0);
 #endif

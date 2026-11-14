@@ -16,6 +16,7 @@
 
 #include <string>
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <fstream>
 #include <map>
@@ -62,7 +63,10 @@ class GBDT : public GBDTBase {
   /*!
   * \brief Traverse the tree of forced splits and check that all indices are less than the number of features.
   */
-  void CheckForcedSplitFeatures();
+  void CheckForcedSplitFeatures(const Json& forced_splits) const;
+
+  /*! \brief Parse a forced splits file, failing on malformed JSON or a non-object root */
+  static Json ParseForcedSplits(const std::string& content, const std::string& filename);
 
   /*!
   * \brief Merge model from other boosting object. Will insert to the front of current boosting object
@@ -79,6 +83,17 @@ class GBDT : public GBDTBase {
       merged_models.push_back(tree.get());
     }
     CheckLeafValueDimensions(merged_models);
+    // the merged trees are scored as this model's iterations and over this model's feature vector: a model
+    // with another number of trees per iteration would be summed into the wrong outputs, and one with more
+    // features would read past the prediction buffer (heap-buffer-overflow)
+    if (other_gbdt->num_tree_per_iteration_ != num_tree_per_iteration_) {
+      Log::Fatal("Cannot merge a model with %d trees per iteration into one with %d",
+                 other_gbdt->num_tree_per_iteration_, num_tree_per_iteration_);
+    }
+    if (other_gbdt->max_feature_idx_ > max_feature_idx_) {
+      Log::Fatal("Cannot merge a model with %d features into one with %d",
+                 other_gbdt->max_feature_idx_ + 1, max_feature_idx_ + 1);
+    }
 
     // tmp move to other vector
     auto original_models = std::move(models_);
@@ -200,7 +215,8 @@ class GBDT : public GBDTBase {
     str_buf << "{";
     for (const auto& line : lines) {
       const auto pair = Common::Split(line.c_str(), ":");
-      if (pair[1] == " ]")
+      // a "[name: value]" line; skip anything else rather than index past it
+      if (pair.size() < 2 || pair[0].size() < 2 || pair[1].size() < 2 || pair[1] == " ]")
         continue;
       const auto param = pair[0].substr(1);
       const auto value_str = pair[1].substr(1, pair[1].size() - 2);
@@ -340,6 +356,29 @@ class GBDT : public GBDTBase {
   void PredictContribByMap(const std::unordered_map<int, double>& features,
                            std::vector<std::unordered_map<int, double>>* output) const override;
 
+  void PredictRawInRange(const double* features, double* output, const PredictionEarlyStopInstance* early_stop,
+                         const PredictRange& range) const override;
+  void PredictRawByMapInRange(const std::unordered_map<int, double>& features, double* output,
+                              const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const override;
+  void PredictInRange(const double* features, double* output, const PredictionEarlyStopInstance* early_stop,
+                      const PredictRange& range) const override;
+  void PredictByMapInRange(const std::unordered_map<int, double>& features, double* output,
+                           const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const override;
+  void PredictLeafIndexInRange(const double* features, double* output, const PredictRange& range) const override;
+  void PredictLeafIndexByMapInRange(const std::unordered_map<int, double>& features, double* output,
+                                    const PredictRange& range) const override;
+  void PredictContribInRange(const double* features, double* output, const PredictRange& range) const override;
+  void PredictContribByMapInRange(const std::unordered_map<int, double>& features,
+                                  std::vector<std::unordered_map<int, double>>* output,
+                                  const PredictRange& range) const override;
+  /*! \brief the range set by the last InitPredict (the legacy, model-wide prediction state) */
+  inline PredictRange InitializedPredictRange() const {
+    PredictRange range;
+    range.start_iteration = start_iteration_for_pred_;
+    range.num_iteration = num_iteration_for_pred_;
+    return range;
+  }
+
   /*!
   * \brief Dump model to json format string
   * \param start_iteration The model will be saved start from
@@ -465,15 +504,23 @@ class GBDT : public GBDTBase {
   inline int NumberOfClasses() const override { return num_class_; }
 
   inline void InitPredict(int start_iteration, int num_iteration, bool is_pred_contrib) override {
-    num_iteration_for_pred_ = static_cast<int>(models_.size()) / num_tree_per_iteration_;
+    const PredictRange range = ResolvePredictRange(start_iteration, num_iteration, is_pred_contrib);
+    num_iteration_for_pred_ = range.num_iteration;
+    start_iteration_for_pred_ = range.start_iteration;
+  }
+
+  inline PredictRange ResolvePredictRange(int start_iteration, int num_iteration,
+                                          bool is_pred_contrib) const override {
+    PredictRange range;
+    const int total_iterations = static_cast<int>(models_.size()) / num_tree_per_iteration_;
     start_iteration = std::max(start_iteration, 0);
-    start_iteration = std::min(start_iteration, num_iteration_for_pred_);
+    start_iteration = std::min(start_iteration, total_iterations);
     if (num_iteration > 0) {
-      num_iteration_for_pred_ = std::min(num_iteration, num_iteration_for_pred_ - start_iteration);
+      range.num_iteration = std::min(num_iteration, total_iterations - start_iteration);
     } else {
-      num_iteration_for_pred_ = num_iteration_for_pred_ - start_iteration;
+      range.num_iteration = total_iterations - start_iteration;
     }
-    start_iteration_for_pred_ = start_iteration;
+    range.start_iteration = start_iteration;
 
     if (is_pred_contrib && leaf_value_dim_ > 1) {
       Log::Fatal(
@@ -489,18 +536,22 @@ class GBDT : public GBDTBase {
           "NaN/Inf rather than wrong-but-plausible. Re-save the model with "
           "save_model(..., with_stats=True) (or format='txt').");
     }
-    if (is_pred_contrib && !models_initialized_) {
+    if (is_pred_contrib) {
       std::lock_guard<std::mutex> lock(instance_mutex_);
-      if (models_initialized_)
-        return;
-
+      // The first contribution prediction computes every tree's depth (a depth read from a model file is not
+      // trusted). Later ones compute it for the trees added since (further training, a merge), which have none:
+      // they would otherwise fail CHECK_GE(max_depth_, 0) in Tree::PredictContrib.
+      const bool all_trees = !models_initialized_;
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
       for (int i = 0; i < static_cast<int>(models_.size()); ++i) {
-        models_[i]->RecomputeMaxDepth();
+        if (all_trees || !models_[i]->HasMaxDepth()) {
+          models_[i]->RecomputeMaxDepth();
+        }
       }
 
       models_initialized_ = true;
     }
+    return range;
   }
 
   inline double GetLeafValue(int tree_idx, int leaf_idx) const override {
@@ -539,6 +590,9 @@ class GBDT : public GBDTBase {
   inline std::string ParserConfigStr() const override {return parser_config_str_;}
 
  protected:
+  /*! \brief Stop training on a non-finite leaf output (a diverged or degenerate tree), as TrainOneIter does */
+  static void CheckTreeOutputsAreFinite(const Tree* tree, int iter, int tree_id);
+
   /*! \brief Validate per-tree output dimensions after model loading. */
   void ValidateLeafValueDimensions();
   int CheckLeafValueDimensions(const std::vector<const Tree*>& models) const;
@@ -663,9 +717,9 @@ class GBDT : public GBDTBase {
   /*! \brief Parser config file content */
   std::string parser_config_str_ = "";
   /*! \brief Are the models initialized (passed RecomputeMaxDepth phase) */
-  bool models_initialized_ = false;
+  mutable std::atomic<bool> models_initialized_{false};
   /*! \brief Mutex for exclusive models initialization */
-  std::mutex instance_mutex_;
+  mutable std::mutex instance_mutex_;
 
 #ifdef USE_CUDA
   /*! \brief First order derivative of training data */
@@ -731,6 +785,8 @@ class GBDT : public GBDTBase {
   std::string loaded_parameter_;
   /*! \brief loaded from FALB without the structural-stats section */
   bool falb_without_stats_ = false;
+  /*! \brief loaded from FALB without the diagnostics section: every split_gain reads 0 */
+  bool falb_without_diagnostics_ = false;
   std::vector<int8_t> monotone_constraints_;
   Json forced_splits_json_;
   bool linear_tree_;

@@ -264,6 +264,14 @@ class CUDATree : public Tree {
    *  no count), which is exact only for a constant-hessian objective. */
   void SyncNodeCountsFromPartition(const std::vector<data_size_t>& leaf_num_data);
 
+  /*! \brief adds offset to every split's host gain (the CUDA finders report the gain above the parent's gain plus
+   *  min_gain_to_split; the CPU learner stores it with min_gain_to_split added back) */
+  void AddSplitGainOffset(const double offset) {
+    for (int i = 0; i < num_leaves_ - 1 && i < static_cast<int>(split_gain_.size()); ++i) {
+      split_gain_[i] = static_cast<float>(split_gain_[i] + offset);
+    }
+  }
+
   /*! \brief device level replay: the host-mirror half of SplitBatch
    *  (branch features, leaf depth, num_leaves_) for ONE split whose device
    *  updates already ran on the device */

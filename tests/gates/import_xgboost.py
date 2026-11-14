@@ -118,24 +118,33 @@ try:
     chk("refuses gblinear", False)
 except ValueError as e:
     chk("refuses gblinear", "gbtree" in str(e), str(e)[:44])
-# booster=dart is deprecated in xgboost >= 3.4: dropout applies during
-# training only and the model SAVES as gbtree, so it must convert with parity
+# booster=dart: prediction is sum(weight_drop[i] * tree_i). xgboost >= 3.4
+# saves it as a gbtree whose model carries "weight_drop"; older versions save
+# {"name": "dart", "gbtree": {...}, "weight_drop": [...]}. Both must convert
+# with parity -- ignoring the weights silently mispredicts.
 drt = xgb.train(
-    {"booster": "dart", "objective": "reg:squarederror", "max_depth": 3, "rate_drop": 0.1, "seed": 1},
+    {"booster": "dart", "objective": "reg:squarederror", "max_depth": 3, "rate_drop": 0.5, "seed": 1},
     xgb.DMatrix(Xs, label=ys),
-    num_boost_round=5,
+    num_boost_round=12,
 )
 dref = drt.predict(xgb.DMatrix(Xs))
-chk("dart-trained (saves as gbtree)", np.allclose(np.asarray(from_xgboost(drt).predict(Xs)), dref, atol=1e-6))
-# ...but a legacy dart MODEL (older xgboost) scales leaves at predict time, so
-# a plain tree walk would predict something else -- must refuse, not approximate
+drt_json = json.loads(drt.save_raw("json").decode())
+drt_model = drt_json["learner"]["gradient_booster"].get("gbtree", drt_json["learner"]["gradient_booster"])["model"]
+drt_w = drt_model.get("weight_drop") or drt_json["learner"]["gradient_booster"].get("weight_drop") or []
+chk("dart model has non-unit tree weights", any(abs(w - 1.0) > 1e-6 for w in drt_w), f"{len(drt_w)} weights")
+chk("dart model converts with parity", np.allclose(np.asarray(from_xgboost(drt).predict(Xs)), dref, atol=1e-5))
 legacy = json.loads(drt.save_raw("json").decode())
-legacy["learner"]["gradient_booster"]["name"] = "dart"
-try:
-    from_xgboost(legacy)
-    chk("refuses legacy dart model", False)
-except ValueError as e:
-    chk("refuses legacy dart model", "gbtree" in str(e) and "dart" in str(e), str(e)[:44])
+model = dict(drt_model)
+model.pop("weight_drop", None)
+legacy["learner"]["gradient_booster"] = {
+    "name": "dart",
+    "gbtree": {"name": "gbtree", "model": model},
+    "weight_drop": drt_w,
+}
+chk(
+    "legacy dart layout converts with parity",
+    np.allclose(np.asarray(from_xgboost(legacy).predict(Xs)), dref, atol=1e-5),
+)
 Xc = Xs.copy()
 dm = xgb.DMatrix(
     np.c_[Xc, rng.integers(0, 5, len(Xc))].astype(np.float32),
