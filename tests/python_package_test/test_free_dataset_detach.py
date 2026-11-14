@@ -72,5 +72,5 @@ def test_add_valid_after_free_dataset_is_refused():
     reference = flc.Dataset(x, x[:, 0], free_raw_data=False).construct()
     booster.free_dataset()
     gc.collect()
-    with pytest.raises(flc.basic.FalcataError, match="Cannot add validation data to a Booster without training data"):
+    with pytest.raises(flc.basic.FalcataError, match="Cannot add validation data: this Booster has no training data"):
         booster.add_valid(flc.Dataset(x, x[:, 0], reference=reference), "valid")
