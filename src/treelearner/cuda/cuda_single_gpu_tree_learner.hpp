@@ -604,7 +604,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   void RenewDiscretizedTreeLeaves(CUDATree* cuda_tree);
 
-  void LaunchCalcLeafValuesGivenGradStat(CUDATree* cuda_tree, const data_size_t* num_data_in_leaf);
+  void LaunchCalcLeafValuesGivenGradStat(CUDATree* cuda_tree);
 
   void NCCLReduceHistogram(const int pipeline);
 
