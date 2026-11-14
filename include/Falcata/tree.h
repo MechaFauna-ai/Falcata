@@ -348,6 +348,15 @@ class Tree {
 
   void RecomputeMaxDepth();
 
+  /*!
+  * \brief Check a deserialized tree before anything walks it: children form
+  *        one tree rooted at node 0 (no cycle, no out-of-range or repeated
+  *        child), split features index inputs below num_features, categorical
+  *        splits name a valid bitset, and linear leaves use valid features.
+  *        Calls Log::Fatal on the first violation.
+  */
+  void CheckLoadedStructure(int num_features) const;
+
   int NextLeafId() const { return num_leaves_; }
 
   /*! \brief Get the linear model constant term (bias) of one leaf */
