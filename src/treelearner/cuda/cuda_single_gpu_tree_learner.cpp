@@ -6884,11 +6884,35 @@ void CUDASingleGPUTreeLearner::RenewTreeOutput(Tree* tree, const ObjectiveFuncti
 
 Tree* CUDASingleGPUTreeLearner::FitByExistingTree(const Tree* old_tree, const score_t* gradients, const score_t* hessians) const {
   std::unique_ptr<CUDATree> cuda_tree(new CUDATree(old_tree));
+  const int num_leaves = cuda_tree->num_leaves();
   cuda_leaf_gradient_stat_buffer_.SetValue(0);
   cuda_leaf_hessian_stat_buffer_.SetValue(0);
   cuda_data_partition_->EnsureLevelPartitioned();  // cuda_plan key final_map_only: reads the leaf windows
-  ReduceLeafStat(cuda_tree.get(), gradients, hessians, cuda_data_partition_->cuda_data_indices());
-  cuda_tree->SyncLeafOutputFromCUDAToHost();
+  // the device reduces the per-leaf gradient and hessian sums of the refit rows; the leaf outputs (L1,
+  // max_delta_step, path smoothing toward the parent node's output, decay) are the CPU learner's, on the host
+  LaunchReduceLeafStatKernel(gradients, hessians, num_leaves, refit_num_data_);
+  std::vector<double> leaf_sum_grad(num_leaves);
+  std::vector<double> leaf_sum_hess(num_leaves);
+  CopyFromCUDADeviceToHost<double>(leaf_sum_grad.data(), cuda_leaf_gradient_stat_buffer_.RawData(),
+                                   static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  CopyFromCUDADeviceToHost<double>(leaf_sum_hess.data(), cuda_leaf_hessian_stat_buffer_.RawData(),
+                                   static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  for (double& h : leaf_sum_hess) {
+    h += kEpsilon;  // the CPU refit's hessian sums start at kEpsilon
+  }
+  std::vector<data_size_t> leaf_cnt(num_leaves, 0);
+  if (refit_num_data_ > 0) {
+    std::vector<int> row_leaf(static_cast<size_t>(refit_num_data_));
+    CopyFromCUDADeviceToHost<int>(row_leaf.data(), cuda_data_partition_->cuda_data_index_to_leaf_index(),
+                                  row_leaf.size(), __FILE__, __LINE__);
+    for (const int leaf : row_leaf) {
+      if (leaf >= 0 && leaf < num_leaves) {
+        ++leaf_cnt[leaf];
+      }
+    }
+  }
+  SetRefitLeafOutputs(cuda_tree.get(), leaf_sum_grad, leaf_sum_hess, leaf_cnt);
+  cuda_tree->SyncLeafOutputFromHostToCUDA();
   return cuda_tree.release();
 }
 
@@ -6917,12 +6941,6 @@ Tree* CUDASingleGPUTreeLearner::FitByExistingTree(const Tree* old_tree, const st
   return tree;
 }
 
-void CUDASingleGPUTreeLearner::ReduceLeafStat(
-  CUDATree* old_tree, const score_t* gradients, const score_t* hessians, const data_size_t* num_data_in_leaf) const {
-  LaunchReduceLeafStatKernel(gradients, hessians, num_data_in_leaf, old_tree->cuda_leaf_parent(),
-    old_tree->cuda_left_child(), old_tree->cuda_right_child(),
-    old_tree->num_leaves(), refit_num_data_, old_tree->cuda_leaf_value_ref(), old_tree->shrinkage());
-}
 
 void CUDASingleGPUTreeLearner::ConstructBitsetForCategoricalSplit(
   const CUDASplitInfo* best_split_info) {

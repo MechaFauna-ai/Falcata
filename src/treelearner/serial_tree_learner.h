@@ -122,6 +122,12 @@ class SerialTreeLearner: public TreeLearner {
   double GetParentOutput(const Tree* tree, const LeafSplits* leaf_splits) const;
 
  protected:
+  /*! \brief Refit: sets each leaf's output from the refit rows' per-leaf gradient and hessian sums (hessian sums
+   *  include the kEpsilon start) and row counts, decayed toward the old output. With path_smooth, node outputs
+   *  are rebuilt top-down from the same sums, as training smooths them. Shared by the CPU and CUDA learners. */
+  void SetRefitLeafOutputs(Tree* tree, const std::vector<double>& leaf_sum_grad, const std::vector<double>& leaf_sum_hess,
+                           const std::vector<data_size_t>& leaf_cnt) const;
+
   void ComputeBestSplitForFeature(FeatureHistogram* histogram_array_,
                                   int feature_index, int real_fidx,
                                   int8_t is_feature_used, int num_data,
