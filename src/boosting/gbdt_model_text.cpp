@@ -23,6 +23,36 @@ namespace Falcata {
 
 const char* kModelVersion = "v4";
 
+namespace {
+
+// Quote a feature name as a JSON string. The dataset only rejects the JSON
+// structural characters in names, so a backslash or a control character
+// (a tab, say) can still reach the dump and would break the JSON or decode
+// to a different name.
+std::string JSONQuote(const std::string& s) {
+  static const char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(s.size() + 2);
+  out.push_back('"');
+  for (const char c : s) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    if (c == '"' || c == '\\') {
+      out.push_back('\\');
+      out.push_back(c);
+    } else if (u < 0x20) {
+      out += "\\u00";
+      out.push_back(kHex[u >> 4]);
+      out.push_back(kHex[u & 0xF]);
+    } else {
+      out.push_back(c);
+    }
+  }
+  out.push_back('"');
+  return out;
+}
+
+}  // namespace
+
 std::string GBDT::DumpModel(int start_iteration, int num_iteration, int feature_importance_type) const {
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
@@ -40,8 +70,14 @@ std::string GBDT::DumpModel(int start_iteration, int num_iteration, int feature_
 
   str_buf << "\"average_output\":" << (average_output_ ? "true" : "false") << ",\n";
 
-  str_buf << "\"feature_names\":[\"" << CommonC::Join(feature_names_, "\",\"")
-          << "\"]," << '\n';
+  str_buf << "\"feature_names\":[";
+  for (size_t i = 0; i < feature_names_.size(); ++i) {
+    if (i > 0) {
+      str_buf << ",";
+    }
+    str_buf << JSONQuote(feature_names_[i]);
+  }
+  str_buf << "]," << '\n';
 
   str_buf << "\"monotone_constraints\":["
           << CommonC::Join(monotone_constraints_, ",") << "]," << '\n';
@@ -82,7 +118,7 @@ std::string GBDT::DumpModel(int start_iteration, int num_iteration, int feature_
     if (!first_obj) {
       str_buf << ",";
     }
-    str_buf << "\"" << feature_names_[i] << "\":";
+    str_buf << JSONQuote(feature_names_[i]) << ":";
     str_buf << json_str_buf.str();
     first_obj = false;
   }
@@ -124,7 +160,7 @@ std::string GBDT::DumpModel(int start_iteration, int num_iteration, int feature_
     if (i > 0) {
       str_buf << ",";
     }
-    str_buf << "\"" << pairs[i].second << "\":" << std::to_string(pairs[i].first);
+    str_buf << JSONQuote(pairs[i].second) << ":" << std::to_string(pairs[i].first);
   }
   str_buf << "}" << '\n';
 
