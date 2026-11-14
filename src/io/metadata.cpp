@@ -721,12 +721,18 @@ void Metadata::LoadWeights() {
   Log::Info("Loading weights...");
   num_weights_ = static_cast<data_size_t>(reader.Lines().size());
   weights_ = std::vector<label_t>(num_weights_);
+  // Atof throws on a bad token; an exception escaping the OpenMP region
+  // would call std::terminate
+  OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (data_size_t i = 0; i < num_weights_; ++i) {
+    OMP_LOOP_EX_BEGIN();
     double tmp_weight = 0.0f;
     Common::Atof(reader.Lines()[i].c_str(), &tmp_weight);
     weights_[i] = Common::AvoidInf(static_cast<label_t>(tmp_weight));
+    OMP_LOOP_EX_END();
   }
+  OMP_THROW_EX();
   weight_load_from_file_ = true;
 }
 
@@ -775,16 +781,22 @@ void Metadata::LoadInitialScore(const std::string& data_filename) {
   num_init_score_ = static_cast<int64_t>(num_line) * num_class;
 
   init_score_ = std::vector<double>(num_init_score_);
+  // Atof and the column check throw; an exception escaping the OpenMP
+  // region would call std::terminate
+  OMP_INIT_EX();
   if (num_class == 1) {
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (data_size_t i = 0; i < num_line; ++i) {
+      OMP_LOOP_EX_BEGIN();
       double tmp = 0.0f;
       Common::Atof(reader.Lines()[i].c_str(), &tmp);
       init_score_[i] = Common::AvoidInf(static_cast<double>(tmp));
+      OMP_LOOP_EX_END();
     }
   } else {
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (data_size_t i = 0; i < num_line; ++i) {
+      OMP_LOOP_EX_BEGIN();
       double tmp = 0.0f;
       const std::vector<std::string> oneline_init_score = Common::Split(reader.Lines()[i].c_str(), '\t');
       if (static_cast<int>(oneline_init_score.size()) != num_class) {
@@ -794,8 +806,10 @@ void Metadata::LoadInitialScore(const std::string& data_filename) {
         Common::Atof(oneline_init_score[k].c_str(), &tmp);
         init_score_[static_cast<size_t>(k) * num_line + i] = Common::AvoidInf(static_cast<double>(tmp));
       }
+      OMP_LOOP_EX_END();
     }
   }
+  OMP_THROW_EX();
   init_score_load_from_file_ = true;
 }
 
