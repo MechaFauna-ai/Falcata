@@ -222,6 +222,17 @@ class BinMapper {
   void CopyFrom(const char* buffer);
 
   /*!
+  * \brief Deserializing this object from an untrusted buffer of known size
+  * \param buffer The source
+  * \param size Bytes available at buffer
+  * \return Bytes consumed; a truncated or inconsistent mapper is a Log::Fatal
+  */
+  size_t CopyFrom(const char* buffer, size_t size);
+
+  /*! \brief Serialized size of a mapper with this many bins of this type */
+  static size_t SizesInByteFor(int num_bin, BinType bin_type);
+
+  /*!
   * \brief Get bin types
   */
   inline BinType bin_type() const { return bin_type_; }
@@ -346,6 +357,16 @@ class Bin {
   */
   virtual void LoadFromMemory(const void* memory,
     const std::vector<data_size_t>& local_used_indices) = 0;
+
+  /*!
+  * \brief Bytes the serialized form at `memory` occupies, for a bin saved with
+  *        `num_all_data` rows; Log::Fatal if that is more than `available`.
+  *        Checked before LoadFromMemory reads an untrusted buffer.
+  */
+  virtual size_t SerializedSize(const void* memory, size_t available, data_size_t num_all_data) const = 0;
+
+  /*! \brief Largest bin value stored (0 when empty); checks a loaded bin fits its histogram */
+  virtual uint32_t MaxStoredBin() const = 0;
 
   /*!
   * \brief Get sizes in byte of this object
@@ -525,6 +546,16 @@ class MultiValBin {
   virtual const std::vector<uint32_t>& offsets() const = 0;
 
   virtual void PushOneRow(int tid, data_size_t idx, const std::vector<uint32_t>& values) = 0;
+
+  /*!
+  * \brief Before FinishLoad: the number of entries pushed so far, and whether the bin can store
+  *        them. A sparse bin picks its row index type from an estimated entry count; when the
+  *        estimate was too low it returns false, and the caller rebuilds with the exact count.
+  */
+  virtual bool PushedEntriesFit(uint64_t* num_entries) const {
+    *num_entries = 0;
+    return true;
+  }
 
   virtual void CopySubrow(const MultiValBin* full_bin,
                           const data_size_t* used_indices,

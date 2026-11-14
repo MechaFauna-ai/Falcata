@@ -48,9 +48,15 @@ class DART: public GBDT {
   }
 
   void ResetConfig(const Config* config) override {
+    const int old_drop_seed = config_->drop_seed;
     GBDT::ResetConfig(config);
-    random_for_drop_ = Random(config_->drop_seed);
-    sum_weight_ = 0.0f;
+    // sum_weight_ is the total weight of the trees already in the model (tree_weight_ keeps them): zeroing it made
+    // the next DroppingTrees divide by zero, so every tree got an infinite drop probability and up to max_drop trees
+    // were dropped whatever drop_rate. The drop stream restarts only for a new drop_seed, so a reset that changes
+    // nothing leaves the trees grown after it unchanged.
+    if (config_->drop_seed != old_drop_seed) {
+      random_for_drop_ = Random(config_->drop_seed);
+    }
   }
 
   /*!
@@ -60,6 +66,10 @@ class DART: public GBDT {
     is_update_score_cur_iter_ = false;
     bool ret = GBDT::TrainOneIter(gradient, hessian);
     if (ret) {
+      // No tree was added (no leaf met the split requirements), so Normalize does not run. Undo this iteration's
+      // drop: the dropped trees were negated (Shrinkage(-1)) and taken out of the training score, and left like that
+      // they would stay negated in the model.
+      RestoreDroppedTrees();
       return ret;
     }
     // normalize
@@ -145,6 +155,17 @@ class DART: public GBDT {
         shrinkage_rate_ = config_->learning_rate / (config_->learning_rate + static_cast<double>(drop_index_.size()));
       }
     }
+  }
+  /*! \brief undo DroppingTrees: give each dropped tree its weight back and add it to the training score again */
+  void RestoreDroppedTrees() {
+    for (auto i : drop_index_) {
+      for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
+        auto curr_tree = i * num_tree_per_iteration_ + cur_tree_id;
+        models_[curr_tree]->Shrinkage(-1.0);
+        train_score_updater_->AddScore(models_[curr_tree].get(), cur_tree_id);
+      }
+    }
+    drop_index_.clear();
   }
   /*!
   * \brief normalize dropped trees

@@ -272,7 +272,9 @@ class GammaMetric : public RegressionMetric<GammaMetric> {
   }
 
   inline static void CheckLabel(label_t label) {
-    CHECK_GT(label, 0);
+    if (!(label > 0)) {
+      Log::Fatal("Metric %s requires positive labels, but found %g", Name(), static_cast<double>(label));
+    }
   }
 };
 
@@ -294,7 +296,9 @@ class GammaDevianceMetric : public RegressionMetric<GammaDevianceMetric> {
     return sum_loss * 2;
   }
   inline static void CheckLabel(label_t label) {
-    CHECK_GT(label, 0);
+    if (!(label > 0)) {
+      Log::Fatal("Metric %s requires positive labels, but found %g", Name(), static_cast<double>(label));
+    }
   }
 };
 

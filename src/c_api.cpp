@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cinttypes>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -77,6 +78,16 @@ yamc::shared_lock<yamc::alternate::shared_mutex> lock(&mtx);
 
 const int PREDICTOR_TYPES = 4;
 
+// predict_type selects the kind of output and so its length (FLC_BoosterCalcNumPredict): an unknown value used to
+// predict as C_API_PREDICT_NORMAL silently
+static void CheckPredictType(int predict_type) {
+  if (predict_type != C_API_PREDICT_NORMAL && predict_type != C_API_PREDICT_RAW_SCORE &&
+      predict_type != C_API_PREDICT_LEAF_INDEX && predict_type != C_API_PREDICT_CONTRIB) {
+    Log::Fatal("Unknown predict_type %d (expected C_API_PREDICT_NORMAL, C_API_PREDICT_RAW_SCORE, "
+               "C_API_PREDICT_LEAF_INDEX or C_API_PREDICT_CONTRIB)", predict_type);
+  }
+}
+
 // Single row predictor to abstract away caching logic
 class SingleRowPredictorInner {
  public:
@@ -84,6 +95,7 @@ class SingleRowPredictorInner {
   int64_t num_pred_in_one_row;
 
   SingleRowPredictorInner(int predict_type, Boosting* boosting, const Config& config, int start_iter, int num_iter) {
+    CheckPredictType(predict_type);
     bool is_predict_leaf = false;
     bool is_raw_score = false;
     bool predict_contrib = false;
@@ -144,7 +156,10 @@ struct SingleRowPredictor {
              int predict_type,
              Boosting *boosting,
              int start_iter,
-             int num_iter) : config(Config::Str2Map(parameters)), data_type(data_type), num_cols(num_cols), single_row_predictor_inner(predict_type, boosting, config, start_iter, num_iter), booster_mutex(booster_mutex) {
+             int num_iter) : config(Config::Str2Map(parameters)), data_type(data_type), num_cols(num_cols),
+                             single_row_predictor_inner(new SingleRowPredictorInner(predict_type, boosting, config, start_iter, num_iter)),
+                             booster_mutex(booster_mutex), boosting_(boosting), predict_type_(predict_type),
+                             start_iter_(start_iter), num_iter_(num_iter) {
     if (!config.predict_disable_shape_check && num_cols != boosting->MaxFeatureIdx() + 1) {
       Log::Fatal("The number of features in data (%d) is not the same as it was in training data (%d).\n"\
                  "You can set ``predict_disable_shape_check=true`` to discard this error, but please be aware what you are doing.", num_cols, boosting->MaxFeatureIdx() + 1);
@@ -156,10 +171,24 @@ struct SingleRowPredictor {
     UNIQUE_LOCK(single_row_predictor_mutex)
     yamc::shared_lock<yamc::alternate::shared_mutex> booster_shared_lock(booster_mutex);
 
-    auto one_row = get_row_fun(0);
-    single_row_predictor_inner.predict_function(one_row, out_result);
+    // The predictor resolved its iterations when this FastConfig was made. If the booster has since gained or
+    // lost trees (training, rollback, merge), resolve them again: a rollback would otherwise leave it reading
+    // freed trees. The output size the caller sized its buffer for must not change, though.
+    if (!single_row_predictor_inner->IsPredictorEqual(config, start_iter_, num_iter_, boosting_)) {
+      std::unique_ptr<SingleRowPredictorInner> fresh(
+          new SingleRowPredictorInner(predict_type_, boosting_, config, start_iter_, num_iter_));
+      if (fresh->num_pred_in_one_row != single_row_predictor_inner->num_pred_in_one_row) {
+        Log::Fatal("The booster changed since this FastConfig was created, so a prediction now has %" PRId64
+                   " outputs instead of %" PRId64 ". Create a new FastConfig.",
+                   fresh->num_pred_in_one_row, single_row_predictor_inner->num_pred_in_one_row);
+      }
+      single_row_predictor_inner = std::move(fresh);
+    }
 
-    *out_len = single_row_predictor_inner.num_pred_in_one_row;
+    auto one_row = get_row_fun(0);
+    single_row_predictor_inner->predict_function(one_row, out_result);
+
+    *out_len = single_row_predictor_inner->num_pred_in_one_row;
   }
 
  public:
@@ -168,10 +197,16 @@ struct SingleRowPredictor {
   const int32_t num_cols;
 
  private:
-  SingleRowPredictorInner single_row_predictor_inner;
+  // replaced (under single_row_predictor_mutex) when the booster's trees change, see Predict
+  mutable std::unique_ptr<SingleRowPredictorInner> single_row_predictor_inner;
 
   // Prevent the booster from being modified while we have a predictor relying on it during prediction
   yamc::alternate::shared_mutex *booster_mutex;
+
+  Boosting* boosting_;
+  const int predict_type_;
+  const int start_iter_;
+  const int num_iter_;
 
   // If several threads try to predict at the same time using the same SingleRowPredictor
   // we want them to still provide correct values, so the mutex is necessary due to the shared
@@ -266,12 +301,31 @@ class Booster {
   void ResetTrainingData(const Dataset* train_data) {
     if (train_data != train_data_) {
       UNIQUE_LOCK(mutex_)
+      // build the new objective and metrics first and commit them only after GBDT accepted the data: GBDT
+      // rejects data with other bin mappers (Fatal), and it must then keep pointing at objects that still
+      // exist (replacing objective_fun_ up front freed the objective GBDT kept: use-after-free on the next
+      // iteration)
+      std::unique_ptr<ObjectiveFunction> objective(
+          ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
+      if (objective == nullptr) {
+        Log::Info("Using self-defined objective function");
+      } else {
+        objective->Init(train_data->metadata(), train_data->num_data());
+      }
+      auto train_metric = CreateMetrics(train_data);
+      try {
+        boosting_->ResetTrainingData(train_data, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
+      } catch (...) {
+        // GBDT may fail after it took the new objective and metrics (a later step of the reset). It then points
+        // at either the old or the new objects, so keep both alive for the Booster's lifetime.
+        rejected_reset_objectives_.push_back(std::move(objective));
+        rejected_reset_metrics_.push_back(std::move(train_metric));
+        throw;
+      }
       train_data_ = train_data;
       train_data_num_total_features_ = train_data_->num_total_features();
-      CreateObjectiveAndMetrics();
-      // reset the boosting
-      boosting_->ResetTrainingData(train_data_,
-                                   objective_fun_.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric_));
+      objective_fun_ = std::move(objective);
+      train_metric_ = std::move(train_metric);
     }
   }
 
@@ -462,52 +516,65 @@ class Booster {
       }
     }
 
+    // a failed reset keeps the previous parameters: without this, the rejected keys stayed in
+    // config_ and were merged into every later reset (and GBDT::ResetConfig rolls its own
+    // state back to the config it keeps)
+    const Config previous_config(config_);
     config_.Set(param);
 
-    OMP_SET_NUM_THREADS(config_.num_threads);
+    try {
+      OMP_SET_NUM_THREADS(config_.num_threads);
 
-    // The objective and the metrics are built from one config: a CUDA metric converts the score only through a
-    // CUDA objective, so a new objective needs new metrics (train and every valid set) when it moves between the
-    // device and the host (binary <-> cross_entropy, update(fobj=...) resetting the objective to "none").
-    if (param.count("objective")) {
-      // recreating the objective requires training data to initialize
-      // against; a model-loaded booster has none
-      if (train_data_ == nullptr) {
-        Log::Fatal("Cannot change objective for a Booster with no training data.");
+      // The objective and the metrics are built from one config: a CUDA metric converts the score only through a
+      // CUDA objective, so a new objective needs new metrics (train and every valid set) when it moves between the
+      // device and the host (binary <-> cross_entropy, update(fobj=...) resetting the objective to "none").
+      if (param.count("objective")) {
+        // recreating the objective requires training data to initialize
+        // against; a model-loaded booster has none
+        if (train_data_ == nullptr) {
+          Log::Fatal("Cannot change objective for a Booster with no training data.");
+        }
+        // build and initialize everything first (objective and metric Init can Fatal), so a Fatal here leaves the
+        // booster and GBDT on the previous objective and metrics
+        std::unique_ptr<ObjectiveFunction> objective(
+            ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
+        if (objective == nullptr) {
+          Log::Info("Using self-defined objective function");
+        } else {
+          objective->Init(train_data_->metadata(), train_data_->num_data());
+        }
+        auto train_metric = CreateMetrics(train_data_);
+        std::vector<std::vector<std::unique_ptr<Metric>>> valid_metrics;
+        for (const Dataset* valid_data : valid_data_) {
+          valid_metrics.push_back(CreateMetrics(valid_data));
+        }
+        // then commit: the new objects replace the old ones only after GBDT holds the new pointers
+        boosting_->ResetTrainingData(train_data_, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
+        for (size_t i = 0; i < valid_metrics.size(); ++i) {
+          boosting_->ResetValidMetrics(static_cast<int>(i), Common::ConstPtrInVectorWrapper<Metric>(valid_metrics[i]));
+        }
+        objective_fun_ = std::move(objective);
+        train_metric_ = std::move(train_metric);
+        valid_metrics_ = std::move(valid_metrics);
       }
-      // build and initialize everything first (objective and metric Init can Fatal), so a Fatal here leaves the
-      // booster and GBDT on the previous objective and metrics
-      std::unique_ptr<ObjectiveFunction> objective(
-          ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
-      if (objective == nullptr) {
-        Log::Info("Using self-defined objective function");
-      } else {
-        objective->Init(train_data_->metadata(), train_data_->num_data());
-      }
-      auto train_metric = CreateMetrics(train_data_);
-      std::vector<std::vector<std::unique_ptr<Metric>>> valid_metrics;
-      for (const Dataset* valid_data : valid_data_) {
-        valid_metrics.push_back(CreateMetrics(valid_data));
-      }
-      // then commit: the new objects replace the old ones only after GBDT holds the new pointers
-      boosting_->ResetTrainingData(train_data_, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
-      for (size_t i = 0; i < valid_metrics.size(); ++i) {
-        boosting_->ResetValidMetrics(static_cast<int>(i), Common::ConstPtrInVectorWrapper<Metric>(valid_metrics[i]));
-      }
-      objective_fun_ = std::move(objective);
-      train_metric_ = std::move(train_metric);
-      valid_metrics_ = std::move(valid_metrics);
+
+      boosting_->ResetConfig(&config_);
+    } catch (...) {
+      config_ = previous_config;
+      OMP_SET_NUM_THREADS(config_.num_threads);
+      throw;
     }
-
-    boosting_->ResetConfig(&config_);
   }
 
   void AddValidData(const Dataset* valid_data) {
     UNIQUE_LOCK(mutex_)
+    // register the validation set only after GBDT accepted it: a rejected one (other bin mappers, ...) used to stay
+    // in valid_data_, so a later objective reset built metrics on it after the caller had freed the Dataset
+    // (heap-use-after-free) and GBDT and the Booster disagreed on the number of validation sets
+    auto metrics = CreateMetrics(valid_data);
+    boosting_->AddValidDataset(valid_data, Common::ConstPtrInVectorWrapper<Metric>(metrics));
     valid_data_.push_back(valid_data);
-    valid_metrics_.push_back(CreateMetrics(valid_data));
-    boosting_->AddValidDataset(valid_data,
-                               Common::ConstPtrInVectorWrapper<Metric>(valid_metrics_.back()));
+    valid_metrics_.push_back(std::move(metrics));
   }
 
   bool TrainOneIter() {
@@ -580,6 +647,7 @@ class Booster {
   }
 
   std::shared_ptr<Predictor> CreatePredictor(int start_iteration, int num_iteration, int predict_type, int ncol, const Config& config) const {
+    CheckPredictType(predict_type);
     if (!config.predict_disable_shape_check && ncol != boosting_->MaxFeatureIdx() + 1) {
       Log::Fatal("The number of features in data (%d) is not the same as it was in training data (%d).\n" \
                  "You can set ``predict_disable_shape_check=true`` to discard this error, but please be aware what you are doing.", ncol, boosting_->MaxFeatureIdx() + 1);
@@ -774,7 +842,10 @@ class Booster {
     auto pred_sparse_fun = predictor->GetPredictSparseFunction();
     bool is_col_ptr_int32 = false;
     bool is_data_float32 = false;
-    int num_output_cols = ncol + 1;
+    // one column per input feature plus the expected value, which sits at the model's feature count: with
+    // predict_disable_shape_check the input may have fewer columns than the model, and the contributions of
+    // the model's last features and the expected value were counted past the end of column_sizes
+    int num_output_cols = std::max(ncol, boosting_->MaxFeatureIdx() + 1) + 1;
     int col_ptr_size = (num_output_cols + 1) * num_matrices;
     if (col_ptr_type == C_API_DTYPE_INT32) {
       *out_col_ptr = new int32_t[col_ptr_size];
@@ -875,6 +946,7 @@ class Booster {
                int data_has_header, const Config& config,
                const char* result_filename) const {
     SHARED_LOCK(mutex_)
+    CheckPredictType(predict_type);
     bool is_predict_leaf = false;
     bool is_raw_score = false;
     bool predict_contrib = false;
@@ -898,6 +970,7 @@ class Booster {
                       int data_has_header, const Config& config, std::vector<double>* out_result,
                       int64_t* out_num_row) const {
     SHARED_LOCK(mutex_)
+    CheckPredictType(predict_type);
     Predictor predictor(boosting_.get(), start_iteration, num_iteration, predict_type == C_API_PREDICT_RAW_SCORE,
                         predict_type == C_API_PREDICT_LEAF_INDEX, predict_type == C_API_PREDICT_CONTRIB,
                         config.pred_early_stop, config.pred_early_stop_freq, config.pred_early_stop_margin);
@@ -1031,6 +1104,9 @@ class Booster {
   Config config_;
   /*! \brief Metric for training data */
   std::vector<std::unique_ptr<Metric>> train_metric_;
+  /*! \brief objectives and metrics of failed ResetTrainingData calls, which GBDT may still point at */
+  std::vector<std::unique_ptr<ObjectiveFunction>> rejected_reset_objectives_;
+  std::vector<std::vector<std::unique_ptr<Metric>>> rejected_reset_metrics_;
   /*! \brief Metrics for validation data */
   std::vector<std::vector<std::unique_ptr<Metric>>> valid_metrics_;
   /*! \brief Validation data, one per valid_metrics_ entry (their metrics are rebuilt when the objective changes) */
@@ -1108,6 +1184,17 @@ static int32_t CheckedRowCount(int64_t nrow, const char* what) {
                std::to_string(nrow).c_str());
   }
   return static_cast<int32_t>(nrow);
+}
+
+// The streaming push functions write rows [start_row, start_row + nrow) of a Dataset allocated for num_data rows:
+// a range outside it wrote past the bins (heap-buffer-overflow).
+static void CheckPushRowRange(const Dataset* dataset, int64_t start_row, int64_t nrow) {
+  const int64_t num_data = dataset->num_data();
+  // compare against the remaining rows, so a huge start_row (CSR takes an int64_t) cannot overflow the check
+  if (start_row < 0 || nrow < 0 || start_row > num_data || nrow > num_data - start_row) {
+    Log::Fatal("Cannot push %s rows at start_row %s: the Dataset has %d rows", std::to_string(nrow).c_str(),
+               std::to_string(start_row).c_str(), dataset->num_data());
+  }
 }
 
 // One iterator per column of a CSC matrix, built by a prediction thread on its first row; out of line so the
@@ -1273,6 +1360,9 @@ int FLC_GetSampleCount(int32_t num_total_row,
   if (out == nullptr) {
     Log::Fatal("FLC_GetSampleCount output is nullptr");
   }
+  if (num_total_row < 0) {
+    Log::Fatal("FLC_GetSampleCount: num_total_row (%d) is negative", num_total_row);
+  }
   auto param = Config::Str2Map(parameters);
   Config config;
   config.Set(param);
@@ -1291,12 +1381,17 @@ int FLC_SampleIndices(int32_t num_total_row,
   if (out == nullptr) {
     Log::Fatal("FLC_SampleIndices output is nullptr");
   }
+  if (num_total_row < 0) {
+    Log::Fatal("FLC_SampleIndices: num_total_row (%d) is negative", num_total_row);
+  }
   auto param = Config::Str2Map(parameters);
   Config config;
   config.Set(param);
 
   auto sample_indices = CreateSampleIndices(num_total_row, config);
-  memcpy(out, sample_indices.data(), sizeof(int32_t) * sample_indices.size());
+  if (!sample_indices.empty()) {  // an empty vector's data() may be null, which memcpy must not get
+    memcpy(out, sample_indices.data(), sizeof(int32_t) * sample_indices.size());
+  }
   *out_len = static_cast<int32_t>(sample_indices.size());
   API_END();
 }
@@ -1429,6 +1524,7 @@ int FLC_DatasetPushRows(DatasetHandle dataset,
                          int32_t start_row) {
   API_BEGIN();
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
+  CheckPushRowRange(p_dataset, start_row, nrow);
   auto get_row_fun = RowFunctionFromDenseMatrix(data, nrow, ncol, data_type, 1);
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
@@ -1468,6 +1564,7 @@ int FLC_DatasetPushRowsWithMetadata(DatasetHandle dataset,
     Log::Fatal("data cannot be null.");
   }
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
+  CheckPushRowRange(p_dataset, start_row, nrow);
   auto get_row_fun = RowFunctionFromDenseMatrix(data, nrow, ncol, data_type, 1);
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
@@ -1509,6 +1606,7 @@ int FLC_DatasetPushRowsByCSR(DatasetHandle dataset,
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
   int32_t nrow = CheckedRowCount(nindptr - 1, "CSR rows to push");
+  CheckPushRowRange(p_dataset, start_row, nrow);
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
@@ -1552,6 +1650,7 @@ int FLC_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
   int32_t nrow = CheckedRowCount(nindptr - 1, "CSR rows to push");
+  CheckPushRowRange(p_dataset, start_row, nrow);
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
@@ -3388,6 +3487,7 @@ int FLC_BoosterCalcNumPredict(BoosterHandle handle,
                                int64_t* out_len) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
+  Falcata::CheckPredictType(predict_type);
   *out_len = static_cast<int64_t>(num_row) * ref_booster->GetBoosting()->NumPredictOneRow(start_iteration,
     num_iteration, predict_type == C_API_PREDICT_LEAF_INDEX, predict_type == C_API_PREDICT_CONTRIB);
   API_END();

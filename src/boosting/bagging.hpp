@@ -11,6 +11,7 @@
 #include <Falcata/cuda/cuda_bagging.hpp>
 #endif  // USE_CUDA
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,12 @@ class BaggingSampleStrategy : public SampleStrategy {
 
   void Bagging(int iter, TreeLearner* tree_learner, score_t* /*gradients*/, score_t* /*hessians*/) override {
     Common::FunctionTimer fun_timer("GBDT::Bagging", global_timer);
+    if (need_release_bag_) {
+      // a reset turned bagging off: the learner still holds the last bag (its row indices, or the
+      // subset dataset), so hand it every row again before it trains
+      need_release_bag_ = false;
+      tree_learner->SetBaggingData(nullptr, nullptr, num_data_);
+    }
     // if need bagging
     if ((bag_data_cnt_ < num_data_ && iter % config_->bagging_freq == 0) ||
       need_re_bagging_) {
@@ -175,13 +182,14 @@ class BaggingSampleStrategy : public SampleStrategy {
     balanced_bagging_ = balance_bagging_cond;
     if ((config->bagging_fraction < 1.0 || balance_bagging_cond) && config->bagging_freq > 0) {
       need_re_bagging_ = false;
-      if (!is_change_dataset &&
+      if (!is_change_dataset && !need_release_bag_ &&
         config_ != nullptr && config_->bagging_fraction == config->bagging_fraction && config_->bagging_freq == config->bagging_freq
         && config_->pos_bagging_fraction == config->pos_bagging_fraction && config_->neg_bagging_fraction == config->neg_bagging_fraction) {
         config_ = config;
         return;
       }
       config_ = config;
+      need_release_bag_ = false;  // the re-bagging below hands the learner its new bag
       if (balance_bagging_cond) {
         bag_data_cnt_ = static_cast<data_size_t>(num_pos_data * config_->pos_bagging_fraction)
                         + static_cast<data_size_t>((num_data_ - num_pos_data) * config_->neg_bagging_fraction);
@@ -217,7 +225,9 @@ class BaggingSampleStrategy : public SampleStrategy {
         if (average_bag_rate <= average_bag_rate_threshold
             && (train_data_->num_feature_groups() < group_threshold_usesubset)) {
           if (tmp_subset_ == nullptr || is_change_dataset) {
-            tmp_subset_.reset(new Dataset(bag_data_cnt_));
+            // at least one row, as GOSS does: bagging_fraction * num_data can round down to 0 on
+            // a small dataset, and the subset is resized to each bag's actual count anyway
+            tmp_subset_.reset(new Dataset(std::max<data_size_t>(1, bag_data_cnt_)));
             tmp_subset_->CopyFeatureMapperFrom(train_data_);
           }
           is_use_subset_ = true;
@@ -232,7 +242,14 @@ class BaggingSampleStrategy : public SampleStrategy {
         need_resize_gradients_ = true;
       }
     } else {
+      // keep pointing at the current config: GBDT::ResetConfig frees the previous one, and the next reset that
+      // enables bagging compares against config_ above (heap-use-after-free)
+      config_ = config;
       bag_data_cnt_ = num_data_;
+      // bagging was on until now: the learner must be given all rows back (see Bagging). The CUDA
+      // learner's partition keeps its own bagging state and is not released this way.
+      need_release_bag_ = need_release_bag_ ||
+                          (!bag_data_indices_.empty() && config->device_type != std::string("cuda"));
       bag_data_indices_.clear();
       #ifdef USE_CUDA
       cuda_bag_data_indices_.Clear();
@@ -287,6 +304,8 @@ class BaggingSampleStrategy : public SampleStrategy {
 
   /*! \brief whether need restart bagging in continued training */
   bool need_re_bagging_;
+  /*! \brief a reset turned bagging off and the tree learner still holds the last bag */
+  bool need_release_bag_ = false;
   /*! \brief number of threads */
   int num_threads_;
   /*! \brief query boundaries of the in-bag queries */

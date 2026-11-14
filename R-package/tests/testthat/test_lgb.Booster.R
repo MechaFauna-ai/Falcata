@@ -428,6 +428,8 @@ test_that("Creating a Booster from a Dataset with an existing predictor should w
             num_leaves = 4L
             , learning_rate = 1.0
             , objective = "binary"
+            # the expected values were computed with the unbounded Newton step
+            , max_delta_step = 0.0
             , verbose = .LGB_VERBOSITY
             , num_threads = .LGB_MAX_THREADS
         )
@@ -525,6 +527,8 @@ test_that("Booster$rollback_one_iter() should work as expected", {
             num_leaves = 4L
             , learning_rate = 1.0
             , objective = "binary"
+            # the expected values were computed with the unbounded Newton step
+            , max_delta_step = 0.0
             , verbose = .LGB_VERBOSITY
             , num_threads = .LGB_MAX_THREADS
         )
@@ -560,6 +564,8 @@ test_that("Booster$update() passing a train_set works as expected", {
             num_leaves = 4L
             , learning_rate = 1.0
             , objective = "binary"
+            # the expected values were computed with the unbounded Newton step
+            , max_delta_step = 0.0
             , verbose = .LGB_VERBOSITY
             , num_threads = .LGB_MAX_THREADS
         )
@@ -585,6 +591,8 @@ test_that("Booster$update() passing a train_set works as expected", {
             num_leaves = 4L
             , learning_rate = 1.0
             , objective = "binary"
+            # the expected values were computed with the unbounded Newton step
+            , max_delta_step = 0.0
             , verbose = .LGB_VERBOSITY
             , num_threads = .LGB_MAX_THREADS
         )
@@ -879,6 +887,8 @@ test_that("Saving a model with different feature importance types works", {
             num_leaves = 4L
             , learning_rate = 1.0
             , objective = "binary"
+            # the expected values were computed with the unbounded Newton step
+            , max_delta_step = 0.0
             , verbose = .LGB_VERBOSITY
             , num_threads = .LGB_MAX_THREADS
         )
@@ -1020,7 +1030,7 @@ test_that("all parameters are stored correctly with save_model_to_string()", {
         , "[early_stopping_round: 0]"
         , "[early_stopping_min_delta: 0]"
         , "[first_metric_only: 0]"
-        , "[max_delta_step: 0]"
+        , "[max_delta_step: -1]"
         , "[lambda_l1: 0]"
         , "[lambda_l2: 0]"
         , "[linear_lambda: 0]"

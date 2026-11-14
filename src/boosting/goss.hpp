@@ -34,15 +34,25 @@ class GOSSStrategy : public SampleStrategy {
     if (iter < static_cast<int>(1.0f / config_->learning_rate)) {
       return;
     }
-    auto left_cnt = bagging_runner_.Run<true>(
-        num_data_,
-        [=](int, data_size_t cur_start, data_size_t cur_cnt, data_size_t* left,
-            data_size_t*) {
-          data_size_t cur_left_count = 0;
-          cur_left_count = Helper(cur_start, cur_cnt, left, gradients, hessians);
-          return cur_left_count;
-        },
-        bag_data_indices_.data());
+    data_size_t left_cnt = 0;
+    if (config_->deterministic) {
+      // Helper picks the top_rate threshold and draws the other rows per block, and the
+      // parallel runner's blocks follow the thread count: with deterministic=true the
+      // sample must not depend on num_threads, so it is drawn in one block (the in-bag
+      // rows first, then the out-of-bag rows in ascending order, as the runner leaves them)
+      left_cnt = Helper(0, num_data_, bag_data_indices_.data(), gradients, hessians);
+      std::reverse(bag_data_indices_.data() + left_cnt, bag_data_indices_.data() + num_data_);
+    } else {
+      left_cnt = bagging_runner_.Run<true>(
+          num_data_,
+          [=](int, data_size_t cur_start, data_size_t cur_cnt, data_size_t* left,
+              data_size_t*) {
+            data_size_t cur_left_count = 0;
+            cur_left_count = Helper(cur_start, cur_cnt, left, gradients, hessians);
+            return cur_left_count;
+          },
+          bag_data_indices_.data());
+    }
     bag_data_cnt_ = left_cnt;
     #ifdef USE_CUDA
     // GOSS builds its index list on the host and ships it down, so the device
@@ -85,7 +95,7 @@ class GOSSStrategy : public SampleStrategy {
     }
   }
 
-  void ResetSampleConfig(const Config* config, bool /*is_change_dataset*/) override {
+  void ResetSampleConfig(const Config* config, bool is_change_dataset) override {
     // Cannot use bagging in GOSS
     config_ = config;
     need_resize_gradients_ = false;
@@ -112,8 +122,14 @@ class GOSSStrategy : public SampleStrategy {
     if (config_->top_rate + config_->other_rate <= 0.5) {
       auto bag_data_cnt = static_cast<data_size_t>((config_->top_rate + config_->other_rate) * num_data_);
       bag_data_cnt = std::max(1, bag_data_cnt);
-      tmp_subset_.reset(new Dataset(bag_data_cnt));
-      tmp_subset_->CopyFeatureMapperFrom(train_data_);
+      // Keep an existing subset across a parameter reset, as bagging does: once GOSS has
+      // sampled, the tree learner holds it as its training data, and replacing it here
+      // left the learner on a freed Dataset until the next Bagging call (a second reset in
+      // between read freed memory). Each Bagging call resizes it to the drawn count.
+      if (tmp_subset_ == nullptr || is_change_dataset) {
+        tmp_subset_.reset(new Dataset(bag_data_cnt));
+        tmp_subset_->CopyFeatureMapperFrom(train_data_);
+      }
       is_use_subset_ = true;
     }
     // flag to not bagging first
