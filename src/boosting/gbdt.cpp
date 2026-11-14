@@ -31,7 +31,56 @@
 
 namespace Falcata {
 
+namespace {
+
+// Metadata accepts any multiple of #data labels (column-major, for multi-target objectives), but every objective
+// other than multi_regression reads only the first #data of them: a 2-D y passed by mistake silently trained on its
+// first column. Custom objectives (nullptr) get the labels through their own code and are left alone.
+void CheckSingleTargetLabels(const ObjectiveFunction* objective_function, const Dataset* data, const char* what) {
+  if (objective_function == nullptr || data == nullptr ||
+      std::string(objective_function->GetName()) == std::string("multi_regression")) {
+    return;
+  }
+  const size_t num_labels = data->metadata().label_size();
+  const size_t num_data = static_cast<size_t>(data->num_data());
+  if (num_labels != num_data) {
+    Log::Fatal("The %s data has %zu labels for %zu rows; objective=%s takes one label per row "
+               "(only objective=multi_regression takes num_data * num_class labels)",
+               what, num_labels, num_data, objective_function->GetName());
+  }
+}
+
+}  // namespace
+
 Common::Timer global_timer;
+
+namespace {
+
+// The per-feature parameters are indexed by the raw feature index of the training data. A wrong size used to be a
+// bare CHECK, and an interaction_constraints index outside the features was read as a feature
+// (Dataset::InnerFeatureIndex out of bounds in ColSampler::GetByNode).
+void CheckPerFeatureParameters(const Config& config, const Dataset& train_data) {
+  const int num_features = train_data.num_total_features();
+  if (!config.monotone_constraints.empty() &&
+      config.monotone_constraints.size() != static_cast<size_t>(num_features)) {
+    Log::Fatal("monotone_constraints has %zu values, but the training data has %d features; give one per feature",
+               config.monotone_constraints.size(), num_features);
+  }
+  if (!config.feature_contri.empty() && config.feature_contri.size() != static_cast<size_t>(num_features)) {
+    Log::Fatal("feature_contri has %zu values, but the training data has %d features; give one per feature",
+               config.feature_contri.size(), num_features);
+  }
+  for (const auto& constraint : config.interaction_constraints_vector) {
+    for (const int feature : constraint) {
+      if (feature < 0 || feature >= num_features) {
+        Log::Fatal("interaction_constraints refers to feature %d, but the training data has %d features "
+                   "(indices 0 to %d)", feature, num_features, num_features - 1);
+      }
+    }
+  }
+}
+
+}  // namespace
 
 namespace {
 
@@ -74,6 +123,10 @@ void CheckLeafOutputsAreFinite(const Tree* tree, int iter, int tree_id) {
 }
 
 }  // namespace
+
+void GBDT::CheckTreeOutputsAreFinite(const Tree* tree, int iter, int tree_id) {
+  CheckLeafOutputsAreFinite(tree, iter, tree_id);
+}
 
 void GBDT::CheckGradientNormForDivergence(const score_t* gradients) {
   if (gradients == nullptr || num_data_ <= 0 || num_tree_per_iteration_ <= 0) {
@@ -165,13 +218,9 @@ GBDT::~GBDT() {
 void GBDT::Init(const Config* config, const Dataset* train_data, const ObjectiveFunction* objective_function,
                 const std::vector<const Metric*>& training_metrics) {
   CHECK_NOTNULL(train_data);
+  CheckSingleTargetLabels(objective_function, train_data, "training");
   train_data_ = train_data;
-  if (!config->monotone_constraints.empty()) {
-    CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->monotone_constraints.size());
-  }
-  if (!config->feature_contri.empty()) {
-    CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->feature_contri.size());
-  }
+  CheckPerFeatureParameters(*config, *train_data_);
   iter_ = 0;
   num_iteration_for_pred_ = 0;
   max_feature_idx_ = 0;
@@ -202,8 +251,7 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
     }
     std::stringstream buffer;
     buffer << forced_splits_file.rdbuf();
-    std::string err;
-    forced_splits_json_ = Json::parse(buffer.str(), &err);
+    forced_splits_json_ = ParseForcedSplits(buffer.str(), config->forcedsplits_filename);
   }
 
   objective_function_ = objective_function;
@@ -266,7 +314,7 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
   parser_config_str_ = train_data_->parser_config_str();
 
   // check that forced splits does not use feature indices larger than dataset size
-  CheckForcedSplitFeatures();
+  CheckForcedSplitFeatures(forced_splits_json_);
 
   // if need bagging, create buffer
   data_sample_strategy_->ResetSampleConfig(config_.get(), true);
@@ -285,15 +333,30 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
   }
 }
 
-void GBDT::CheckForcedSplitFeatures() {
+Json GBDT::ParseForcedSplits(const std::string& content, const std::string& filename) {
+  std::string err;
+  Json forced_splits = Json::parse(content, &err);
+  if (!err.empty()) {
+    Log::Fatal("Could not parse forced splits file %s: %s", filename.c_str(), err.c_str());
+  }
+  if (!forced_splits.is_object()) {
+    Log::Fatal("Forced splits file %s must hold a JSON object (the root split)", filename.c_str());
+  }
+  return forced_splits;
+}
+
+void GBDT::CheckForcedSplitFeatures(const Json& forced_splits) const {
+  if (forced_splits.is_null()) {
+    return;
+  }
   std::queue<Json> forced_split_nodes;
-  forced_split_nodes.push(forced_splits_json_);
+  forced_split_nodes.push(forced_splits);
   while (!forced_split_nodes.empty()) {
     Json node = forced_split_nodes.front();
     forced_split_nodes.pop();
     const int feature_index = node["feature"].int_value();
-    if (feature_index > max_feature_idx_) {
-      Log::Fatal("Forced splits file includes feature index %d, but maximum feature index in dataset is %d",
+    if (feature_index < 0 || feature_index > max_feature_idx_) {
+      Log::Fatal("Forced splits file includes feature index %d, but feature indices in dataset are 0 to %d",
         feature_index, max_feature_idx_);
     }
     if (node.object_items().count("left") > 0) {
@@ -310,13 +373,25 @@ void GBDT::ResetValidMetrics(int valid_idx, const std::vector<const Metric*>& va
   // the early-stopping state (best_iter_, best_score_, best_msg_) is sized by the metric count
   CHECK_EQ(valid_metrics.size(), valid_metrics_[valid_idx].size());
   valid_metrics_[valid_idx] = valid_metrics;
+  // the rebuilt metrics may measure something else (a new objective, eval_at, ...): early stopping restarts from
+  // the next evaluation instead of comparing against best scores of the old definition
+  if (static_cast<size_t>(valid_idx) < best_score_.size()) {
+    std::fill(best_score_[valid_idx].begin(), best_score_[valid_idx].end(), kMinScore);
+    std::fill(best_iter_[valid_idx].begin(), best_iter_[valid_idx].end(), 0);
+    std::fill(best_msg_[valid_idx].begin(), best_msg_[valid_idx].end(), std::string());
+  }
 }
 
 void GBDT::AddValidDataset(const Dataset* valid_data,
                            const std::vector<const Metric*>& valid_metrics) {
+  // a model-loaded booster (or one whose Datasets were freed) has no training data to align with
+  if (train_data_ == nullptr) {
+    Log::Fatal("Cannot add validation data to a Booster without training data");
+  }
   if (!train_data_->CheckAlign(*valid_data)) {
     Log::Fatal("Cannot add validation data, since it has different bin mappers with training data");
   }
+  CheckSingleTargetLabels(objective_function_, valid_data, "validation");
   // for a validation dataset, we need its score and metric
   auto new_score_updater =
     #ifdef USE_CUDA
@@ -398,13 +473,27 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
   CHECK_GT(nrow * ncol, 0);
   CHECK_EQ(static_cast<size_t>(num_data_), nrow);
   CHECK_EQ(models_.size(), ncol);
+  // validate every leaf index before refitting any tree: the check used to sit inside the OpenMP loop below, where a
+  // failing CHECK terminated the process, and it let negative indices through to the data partition
+  for (size_t i = 0; i < nrow; ++i) {
+    for (size_t model_index = 0; model_index < ncol; ++model_index) {
+      const int leaf = tree_leaf_prediction[i * ncol + model_index];
+      if (leaf < 0 || leaf >= models_[model_index]->num_leaves()) {
+        Log::Fatal("Leaf prediction %d (row %zu, tree %zu) is outside the tree's %d leaves", leaf, i, model_index,
+                   models_[model_index]->num_leaves());
+      }
+    }
+  }
 
   int num_iterations = static_cast<int>(models_.size() / num_tree_per_iteration_);
   std::vector<int> leaf_pred(num_data_);
   if (linear_tree_) {
     // Refit visits every model leaf, even leaves reached by no refit rows.
     // The current training limit and largest predicted leaf can both be smaller.
-    int max_leaves = 0;
+    // keep room for the training limit too: InitLinear resizes the per-leaf linear workspaces, and a Booster that
+    // keeps training after an in-place refit grows trees up to num_leaves (heap-buffer-overflow in CalculateLinear
+    // when the refit models were smaller)
+    int max_leaves = config_->num_leaves;
     for (const auto& model : models_) {
       max_leaves = std::max(max_leaves, model->num_leaves());
     }
@@ -418,7 +507,6 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
       for (int i = 0; i < num_data_; ++i) {
         leaf_pred[i] = tree_leaf_prediction[i * ncol + model_index];
-        CHECK_LT(leaf_pred[i], models_[model_index]->num_leaves());
       }
       size_t offset = static_cast<size_t>(tree_id) * num_data_;
       auto grad = gradients_pointer_ + offset;
@@ -603,6 +691,12 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
       for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
         models_.pop_back();
       }
+    } else {
+      // The first iteration's constant trees stay as the model's starting score. Count
+      // them like any kept iteration (GetCurrentIteration counts models_): rescoring a new
+      // training or validation set (ResetTrainingData, AddValidDataset) adds iter_
+      // iterations, and a later update() after a parameter reset continues from here.
+      ++iter_;
     }
     return true;
   }
@@ -653,6 +747,8 @@ bool GBDT::VectorTrainOneIter() {
     Log::Warning("Stopped training because there are no more leaves that meet the split requirements");
     if (models_.size() > 1) {
       models_.pop_back();
+    } else {
+      ++iter_;  // the kept first iteration counts, as in TrainOneIter
     }
     return true;
   }
@@ -872,14 +968,23 @@ const double* GBDT::GetTrainingScore(int64_t* out_len) {
 }
 
 void GBDT::PredictContrib(const double* features, double* output) const {
+  PredictContribInRange(features, output, InitializedPredictRange());
+}
+
+void GBDT::PredictContribByMap(const std::unordered_map<int, double>& features,
+                               std::vector<std::unordered_map<int, double>>* output) const {
+  PredictContribByMapInRange(features, output, InitializedPredictRange());
+}
+
+void GBDT::PredictContribInRange(const double* features, double* output, const PredictRange& range) const {
   if (leaf_value_dim_ > 1) {
     Log::Fatal("pred_contrib is not supported for vector-leaf models.");
   }
   // set zero
   const int num_features = max_feature_idx_ + 1;
   std::memset(output, 0, sizeof(double) * num_tree_per_iteration_ * (num_features + 1));
-  const int end_iteration_for_pred = start_iteration_for_pred_ + num_iteration_for_pred_;
-  for (int i = start_iteration_for_pred_; i < end_iteration_for_pred; ++i) {
+  const int end_iteration_for_pred = range.start_iteration + range.num_iteration;
+  for (int i = range.start_iteration; i < end_iteration_for_pred; ++i) {
     // predict all the trees for one iteration
     for (int k = 0; k < num_tree_per_iteration_; ++k) {
       models_[i * num_tree_per_iteration_ + k]->PredictContrib(features, num_features, output + k*(num_features + 1));
@@ -887,14 +992,15 @@ void GBDT::PredictContrib(const double* features, double* output) const {
   }
 }
 
-void GBDT::PredictContribByMap(const std::unordered_map<int, double>& features,
-                               std::vector<std::unordered_map<int, double>>* output) const {
+void GBDT::PredictContribByMapInRange(const std::unordered_map<int, double>& features,
+                                      std::vector<std::unordered_map<int, double>>* output,
+                                      const PredictRange& range) const {
   if (leaf_value_dim_ > 1) {
     Log::Fatal("pred_contrib is not supported for vector-leaf models.");
   }
   const int num_features = max_feature_idx_ + 1;
-  const int end_iteration_for_pred = start_iteration_for_pred_ + num_iteration_for_pred_;
-  for (int i = start_iteration_for_pred_; i < end_iteration_for_pred; ++i) {
+  const int end_iteration_for_pred = range.start_iteration + range.num_iteration;
+  for (int i = range.start_iteration; i < end_iteration_for_pred; ++i) {
     // predict all the trees for one iteration
     for (int k = 0; k < num_tree_per_iteration_; ++k) {
       models_[i * num_tree_per_iteration_ + k]->PredictContribByMap(features, num_features, &((*output)[k]));
@@ -979,6 +1085,21 @@ void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction*
   }
   if (train_data != train_data_ && !train_data_->CheckAlign(*train_data)) {
     Log::Fatal("Cannot reset training data, since new training data has different bin mappers");
+  }
+  CheckSingleTargetLabels(objective_function, train_data, "training");
+  if (train_data != train_data_) {
+    // the new training data is scored with every trained tree below, after GBDT has already taken the new
+    // objective and data: check up front that every such tree can score a Dataset (trees merged in from a loaded
+    // model cannot), so the reset fails before it changes anything
+    for (int i = 0; i < iter_; ++i) {
+      for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
+        const auto curr_tree = (i + num_init_iteration_) * num_tree_per_iteration_ + cur_tree_id;
+        if (static_cast<size_t>(curr_tree) < models_.size() && !models_[curr_tree]->HasDatasetScoringMetadata()) {
+          Log::Fatal("Cannot reset training data: tree %d has no training bin metadata (it was loaded or merged "
+                     "from a saved model), so it cannot score the new data", curr_tree);
+        }
+      }
+    }
   }
 
   // check the incoming objective before taking it: a Fatal here must leave GBDT on its previous objective (the
@@ -1080,14 +1201,29 @@ void GBDT::ResetConfig(const Config* config) {
       (tree_learner_ == nullptr || train_data_ == nullptr)) {
     Log::Fatal("forcedsplits_filename can only be changed for a booster with training data");
   }
+  // Read and validate a changed forced splits file before any state changes: the tree
+  // learner and the sample strategy keep a pointer to new_config, which a failure further
+  // down would free (heap-use-after-free on the next update).
+  const bool forced_splits_changed =
+      config_.get() != nullptr && config_->forcedsplits_filename != new_config->forcedsplits_filename;
+  Json new_forced_splits;
+  if (forced_splits_changed && !new_config->forcedsplits_filename.empty()) {
+    // Forced splits are a training-time tree-learner setting. The C API
+    // rejects enabling them on a loaded model before committing its config.
+    std::ifstream forced_splits_file(new_config->forcedsplits_filename.c_str());
+    if (forced_splits_file.fail()) {
+      Log::Fatal("Could not open %s", new_config->forcedsplits_filename.c_str());
+    }
+    std::stringstream buffer;
+    buffer << forced_splits_file.rdbuf();
+    new_forced_splits = ParseForcedSplits(buffer.str(), new_config->forcedsplits_filename);
+    CheckForcedSplitFeatures(new_forced_splits);
+  }
   // A model-loaded booster (the default return of train()) has no training
   // data and no tree learner; per-feature checks and learner resets only
   // apply when they exist.
-  if (train_data_ != nullptr && !config->monotone_constraints.empty()) {
-    CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->monotone_constraints.size());
-  }
-  if (train_data_ != nullptr && !config->feature_contri.empty()) {
-    CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->feature_contri.size());
+  if (train_data_ != nullptr) {
+    CheckPerFeatureParameters(*config, *train_data_);
   }
   if (objective_function_ != nullptr && objective_function_->IsRenewTreeOutput() && !config->monotone_constraints.empty()) {
     Log::Fatal("Cannot use ``monotone_constraints`` in %s objective, please disable it.", objective_function_->GetName());
@@ -1104,39 +1240,42 @@ void GBDT::ResetConfig(const Config* config) {
     }
     vector_leaf_mode_ = new_config->tree_mode == std::string("vector_leaf");
   }
-  if (tree_learner_ != nullptr) {
-    tree_learner_->ResetConfig(new_config.get());
-    boosting_on_gpu_ = objective_function_ != nullptr && objective_function_->IsCUDAObjective() &&
-                      !data_sample_strategy_->IsHessianChange();  // for sample strategy with Hessian change, fall back to boosting on CPU
-    tree_learner_->ResetBoostingOnGPU(boosting_on_gpu_);
-  }
-
-  if (train_data_ != nullptr) {
-    data_sample_strategy_->ResetSampleConfig(new_config.get(), false);
-    if (data_sample_strategy_->NeedResizeGradients()) {
-      // resize gradient vectors to copy the customized gradients for goss or bagging with subset
-      ResetGradientBuffers();
+  // The tree learner and the sample strategy keep a pointer to the config they are reset
+  // with. If a later step fails (e.g. "Cannot use bagging in GOSS" from ResetSampleConfig),
+  // new_config is freed while they still point at it: re-point them at the config the
+  // booster keeps (config_) before the error propagates.
+  try {
+    if (tree_learner_ != nullptr) {
+      tree_learner_->ResetConfig(new_config.get());
+      boosting_on_gpu_ = objective_function_ != nullptr && objective_function_->IsCUDAObjective() &&
+                        !data_sample_strategy_->IsHessianChange();  // for sample strategy with Hessian change, fall back to boosting on CPU
+      tree_learner_->ResetBoostingOnGPU(boosting_on_gpu_);
     }
-  }
-  if (config_.get() != nullptr && config_->forcedsplits_filename != new_config->forcedsplits_filename) {
-    // Forced splits are a training-time tree-learner setting. The C API
-    // rejects enabling them on a loaded model before committing its config.
-    if (!new_config->forcedsplits_filename.empty()) {
-      std::ifstream forced_splits_file(
-          new_config->forcedsplits_filename.c_str());
-      if (forced_splits_file.fail()) {
-        Log::Fatal("Could not open %s", new_config->forcedsplits_filename.c_str());
+
+    if (train_data_ != nullptr) {
+      data_sample_strategy_->ResetSampleConfig(new_config.get(), false);
+      if (data_sample_strategy_->NeedResizeGradients()) {
+        // resize gradient vectors to copy the customized gradients for goss or bagging with subset
+        ResetGradientBuffers();
       }
-      std::stringstream buffer;
-      buffer << forced_splits_file.rdbuf();
-      std::string err;
-      forced_splits_json_ = Json::parse(buffer.str(), &err);
-      tree_learner_->SetForcedSplit(&forced_splits_json_);
-    } else {
-      forced_splits_json_ = Json();
+    }
+  } catch (...) {
+    if (config_ != nullptr) {
+      early_stopping_round_ = config_->early_stopping_round;
+      shrinkage_rate_ = config_->learning_rate;
       if (tree_learner_ != nullptr) {
-        tree_learner_->SetForcedSplit(nullptr);
+        tree_learner_->ResetConfig(config_.get());
       }
+      if (train_data_ != nullptr) {
+        data_sample_strategy_->ResetSampleConfig(config_.get(), false);
+      }
+    }
+    throw;
+  }
+  if (forced_splits_changed) {
+    forced_splits_json_ = std::move(new_forced_splits);
+    if (tree_learner_ != nullptr) {
+      tree_learner_->SetForcedSplit(forced_splits_json_.is_null() ? nullptr : &forced_splits_json_);
     }
   }
   config_.reset(new_config.release());
