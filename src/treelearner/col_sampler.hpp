@@ -28,10 +28,7 @@ class ColSampler {
         fraction_bynode_(config->feature_fraction_bynode),
         seed_(config->feature_fraction_seed),
         random_(config->feature_fraction_seed) {
-    for (auto constraint : config->interaction_constraints_vector) {
-      std::unordered_set<int> constraint_set(constraint.begin(), constraint.end());
-      interaction_constraints_.push_back(constraint_set);
-    }
+    SetInteractionConstraints(config);
   }
 
   static int GetCnt(size_t total_cnt, double fraction) {
@@ -58,6 +55,8 @@ class ColSampler {
   void SetConfig(const Config* config) {
     fraction_bytree_ = config->feature_fraction;
     fraction_bynode_ = config->feature_fraction_bynode;
+    // reset_parameter can change interaction_constraints too; a copy made only at construction kept the old ones
+    SetInteractionConstraints(config);
     is_feature_used_.resize(train_data_->num_features(), 1);
     // seed is changed
     if (seed_ != config->feature_fraction_seed) {
@@ -72,13 +71,15 @@ class ColSampler {
       used_cnt_bytree_ =
           GetCnt(valid_feature_indices_.size(), fraction_bytree_);
     }
-    ResetByTree();
+    // no ResetByTree() here: every tree draws its sample in BeforeTrain, and an extra draw at a parameter reset
+    // advanced the feature_fraction stream, so even a reset that changes nothing gave later trees other features
   }
 
   void ResetByTree() {
     if (need_reset_bytree_) {
-      std::memset(is_feature_used_.data(), 0,
-                  sizeof(int8_t) * is_feature_used_.size());
+      // std::fill, not memset: with no used features the vector is empty and data() may be
+      // null, which memset must not receive even for 0 bytes (UBSan: nonnull-attribute)
+      std::fill(is_feature_used_.begin(), is_feature_used_.end(), 0);
       used_feature_indices_ = random_.Sample(
           static_cast<int>(valid_feature_indices_.size()), used_cnt_bytree_);
       int omp_loop_size = static_cast<int>(used_feature_indices_.size());
@@ -110,7 +111,7 @@ class ColSampler {
     if (!need_reset_bytree_) {
       return;
     }
-    std::memset(is_feature_used_.data(), 0, sizeof(int8_t) * is_feature_used_.size());
+    std::fill(is_feature_used_.begin(), is_feature_used_.end(), 0);
     used_feature_indices_ = used_feature_indices;
     for (const int i : used_feature_indices_) {
       is_feature_used_[train_data_->InnerFeatureIndex(valid_feature_indices_[i])] = 1;
@@ -305,6 +306,13 @@ class ColSampler {
   std::vector<int> valid_feature_indices_;
   /*! \brief interaction constraints index in original (raw data) features */
   std::vector<std::unordered_set<int>> interaction_constraints_;
+
+  void SetInteractionConstraints(const Config* config) {
+    interaction_constraints_.clear();
+    for (const auto& constraint : config->interaction_constraints_vector) {
+      interaction_constraints_.emplace_back(constraint.begin(), constraint.end());
+    }
+  }
 };
 
 }  // namespace Falcata

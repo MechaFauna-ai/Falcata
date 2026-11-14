@@ -6,6 +6,7 @@
 #include <Falcata/bin.h>
 
 #include <Falcata/utils/array_args.h>
+#include <Falcata/utils/bounded_reader.h>
 #include <Falcata/utils/common.h>
 #include <Falcata/utils/file_io.h>
 
@@ -600,35 +601,61 @@ void BinMapper::CopyTo(char * buffer) const {
 }
 
 void BinMapper::CopyFrom(const char * buffer) {
-  std::memcpy(&num_bin_, buffer, sizeof(num_bin_));
-  buffer += VirtualFileWriter::AlignedSize(sizeof(num_bin_));
-  std::memcpy(&missing_type_, buffer, sizeof(missing_type_));
-  buffer += VirtualFileWriter::AlignedSize(sizeof(missing_type_));
-  std::memcpy(&is_trivial_, buffer, sizeof(is_trivial_));
-  buffer += VirtualFileWriter::AlignedSize(sizeof(is_trivial_));
-  std::memcpy(&sparse_rate_, buffer, sizeof(sparse_rate_));
-  buffer += sizeof(sparse_rate_);
-  std::memcpy(&bin_type_, buffer, sizeof(bin_type_));
-  buffer += VirtualFileWriter::AlignedSize(sizeof(bin_type_));
-  std::memcpy(&min_val_, buffer, sizeof(min_val_));
-  buffer += sizeof(min_val_);
-  std::memcpy(&max_val_, buffer, sizeof(max_val_));
-  buffer += sizeof(max_val_);
-  std::memcpy(&default_bin_, buffer, sizeof(default_bin_));
-  buffer += VirtualFileWriter::AlignedSize(sizeof(default_bin_));
-  std::memcpy(&most_freq_bin_, buffer, sizeof(most_freq_bin_));
-  buffer += VirtualFileWriter::AlignedSize(sizeof(most_freq_bin_));
+  // A trusted buffer of unstated size (bin mappers synced between machines):
+  // size it from its own num_bin and bin_type, the layout CopyTo writes.
+  const size_t fixed = SizesInByteFor(0, BinType::NumericalBin);
+  int num_bin = 0;
+  int bin_type = 0;
+  std::memcpy(&num_bin, buffer, sizeof(num_bin));
+  const size_t bin_type_offset = VirtualFileWriter::AlignedSize(sizeof(int)) +
+                                 VirtualFileWriter::AlignedSize(sizeof(MissingType)) +
+                                 VirtualFileWriter::AlignedSize(sizeof(bool)) + sizeof(double);
+  std::memcpy(&bin_type, buffer + bin_type_offset, sizeof(bin_type));
+  CopyFrom(buffer, num_bin > 0 ? SizesInByteFor(num_bin, static_cast<BinType>(bin_type == 1)) : fixed);
+}
+
+size_t BinMapper::CopyFrom(const char* buffer, size_t size) {
+  BoundedReader reader(buffer, size, "Serialized bin mapper");
+  num_bin_ = reader.ReadAligned<int>();
+  const int missing_type = reader.ReadAligned<int>();
+  is_trivial_ = reader.ReadAlignedBool();
+  sparse_rate_ = reader.Read<double>();
+  const int bin_type = reader.ReadAligned<int>();
+  min_val_ = reader.Read<double>();
+  max_val_ = reader.Read<double>();
+  default_bin_ = reader.ReadAligned<uint32_t>();
+  most_freq_bin_ = reader.ReadAligned<uint32_t>();
+  static_assert(sizeof(MissingType) == sizeof(int) && sizeof(BinType) == sizeof(int),
+                "enums are serialized as int");
+  // the enums are range-checked before they are stored: an out-of-range
+  // value in an enum object is undefined behaviour
+  if (missing_type < MissingType::None || missing_type > MissingType::NaN) {
+    Log::Fatal("Serialized bin mapper is corrupt: missing_type=%d", missing_type);
+  }
+  if (bin_type != BinType::NumericalBin && bin_type != BinType::CategoricalBin) {
+    Log::Fatal("Serialized bin mapper is corrupt: bin_type=%d", bin_type);
+  }
+  missing_type_ = static_cast<MissingType>(missing_type);
+  bin_type_ = static_cast<BinType>(bin_type);
+  if (num_bin_ < 1 || default_bin_ >= static_cast<uint32_t>(num_bin_) ||
+      most_freq_bin_ >= static_cast<uint32_t>(num_bin_)) {
+    Log::Fatal("Serialized bin mapper is corrupt: num_bin=%d, default_bin=%u, most_freq_bin=%u",
+               num_bin_, default_bin_, most_freq_bin_);
+  }
   if (bin_type_ == BinType::NumericalBin) {
+    const char* bounds = reader.TakeArray(static_cast<size_t>(num_bin_), sizeof(double), false);
     bin_upper_bound_ = std::vector<double>(num_bin_);
-    std::memcpy(bin_upper_bound_.data(), buffer, num_bin_ * sizeof(double));
+    std::memcpy(bin_upper_bound_.data(), bounds, num_bin_ * sizeof(double));
   } else {
+    const char* cats = reader.TakeArray(static_cast<size_t>(num_bin_), sizeof(int), false);
     bin_2_categorical_ = std::vector<int>(num_bin_);
-    std::memcpy(bin_2_categorical_.data(), buffer, num_bin_ * sizeof(int));
+    std::memcpy(bin_2_categorical_.data(), cats, num_bin_ * sizeof(int));
     categorical_2_bin_.clear();
     for (int i = 0; i < num_bin_; ++i) {
       categorical_2_bin_[bin_2_categorical_[i]] = static_cast<unsigned int>(i);
     }
   }
+  return static_cast<size_t>(reader.pos() - buffer);
 }
 
 void BinMapper::SaveBinaryToFile(BinaryWriter* writer) const {
@@ -646,6 +673,19 @@ void BinMapper::SaveBinaryToFile(BinaryWriter* writer) const {
   } else {
     writer->Write(bin_2_categorical_.data(), sizeof(int) * num_bin_);
   }
+}
+
+size_t BinMapper::SizesInByteFor(int num_bin, BinType bin_type) {
+  size_t ret = VirtualFileWriter::AlignedSize(sizeof(int)) +
+               VirtualFileWriter::AlignedSize(sizeof(MissingType)) +
+               VirtualFileWriter::AlignedSize(sizeof(bool)) +
+               sizeof(double) +
+               VirtualFileWriter::AlignedSize(sizeof(BinType)) +
+               sizeof(double) + sizeof(double) +
+               VirtualFileWriter::AlignedSize(sizeof(uint32_t)) +
+               VirtualFileWriter::AlignedSize(sizeof(uint32_t));
+  ret += static_cast<size_t>(num_bin) * (bin_type == BinType::NumericalBin ? sizeof(double) : sizeof(int));
+  return ret;
 }
 
 size_t BinMapper::SizesInByte() const {

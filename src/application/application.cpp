@@ -263,6 +263,14 @@ void Application::Predict() {
     DatasetLoader dataset_loader(config_, nullptr,
                                  config_.num_class, config_.data.c_str());
     train_data_.reset(dataset_loader.LoadFromFile(config_.data.c_str(), 0, 1));
+    // the leaf predictions above parsed the file against the model; the refit Dataset must hold the same features.
+    // A file with one column fewer than the model's features plus label was read by the predictor as label-less
+    // features (the column count matched the model), but loaded here with its first column as the label: the
+    // trees then referenced features past the Dataset (heap-buffer-overflow in FeatureImportance when saving)
+    if (train_data_->num_total_features() != boosting_->MaxFeatureIdx() + 1) {
+      Log::Fatal("The refit data has %d features, but the model was trained on %d (refit needs the label column "
+                 "and the model's features)", train_data_->num_total_features(), boosting_->MaxFeatureIdx() + 1);
+    }
     train_metric_.clear();
     objective_fun_.reset(ObjectiveFunction::CreateObjectiveFunction(config_.objective,
                                                                     config_));

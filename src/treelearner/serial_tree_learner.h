@@ -57,6 +57,7 @@ class SerialTreeLearner: public TreeLearner {
 
   void ResetTrainingData(const Dataset* train_data,
                          bool is_constant_hessian) override {
+    full_train_data_ = train_data;
     ResetTrainingDataInner(train_data, is_constant_hessian, true);
   }
 
@@ -87,9 +88,15 @@ class SerialTreeLearner: public TreeLearner {
 
   void SetBaggingData(const Dataset* subset, const data_size_t* used_indices, data_size_t num_data) override {
     if (subset == nullptr) {
+      if (train_data_ != full_train_data_) {
+        // the previous bag was a subset dataset (bagging changed by a reset): train on the full data again
+        ResetTrainingDataInner(full_train_data_, share_state_->is_constant_hessian, false);
+      }
       data_partition_->SetUsedDataIndices(used_indices, num_data);
       share_state_->SetUseSubrow(false);
     } else {
+      // the subset holds exactly the bag; drop row indices an earlier index-based bag left behind
+      data_partition_->SetUsedDataIndices(nullptr, 0);
       ResetTrainingDataInner(subset, share_state_->is_constant_hessian, false);
       share_state_->SetUseSubrow(true);
       share_state_->SetSubrowCopied(false);
@@ -122,6 +129,12 @@ class SerialTreeLearner: public TreeLearner {
   double GetParentOutput(const Tree* tree, const LeafSplits* leaf_splits) const;
 
  protected:
+  /*! \brief Refit: sets each leaf's output from the refit rows' per-leaf gradient and hessian sums (hessian sums
+   *  include the kEpsilon start) and row counts, decayed toward the old output. With path_smooth, node outputs
+   *  are rebuilt top-down from the same sums, as training smooths them. Shared by the CPU and CUDA learners. */
+  void SetRefitLeafOutputs(Tree* tree, const std::vector<double>& leaf_sum_grad, const std::vector<double>& leaf_sum_hess,
+                           const std::vector<data_size_t>& leaf_cnt) const;
+
   void ComputeBestSplitForFeature(FeatureHistogram* histogram_array_,
                                   int feature_index, int real_fidx,
                                   int8_t is_feature_used, int num_data,
@@ -176,6 +189,9 @@ class SerialTreeLearner: public TreeLearner {
 
   std::set<int> FindAllForceFeatures(Json force_split_leaf_setting);
 
+  /*! \brief Warn, once per feature, that a forced split names a feature the dataset does not use */
+  void WarnUnusedForcedSplitFeature(int feature);
+
   /*!
   * \brief Get the number of data in a leaf
   * \param leaf_idx The index of leaf
@@ -189,6 +205,8 @@ class SerialTreeLearner: public TreeLearner {
   int num_features_;
   /*! \brief training data */
   const Dataset* train_data_;
+  /*! \brief the full training data; train_data_ is a bagging subset of it while subset bagging is on */
+  const Dataset* full_train_data_ = nullptr;
   /*! \brief gradients of current iteration */
   const score_t* gradients_;
   /*! \brief hessians of current iteration */
@@ -240,6 +258,8 @@ class SerialTreeLearner: public TreeLearner {
   // uninitialized garbage (segfault in HybridGrowthUsable's
   // forced_split_json_->is_null() on NCCL worker threads).
   const Json* forced_split_json_ = nullptr;
+  /*! \brief forced-split features already reported as unused by the dataset */
+  std::set<int> warned_unused_forced_split_features_;
   std::unique_ptr<TrainingShareStates> share_state_;
   std::unique_ptr<CostEfficientGradientBoosting> cegb_;
   std::unique_ptr<GradientDiscretizer> gradient_discretizer_;

@@ -183,6 +183,11 @@ class LambdarankNDCG : public RankingObjective {
                                       const label_t* label, const double* score,
                                       score_t* lambdas,
                                       score_t* hessians) const override {
+    // an empty query (a zero group count) has no documents to rank; the code below
+    // reads its best-ranked document
+    if (cnt <= 0) {
+      return;
+    }
     // get max DCG on current query
     const double inverse_max_dcg = inverse_max_dcgs_[query_id];
     // initialize with zero
@@ -394,6 +399,14 @@ class RankXENDCG : public RankingObjective {
 
   void Init(const Metadata& metadata, data_size_t num_data) override {
     RankingObjective::Init(metadata, num_data);
+    // Phi computes 2^label in double through an int: a label beyond the int range (or NaN)
+    // is an undefined cast, and from 2^1024 on the gradients are inf/NaN
+    for (data_size_t i = 0; i < num_data_; ++i) {
+      if (!(std::fabs(label_[i]) < kMaxLabel)) {
+        Log::Fatal("rank_xendcg: label must be in (-%d, %d), but found %f at row %d",
+                   kMaxLabel, kMaxLabel, label_[i], i);
+      }
+    }
     for (data_size_t i = 0; i < num_queries_; ++i) {
       rands_.emplace_back(seed_ + i);
     }
@@ -454,6 +467,8 @@ class RankXENDCG : public RankingObjective {
       hessians[i] = static_cast<score_t>(rho[i] * (1.0 - rho[i]));
     }
   }
+
+  static constexpr int kMaxLabel = 1024;
 
   double Phi(const label_t l, double g) const {
     return Common::Pow(2, static_cast<int>(l)) - g;
