@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -213,4 +214,83 @@ TEST(ArrowChunkedArrayTest, OffsetAndValidity) {
     EXPECT_EQ(it[2], 4);
     EXPECT_EQ(it[4], 6);
   });
+}
+
+namespace {
+
+nanoarrow::UniqueArray MakeStructArray(const nanoarrow::UniqueSchema& schema,
+                                       const std::vector<std::vector<double>>& columns) {
+  nanoarrow::UniqueArray array;
+  EXPECT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
+  EXPECT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
+  for (size_t i = 0; i < columns[0].size(); ++i) {
+    for (size_t j = 0; j < columns.size(); ++j) {
+      EXPECT_EQ(ArrowArrayAppendDouble(array->children[j], columns[j][i]), NANOARROW_OK);
+    }
+    EXPECT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
+  }
+  EXPECT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
+  return array;
+}
+
+void NoopRelease(struct ArrowArray* array) { array->release = nullptr; }
+
+// Hand a corrupted shallow copy of `chunk` (whose release does nothing, so `chunk` still frees the
+// real buffers) to the constructor taking an array of chunks, and expect it to be rejected.
+void ExpectRejected(const nanoarrow::UniqueSchema& schema, const nanoarrow::UniqueArray& chunk,
+                    const std::function<void(struct ArrowArray*)>& corrupt) {
+  struct ArrowArray shallow = *chunk.get();
+  shallow.release = &NoopRelease;
+  corrupt(&shallow);
+  nanoarrow::UniqueSchema schema_copy;
+  ASSERT_EQ(ArrowSchemaDeepCopy(schema.get(), schema_copy.get()), NANOARROW_OK);
+  struct ArrowSchema raw_schema;
+  schema_copy.move(&raw_schema);
+  EXPECT_THROW(ArrowChunkedArray chunked_array(1, &shallow, &raw_schema), std::exception);
+}
+
+}  // namespace
+
+// Chunks are validated against the schema before their buffers are read: each of these used to be
+// read out of bounds (or through a NULL pointer) by the dataset, set_field and predict paths.
+TEST(ArrowChunkedArrayTest, MalformedChunksAreRejected) {
+  for (auto type : {NANOARROW_TYPE_DOUBLE, NANOARROW_TYPE_FLOAT, NANOARROW_TYPE_BOOL}) {
+    auto schema = MakePrimitiveSchema(type);
+    auto chunk = MakePrimitiveArray<double>(type, {1, 2, 3, 4});
+    ExpectRejected(schema, chunk, [](struct ArrowArray* a) { a->length = -1; });
+    ExpectRejected(schema, chunk, [](struct ArrowArray* a) { a->offset = -3; });
+    ExpectRejected(schema, chunk, [](struct ArrowArray* a) { a->n_buffers = 1; });
+    ExpectRejected(schema, chunk, [](struct ArrowArray* a) { a->buffers = nullptr; });
+    const void* null_buffers[2] = {nullptr, nullptr};
+    ExpectRejected(schema, chunk, [&](struct ArrowArray* a) { a->buffers = null_buffers; });
+  }
+}
+
+TEST(ArrowChunkedArrayTest, MalformedStructChunksAreRejected) {
+  auto schema = MakeStructSchema({NANOARROW_TYPE_DOUBLE, NANOARROW_TYPE_DOUBLE});
+  auto chunk = MakeStructArray(schema, {{1, 2, 3}, {4, 5, 6}});
+  // fewer children than the schema has fields, a NULL children array and a NULL child
+  ExpectRejected(schema, chunk, [](struct ArrowArray* a) { a->n_children = 1; });
+  ExpectRejected(schema, chunk, [](struct ArrowArray* a) { a->children = nullptr; });
+  struct ArrowArray* children[2] = {chunk->children[0], nullptr};
+  ExpectRejected(schema, chunk, [&](struct ArrowArray* a) { a->children = children; });
+  // a child shorter than its struct parent
+  struct ArrowArray short_child = *chunk->children[1];
+  short_child.length = 1;
+  struct ArrowArray* short_children[2] = {chunk->children[0], &short_child};
+  ExpectRejected(schema, chunk, [&](struct ArrowArray* a) { a->children = short_children; });
+
+  // the stream constructor validates too
+  chunk->children[1]->length = 1;
+  std::vector<nanoarrow::UniqueArray> chunks;
+  chunks.emplace_back(std::move(chunk));
+  auto stream = MakeStream(std::move(schema), std::move(chunks));
+  EXPECT_THROW(ArrowChunkedArray chunked_array(stream.get()), std::exception);
+}
+
+TEST(ArrowChunkedArrayTest, NegativeChunkCountIsRejected) {
+  auto schema = MakePrimitiveSchema(NANOARROW_TYPE_DOUBLE);
+  struct ArrowSchema raw_schema;
+  schema.move(&raw_schema);
+  EXPECT_THROW(ArrowChunkedArray chunked_array(-1, nullptr, &raw_schema), std::exception);
 }
