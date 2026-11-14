@@ -4,7 +4,8 @@
 LocalFile::Write only checked fwrite, and fwrite of a small payload just fills the
 stdio buffer: on a full disk the bytes are lost in the unchecked fclose. So
 Dataset.save_binary, FLC_BoosterSaveModel (Booster.save_model text, the R package,
-the CLI) and the CLI prediction output reported success for a truncated file.
+the CLI), FLC_DatasetDumpText and the CLI prediction output reported success for a
+truncated file.
 
 The child caps its file size with RLIMIT_FSIZE (SIGXFSZ ignored, so a write past the
 cap fails with EFBIG), which fails writes the way a full disk does.
@@ -40,7 +41,7 @@ _CHILD = textwrap.dedent(
         flc.basic._safe_call(flc.basic._LIB.FLC_BoosterSaveModel(
             booster._handle, 0, -1, 0, flc.basic._c_str(path)))
 
-    for name, save in [("binary", ds.save_binary), ("model", native_model_save)]:
+    for name, save in [("binary", ds.save_binary), ("model", native_model_save), ("dump", ds._dump_text)]:
         path = os.path.join(out_dir, name)
         try:
             save(path)
@@ -60,3 +61,4 @@ def test_failed_native_file_writes_raise(tmp_path):
     lines = dict(line.split(" ", 1) for line in proc.stdout.splitlines())
     assert lines["binary"].startswith("RAISED Cannot write binary data"), proc.stdout
     assert lines["model"].startswith("RAISED Cannot write model"), proc.stdout
+    assert lines["dump"].startswith("RAISED Cannot write the dataset dump"), proc.stdout
