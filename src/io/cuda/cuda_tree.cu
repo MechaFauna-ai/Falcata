@@ -1064,12 +1064,45 @@ __global__ void AddPredictionToScoreNodeTableKernel(
   score[data_index] += cuda_leaf_value[~node];
 }
 
+template <bool USE_INDICES>
+__global__ void AddConstantLeafToScoreKernel(const data_size_t num_data, const data_size_t* cuda_used_indices,
+                                             const double value, double* score) {
+  const data_size_t i = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
+  if (i < num_data) {
+    score[USE_INDICES ? cuda_used_indices[i] : i] += value;
+  }
+}
+
 void CUDATree::LaunchAddPredictionToScoreKernel(
   const Dataset* data,
   const data_size_t* used_data_indices,
   data_size_t num_data,
   double* score,
   int* leaf_index_out) const {
+  if (num_leaves_ <= 1 && !is_linear_ && leaf_index_out == nullptr) {
+    // A stump has no internal node: the traversal below would read split_feature_inner[0] of an empty tree (a null
+    // device pointer). Every row gets the leaf value, as Tree::AddPredictionToScore does on the host. GBDT scores
+    // stumps this way when it rebuilds a score from the model (ResetTrainingData, a new validation set).
+    const int num_blocks = (num_data + num_threads_per_block_add_prediction_to_score_ - 1) /
+                           num_threads_per_block_add_prediction_to_score_;
+    const int dim = std::max(leaf_value_dim_, 1);
+    for (int target = 0; target < dim && num_data > 0; ++target) {
+      const double value = leaf_value_dim_ > 1 ? leaf_values_vec_[target] : leaf_value_[0];
+      if (value == 0.0) {
+        continue;
+      }
+      double* plane = score + static_cast<size_t>(target) * static_cast<size_t>(data->num_data());
+      if (used_data_indices == nullptr) {
+        AddConstantLeafToScoreKernel<false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
+          num_data, nullptr, value, plane);
+      } else {
+        AddConstantLeafToScoreKernel<true><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
+          num_data, used_data_indices, value, plane);
+      }
+    }
+    CUDASUCCESS_OR_FATAL(cudaGetLastError());
+    return;
+  }
   const CUDAColumnData* cuda_column_data = data->cuda_column_data();
   // A launch with used_data_indices on the TRAIN data is the out-of-bag score
   // update of the tree trained this very iteration (nothing else scores a row

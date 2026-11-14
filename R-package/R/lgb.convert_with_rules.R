@@ -165,15 +165,22 @@ lgb.convert_with_rules <- function(data, rules = NULL) {
         } else {
             default_value_for_na <- .LGB_CONVERT_DEFAULT_FOR_NON_LOGICAL_NA()
         }
+        # look rules up by value: indexing the named rules vector with a factor used the factor's
+        # integer codes (wrong codes when the levels differ from the ones the rules were built from),
+        # and indexing it with a logical vector selected elements instead of looking them up
+        lookup_keys <- data[[col_name]]
+        if (is.factor(lookup_keys) || is.logical(lookup_keys)) {
+            lookup_keys <- as.character(lookup_keys)
+        }
         if (is_data_table) {
             data.table::set(
                 x = data
                 , j = col_name
-                , value = unname(rules[[col_name]][data[[col_name]]])
+                , value = unname(rules[[col_name]][lookup_keys])
             )
             data[is.na(get(col_name)), (col_name) := default_value_for_na]
         } else {
-            data[[col_name]] <- unname(rules[[col_name]][data[[col_name]]])
+            data[[col_name]] <- unname(rules[[col_name]][lookup_keys])
             data[is.na(data[col_name]), col_name] <- default_value_for_na
         }
     }

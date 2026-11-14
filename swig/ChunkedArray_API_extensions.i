@@ -13,6 +13,18 @@
 #include "../include/Falcata/utils/chunked_array.hpp"
 %}
 
+// ChunkedArray reports errors with Log::Fatal (a C++ exception): chunk size 0, a failed chunk allocation, ...
+// Unhandled, the exception crossed the JNI boundary and called std::terminate, which killed the JVM. Turn it into
+// a java.lang.RuntimeException instead.
+%exception {
+  try {
+    $action
+  } catch (const std::exception& e) {
+    SWIG_JavaThrowException(jenv, SWIG_JavaRuntimeException, e.what());
+    return $null;
+  }
+}
+
 %include "../include/Falcata/utils/chunked_array.hpp"
 
 using Falcata::ChunkedArray;
@@ -26,3 +38,5 @@ using Falcata::ChunkedArray;
 //%template(int64ChunkedArray) ChunkedArray<int64_t>;
 %template(floatChunkedArray) ChunkedArray<float>;
 %template(doubleChunkedArray) ChunkedArray<double>;
+
+%exception;
