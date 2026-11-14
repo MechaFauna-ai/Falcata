@@ -34,15 +34,25 @@ class GOSSStrategy : public SampleStrategy {
     if (iter < static_cast<int>(1.0f / config_->learning_rate)) {
       return;
     }
-    auto left_cnt = bagging_runner_.Run<true>(
-        num_data_,
-        [=](int, data_size_t cur_start, data_size_t cur_cnt, data_size_t* left,
-            data_size_t*) {
-          data_size_t cur_left_count = 0;
-          cur_left_count = Helper(cur_start, cur_cnt, left, gradients, hessians);
-          return cur_left_count;
-        },
-        bag_data_indices_.data());
+    data_size_t left_cnt = 0;
+    if (config_->deterministic) {
+      // Helper picks the top_rate threshold and draws the other rows per block, and the
+      // parallel runner's blocks follow the thread count: with deterministic=true the
+      // sample must not depend on num_threads, so it is drawn in one block (the in-bag
+      // rows first, then the out-of-bag rows in ascending order, as the runner leaves them)
+      left_cnt = Helper(0, num_data_, bag_data_indices_.data(), gradients, hessians);
+      std::reverse(bag_data_indices_.data() + left_cnt, bag_data_indices_.data() + num_data_);
+    } else {
+      left_cnt = bagging_runner_.Run<true>(
+          num_data_,
+          [=](int, data_size_t cur_start, data_size_t cur_cnt, data_size_t* left,
+              data_size_t*) {
+            data_size_t cur_left_count = 0;
+            cur_left_count = Helper(cur_start, cur_cnt, left, gradients, hessians);
+            return cur_left_count;
+          },
+          bag_data_indices_.data());
+    }
     bag_data_cnt_ = left_cnt;
     #ifdef USE_CUDA
     // GOSS builds its index list on the host and ships it down, so the device
