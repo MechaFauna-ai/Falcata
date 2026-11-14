@@ -29,6 +29,30 @@ void GetStatistic(const char* str, int* comma_cnt, int* tab_cnt, int* colon_cnt)
   }
 }
 
+/*!
+ * \brief a sampled line without its surrounding spaces and line breaks. Tabs stay: Common::Trim also stripped them,
+ *        so a TSV line whose first or last field is empty lost a tab, and the format sniffer saw a different column
+ *        count on that line and rejected the file ("Unknown format of training data")
+ */
+static std::string TrimSampledLine(const std::string& line) {
+  const char* const blanks = " \f\n\r\v";
+  const size_t end = line.find_last_not_of(blanks);
+  if (end == std::string::npos) {
+    return std::string();
+  }
+  const size_t begin = line.find_first_not_of(blanks);
+  return line.substr(begin, end - begin + 1);
+}
+
+/*!
+ * \brief fields of a CSV/TSV line: its delimiters plus one, as GetDataType counts the columns and the parsers read
+ *        them. Common::Split drops empty tokens, so a line with a missing value counted one field short: a predict
+ *        file whose first line has a missing value was taken to carry a label column (and refused for its shape)
+ */
+static int CountFields(const std::string& line, char delimiter) {
+  return static_cast<int>(std::count(line.begin(), line.end(), delimiter)) + 1;
+}
+
 int GetLabelIdxForLibsvm(const std::string& str, int num_features, int label_idx) {
   if (num_features <= 0) {
     return label_idx;
@@ -47,9 +71,7 @@ int GetLabelIdxForTSV(const std::string& str, int num_features, int label_idx) {
   if (num_features <= 0) {
     return label_idx;
   }
-  auto str2 = Common::Trim(str);
-  auto tokens = Common::Split(str2.c_str(), '\t');
-  if (static_cast<int>(tokens.size()) == num_features) {
+  if (CountFields(str, '\t') == num_features) {
     return -1;
   } else {
     return label_idx;
@@ -60,9 +82,7 @@ int GetLabelIdxForCSV(const std::string& str, int num_features, int label_idx) {
   if (num_features <= 0) {
     return label_idx;
   }
-  auto str2 = Common::Trim(str);
-  auto tokens = Common::Split(str2.c_str(), ',');
-  if (static_cast<int>(tokens.size()) == num_features) {
+  if (CountFields(str, ',') == num_features) {
     return -1;
   } else {
     return label_idx;
@@ -117,7 +137,7 @@ std::vector<std::string> ReadKLineFromFile(const char* filename, bool header, in
   for (int i = 0; i < k; ++i) {
     if (!tmp_file.eof()) {
       GetLine(&tmp_file, &cur_line, reader.get(), &buffer, buffer_size);
-      cur_line = Common::Trim(cur_line);
+      cur_line = TrimSampledLine(cur_line);
       if (!cur_line.empty()) {
         ret.push_back(cur_line);
       }
