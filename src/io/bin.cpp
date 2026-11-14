@@ -376,6 +376,17 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
                         int max_bin, int min_data_in_bin, int min_split_data, bool pre_filter, BinType bin_type,
                         bool use_missing, bool zero_as_missing,
                         const std::vector<double>& forced_upper_bounds) {
+  if (static_cast<size_t>(num_sample_values) > total_sample_cnt) {
+    // More sampled values than sampled rows: a row lists this feature more than once (a repeated index in a LibSVM
+    // line, duplicate column indices in a CSR row). Count each value as a row of its own. Otherwise the zero count
+    // below goes negative, a sparse rate exceeds 1, and when every row has the feature more than once,
+    // FindBinWithZeroAsOneBin divides by a zero non-zero count and casts the infinity to int (UB).
+    Log::Warning("A feature has %d sampled values in %zu sampled rows: some row lists the same feature more than "
+                 "once (a repeated index in a LibSVM line or duplicate column indices in a sparse row). Each "
+                 "duplicate is counted as a separate row when finding the bins.",
+                 num_sample_values, total_sample_cnt);
+    total_sample_cnt = static_cast<size_t>(num_sample_values);
+  }
   int na_cnt = 0;
   int non_na_cnt = 0;
   for (int i = 0; i < num_sample_values; ++i) {
