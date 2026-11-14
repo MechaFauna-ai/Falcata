@@ -376,8 +376,11 @@ void GPUTreeLearner::AllocateGPUMemory() {
                     0, num_data_ * sizeof(Feature4)));
   }
   // building Feature4 bundles; each thread handles dword_features_ features
+  // (a Log::Fatal inside the parallel region must reach the caller as an exception, not std::terminate)
+  OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int i = 0; i < static_cast<int>(dense_feature_group_map_.size() / dword_features_); ++i) {
+    OMP_LOOP_EX_BEGIN();
     int tid = omp_get_thread_num();
     Feature4* host4 = host4_ptrs[tid];
     auto dense_ind = dense_feature_group_map_.begin() + i * dword_features_;
@@ -453,6 +456,22 @@ void GPUTreeLearner::AllocateGPUMemory() {
     }
     printf("\n");
     #endif
+    OMP_LOOP_EX_END();
+  }
+  // the pinned staging buffers below are released at the end of this function: release them before rethrowing too
+  const auto release_host4 = [&]() {
+    for (int i = 0; i < nthreads; ++i) {
+      queue_.enqueue_unmap_buffer(host4_bufs[i], host4_ptrs[i]);
+      host4_bufs[i] = boost::compute::buffer();
+      boost::alignment::aligned_free(host4_vecs[i]);
+    }
+  };
+  try {
+    OMP_THROW_EX();
+  } catch (...) {
+    queue_.finish();
+    release_host4();
+    throw;
   }
   // working on the remaining (less than dword_features_) feature groups
   if (k != 0) {
@@ -529,11 +548,7 @@ void GPUTreeLearner::AllocateGPUMemory() {
     }
   }
   // deallocate pinned space for feature copying
-  for (int i = 0; i < nthreads; ++i) {
-      queue_.enqueue_unmap_buffer(host4_bufs[i], host4_ptrs[i]);
-      host4_bufs[i] = boost::compute::buffer();
-      boost::alignment::aligned_free(host4_vecs[i]);
-  }
+  release_host4();
   // data transfer time
   std::chrono::duration<double, std::milli> end_time = std::chrono::steady_clock::now() - start_time;
   Log::Info("%d dense feature groups (%.2f MB) transferred to GPU in %f secs. %d sparse feature groups",
