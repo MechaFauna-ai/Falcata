@@ -28,9 +28,8 @@ void DataParallelTreeLearner<TREELEARNER_T>::Init(const Dataset* train_data, boo
   rank_ = Network::rank();
   num_machines_ = Network::num_machines();
 
-  auto max_cat_threshold = this->config_->max_cat_threshold;
-  // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit
-  size_t split_info_size = static_cast<size_t>(SplitInfo::Size(max_cat_threshold) * 2);
+  // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit, under any max_cat_threshold
+  size_t split_info_size = static_cast<size_t>(SplitInfo::Size(MaxCatThresholdInSplit(train_data))) * 2;
   size_t histogram_size =
     static_cast<size_t>(this->share_state_->num_hist_total_bin() * kHistEntrySize);
 
@@ -283,7 +282,7 @@ void DataParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(const 
   }
 
   // sync global best info
-  SyncUpGlobalBestSplit(input_buffer_.data(), input_buffer_.data(), &smaller_best_split, &larger_best_split, this->config_->max_cat_threshold);
+  SyncUpGlobalBestSplit(input_buffer_.data(), input_buffer_.data(), &smaller_best_split, &larger_best_split, SyncSplitInfoSize(this->train_data_, this->config_->max_cat_threshold));
 
   // set best split
   this->best_split_per_leaf_[this->smaller_leaf_splits_->leaf_index()] = smaller_best_split;
