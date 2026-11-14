@@ -399,6 +399,7 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
 
   bin_type_ = bin_type;
   default_bin_ = 0;
+  most_freq_bin_ = 0;  // a trivial feature keeps it, and is still serialized
   int zero_cnt = static_cast<int>(total_sample_cnt - num_sample_values - na_cnt);
   // find distinct_values first
   std::vector<double> distinct_values;
