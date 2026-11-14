@@ -520,6 +520,13 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
     auto line_len = Common::GetLine(p);
     if (line_len > 0) {
       std::string cur_line(p, line_len);
+      // A model with no trees has no "Tree=" line to end the header, and the
+      // lines after "end of trees" are not header keys: a feature importance
+      // line for a feature named "a=b" reads "a=b=3" and must not be parsed
+      // as one. This is every FALB metadata block, which is a zero-tree model.
+      if (cur_line == "end of trees") {
+        break;
+      }
       if (!Common::StartsWith(cur_line, "Tree=")) {
         auto strs = Common::Split(cur_line.c_str(), '=');
         if (strs.size() == 1) {
