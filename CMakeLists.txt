@@ -1065,6 +1065,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_find_groups.cpp
       tests/cpp_tests/test_histogram_pool_move.cpp
       tests/cpp_tests/test_host_quantization.cpp
+      tests/cpp_tests/test_if_else_linear_tree.cpp
       tests/cpp_tests/test_init_score_layout.cpp
       tests/cpp_tests/test_int_histogram.cpp
       tests/cpp_tests/test_leaf_splits.cpp
