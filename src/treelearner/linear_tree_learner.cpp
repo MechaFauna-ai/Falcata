@@ -39,6 +39,13 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::ResetTrainingData(const Dataset* trai
 
 template <typename TREE_LEARNER_TYPE>
 void LinearTreeLearner<TREE_LEARNER_TYPE>::InitLinear(const Dataset* train_data, const int max_leaves) {
+  // the linear models are fit on the raw feature values, which a Dataset keeps only when it was constructed with
+  // linear_tree=true; without them raw_index() below read an empty buffer (the Python package checks this through
+  // FLC_DatasetUpdateParamChecking, the raw C API and the CLI did not)
+  if (!train_data->has_raw()) {
+    Log::Fatal("linear_tree=true needs a Dataset constructed with linear_tree=true (it keeps the raw feature "
+               "values the linear models are fit on)");
+  }
   leaf_map_ = std::vector<int>(train_data->num_data(), -1);
   contains_nan_ = std::vector<int8_t>(train_data->num_features(), 0);
   // identify features containing nans
