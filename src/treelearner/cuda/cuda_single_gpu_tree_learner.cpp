@@ -6700,8 +6700,11 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
     count_hist_cache_->Clear();  // cuda_plan key forest_count_hist: the gradient arrays get other values
   }
   cuda_histogram_constructor_->ResetTrainingData(train_data, share_state_.get());
-  cuda_data_partition_->ResetTrainingData(train_data,
-    static_cast<int>(share_state_->feature_hist_offsets().back()) * std::max(1, vec_num_targets_),
+  // a dataset without a usable feature (all filtered, e.g. by feature_pre_filter) has no histogram offsets: zero
+  // bins, as in Init
+  const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
+  num_total_bin_ = feature_hist_offsets.empty() ? 0 : static_cast<int>(feature_hist_offsets.back());
+  cuda_data_partition_->ResetTrainingData(train_data, num_total_bin_ * std::max(1, vec_num_targets_),
     cuda_histogram_constructor_->cuda_hist_pointer());
   cuda_best_split_finder_->ResetTrainingData(
     cuda_histogram_constructor_->cuda_hist(),
