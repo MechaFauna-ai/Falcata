@@ -886,7 +886,7 @@ std::string GBDT::OutputMetric(int iter) {
         tmp_buf << "Iteration:" << iter
           << ", training " << name[k]
           << " : " << scores[k];
-        Log::Info(tmp_buf.str().c_str());
+        Log::Info("%s", tmp_buf.str().c_str());
         if (early_stopping_round_ > 0) {
           msg_buf << tmp_buf.str() << '\n';
         }
@@ -905,7 +905,7 @@ std::string GBDT::OutputMetric(int iter) {
             << ", valid_" << i + 1 << " " << name[k]
             << " : " << test_scores[k];
           if (need_output) {
-            Log::Info(tmp_buf.str().c_str());
+            Log::Info("%s", tmp_buf.str().c_str());
           }
           if (early_stopping_round_ > 0) {
             msg_buf << tmp_buf.str() << '\n';

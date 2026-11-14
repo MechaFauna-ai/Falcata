@@ -353,12 +353,12 @@ class LambdarankNDCG : public RankingObjective {
     message_stream << std::setw(15) << "position"
       << std::setw(15) << "bias_factor"
       << std::endl;
-    Log::Debug(message_stream.str().c_str());
+    Log::Debug("%s", message_stream.str().c_str());
     message_stream.str("");
     for (int i = 0; i < num_position_ids_; ++i) {
       message_stream << std::setw(15) << position_ids_[i]
         << std::setw(15) << pos_biases_[i];
-      Log::Debug(message_stream.str().c_str());
+      Log::Debug("%s", message_stream.str().c_str());
       message_stream.str("");
     }
   }
