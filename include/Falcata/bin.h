@@ -526,6 +526,16 @@ class MultiValBin {
 
   virtual void PushOneRow(int tid, data_size_t idx, const std::vector<uint32_t>& values) = 0;
 
+  /*!
+  * \brief Before FinishLoad: the number of entries pushed so far, and whether the bin can store
+  *        them. A sparse bin picks its row index type from an estimated entry count; when the
+  *        estimate was too low it returns false, and the caller rebuilds with the exact count.
+  */
+  virtual bool PushedEntriesFit(uint64_t* num_entries) const {
+    *num_entries = 0;
+    return true;
+  }
+
   virtual void CopySubrow(const MultiValBin* full_bin,
                           const data_size_t* used_indices,
                           data_size_t num_used_indices) = 0;
