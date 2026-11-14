@@ -1301,7 +1301,45 @@ struct CatHistReaderQuant32 {
 // their own scratch, so the search itself needs no scratch beyond the reduce.
 // `l2` already carries cat_l2, and `min_gain_shift` the parent gain, as in the
 // callers' exact branches.
-template <bool USE_L1, bool USE_SMOOTHING, typename HIST_READER, typename INDEX_T>
+// The leaf's monotone bounds for a categorical split (CPU FindBestThresholdCategoricalInner with USE_MC): a categorical
+// feature carries no monotone direction of its own, but the leaf it splits may sit below a monotone split, and both
+// child outputs must stay inside that leaf's [min, max]. The gain is measured at the clamped outputs, as on the CPU.
+struct CatMonotoneBounds {
+  double min;
+  double max;
+};
+
+template <bool USE_L1, bool USE_SMOOTHING, bool USE_MC>
+__device__ __forceinline__ double CategoricalSplitGain(
+  const double sum_left_gradient, const double sum_left_hessian, const double sum_right_gradient,
+  const double sum_right_hessian, const double lambda_l1, const double l2, const double path_smooth,
+  const double max_delta_step, const data_size_t left_count, const data_size_t right_count, const double parent_output,
+  const CatMonotoneBounds bounds) {
+  if (USE_MC) {
+    return CUDALeafSplits::GetSplitGainsMC<USE_L1, USE_SMOOTHING>(
+      sum_left_gradient, sum_left_hessian, sum_right_gradient, sum_right_hessian, lambda_l1, l2, path_smooth,
+      max_delta_step, left_count, right_count, parent_output, bounds.min, bounds.max, 0);
+  }
+  return CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+    sum_left_gradient, sum_left_hessian, sum_right_gradient, sum_right_hessian, lambda_l1, l2, path_smooth,
+    max_delta_step, left_count, right_count, parent_output);
+}
+
+template <bool USE_L1, bool USE_SMOOTHING, bool USE_MC>
+__device__ __forceinline__ double CategoricalLeafOutput(
+  const double sum_gradient, const double sum_hessian, const double lambda_l1, const double l2,
+  const double path_smooth, const double max_delta_step, const data_size_t count, const double parent_output,
+  const CatMonotoneBounds bounds) {
+  if (USE_MC) {
+    return CUDALeafSplits::CalculateSplittedLeafOutputMC<USE_L1, USE_SMOOTHING>(
+      sum_gradient, sum_hessian, lambda_l1, l2, path_smooth, max_delta_step, count, parent_output, bounds.min,
+      bounds.max);
+  }
+  return CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(
+    sum_gradient, sum_hessian, lambda_l1, l2, path_smooth, max_delta_step, count, parent_output);
+}
+
+template <bool USE_L1, bool USE_SMOOTHING, typename HIST_READER, typename INDEX_T, bool USE_MC = false>
 __device__ void FindBestSplitsForLeafKernelCategoricalRandom(
   const HIST_READER hist_reader,
   const SplitFindTask* task,
@@ -1328,7 +1366,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalRandom(
   // canonical int64 leaf total (quant readers only; 0 for f64)
   const int64_t sum_gradients_hessians_total,
   // output parameters
-  CUDASplitInfo* cuda_best_split_info) {
+  CUDASplitInfo* cuda_best_split_info,
+  // the leaf's monotone bounds (USE_MC only)
+  const CatMonotoneBounds bounds = CatMonotoneBounds{-DBL_MAX, DBL_MAX}) {
   __shared__ double shared_rand_gain_buffer[WARPSIZE];
   __shared__ bool shared_rand_found_buffer[WARPSIZE];
   __shared__ uint32_t shared_rand_trial_buffer[WARPSIZE];
@@ -1387,9 +1427,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalRandom(
       continue;
     }
     const double sum_right_gradient = sum_gradients - sum_left_gradient;
-    const double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+    const double current_gain = CategoricalSplitGain<USE_L1, USE_SMOOTHING, USE_MC>(
       sum_left_gradient, sum_left_hessian, sum_right_gradient, sum_right_hessian,
-      lambda_l1, l2, path_smooth, max_delta_step, left_count, right_count, parent_output);
+      lambda_l1, l2, path_smooth, max_delta_step, left_count, right_count, parent_output, bounds);
     // Running MAXIMUM over the grid-stride trials this thread owns; strict '>'
     // keeps the lowest trial index on an exact tie, matching CPU's scan over
     // its trial sequence.
@@ -1461,10 +1501,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalRandom(
     const double sum_right_gradient = sum_gradients - sum_left_gradient;
     const double sum_right_hessian = sum_hessians - sum_left_hessian;
     const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
-    const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_left_gradient,
-      sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output);
-    const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_right_gradient,
-      sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output);
+    const double left_output = CategoricalLeafOutput<USE_L1, USE_SMOOTHING, USE_MC>(sum_left_gradient,
+      sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output, bounds);
+    const double right_output = CategoricalLeafOutput<USE_L1, USE_SMOOTHING, USE_MC>(sum_right_gradient,
+      sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output, bounds);
     cuda_best_split_info->left_sum_gradients = sum_left_gradient;
     cuda_best_split_info->left_sum_hessians = sum_left_hessian;
     cuda_best_split_info->left_count = left_count;
@@ -1480,7 +1520,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalRandom(
   }
 }
 
-template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename HIST_READER>
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename HIST_READER, bool USE_MC = false>
 __device__ void FindBestSplitsForLeafKernelCategoricalInner(
   // input feature information
   const HIST_READER hist_reader,
@@ -1509,7 +1549,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
   // canonical int64 leaf total (quant readers only; 0 for f64)
   const int64_t sum_gradients_hessians_total,
   // output parameters
-  CUDASplitInfo* cuda_best_split_info) {
+  CUDASplitInfo* cuda_best_split_info,
+  // the leaf's monotone bounds (USE_MC only)
+  const CatMonotoneBounds bounds = CatMonotoneBounds{-DBL_MAX, DBL_MAX}) {
   __shared__ double shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_found_buffer[WARPSIZE];
   __shared__ uint32_t shared_thread_index_buffer[WARPSIZE];
@@ -1548,10 +1590,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
           const double sum_other_hessian = sum_hessians - hess - kEpsilon;
           if (sum_other_hessian >= min_sum_hessian_in_leaf && (!USE_RAND || static_cast<int>(threadIdx_x) == rand_threshold)) {
             const double sum_other_gradient = sum_gradients - grad;
-            double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+            double current_gain = CategoricalSplitGain<USE_L1, USE_SMOOTHING, USE_MC>(
               sum_other_gradient, sum_other_hessian, grad,
               hess + kEpsilon, lambda_l1,
-              l2, path_smooth, max_delta_step, other_count, cnt, parent_output);
+              l2, path_smooth, max_delta_step, other_count, cnt, parent_output, bounds);
             if (current_gain > min_gain_shift) {
               local_gain = current_gain;
               threshold_found = true;
@@ -1584,10 +1626,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
-      const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_left_gradient,
-        sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output);
-      const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_right_gradient,
-        sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output);
+      const double left_output = CategoricalLeafOutput<USE_L1, USE_SMOOTHING, USE_MC>(sum_left_gradient,
+        sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output, bounds);
+      const double right_output = CategoricalLeafOutput<USE_L1, USE_SMOOTHING, USE_MC>(sum_right_gradient,
+        sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output, bounds);
       cuda_best_split_info->left_sum_gradients = sum_left_gradient;
       cuda_best_split_info->left_sum_hessians = sum_left_hessian;
       cuda_best_split_info->left_count = left_count;
@@ -1635,12 +1677,12 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
         shared_index_buffer[candidate_prefix - 1] = static_cast<int16_t>(threadIdx_x);
       }
       __syncthreads();
-      FindBestSplitsForLeafKernelCategoricalRandom<USE_L1, USE_SMOOTHING, HIST_READER, int16_t>(
+      FindBestSplitsForLeafKernelCategoricalRandom<USE_L1, USE_SMOOTHING, HIST_READER, int16_t, USE_MC>(
         hist_reader, task, cuda_random, shared_index_buffer, used_bin,
         cat_random_search, lambda_l1, l2, path_smooth, max_delta_step,
         min_data_in_leaf, min_sum_hessian_in_leaf, max_cat_threshold, min_data_per_group,
         min_gain_shift, cnt_factor, sum_gradients, sum_hessians, num_data, parent_output,
-        sum_gradients_hessians_total, cuda_best_split_info);
+        sum_gradients_hessians_total, cuda_best_split_info, bounds);
       return;
     }
     if (threadIdx_x >= bin_start && threadIdx_x < bin_end) {
@@ -1728,10 +1770,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
           num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
           min_data_per_group) &&
         (!USE_RAND || threadIdx_x == static_cast<int>(rand_threshold))) {
-        double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+        double current_gain = CategoricalSplitGain<USE_L1, USE_SMOOTHING, USE_MC>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
-          l2, path_smooth, max_delta_step, left_count, right_count, parent_output);
+          l2, path_smooth, max_delta_step, left_count, right_count, parent_output, bounds);
         // gain with split is worse than without split
         if (current_gain > local_gain) {
           local_gain = current_gain;
@@ -1778,10 +1820,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
           num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
           min_data_per_group) &&
         (!USE_RAND || threadIdx_x == static_cast<int>(rand_threshold))) {
-        double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+        double current_gain = CategoricalSplitGain<USE_L1, USE_SMOOTHING, USE_MC>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
-          l2, path_smooth, max_delta_step, left_count, right_count, parent_output);
+          l2, path_smooth, max_delta_step, left_count, right_count, parent_output, bounds);
         // gain with split is worse than without split
         if (current_gain > local_gain) {
           local_gain = current_gain;
@@ -1843,10 +1885,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
-      const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_left_gradient,
-        sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output);
-      const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_right_gradient,
-        sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output);
+      const double left_output = CategoricalLeafOutput<USE_L1, USE_SMOOTHING, USE_MC>(sum_left_gradient,
+        sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output, bounds);
+      const double right_output = CategoricalLeafOutput<USE_L1, USE_SMOOTHING, USE_MC>(sum_right_gradient,
+        sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output, bounds);
       cuda_best_split_info->left_sum_gradients = sum_left_gradient;
       cuda_best_split_info->left_sum_hessians = sum_left_hessian;
       cuda_best_split_info->left_count = left_count;
@@ -1933,7 +1975,7 @@ __global__ void FindBestSplitsForLeafKernel(
     if (task->is_categorical) {
       // fp32_hist is globally disabled for datasets with categorical features
       const CatHistReaderF64 hist_reader{hist_ptr};
-      FindBestSplitsForLeafKernelCategoricalInner<USE_RAND, USE_L1, USE_SMOOTHING, CatHistReaderF64>(
+      FindBestSplitsForLeafKernelCategoricalInner<USE_RAND, USE_L1, USE_SMOOTHING, CatHistReaderF64, USE_MC>(
         // input feature information
         hist_reader,
         // input task information
@@ -1960,7 +2002,8 @@ __global__ void FindBestSplitsForLeafKernel(
         parent_output,
         /*sum_gradients_hessians_total=*/0,
         // output parameters
-        out);
+        out,
+        CatMonotoneBounds{leaf_constraint_min, leaf_constraint_max});
     } else {
       if (!task->reverse) {
         FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T, USE_MC>(
@@ -2637,7 +2680,7 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
   }
 }
 
-template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool USE_MC = false>
 __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
   // input feature information
   const hist_t* feature_hist_ptr,
@@ -2670,7 +2713,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
   data_size_t* hist_index_buffer_ptr,
   data_size_t* hist_cnt_buffer_ptr,
   // output parameters
-  CUDASplitInfo* cuda_best_split_info) {
+  CUDASplitInfo* cuda_best_split_info,
+  // the leaf's monotone bounds (USE_MC only)
+  const CatMonotoneBounds bounds = CatMonotoneBounds{-DBL_MAX, DBL_MAX}) {
   __shared__ double shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_found_buffer[WARPSIZE];
   __shared__ uint32_t shared_thread_index_buffer[WARPSIZE];
@@ -2710,10 +2755,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
           const double sum_other_hessian = sum_hessians - hess - kEpsilon;
           if (sum_other_hessian >= min_sum_hessian_in_leaf && (!USE_RAND || bin == rand_threshold)) {
             const double sum_other_gradient = sum_gradients - grad;
-            double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+            double current_gain = CategoricalSplitGain<USE_L1, USE_SMOOTHING, USE_MC>(
               sum_other_gradient, sum_other_hessian, grad,
               hess + kEpsilon, lambda_l1,
-              l2, path_smooth, max_delta_step, other_count, cnt, parent_output);
+              l2, path_smooth, max_delta_step, other_count, cnt, parent_output, bounds);
             if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
               best_threshold = bin;
               local_gain = current_gain - min_gain_shift;
@@ -2744,10 +2789,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
-      const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_left_gradient,
-        sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output);
-      const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_right_gradient,
-        sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output);
+      const double left_output = CategoricalLeafOutput<USE_L1, USE_SMOOTHING, USE_MC>(sum_left_gradient,
+        sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output, bounds);
+      const double right_output = CategoricalLeafOutput<USE_L1, USE_SMOOTHING, USE_MC>(sum_right_gradient,
+        sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output, bounds);
       cuda_best_split_info->left_sum_gradients = sum_left_gradient;
       cuda_best_split_info->left_sum_hessians = sum_left_hessian;
       cuda_best_split_info->left_count = left_count;
@@ -2799,12 +2844,12 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       }
       __syncthreads();
       const CatHistReaderF64 hist_reader{feature_hist_ptr};
-      FindBestSplitsForLeafKernelCategoricalRandom<USE_L1, USE_SMOOTHING, CatHistReaderF64, data_size_t>(
+      FindBestSplitsForLeafKernelCategoricalRandom<USE_L1, USE_SMOOTHING, CatHistReaderF64, data_size_t, USE_MC>(
         hist_reader, task, cuda_random, hist_index_buffer_ptr, num_cand,
         cat_random_search, lambda_l1, l2, path_smooth, max_delta_step,
         min_data_in_leaf, min_sum_hessian_in_leaf, max_cat_threshold, min_data_per_group,
         min_gain_shift, cnt_factor, sum_gradients, sum_hessians, num_data, parent_output,
-        /*sum_gradients_hessians_total=*/0, cuda_best_split_info);
+        /*sum_gradients_hessians_total=*/0, cuda_best_split_info, bounds);
       return;
     }
     // Grid-stride over every bin: thread t owns bins t, t + blockDim, ... The
@@ -2901,10 +2946,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
           num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
           min_data_per_group) &&
         (!USE_RAND || bin == rand_threshold)) {
-        double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+        double current_gain = CategoricalSplitGain<USE_L1, USE_SMOOTHING, USE_MC>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
-          l2, path_smooth, max_delta_step, left_count, right_count, parent_output);
+          l2, path_smooth, max_delta_step, left_count, right_count, parent_output, bounds);
         // Keep the RUNNING MAXIMUM across BOTH the left-to-right and
         // right-to-left passes (and, above 256 bins, across the grid-stride
         // bins a thread owns): a bare `> min_gain_shift` test would overwrite
@@ -2951,10 +2996,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
           num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
           min_data_per_group) &&
         (!USE_RAND || bin == rand_threshold)) {
-        double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+        double current_gain = CategoricalSplitGain<USE_L1, USE_SMOOTHING, USE_MC>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
-          l2, path_smooth, max_delta_step, left_count, right_count, parent_output);
+          l2, path_smooth, max_delta_step, left_count, right_count, parent_output, bounds);
         // Keep the RUNNING MAXIMUM across BOTH the left-to-right and
         // right-to-left passes (and, above 256 bins, across the grid-stride
         // bins a thread owns): a bare `> min_gain_shift` test would overwrite
@@ -3004,10 +3049,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
-      const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_left_gradient,
-        sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output);
-      const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_right_gradient,
-        sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output);
+      const double left_output = CategoricalLeafOutput<USE_L1, USE_SMOOTHING, USE_MC>(sum_left_gradient,
+        sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output, bounds);
+      const double right_output = CategoricalLeafOutput<USE_L1, USE_SMOOTHING, USE_MC>(sum_right_gradient,
+        sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output, bounds);
       cuda_best_split_info->left_sum_gradients = sum_left_gradient;
       cuda_best_split_info->left_sum_hessians = sum_left_hessian;
       cuda_best_split_info->left_count = left_count;
@@ -3115,7 +3160,7 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
     data_size_t* hist_index_buffer_ptr = feature_hist_index_buffer + hist_offset;
     data_size_t* hist_cnt_buffer_ptr = feature_hist_cnt_buffer + dir_offset + hist_offset;
     if (task->is_categorical) {
-      FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory<USE_RAND, USE_L1, USE_SMOOTHING>(
+      FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory<USE_RAND, USE_L1, USE_SMOOTHING, USE_MC>(
         // input feature information
         hist_ptr,
         // input task information
@@ -3147,7 +3192,8 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
         hist_index_buffer_ptr,
         hist_cnt_buffer_ptr,
         // output parameters
-        out);
+        out,
+        CatMonotoneBounds{leaf_constraint_min, leaf_constraint_max});
     } else {
       if (!task->reverse) {
         FindBestSplitsForLeafKernelInner_GlobalMemory<USE_RAND, USE_L1, USE_SMOOTHING, false, USE_MC>(
