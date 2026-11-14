@@ -855,7 +855,11 @@ class HistogramPool {
   }
 
   void ResetConfig(const Dataset* train_data, const Config* config) {
-    CHECK_GT(train_data->num_features(), 0);
+    if (train_data->num_features() == 0) {
+      // nothing to re-point: a dataset without usable features has no histograms (training
+      // makes constant trees), and a parameter reset must not fail on it
+      return;
+    }
     const Config* old_config = feature_metas_[0].config;
     SetFeatureInfo<false, true>(train_data, config, &feature_metas_);
     // if need to reset the function pointers
