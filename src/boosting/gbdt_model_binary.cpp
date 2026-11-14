@@ -373,6 +373,10 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
                                     bool with_diagnostics,
                                     bool f32_leaves,
                                     int compress_level) const {
+  if (compress_level < 0 || compress_level > 9) {
+    Log::Fatal("FALB: compress_level must be in [0, 9] (0 = uncompressed), got %d",
+               compress_level);
+  }
   // ---- tree range (mirrors SaveModelToString's slicing) ----
   int num_used_model = static_cast<int>(models_.size());
   const int total_iteration = num_used_model / num_tree_per_iteration_;
