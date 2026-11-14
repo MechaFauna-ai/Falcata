@@ -40,6 +40,12 @@ class BaggingSampleStrategy : public SampleStrategy {
       // subset dataset), so hand it every row again before it trains
       need_release_bag_ = false;
       tree_learner->SetBaggingData(nullptr, nullptr, num_data_);
+      #ifdef USE_CUDA
+      // the CUDA learner read the last bag from this buffer until now
+      if (bag_data_cnt_ >= num_data_) {
+        cuda_bag_data_indices_.Clear();
+      }
+      #endif  // USE_CUDA
     }
     // if need bagging
     if ((bag_data_cnt_ < num_data_ && iter % config_->bagging_freq == 0) ||
@@ -246,14 +252,11 @@ class BaggingSampleStrategy : public SampleStrategy {
       // enables bagging compares against config_ above (heap-use-after-free)
       config_ = config;
       bag_data_cnt_ = num_data_;
-      // bagging was on until now: the learner must be given all rows back (see Bagging). The CUDA
-      // learner's partition keeps its own bagging state and is not released this way.
-      need_release_bag_ = need_release_bag_ ||
-                          (!bag_data_indices_.empty() && config->device_type != std::string("cuda"));
+      // bagging was on until now: the learner must be given all rows back (see Bagging). That holds for the CUDA
+      // learner too, whose partition kept training on the last bag and read it from cuda_bag_data_indices_ after
+      // this branch had freed it; the buffer is released in Bagging once the learner has let go of it.
+      need_release_bag_ = need_release_bag_ || !bag_data_indices_.empty();
       bag_data_indices_.clear();
-      #ifdef USE_CUDA
-      cuda_bag_data_indices_.Clear();
-      #endif  // USE_CUDA
       bagging_runner_.ReSize(0);
       is_use_subset_ = false;
     }
