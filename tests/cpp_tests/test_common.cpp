@@ -229,6 +229,38 @@ TEST(CommonAtoi, SaturatesInsteadOfOverflowing) {
   EXPECT_EQ(w, std::numeric_limits<int64_t>::max());
 }
 
+// Common::Atof (the default text-data parser) read a literal with more than
+// 308 fraction digits as NaN (inf / inf), i.e. as a missing value, and let a
+// long exponent wrap around uint32 back below its 308 clamp.
+TEST(CommonAtof, LongFractionAndExponentStayFinite) {
+  double v = 0.0;
+  const std::string ones = "0." + std::string(400, '1');
+  const char* end = Falcata::Common::Atof(ones.c_str(), &v);
+  EXPECT_EQ(end, ones.c_str() + ones.size());
+  EXPECT_NEAR(v, 1.0 / 9.0, 1e-15);
+  const std::string nines = "-0." + std::string(400, '9');
+  Falcata::Common::Atof(nines.c_str(), &v);
+  EXPECT_NEAR(v, -1.0, 1e-15);
+  const std::string tiny = "0." + std::string(300, '0') + "12345678901";
+  Falcata::Common::Atof(tiny.c_str(), &v);
+  EXPECT_GT(v, 1.2e-301);
+  EXPECT_LT(v, 1.3e-301);
+  // short literals are unchanged
+  Falcata::Common::Atof("0.125", &v);
+  EXPECT_EQ(v, 0.125);
+  Falcata::Common::Atof("2.5e3", &v);
+  EXPECT_EQ(v, 2500.0);
+  // a huge exponent saturates like any exponent beyond 308
+  double clamped = 0.0;
+  Falcata::Common::Atof("1e309", &clamped);
+  Falcata::Common::Atof("1e4294967296", &v);  // 2^32: used to wrap to 1e0
+  EXPECT_EQ(v, clamped);
+  Falcata::Common::Atof("1e4294967297", &v);  // used to wrap to 1e1
+  EXPECT_EQ(v, clamped);
+  Falcata::Common::Atof("1e-4294967296", &v);
+  EXPECT_LT(v, 1e-300);
+}
+
 TEST(CommonCStringToArrayFast, ShortStringFails) {
   EXPECT_EQ(Falcata::CommonC::StringToArrayFast<int>("1 2 3", 3), (std::vector<int>{1, 2, 3}));
   EXPECT_THROW(Falcata::CommonC::StringToArrayFast<int>("1 2", 3), std::exception);
