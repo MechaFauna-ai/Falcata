@@ -46,6 +46,12 @@ class LinearTreeLearner: public TREE_LEARNER_TYPE {
 
   void AddPredictionToScore(const Tree* tree,
                             double* out_score) const override {
+    if (!tree->is_linear()) {
+      // e.g. the constant tree RF adds for a class it skips: it has no
+      // linear leaf model, so leaf_const_ etc. are empty
+      TREE_LEARNER_TYPE::AddPredictionToScore(tree, out_score);
+      return;
+    }
     CHECK_LE(tree->num_leaves(), this->data_partition_->num_leaves());
     bool has_nan = false;
     if (any_nan_) {
