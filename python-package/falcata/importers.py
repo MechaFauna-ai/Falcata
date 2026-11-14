@@ -54,21 +54,33 @@ _DEFAULT_LEFT_MASK = 2
 _MISSING_TYPE_NAN = 2  # shifted into bits 2-3
 
 
-def _objective_mapping(xgb_objective: str, num_class: int) -> Tuple[str, int, int, Any]:
+def _objective_mapping(
+    xgb_objective: str, num_class: int, xgb_version: Optional[Tuple[int, ...]] = None
+) -> Tuple[str, int, int, Any]:
     """(falcata objective string, num_class, num_tree_per_iteration, inverse link).
 
     The inverse link turns XGBoost's base_score -- which it stores in output
     space -- back into the raw margin the trees actually sum to.
+    ``xgb_version`` is the version of XGBoost that wrote the model, when known.
     """
     if xgb_objective in ("reg:squarederror", "reg:linear", "reg:squaredlogerror"):
         if xgb_objective == "reg:squaredlogerror":
             raise ValueError("reg:squaredlogerror is not representable in Falcata")
         return "regression", 1, 1, (lambda p: p)
     if xgb_objective in ("binary:logistic", "reg:logistic"):
+        # XGBoost 3.2+ clamps the probability to [1e-6, 1 - 1e-6] before
+        # taking the margin, so all-negative labels (fitted base_score 0)
+        # still train. Earlier versions reject anything outside (0, 1) and do
+        # not clamp inside it: 1e-8 maps to -18.42 there, -13.82 in 3.2+.
+        clamp_inner = xgb_version is None or tuple(xgb_version[:2]) >= (3, 2)
 
         def _logit(p: float) -> float:
-            p = min(max(p, 1e-12), 1 - 1e-12)
-            return math.log(p / (1.0 - p))
+            # -log(1/p - 1) in float32, as XGBoost's ProbToMargin computes it
+            eps = np.float32(1e-6)
+            p32 = np.float32(p)
+            if clamp_inner or not (0.0 < p32 < 1.0):
+                p32 = min(max(p32, eps), np.float32(1) - eps)
+            return float(-np.log(np.float32(1) / p32 - np.float32(1)))
 
         return "binary sigmoid:1", 1, 1, _logit
     if xgb_objective in ("binary:logitraw",):
@@ -340,7 +352,7 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
     ------
     ValueError
         If the model uses a booster, objective or feature type that cannot be
-        represented exactly (``gblinear``, ``dart``, native categorical splits,
+        represented exactly (``gblinear``, native categorical splits,
         multi-output trees). The conversion refuses rather than approximating.
 
     Notes
@@ -354,8 +366,17 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
     raw = _xgb_json(model)
     learner = raw.get("learner", raw)
     gb = learner["gradient_booster"]
+    # DART predicts sum(weight_drop[i] * tree_i). Before XGBoost 3.4 a dart
+    # model is {"name": "dart", "gbtree": {...}, "weight_drop": [...]}; from
+    # 3.4 it is a plain "gbtree" whose model carries "weight_drop".
+    weight_drop = None
+    if gb.get("name") == "dart" and isinstance(gb.get("gbtree"), dict):
+        weight_drop = gb.get("weight_drop")
+        gb = gb["gbtree"]
     if gb.get("name") != "gbtree":
-        raise ValueError(f"only XGBoost 'gbtree' models can be converted, got '{gb.get('name')}'")
+        raise ValueError(f"only XGBoost 'gbtree' and 'dart' models can be converted, got '{gb.get('name')}'")
+    if weight_drop is None:
+        weight_drop = gb["model"].get("weight_drop")
     mp = learner["learner_model_param"]
     num_feature = int(mp["num_feature"])
     num_class_raw = int(mp.get("num_class", 0) or 0)
@@ -363,7 +384,9 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
         raise ValueError("multi-target XGBoost trees are not supported")
 
     xgb_obj = learner["objective"]["name"]
-    objective, num_class, trees_per_iter, inverse_link = _objective_mapping(xgb_obj, num_class_raw)
+    version = raw.get("version")
+    xgb_version = tuple(int(v) for v in version) if isinstance(version, list) and version else None
+    objective, num_class, trees_per_iter, inverse_link = _objective_mapping(xgb_obj, num_class_raw, xgb_version)
 
     base_score_raw = mp.get("base_score", "0")
     if isinstance(base_score_raw, str):
@@ -395,8 +418,15 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
         # a constant first iteration carries base_score into the sum
         for v in base_margins:
             bodies.append(_constant_tree(v))
+    if weight_drop is not None and len(weight_drop) != len(trees):
+        raise ValueError(f"XGBoost weight_drop has {len(weight_drop)} entries for {len(trees)} trees")
     for i in order:
-        bodies.append(_TreeConverter(trees[i]).convert().to_text())
+        tree = _TreeConverter(trees[i]).convert()
+        if weight_drop is not None:
+            # XGBoost scales each leaf by its tree's weight in float32
+            w = np.float32(weight_drop[i])
+            tree.leaf_value = [float(np.float32(v) * w) for v in tree.leaf_value]
+        bodies.append(tree.to_text())
 
     if feature_names is None:
         names = learner.get("feature_names") or []

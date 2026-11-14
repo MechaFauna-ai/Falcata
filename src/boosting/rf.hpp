@@ -9,10 +9,12 @@
 #include <Falcata/boosting.h>
 #include <Falcata/falcata_plan.h>
 #include <Falcata/metric.h>
+#include <Falcata/network.h>
 
 #include <algorithm>
 #include <string>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <deque>
 #include <fstream>
@@ -40,20 +42,18 @@ class RF : public GBDT {
 
   void Init(const Config* config, const Dataset* train_data, const ObjectiveFunction* objective_function,
     const std::vector<const Metric*>& training_metrics) override {
-    if (config->data_sample_strategy == std::string("bagging")) {
-      CHECK((config->bagging_freq > 0 && config->bagging_fraction < 1.0f && config->bagging_fraction > 0.0f) ||
-            (config->feature_fraction < 1.0f && config->feature_fraction > 0.0f));
-    } else {
-      CHECK_EQ(config->data_sample_strategy, std::string("goss"));
-    }
+    CheckSamplingConfig(*config);
     GBDT::Init(config, train_data, objective_function, training_metrics);
 
     if (num_init_iteration_ > 0) {
       for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
         MultiplyScore(cur_tree_id, 1.0f / num_init_iteration_);
       }
-    } else {
-      CHECK_EQ(train_data->metadata().init_score(), nullptr);
+    } else if (train_data->metadata().init_score() != nullptr) {
+      Log::Fatal("boosting=rf does not support init_score: a random forest averages its trees, so a "
+                 "per-row starting score cannot be carried into the average. Train without init_score, "
+                 "or use boosting=gbdt. (The Python and R packages pass an init_model to a new Dataset as its "
+                 "init_score, so continuing an RF model that way is refused too; the CLI's input_model works.)");
     }
     CHECK_EQ(num_tree_per_iteration_, num_class_);
     // not shrinkage rate for the RF
@@ -66,13 +66,23 @@ class RF : public GBDT {
     }
   }
 
-  void ResetConfig(const Config* config) override {
-    if (config->data_sample_strategy == std::string("bagging")) {
-      CHECK((config->bagging_freq > 0 && config->bagging_fraction < 1.0f && config->bagging_fraction > 0.0f) ||
-            (config->feature_fraction < 1.0f && config->feature_fraction > 0.0f));
-    } else {
-      CHECK_EQ(config->data_sample_strategy, std::string("goss"));
+  /*! \brief A random forest needs each tree to see a different sample of rows or features */
+  static void CheckSamplingConfig(const Config& config) {
+    if (config.data_sample_strategy == std::string("bagging")) {
+      const bool row_bagging = config.bagging_freq > 0 && config.bagging_fraction < 1.0f && config.bagging_fraction > 0.0f;
+      const bool feature_bagging = config.feature_fraction < 1.0f && config.feature_fraction > 0.0f;
+      if (!row_bagging && !feature_bagging) {
+        Log::Fatal("boosting=rf needs each tree to see a sample: set bagging_freq > 0 with 0 < bagging_fraction < 1, "
+                   "or 0 < feature_fraction < 1 (got bagging_freq=%d, bagging_fraction=%g, feature_fraction=%g)",
+                   config.bagging_freq, config.bagging_fraction, config.feature_fraction);
+      }
+    } else if (config.data_sample_strategy != std::string("goss")) {
+      Log::Fatal("boosting=rf does not support data_sample_strategy=%s", config.data_sample_strategy.c_str());
     }
+  }
+
+  void ResetConfig(const Config* config) override {
+    CheckSamplingConfig(*config);
     // the rounds grown ahead were grown under the old config: dropped (and the slots take the new one below)
     ResetForest(true);
     GBDT::ResetConfig(config);
@@ -177,9 +187,15 @@ class RF : public GBDT {
     // the device buffers under the device objective (rf_device_objective), else gradients_ and hessians_
     gradients = gradients_pointer_;
     hessians = hessians_pointer_;
+    // Distributed learners exchange histograms inside Train: every machine must make the same
+    // grow-or-skip decision, so an empty bag counts only when it is empty on all of them.
+    const data_size_t global_bag_data_cnt =
+        Network::num_machines() > 1 ? Network::GlobalSyncUpBySum(bag_data_cnt) : bag_data_cnt;
     for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
       std::unique_ptr<Tree> new_tree(new Tree(2, false, false));
       size_t offset = static_cast<size_t>(cur_tree_id)* num_data_;
+      // whether the tree learner grows this tree (and so partitioned the bag for renewing it)
+      bool grown = false;
       if (class_need_train_[cur_tree_id]) {
         auto grad = gradients + offset;
         auto hess = hessians + offset;
@@ -193,10 +209,24 @@ class RF : public GBDT {
           hess = tmp_hess_.data();
         }
 
-        new_tree.reset(tree_learner_->Train(grad, hess, false));
+        // Nothing to grow when the bag drew no rows (bagging draws each row independently, so a
+        // small dataset can get an empty bag: a grown root would be 0/0 = NaN) or when the
+        // dataset has no usable feature (the learner has no histograms; GBDT has the same
+        // guard). The tree then keeps output 0 and carries the class bias alone.
+        grown = global_bag_data_cnt > 0 && train_data_->num_features() > 0;
+        if (grown) {
+          new_tree.reset(tree_learner_->Train(grad, hess, false));
+          if (new_tree->num_leaves() == 1 && !std::isfinite(new_tree->LeafOutput(0))) {
+            // a root that could not split and has no hessian mass (e.g. every in-bag weight
+            // 0): its Newton step is 0/0, so it takes no step and carries the class bias alone
+            new_tree->SetLeafOutput(0, 0.0);
+          }
+        }
       }
 
-      if (new_tree->num_leaves() > 1) {
+      if (class_need_train_[cur_tree_id]) {
+        // A grown tree, including one that found no split: a 1-leaf tree is still a member of
+        // the forest (its root output, renewed, plus the class bias, like any other tree).
         double pred = init_scores_[cur_tree_id];
         auto residual_getter = [pred](const label_t* label, int i) {return static_cast<double>(label[i]) - pred; };
         // the residual base is the init score (residual_getter on the host; on the device, the objective's kernel
@@ -208,14 +238,22 @@ class RF : public GBDT {
           renew_score = cuda_init_score_.RawData() + offset;
         }
         #endif  // USE_CUDA
-        tree_learner_->RenewTreeOutput(new_tree.get(), objective_function_, residual_getter,
-          num_data_, bag_data_indices.data(), bag_data_cnt, renew_score);
+        if (grown) {
+          tree_learner_->RenewTreeOutput(new_tree.get(), objective_function_, residual_getter,
+            num_data_, bag_data_indices.data(), bag_data_cnt, renew_score);
+        }
         if (std::fabs(init_scores_[cur_tree_id]) > kEpsilon) {
           new_tree->AddBias(init_scores_[cur_tree_id]);
         }
         // update score
+        // as GBDT: a non-finite leaf (e.g. every in-bag weight 0, so 0/0) stops training with
+        // an error instead of writing a model that predicts NaN
+        CheckTreeOutputsAreFinite(new_tree.get(), iter_, cur_tree_id);
         const int num_averaged = iter_ + num_init_iteration_;
-        if (DeferTrainScore()) {
+        if (new_tree->num_leaves() <= 1) {
+          FlushDeferredTrainTrees();
+          AddTreeToAveragedScores(new_tree.get(), cur_tree_id, num_averaged);
+        } else if (DeferTrainScore()) {
           // cuda_plan key rf_lazy_train_score: the validation scores now, the train score when it is read; the bag
           // order the in-bag score update restores is restored all the same (the next tree of the bag starts from it)
           deferred_train_trees_.push_back({new_tree.get(), cur_tree_id, num_averaged});
@@ -232,22 +270,14 @@ class RF : public GBDT {
           MultiplyScore(cur_tree_id, 1.0 / (num_averaged + 1));
         }
       } else {
-        // only add default score one-time
-        if (models_.size() < static_cast<size_t>(num_tree_per_iteration_)) {
-          double output = 0.0;
-          if (!class_need_train_[cur_tree_id]) {
-            if (objective_function_ != nullptr) {
-              output = objective_function_->BoostFromScore(cur_tree_id);
-            } else {
-              output = init_scores_[cur_tree_id];
-            }
-          }
-          new_tree->AsConstantTree(output, num_data_);
-          FlushDeferredTrainTrees();
-          MultiplyScore(cur_tree_id, (iter_ + num_init_iteration_));
-          UpdateScore(new_tree.get(), cur_tree_id);
-          MultiplyScore(cur_tree_id, 1.0 / (iter_ + num_init_iteration_ + 1));
-        }
+        // A class with nothing to learn (e.g. absent from the labels). RF predicts the AVERAGE
+        // of its trees, so every round's tree carries the class's constant: a 0-output tree
+        // after the first round pulled the average toward 0 (an absent class's probability
+        // grew with num_iterations).
+        new_tree->AsConstantTree(objective_function_->BoostFromScore(cur_tree_id), num_data_);
+        CheckTreeOutputsAreFinite(new_tree.get(), iter_, cur_tree_id);
+        FlushDeferredTrainTrees();
+        AddTreeToAveragedScores(new_tree.get(), cur_tree_id, iter_ + num_init_iteration_);
       }
       // add model
       models_.push_back(std::move(new_tree));
@@ -280,6 +310,34 @@ class RF : public GBDT {
       models_.pop_back();
     }
     --iter_;
+  }
+
+  /*!
+   * \brief Average one more tree into the training and validation scores of a class, evaluating the tree on the
+   *        data. Used for 1-leaf trees: GBDT::UpdateScore goes through the tree learner, whose data partition belongs
+   *        to the last tree it grew; the serial learner adds nothing for a 1-leaf tree, and the linear learner reads
+   *        linear metadata a constant tree does not have.
+   */
+  void AddTreeToAveragedScores(const Tree* tree, const int cur_tree_id, const int num_averaged) {
+    MultiplyScore(cur_tree_id, num_averaged);
+    // A constant tree adds one value to every row: the scalar overload is exact and
+    // device-safe (a host Tree's own AddPredictionToScore must not be handed a CUDA score
+    // column). A 1-leaf linear tree goes through the updater, which scores linear trees on
+    // either device.
+    const bool constant = tree->num_leaves() == 1 && !tree->HasLinearMetadata();
+    if (constant) {
+      train_score_updater_->AddScore(tree->LeafOutput(0), cur_tree_id);
+    } else {
+      train_score_updater_->AddScore(tree, cur_tree_id);
+    }
+    for (auto& score_updater : valid_score_updater_) {
+      if (constant) {
+        score_updater->AddScore(tree->LeafOutput(0), cur_tree_id);
+      } else {
+        score_updater->AddScore(tree, cur_tree_id);
+      }
+    }
+    MultiplyScore(cur_tree_id, 1.0 / (num_averaged + 1));
   }
 
   void MultiplyScore(const int cur_tree_id, double val) {
@@ -470,11 +528,26 @@ class RF : public GBDT {
     const bool bagging = config_->bagging_freq > 0 && config_->bagging_fraction < 1.0;
     const bool keyed_bags = !config_->bagging_by_query && config_->pos_bagging_fraction >= 1.0 &&
       config_->neg_bagging_fraction >= 1.0 && (!bagging || config_->bagging_freq == 1);
-    return plan.forest_batched && config_->device_type == std::string("cuda") && config_->num_gpu <= 1 &&
+    // a round's out-of-bag rows are scored after the group is grown, against the original columns (see
+    // RestoreTrainOriginalColumnView); with every column in each tree's view any slot's view serves as well
+    const bool oob_view = config_->feature_fraction >= 1.0 ||
+      (train_data_->has_cuda_column_data() && train_data_->cuda_column_data()->has_original_column_view());
+    return plan.forest_batched && config_->device_type == std::string("cuda") && config_->num_gpu <= 1 && oob_view &&
            boosting_on_gpu_ && config_->data_sample_strategy == std::string("bagging") && !config_->linear_tree &&
            config_->forcedsplits_filename.empty() && config_->tree_mode != std::string("vector_leaf") && !cegb &&
            !shared_stream_bynode && keyed_bags && !plan.compact_prefill &&
            CUDAForestTrainer::Supports(tree_learner_.get());
+  }
+
+  /*! \brief Put the train data's original per-column view back when a packed per-tree view is in force */
+  void RestoreTrainOriginalColumnView() const {
+    if (!train_data_->has_cuda_column_data()) {
+      return;
+    }
+    CUDAColumnData* columns = const_cast<CUDAColumnData*>(train_data_->cuda_column_data());
+    if (columns->packed_column_view_active() && columns->has_original_column_view()) {
+      columns->RestoreOriginalColumnView();
+    }
   }
 
   /*!
@@ -523,6 +596,10 @@ class RF : public GBDT {
           // GBDT::UpdateScore with the tree's own learner and bag
           train_score_updater_->AddScore(learner, new_tree.get(), cur_tree_id);
           if (round.bag != nullptr && num_data_ - round.bag_cnt > 0) {
+            // The out-of-bag traversal reads the packed per-tree column view when one is in force, taking it for this
+            // tree's own view. Here it is the view of the last tree the group grew, which under feature_fraction
+            // leaves this tree's columns null (illegal memory access): score against the original columns instead.
+            RestoreTrainOriginalColumnView();
             train_score_updater_->AddScore(new_tree.get(), round.bag + round.bag_cnt, num_data_ - round.bag_cnt,
                                            cur_tree_id);
           }

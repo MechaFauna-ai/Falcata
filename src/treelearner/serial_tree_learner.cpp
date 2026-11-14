@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <queue>
 #include <set>
@@ -38,6 +39,7 @@ void SerialTreeLearner::Init(const Dataset* train_data, bool is_constant_hessian
     Log::Fatal("Quantized training requires the CUDA tree learner in Falcata.");
   }
   train_data_ = train_data;
+  full_train_data_ = train_data;
   num_data_ = train_data_->num_data();
   num_features_ = train_data_->num_features();
   int max_cache_size = 0;
@@ -250,7 +252,9 @@ Tree* SerialTreeLearner::Train(const score_t* gradients, const score_t *hessians
                 best_leaf_SplitInfo.left_count, best_leaf_SplitInfo.right_count);
       }
       // cannot split, quit
-      if (best_leaf_SplitInfo.gain <= 0.0) {
+      // !(gain > 0): a NaN gain (from non-finite gradients) is not a positive gain either; SplitInfo ranks it as
+      // kMinScore, so it can still win ArgMax over a leaf without any split candidate
+      if (!(best_leaf_SplitInfo.gain > 0.0)) {
         Log::Warning("No further splits with positive gain, best gain: %f", best_leaf_SplitInfo.gain);
         break;
       }
@@ -275,9 +279,13 @@ Tree* SerialTreeLearner::Train(const score_t* gradients, const score_t *hessians
 Tree* SerialTreeLearner::FitByExistingTree(const Tree* old_tree, const score_t* gradients, const score_t *hessians) const {
   auto tree = std::unique_ptr<Tree>(new Tree(*old_tree));
   CHECK_GE(data_partition_->num_leaves(), tree->num_leaves());
+  const int num_leaves = tree->num_leaves();
+  std::vector<double> leaf_sum_grad(num_leaves, 0.0);
+  std::vector<double> leaf_sum_hess(num_leaves, kEpsilon);
+  std::vector<data_size_t> leaf_cnt(num_leaves, 0);
   OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
-  for (int i = 0; i < tree->num_leaves(); ++i) {
+  for (int i = 0; i < num_leaves; ++i) {
     OMP_LOOP_EX_BEGIN();
     data_size_t cnt_leaf_data = 0;
     auto tmp_idx = data_partition_->GetIndexOnLeaf(i, &cnt_leaf_data);
@@ -288,23 +296,98 @@ Tree* SerialTreeLearner::FitByExistingTree(const Tree* old_tree, const score_t* 
       sum_grad += gradients[idx];
       sum_hess += hessians[idx];
     }
+    leaf_sum_grad[i] = sum_grad;
+    leaf_sum_hess[i] = sum_hess;
+    leaf_cnt[i] = cnt_leaf_data;
+    OMP_LOOP_EX_END();
+  }
+  OMP_THROW_EX();
+  SetRefitLeafOutputs(tree.get(), leaf_sum_grad, leaf_sum_hess, leaf_cnt);
+  return tree.release();
+}
+
+void SerialTreeLearner::SetRefitLeafOutputs(Tree* tree, const std::vector<double>& leaf_sum_grad,
+                                            const std::vector<double>& leaf_sum_hess,
+                                            const std::vector<data_size_t>& leaf_cnt) const {
+  const int num_leaves = tree->num_leaves();
+  // With path smoothing, training shrinks each leaf toward its parent node's output
+  // (the root's output is unsmoothed, every deeper node is smoothed toward its own
+  // parent). Rebuild those node outputs from the refit data, top-down. The tree's
+  // leaf_parent_ is not used: a tree loaded from model text or FALB does not carry it.
+  const bool use_smoothing = config_->path_smooth > kEpsilon && num_leaves > 1;
+  std::vector<int> leaf_parent;
+  std::vector<double> node_output;
+  if (use_smoothing) {
+    const int num_nodes = num_leaves - 1;
+    leaf_parent.assign(num_leaves, -1);
+    std::vector<int> node_parent(num_nodes, -1);
+    for (int node = 0; node < num_nodes; ++node) {
+      for (const int child : {tree->left_child(node), tree->right_child(node)}) {
+        if (child >= num_nodes || ~child >= num_leaves) {
+          Log::Fatal("Refit: tree node %d has an out-of-range child %d", node, child);
+        }
+        if (child < 0) {
+          leaf_parent[~child] = node;
+        } else {
+          node_parent[child] = node;
+        }
+      }
+    }
+    std::vector<double> node_sum_grad(num_nodes, 0.0);
+    std::vector<double> node_sum_hess(num_nodes, 0.0);
+    std::vector<data_size_t> node_cnt(num_nodes, 0);
+    std::function<void(int)> accumulate = [&](int node) {
+      for (const int child : {tree->left_child(node), tree->right_child(node)}) {
+        if (child < 0) {
+          node_sum_grad[node] += leaf_sum_grad[~child];
+          node_sum_hess[node] += leaf_sum_hess[~child];
+          node_cnt[node] += leaf_cnt[~child];
+        } else {
+          accumulate(child);
+          node_sum_grad[node] += node_sum_grad[child];
+          node_sum_hess[node] += node_sum_hess[child];
+          node_cnt[node] += node_cnt[child];
+        }
+      }
+    };
+    accumulate(0);
+    // node ids are not ordered root-first, so resolve each node's output through its parents
+    node_output.assign(num_nodes, 0.0);
+    std::vector<bool> resolved(num_nodes, false);
+    std::function<double(int)> output_of = [&](int node) -> double {
+      if (!resolved[node]) {
+        if (node_parent[node] < 0) {
+          node_output[node] = FeatureHistogram::CalculateSplittedLeafOutput<true, true, false>(
+              node_sum_grad[node], node_sum_hess[node], config_->lambda_l1, config_->lambda_l2,
+              config_->max_delta_step, config_->path_smooth, node_cnt[node], 0);
+        } else {
+          node_output[node] = FeatureHistogram::CalculateSplittedLeafOutput<true, true, true>(
+              node_sum_grad[node], node_sum_hess[node], config_->lambda_l1, config_->lambda_l2,
+              config_->max_delta_step, config_->path_smooth, node_cnt[node], output_of(node_parent[node]));
+        }
+        resolved[node] = true;
+      }
+      return node_output[node];
+    };
+    for (int node = 0; node < num_nodes; ++node) {
+      output_of(node);
+    }
+  }
+  for (int i = 0; i < num_leaves; ++i) {
     double output;
-    if ((config_->path_smooth > kEpsilon) & (i > 0)) {
+    if (use_smoothing) {
       output = FeatureHistogram::CalculateSplittedLeafOutput<true, true, true>(
-          sum_grad, sum_hess, config_->lambda_l1, config_->lambda_l2,
-          config_->max_delta_step, config_->path_smooth, cnt_leaf_data, tree->leaf_parent(i));
+          leaf_sum_grad[i], leaf_sum_hess[i], config_->lambda_l1, config_->lambda_l2,
+          config_->max_delta_step, config_->path_smooth, leaf_cnt[i], node_output[leaf_parent[i]]);
     } else {
       output = FeatureHistogram::CalculateSplittedLeafOutput<true, true, false>(
-          sum_grad, sum_hess, config_->lambda_l1, config_->lambda_l2,
-          config_->max_delta_step, config_->path_smooth, cnt_leaf_data, 0);
+          leaf_sum_grad[i], leaf_sum_hess[i], config_->lambda_l1, config_->lambda_l2,
+          config_->max_delta_step, config_->path_smooth, leaf_cnt[i], 0);
     }
     auto old_leaf_output = tree->LeafOutput(i);
     auto new_leaf_output = output * tree->shrinkage();
     tree->SetLeafOutput(i, config_->refit_decay_rate * old_leaf_output + (1.0 - config_->refit_decay_rate) * new_leaf_output);
-    OMP_LOOP_EX_END();
   }
-  OMP_THROW_EX();
-  return tree.release();
 }
 
 Tree* SerialTreeLearner::FitByExistingTree(const Tree* old_tree, const std::vector<int>& leaf_pred,
@@ -322,8 +405,27 @@ void SerialTreeLearner::BeforeTrain() {
   histogram_pool_.ResetMap();
 
   col_sampler_.ResetByTree();
-  train_data_->InitTrain(col_sampler_.is_feature_used_bytree(), share_state_.get());
+  if (forced_split_json_ != nullptr) {
+    // Forced splits are evaluated even on features feature_fraction left out of this tree
+    // (FindBestSplits adds them back), so the row-wise multi-value bin, which InitTrain
+    // narrows to the tree's features, has to keep them: their histograms were zero there,
+    // and row-wise training forced different splits than col-wise.
+    std::vector<int8_t> is_feature_used = col_sampler_.is_feature_used_bytree();
+    for (const int inner_feature : FindAllForceFeatures(*forced_split_json_)) {
+      if (inner_feature >= 0) {
+        is_feature_used[inner_feature] = 1;
+      }
+    }
+    train_data_->InitTrain(is_feature_used, share_state_.get());
+  } else {
+    train_data_->InitTrain(col_sampler_.is_feature_used_bytree(), share_state_.get());
+  }
   // initialize data partition
+  // an in-place refit (FitByExistingTree with leaf predictions) re-sized the partition to the refit tree's leaves;
+  // training trees grow up to num_leaves again
+  if (data_partition_->num_leaves() != config_->num_leaves) {
+    data_partition_->ResetLeaves(config_->num_leaves);
+  }
   data_partition_->Init();
 
   constraints_->Reset();
@@ -403,8 +505,11 @@ void SerialTreeLearner::FindBestSplits(const Tree* tree, const std::set<int>* fo
   std::vector<int8_t> is_feature_used(num_features_, 0);
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 256) if (num_features_ >= 512)
   for (int feature_index = 0; feature_index < num_features_; ++feature_index) {
-    if (!col_sampler_.is_feature_used_bytree()[feature_index] && (force_features == nullptr || force_features->find(feature_index) == force_features->end())) continue;
-    if (parent_leaf_histogram_array_ != nullptr
+    const bool is_forced = force_features != nullptr && force_features->find(feature_index) != force_features->end();
+    if (!col_sampler_.is_feature_used_bytree()[feature_index] && !is_forced) continue;
+    // a feature the parent could not split on is skipped (no histogram is built for it), except
+    // a forced-split feature: ForceSplits reads its histogram whatever the parent found
+    if (!is_forced && parent_leaf_histogram_array_ != nullptr
         && !parent_leaf_histogram_array_[feature_index].is_splittable()) {
       smaller_leaf_histogram_array_[feature_index].set_is_splittable(false);
       continue;
@@ -537,9 +642,18 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
   // Histogram construction require parent features.
   std::set<int> force_split_features = FindAllForceFeatures(*forced_split_json_);
   while (!q.empty()) {
-    if (BeforeFindBestSplit(tree, *left_leaf, *right_leaf)) {
-      FindBestSplits(tree, &force_split_features);
+    if (tree->num_leaves() >= config_->num_leaves) {
+      // num_leaves leaves already: the tree (and the data partition) has no room for another
+      // split, so the remaining forced splits are dropped
+      break;
     }
+    if (!BeforeFindBestSplit(tree, *left_leaf, *right_leaf)) {
+      // The leaves cannot be split (max_depth reached, or too few rows, e.g. a small bag):
+      // their histograms were not prepared, so no forced split can be evaluated on them.
+      abort_last_forced_split = true;
+      break;
+    }
+    FindBestSplits(tree, &force_split_features);
 
     // then, compute own splits
     SplitInfo left_split;
@@ -549,6 +663,13 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
       const int left_feature = left["feature"].int_value();
       const double left_threshold_double = left["threshold"].number_value();
       const int left_inner_feature_index = train_data_->InnerFeatureIndex(left_feature);
+      if (left_inner_feature_index < 0) {
+        // The feature exists but the dataset dropped it (constant, or filtered when the
+        // dataset was built): it has no bins to split on, so this forced split cannot be applied.
+        WarnUnusedForcedSplitFeature(left_feature);
+        abort_last_forced_split = true;
+        break;
+      }
       const uint32_t left_threshold = train_data_->BinThreshold(
               left_inner_feature_index, left_threshold_double);
       auto leaf_histogram_array = (left_smaller) ? smaller_leaf_histogram_array_ : larger_leaf_histogram_array_;
@@ -571,6 +692,11 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
       const int right_feature = right["feature"].int_value();
       const double right_threshold_double = right["threshold"].number_value();
       const int right_inner_feature_index = train_data_->InnerFeatureIndex(right_feature);
+      if (right_inner_feature_index < 0) {
+        WarnUnusedForcedSplitFeature(right_feature);
+        abort_last_forced_split = true;
+        break;
+      }
       const uint32_t right_threshold = train_data_->BinThreshold(
               right_inner_feature_index, right_threshold_double);
       auto leaf_histogram_array = (left_smaller) ? larger_leaf_histogram_array_ : smaller_leaf_histogram_array_;
@@ -629,7 +755,9 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
       int best_leaf =
           static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(best_split_per_leaf_));
       const SplitInfo& best_leaf_SplitInfo = best_split_per_leaf_[best_leaf];
-      if (best_leaf_SplitInfo.gain <= 0.0) {
+      // !(gain > 0): a NaN gain (from non-finite gradients) is not a positive gain either; SplitInfo ranks it as
+      // kMinScore, so it can still win ArgMax over a leaf without any split candidate
+      if (!(best_leaf_SplitInfo.gain > 0.0)) {
         Log::Warning("No further splits with positive gain, best gain: %f",
                      best_leaf_SplitInfo.gain);
         return config_->num_leaves;
@@ -645,6 +773,14 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
   return result_count;
 }
 
+void SerialTreeLearner::WarnUnusedForcedSplitFeature(int feature) {
+  if (warned_unused_forced_split_features_.insert(feature).second) {
+    Log::Warning("Forced split on feature %d is skipped: the training data does not use that feature "
+                 "(it is constant or was filtered out), so the remaining splits are found normally",
+                 feature);
+  }
+}
+
 std::set<int> SerialTreeLearner::FindAllForceFeatures(Json force_split_leaf_setting) {
   std::set<int> force_features;
   std::queue<Json> force_split_leaves;
@@ -657,7 +793,9 @@ std::set<int> SerialTreeLearner::FindAllForceFeatures(Json force_split_leaf_sett
 
     const int feature_index = split_leaf["feature"].int_value();
     const int feature_inner_index = train_data_->InnerFeatureIndex(feature_index);
-    force_features.insert(feature_inner_index);
+    if (feature_inner_index >= 0) {
+      force_features.insert(feature_inner_index);
+    }
 
     if (split_leaf.object_items().count("left") > 0) {
       force_split_leaves.push(split_leaf["left"]);

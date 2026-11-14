@@ -320,6 +320,35 @@ class FALCATA_EXPORT Boosting {
   virtual void InitPredict(int start_iteration, int num_iteration, bool is_pred_contrib) = 0;
 
   /*!
+  * \brief The iterations a prediction uses, resolved like InitPredict but without changing the model, so that
+  *        predictors with different ranges can coexist (a Predictor captures its range at construction; with the
+  *        shared InitPredict state, a later or concurrent prediction with another range changed it under it)
+  */
+  struct PredictRange {
+    int start_iteration = 0;
+    int num_iteration = 0;
+  };
+  virtual PredictRange ResolvePredictRange(int start_iteration, int num_iteration, bool is_pred_contrib) const = 0;
+
+  /*! \brief PredictRaw / Predict / PredictLeafIndex / PredictContrib over an explicit iteration range */
+  virtual void PredictRawInRange(const double* features, double* output, const PredictionEarlyStopInstance* early_stop,
+                                 const PredictRange& range) const = 0;
+  virtual void PredictRawByMapInRange(const std::unordered_map<int, double>& features, double* output,
+                                      const PredictionEarlyStopInstance* early_stop,
+                                      const PredictRange& range) const = 0;
+  virtual void PredictInRange(const double* features, double* output, const PredictionEarlyStopInstance* early_stop,
+                              const PredictRange& range) const = 0;
+  virtual void PredictByMapInRange(const std::unordered_map<int, double>& features, double* output,
+                                   const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const = 0;
+  virtual void PredictLeafIndexInRange(const double* features, double* output, const PredictRange& range) const = 0;
+  virtual void PredictLeafIndexByMapInRange(const std::unordered_map<int, double>& features, double* output,
+                                            const PredictRange& range) const = 0;
+  virtual void PredictContribInRange(const double* features, double* output, const PredictRange& range) const = 0;
+  virtual void PredictContribByMapInRange(const std::unordered_map<int, double>& features,
+                                          std::vector<std::unordered_map<int, double>>* output,
+                                          const PredictRange& range) const = 0;
+
+  /*!
   * \brief Name of submodel
   */
   virtual const char* SubModelName() const = 0;

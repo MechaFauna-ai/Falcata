@@ -4,8 +4,12 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <Falcata/dataset.h>
+#include <Falcata/utils/bounded_reader.h>
 #include <Falcata/utils/common.h>
 
+#include <cinttypes>
+#include <cstdint>
+#include <limits>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -599,13 +603,22 @@ void Metadata::SetQueriesFromIterator(It first, It last) {
     return;
   }
 
-  data_size_t sum = 0;
-  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) reduction(+:sum)
+  // a negative count would make the query boundaries go backwards (the ranking objectives
+  // and metrics then index outside the data); sum in 64 bits so the check cannot wrap
+  int64_t sum = 0;
+  data_size_t num_negative = 0;
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) reduction(+:sum, num_negative)
   for (data_size_t i = 0; i < static_cast<data_size_t>(last - first); ++i) {
     sum += first[i];
+    if (first[i] < 0) {
+      ++num_negative;
+    }
+  }
+  if (num_negative > 0) {
+    Log::Fatal("Query counts must be non-negative (%i negative)", num_negative);
   }
   if (num_data_ != sum) {
-    Log::Fatal("Sum of query counts (%i) differs from the length of #data (%i)", num_data_, sum);
+    Log::Fatal("Sum of query counts (%" PRId64 ") differs from the length of #data (%i)", sum, num_data_);
   }
   num_queries_ = last - first;
 
@@ -721,12 +734,18 @@ void Metadata::LoadWeights() {
   Log::Info("Loading weights...");
   num_weights_ = static_cast<data_size_t>(reader.Lines().size());
   weights_ = std::vector<label_t>(num_weights_);
+  // Atof throws on a bad token; an exception escaping the OpenMP region
+  // would call std::terminate
+  OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (data_size_t i = 0; i < num_weights_; ++i) {
+    OMP_LOOP_EX_BEGIN();
     double tmp_weight = 0.0f;
     Common::Atof(reader.Lines()[i].c_str(), &tmp_weight);
     weights_[i] = Common::AvoidInf(static_cast<label_t>(tmp_weight));
+    OMP_LOOP_EX_END();
   }
+  OMP_THROW_EX();
   weight_load_from_file_ = true;
 }
 
@@ -775,16 +794,22 @@ void Metadata::LoadInitialScore(const std::string& data_filename) {
   num_init_score_ = static_cast<int64_t>(num_line) * num_class;
 
   init_score_ = std::vector<double>(num_init_score_);
+  // Atof and the column check throw; an exception escaping the OpenMP
+  // region would call std::terminate
+  OMP_INIT_EX();
   if (num_class == 1) {
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (data_size_t i = 0; i < num_line; ++i) {
+      OMP_LOOP_EX_BEGIN();
       double tmp = 0.0f;
       Common::Atof(reader.Lines()[i].c_str(), &tmp);
       init_score_[i] = Common::AvoidInf(static_cast<double>(tmp));
+      OMP_LOOP_EX_END();
     }
   } else {
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (data_size_t i = 0; i < num_line; ++i) {
+      OMP_LOOP_EX_BEGIN();
       double tmp = 0.0f;
       const std::vector<std::string> oneline_init_score = Common::Split(reader.Lines()[i].c_str(), '\t');
       if (static_cast<int>(oneline_init_score.size()) != num_class) {
@@ -794,8 +819,10 @@ void Metadata::LoadInitialScore(const std::string& data_filename) {
         Common::Atof(oneline_init_score[k].c_str(), &tmp);
         init_score_[static_cast<size_t>(k) * num_line + i] = Common::AvoidInf(static_cast<double>(tmp));
       }
+      OMP_LOOP_EX_END();
     }
   }
+  OMP_THROW_EX();
   init_score_load_from_file_ = true;
 }
 
@@ -816,6 +843,12 @@ void Metadata::LoadQueryBoundaries() {
   for (size_t i = 0; i < reader.Lines().size(); ++i) {
     int tmp_cnt;
     Common::Atoi(reader.Lines()[i].c_str(), &tmp_cnt);
+    if (tmp_cnt < 0) {
+      Log::Fatal("Query count %i on line %zu of %s is negative", tmp_cnt, i + 1, query_filename.c_str());
+    }
+    if (tmp_cnt > std::numeric_limits<data_size_t>::max() - query_boundaries_[i]) {
+      Log::Fatal("Query counts in %s sum past the int range", query_filename.c_str());
+    }
     query_boundaries_[i + 1] = query_boundaries_[i] + static_cast<data_size_t>(tmp_cnt);
   }
   query_load_from_file_ = true;
@@ -826,6 +859,11 @@ void Metadata::CalculateQueryWeights() {
     return;
   }
   query_weights_.clear();
+  if (static_cast<size_t>(query_boundaries_[num_queries_]) != weights_.size()) {
+    // a .query file and a .weight file of different lengths: averaging would read past the
+    // weights, and the size checks against the data report the mismatch once it is known
+    return;
+  }
   Log::Info("Calculating query weights...");
   query_weights_ = std::vector<label_t>(num_queries_);
   for (data_size_t i = 0; i < num_queries_; ++i) {
@@ -833,7 +871,10 @@ void Metadata::CalculateQueryWeights() {
     for (data_size_t j = query_boundaries_[i]; j < query_boundaries_[i + 1]; ++j) {
       query_weights_[i] += weights_[j];
     }
-    query_weights_[i] /= (query_boundaries_[i + 1] - query_boundaries_[i]);
+    // an empty query keeps weight 0 (0 / 0 made the weighted ranking metrics NaN)
+    if (query_boundaries_[i + 1] > query_boundaries_[i]) {
+      query_weights_[i] /= (query_boundaries_[i + 1] - query_boundaries_[i]);
+    }
   }
 }
 
@@ -869,40 +910,45 @@ void Metadata::CreateCUDAMetadata(const int gpu_device_id) {
 }
 #endif  // USE_CUDA
 
-void Metadata::LoadFromMemory(const void* memory) {
-  const char* mem_ptr = reinterpret_cast<const char*>(memory);
+void Metadata::LoadFromMemory(const void* memory, size_t memory_size) {
+  BoundedReader reader(reinterpret_cast<const char*>(memory), memory_size, "Binary dataset metadata");
 
-  num_data_ = *(reinterpret_cast<const data_size_t*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(num_data_));
-  num_weights_ = *(reinterpret_cast<const data_size_t*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(num_weights_));
-  num_queries_ = *(reinterpret_cast<const data_size_t*>(mem_ptr));
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(num_queries_));
-
-  if (!label_.empty()) {
-    label_.clear();
+  num_data_ = reader.ReadAligned<data_size_t>();
+  num_weights_ = reader.ReadAligned<data_size_t>();
+  num_queries_ = reader.ReadAligned<data_size_t>();
+  if (num_data_ < 0 || num_weights_ < 0 || num_queries_ < 0 ||
+      (num_weights_ > 0 && num_weights_ != num_data_) || num_queries_ == std::numeric_limits<data_size_t>::max()) {
+    Log::Fatal("Binary dataset metadata is corrupt: num_data=%d, num_weights=%d, num_queries=%d",
+               num_data_, num_weights_, num_queries_);
   }
+
+  // each array's bytes are taken before it is allocated: the buffer, not
+  // the claimed count, bounds the allocation
+  const char* labels = reader.TakeArray(static_cast<size_t>(num_data_), sizeof(label_t), true);
   label_ = std::vector<label_t>(num_data_);
-  std::memcpy(label_.data(), mem_ptr, sizeof(label_t) * num_data_);
-  mem_ptr += VirtualFileWriter::AlignedSize(sizeof(label_t) * num_data_);
+  if (num_data_ > 0) {  // an empty vector's data() may be null
+    std::memcpy(label_.data(), labels, sizeof(label_t) * num_data_);
+  }
 
   if (num_weights_ > 0) {
-    if (!weights_.empty()) {
-      weights_.clear();
-    }
+    const char* weights = reader.TakeArray(static_cast<size_t>(num_weights_), sizeof(label_t), true);
     weights_ = std::vector<label_t>(num_weights_);
-    std::memcpy(weights_.data(), mem_ptr, sizeof(label_t) * num_weights_);
-    mem_ptr += VirtualFileWriter::AlignedSize(sizeof(label_t) * num_weights_);
+    std::memcpy(weights_.data(), weights, sizeof(label_t) * num_weights_);
     weight_load_from_file_ = true;
   }
   if (num_queries_ > 0) {
-    if (!query_boundaries_.empty()) {
-      query_boundaries_.clear();
-    }
+    const char* bounds = reader.TakeArray(static_cast<size_t>(num_queries_) + 1, sizeof(data_size_t), true);
     query_boundaries_ = std::vector<data_size_t>(num_queries_ + 1);
-    std::memcpy(query_boundaries_.data(), mem_ptr, sizeof(data_size_t) * (num_queries_ + 1));
-    mem_ptr += VirtualFileWriter::AlignedSize(sizeof(data_size_t) *
-                                              (num_queries_ + 1));
+    std::memcpy(query_boundaries_.data(), bounds, sizeof(data_size_t) * (num_queries_ + 1));
+    // the queries partition [0, num_data): every consumer indexes rows by them
+    if (query_boundaries_.front() != 0 || query_boundaries_.back() != num_data_) {
+      Log::Fatal("Binary dataset metadata is corrupt: query boundaries must run from 0 to num_data");
+    }
+    for (data_size_t i = 0; i < num_queries_; ++i) {
+      if (query_boundaries_[i + 1] < query_boundaries_[i]) {
+        Log::Fatal("Binary dataset metadata is corrupt: query boundaries must be non-decreasing");
+      }
+    }
     query_load_from_file_ = true;
   }
   CalculateQueryWeights();

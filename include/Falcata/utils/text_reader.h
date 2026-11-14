@@ -35,6 +35,9 @@ class TextReader {
   */
   TextReader(const char* filename, bool is_skip_first_line, size_t progress_interval_bytes = SIZE_MAX):
     filename_(filename), is_skip_first_line_(is_skip_first_line), read_progress_interval_bytes_(progress_interval_bytes) {
+    // a UTF-8 byte order mark (written by Excel's and Windows' "CSV UTF-8") is not part of the data: it used to stick
+    // to the first value ("Unknown token \xEF\xBB\xBF0.844") or to the first header name
+    skip_bytes_ = Utf8BomLength(filename);
     if (is_skip_first_line_) {
       auto reader = VirtualFileReader::Make(filename);
       if (!reader->Init()) {
@@ -42,6 +45,9 @@ class TextReader {
       }
       std::stringstream str_buf;
       char read_c;
+      for (int i = 0; i < skip_bytes_; ++i) {
+        reader->Read(&read_c, 1);
+      }
       size_t nread = reader->Read(&read_c, 1);
       while (nread == 1) {
         if (read_c == '\n' || read_c == '\r') {
@@ -62,6 +68,20 @@ class TextReader {
       first_line_ = str_buf.str();
       Log::Debug("Skipped header \"%s\" in file %s", first_line_.c_str(), filename_);
     }
+  }
+  /*!
+  * \brief Length of the UTF-8 byte order mark at the start of the file (3), or 0
+  */
+  static int Utf8BomLength(const char* filename) {
+    auto reader = VirtualFileReader::Make(filename);
+    if (!reader->Init()) {
+      return 0;
+    }
+    unsigned char bom[3] = {0, 0, 0};
+    if (reader->Read(bom, 3) == 3 && bom[0] == 0xEF && bom[1] == 0xBB && bom[2] == 0xBF) {
+      return 3;
+    }
+    return 0;
   }
   /*!
   * \brief Destructor
