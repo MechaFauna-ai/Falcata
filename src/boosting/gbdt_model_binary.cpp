@@ -20,6 +20,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -169,6 +170,20 @@ namespace {
  *  own codebook. Entries are the trees' own doubles copied verbatim, which
  *  makes the encoding exact by construction -- no grid to fall off, hence no
  *  whole-model raw-f64 fallback for refit or text-edited models. */
+// Orders NaN after every number, all NaNs alike. std::less<double> is not a
+// strict weak ordering once a NaN threshold is present (every comparison with
+// it is false), and the set/map below then merge it with an unrelated value:
+// a model with a NaN threshold -- it loads from text, where the split simply
+// sends every value right -- predicted differently after a FALB round trip.
+// Finite values keep their order, so the bytes of ordinary models are unchanged.
+struct ThresholdLess {
+  bool operator()(double a, double b) const {
+    if (std::isnan(a)) return false;
+    if (std::isnan(b)) return true;
+    return a < b;
+  }
+};
+
 class ThresholdDictionary {
  public:
   void Build(const std::vector<std::unique_ptr<Tree>>& models, int start,
@@ -220,8 +235,8 @@ class ThresholdDictionary {
  private:
   // std::map keeps a deterministic (sorted) order, so the same model always
   // produces byte-identical output
-  std::vector<std::set<double>> per_feature_;
-  std::vector<std::map<double, uint32_t>> index_;
+  std::vector<std::set<double, ThresholdLess>> per_feature_;
+  std::vector<std::map<double, uint32_t, ThresholdLess>> index_;
   std::vector<uint32_t> offsets_;
   std::vector<double> values_;
   size_t max_per_feature_ = 0;
@@ -373,6 +388,10 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
                                     bool with_diagnostics,
                                     bool f32_leaves,
                                     int compress_level) const {
+  if (compress_level < 0 || compress_level > 9) {
+    Log::Fatal("FALB: compress_level must be in [0, 9] (0 = uncompressed), got %d",
+               compress_level);
+  }
   // ---- tree range (mirrors SaveModelToString's slicing) ----
   int num_used_model = static_cast<int>(models_.size());
   const int total_iteration = num_used_model / num_tree_per_iteration_;
@@ -656,6 +675,12 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
     }
     add_section(kSecStats, kDTypeBytes, std::move(w), 8);
   }
+  // A model loaded from FALB without diagnostics has no real split gains:
+  // writing its 0 placeholders as a diagnostics section would make the copy
+  // look as if they were measured (pickle always asks for diagnostics).
+  if (falb_without_diagnostics_) {
+    with_diagnostics = false;
+  }
   if (with_diagnostics) {
     ByteWriter w;
     for (int i = start_model; i < num_used_model; ++i) {
@@ -757,18 +782,26 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     }
     auto it = owned.find(id);
     if (it == owned.end()) {
-      // raw_len comes from the file, so cap it before allocating: a hostile
-      // header must not be able to ask for an arbitrary allocation
-      if (e.raw_len > (1ULL << 40)) {
+      // raw_len comes from the file, so bound it before allocating: a hostile
+      // header must not be able to ask for an arbitrary allocation. Deflate
+      // expands at most 1032:1, so a larger claim is corrupt; the 1 TiB cap
+      // alone still let a 4 KiB file allocate (and zero) terabytes.
+      const char* stored = r.Bytes(e.offset, e.stored_len, "section");
+      constexpr uint64_t kMaxDeflateRatio = 1032;
+      const uint64_t max_raw_len =
+          e.stored_len > ((1ULL << 40) - 1024) / kMaxDeflateRatio
+              ? (1ULL << 40)
+              : e.stored_len * kMaxDeflateRatio + 1024;
+      if (e.raw_len > max_raw_len) {
         Log::Fatal("FALB: corrupt model -- section %u declares an implausible "
-                   "decompressed size of %llu bytes", e.id,
-                   static_cast<unsigned long long>(e.raw_len));  // NOLINT(runtime/int): %llu format
+                   "decompressed size of %llu bytes from %llu stored bytes", e.id,
+                   static_cast<unsigned long long>(e.raw_len),       // NOLINT(runtime/int): %llu format
+                   static_cast<unsigned long long>(e.stored_len));  // NOLINT(runtime/int): %llu format
       }
       std::vector<char> out(static_cast<size_t>(e.raw_len));
       uLongf out_len = static_cast<uLongf>(e.raw_len);
       const int rc = uncompress(reinterpret_cast<Bytef*>(out.data()), &out_len,
-                                reinterpret_cast<const Bytef*>(
-                                    r.Bytes(e.offset, e.stored_len, "section")),
+                                reinterpret_cast<const Bytef*>(stored),
                                 static_cast<uLong>(e.stored_len));
       if (rc != Z_OK || out_len != e.raw_len) {
         Log::Fatal("FALB: corrupt model -- section %u failed to decompress (%d)",
@@ -1051,9 +1084,12 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
         }
       }
       const size_t n_thr = static_cast<size_t>(cat_boundaries.back());
-      std::vector<uint32_t> cat_threshold(n_thr);
+      // View range-checks the section before the vector is sized: the last
+      // boundary is a file field, and allocating first let a corrupt one ask
+      // for up to 8 GiB
       const auto p = ct_r.View<uint32_t>(
           rec.cat_threshold_offset * sizeof(uint32_t), n_thr, "cat_threshold");
+      std::vector<uint32_t> cat_threshold(n_thr);
       p.CopyTo(cat_threshold.data());
       TreeIO::SetCategorical(tree.get(), std::move(cat_boundaries), std::move(cat_threshold));
     }
@@ -1108,6 +1144,9 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
   // stats section would produce NaN/Inf contributions rather than fail. Record
   // it and refuse loudly at the point of use.
   falb_without_stats_ = !has_stats;
+  // without diagnostics every split_gain is 0, and split importance counts
+  // only splits with a positive gain: it would report zero for every feature
+  falb_without_diagnostics_ = !has_diag;
   return true;
 }
 

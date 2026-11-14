@@ -1211,7 +1211,10 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
          (!select_features_by_node_ || LevelFlowsTakeNodeMasks()) &&
          (cuda_best_split_finder_ == nullptr || !cuda_best_split_finder_->use_global_memory()) &&
          (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
-         (config_->num_leaves > 2 || QuantizedStump());
+         (config_->num_leaves > 2 || QuantizedStump()) &&
+         // a level's batched kernels put its split pairs on grid y (at most 65535 blocks): a budget of more than
+         // 2 * 65535 leaves can reach a level of 65536 pairs, so such trees take the per-split loop
+         config_->num_leaves <= 2 * 65535;
   if (!base) {
     return false;
   }
@@ -5898,6 +5901,12 @@ void CUDASingleGPUTreeLearner::TrainSelective(CUDATree* tree) {
 
 Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   const score_t* hessians, bool is_first_tree) {
+  if (train_data_->num_features() == 0) {
+    // no usable feature (all dropped by feature_pre_filter): nothing to split, and the device row data was never
+    // built. GBDT does not call Train then; RF (and its forest trainer) does, and gets a single-leaf tree, as from
+    // the CPU learner
+    return new Tree(2, false, false);
+  }
   MaybeInitColMajorFill();
   if (construct_saturation_floor_ > 0 &&
       FalcataPlan::Get().batch_construct_saturation_floor != construct_saturation_floor_) {
@@ -6395,6 +6404,11 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     LogDeviceTreeFallback();
   }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  // SerialTreeLearner::Split stores a split's gain with min_gain_to_split added back; the CUDA finders report it above
+  // the parent gain plus min_gain_to_split. Same model text and gain importance as the CPU learner.
+  if (config_->min_gain_to_split != 0.0) {
+    tree->AddSplitGainOffset(config_->min_gain_to_split);
+  }
   tree_in_progress_ = false;
   return tree.release();
 }
@@ -6700,8 +6714,11 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
     count_hist_cache_->Clear();  // cuda_plan key forest_count_hist: the gradient arrays get other values
   }
   cuda_histogram_constructor_->ResetTrainingData(train_data, share_state_.get());
-  cuda_data_partition_->ResetTrainingData(train_data,
-    static_cast<int>(share_state_->feature_hist_offsets().back()) * std::max(1, vec_num_targets_),
+  // a dataset without a usable feature (all filtered, e.g. by feature_pre_filter) has no histogram offsets: zero
+  // bins, as in Init
+  const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
+  num_total_bin_ = feature_hist_offsets.empty() ? 0 : static_cast<int>(feature_hist_offsets.back());
+  cuda_data_partition_->ResetTrainingData(train_data, num_total_bin_ * std::max(1, vec_num_targets_),
     cuda_histogram_constructor_->cuda_hist_pointer());
   cuda_best_split_finder_->ResetTrainingData(
     cuda_histogram_constructor_->cuda_hist(),
@@ -6884,11 +6901,35 @@ void CUDASingleGPUTreeLearner::RenewTreeOutput(Tree* tree, const ObjectiveFuncti
 
 Tree* CUDASingleGPUTreeLearner::FitByExistingTree(const Tree* old_tree, const score_t* gradients, const score_t* hessians) const {
   std::unique_ptr<CUDATree> cuda_tree(new CUDATree(old_tree));
+  const int num_leaves = cuda_tree->num_leaves();
   cuda_leaf_gradient_stat_buffer_.SetValue(0);
   cuda_leaf_hessian_stat_buffer_.SetValue(0);
   cuda_data_partition_->EnsureLevelPartitioned();  // cuda_plan key final_map_only: reads the leaf windows
-  ReduceLeafStat(cuda_tree.get(), gradients, hessians, cuda_data_partition_->cuda_data_indices());
-  cuda_tree->SyncLeafOutputFromCUDAToHost();
+  // the device reduces the per-leaf gradient and hessian sums of the refit rows; the leaf outputs (L1,
+  // max_delta_step, path smoothing toward the parent node's output, decay) are the CPU learner's, on the host
+  LaunchReduceLeafStatKernel(gradients, hessians, num_leaves, refit_num_data_);
+  std::vector<double> leaf_sum_grad(num_leaves);
+  std::vector<double> leaf_sum_hess(num_leaves);
+  CopyFromCUDADeviceToHost<double>(leaf_sum_grad.data(), cuda_leaf_gradient_stat_buffer_.RawData(),
+                                   static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  CopyFromCUDADeviceToHost<double>(leaf_sum_hess.data(), cuda_leaf_hessian_stat_buffer_.RawData(),
+                                   static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  for (double& h : leaf_sum_hess) {
+    h += kEpsilon;  // the CPU refit's hessian sums start at kEpsilon
+  }
+  std::vector<data_size_t> leaf_cnt(num_leaves, 0);
+  if (refit_num_data_ > 0) {
+    std::vector<int> row_leaf(static_cast<size_t>(refit_num_data_));
+    CopyFromCUDADeviceToHost<int>(row_leaf.data(), cuda_data_partition_->cuda_data_index_to_leaf_index(),
+                                  row_leaf.size(), __FILE__, __LINE__);
+    for (const int leaf : row_leaf) {
+      if (leaf >= 0 && leaf < num_leaves) {
+        ++leaf_cnt[leaf];
+      }
+    }
+  }
+  SetRefitLeafOutputs(cuda_tree.get(), leaf_sum_grad, leaf_sum_hess, leaf_cnt);
+  cuda_tree->SyncLeafOutputFromHostToCUDA();
   return cuda_tree.release();
 }
 
@@ -6917,12 +6958,6 @@ Tree* CUDASingleGPUTreeLearner::FitByExistingTree(const Tree* old_tree, const st
   return tree;
 }
 
-void CUDASingleGPUTreeLearner::ReduceLeafStat(
-  CUDATree* old_tree, const score_t* gradients, const score_t* hessians, const data_size_t* num_data_in_leaf) const {
-  LaunchReduceLeafStatKernel(gradients, hessians, num_data_in_leaf, old_tree->cuda_leaf_parent(),
-    old_tree->cuda_left_child(), old_tree->cuda_right_child(),
-    old_tree->num_leaves(), refit_num_data_, old_tree->cuda_leaf_value_ref(), old_tree->shrinkage());
-}
 
 void CUDASingleGPUTreeLearner::ConstructBitsetForCategoricalSplit(
   const CUDASplitInfo* best_split_info) {
@@ -7223,7 +7258,7 @@ void CUDASingleGPUTreeLearner::RenewDiscretizedTreeLeaves(CUDATree* cuda_tree) {
     gradients_, hessians_, cuda_tree,
     cuda_leaf_gradient_stat_buffer_.RawData(),
     cuda_leaf_hessian_stat_buffer_.RawData());
-  LaunchCalcLeafValuesGivenGradStat(cuda_tree, cuda_data_partition_->cuda_data_indices());
+  LaunchCalcLeafValuesGivenGradStat(cuda_tree);
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 

@@ -257,15 +257,19 @@ class ObliquePool:
             take = np.sort(rng.choice(n, size=self.sample_rows, replace=False))
             sample = matrix[xp.asarray(take)] if xp is not np else matrix[take]
         sample = xp.asarray(sample, dtype=xp.float32)
-        med = xp.nanmedian(sample, axis=0)
-        med = xp.nan_to_num(med, nan=0.0)  # all-NaN column: center 0
-        q75 = xp.nanpercentile(sample, 75, axis=0)
-        q25 = xp.nanpercentile(sample, 25, axis=0)
-        iqr = xp.nan_to_num(q75 - q25, nan=0.0)
-        scale = xp.where(iqr > 0, iqr, 1.0)
-        # host copies: the pool definition is host data regardless of device
-        center = np.asarray(med.get() if xp is not np else med, dtype=np.float64)
-        scale = np.asarray(scale.get() if xp is not np else scale, dtype=np.float64)
+        # The statistics are computed on the host: CuPy has no nanpercentile, the sample is at most sample_rows
+        # rows, and the pool definition is host data regardless of device. It also makes a CuPy fit draw exactly
+        # the pool a NumPy fit of the same values draws.
+        if xp is not np:
+            sample = sample.get()
+        med = np.nanmedian(sample, axis=0)
+        med = np.nan_to_num(med, nan=0.0)  # all-NaN column: center 0
+        q75 = np.nanpercentile(sample, 75, axis=0)
+        q25 = np.nanpercentile(sample, 25, axis=0)
+        iqr = np.nan_to_num(q75 - q25, nan=0.0)
+        scale = np.where(iqr > 0, iqr, 1.0)
+        center = np.asarray(med, dtype=np.float64)
+        scale = np.asarray(scale, dtype=np.float64)
 
         feature_idx = []
         weights = []

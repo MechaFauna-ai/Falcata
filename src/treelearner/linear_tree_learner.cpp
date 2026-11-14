@@ -39,16 +39,25 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::ResetTrainingData(const Dataset* trai
 
 template <typename TREE_LEARNER_TYPE>
 void LinearTreeLearner<TREE_LEARNER_TYPE>::InitLinear(const Dataset* train_data, const int max_leaves) {
+  // the linear models are fit on the raw feature values, which a Dataset keeps only when it was constructed with
+  // linear_tree=true; without them raw_index() below read an empty buffer (the Python package checks this through
+  // FLC_DatasetUpdateParamChecking, the raw C API and the CLI did not)
+  if (!train_data->has_raw()) {
+    Log::Fatal("linear_tree=true needs a Dataset constructed with linear_tree=true (it keeps the raw feature "
+               "values the linear models are fit on)");
+  }
   leaf_map_ = std::vector<int>(train_data->num_data(), -1);
   contains_nan_ = std::vector<int8_t>(train_data->num_features(), 0);
-  // identify features containing nans
+  // identify features containing values a linear model cannot use: NaN, and +-inf (an input
+  // beyond the float range, e.g. 1e300, is +-inf in the raw float copy). Such rows take the
+  // leaf's constant, at fit and at score time, as NaN always did.
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int feat = 0; feat < train_data->num_features(); ++feat) {
     auto bin_mapper = this->train_data_->FeatureBinMapper(feat);
     if (bin_mapper->bin_type() == BinType::NumericalBin) {
       const float* feat_ptr = this->train_data_->raw_index(feat);
       for (int i = 0; i < train_data->num_data(); ++i) {
-        if (std::isnan(feat_ptr[i])) {
+        if (!std::isfinite(feat_ptr[i])) {
           contains_nan_[feat] = 1;
           break;
         }
@@ -117,7 +126,9 @@ Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::Train(const score_t* gradients, cons
     while (true) {
       int best_leaf = static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(this->best_split_per_leaf_));
       const SplitInfo& best_leaf_SplitInfo = this->best_split_per_leaf_[best_leaf];
-      if (best_leaf_SplitInfo.gain <= 0.0) {
+      // !(gain > 0): a NaN gain (from non-finite gradients) is not a positive gain either; SplitInfo ranks it as
+      // kMinScore, so it can still win ArgMax over a leaf without any split candidate
+      if (!(best_leaf_SplitInfo.gain > 0.0)) {
         Log::Warning("No further splits with positive gain, best gain: %f", best_leaf_SplitInfo.gain);
         break;
       }
@@ -158,6 +169,11 @@ Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::Train(const score_t* gradients, cons
 template <typename TREE_LEARNER_TYPE>
 Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::FitByExistingTree(const Tree* old_tree, const score_t* gradients, const score_t *hessians) const {
   auto tree = TREE_LEARNER_TYPE::FitByExistingTree(old_tree, gradients, hessians);
+  if (!old_tree->is_linear()) {
+    // a linear model's constant (no-split) trees are plain trees: they have
+    // no per-leaf feature lists, so refit them like any plain tree
+    return tree;
+  }
   bool has_nan = false;
   if (any_nan_) {
     for (int i = 0; i < tree->num_leaves() - 1 ; ++i) {
@@ -208,6 +224,13 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
   tree->SetIsLinear(true);
   int num_leaves = tree->num_leaves();
   int num_threads = OMP_NUM_THREADS();
+  // the per-thread normal-equation buffers were sized for the thread count at InitLinear; a prediction on the same
+  // process (whose own num_threads sets the process-wide count) can raise it before the next iteration, and the
+  // loops below index the buffers by thread id (heap-buffer-overflow)
+  while (static_cast<int>(XTHX_by_thread_.size()) < num_threads) {
+    XTHX_by_thread_.push_back(XTHX_);
+    XTg_by_thread_.push_back(XTg_);
+  }
   if (is_first_tree) {
     for (int leaf_num = 0; leaf_num < num_leaves; ++leaf_num) {
       tree->SetLeafConst(leaf_num, tree->LeafOutput(leaf_num));
@@ -287,7 +310,11 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
     }
   }
   OMP_INIT_EX();
-#pragma omp parallel num_threads(OMP_NUM_THREADS()) if (this->num_data_ > 1024)
+  // Each thread sums its rows into its own X^T H X and X^T g, and the per-thread sums are added
+  // afterwards: the floating-point grouping follows the thread count. deterministic=true promises
+  // the same model for any num_threads, so it sums all rows on one thread.
+  const bool parallel_rows = this->num_data_ > 1024 && !this->config_->deterministic;
+#pragma omp parallel num_threads(OMP_NUM_THREADS()) if (parallel_rows)
   {
     std::vector<float> curr_row(max_num_features + 1);
     int tid = omp_get_thread_num();
@@ -303,7 +330,7 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
       for (int feat = 0; feat < num_feat; ++feat) {
         if (HAS_NAN) {
           float val = raw_data_ptr[leaf_num][feat][i];
-          if (std::isnan(val)) {
+          if (!std::isfinite(val)) {
             nan_found = true;
             break;
           }

@@ -704,3 +704,28 @@ test_that("predict type='class' returns values in the target's range for regress
     pred <- predict(bst, X, type = "class")
     expect_true(!any(pred %in% c(0.0, 1.0)))
 })
+
+test_that("predict() on zero rows returns an empty result with the per-row width", {
+    set.seed(708L)
+    X <- matrix(rnorm(400L), ncol = 4L)
+    bst <- lgb.train(
+        params = list(objective = "regression", verbose = .LGB_VERBOSITY, num_threads = .LGB_MAX_THREADS)
+        , data = lgb.Dataset(X, label = X[, 1L])
+        , nrounds = 2L
+    )
+    empty <- X[0L, , drop = FALSE]
+    expect_identical(predict(bst, empty), numeric(0L))
+    expect_identical(dim(predict(bst, empty, type = "leaf")), c(0L, 2L))
+    expect_identical(dim(predict(bst, empty, type = "contrib")), c(0L, 5L))
+    multi <- lgb.train(
+        params = list(
+            objective = "multiclass"
+            , num_class = 3L
+            , verbose = .LGB_VERBOSITY
+            , num_threads = .LGB_MAX_THREADS
+        )
+        , data = lgb.Dataset(X, label = rep(0L:2L, length.out = 100L))
+        , nrounds = 2L
+    )
+    expect_identical(dim(predict(multi, empty)), c(0L, 3L))
+})

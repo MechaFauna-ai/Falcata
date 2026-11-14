@@ -155,14 +155,18 @@ void DCGCalculator::CheckMetadata(const Metadata& metadata, data_size_t num_quer
 
 void DCGCalculator::CheckLabel(const label_t* label, data_size_t num_data) {
   for (data_size_t i = 0; i < num_data; ++i) {
+    // range first: casting a label beyond int (or NaN) to int is undefined behaviour
+    if (!(label[i] >= 0)) {
+      Log::Fatal("Label should be non-negative (met %f) for ranking task", label[i]);
+    }
+    if (label[i] >= static_cast<label_t>(label_gain_.size())) {
+      Log::Fatal("Label %f is not less than the number of label mappings (%zu)", label[i], label_gain_.size());
+    }
+
     label_t delta = std::fabs(label[i] - static_cast<int>(label[i]));
     if (delta > kEpsilon) {
       Log::Fatal("label should be int type (met %f) for ranking task,\n"
                  "for the gain of label, please set the label_gain parameter", label[i]);
-    }
-
-    if (label[i] < 0) {
-      Log::Fatal("Label should be non-negative (met %f) for ranking task", label[i]);
     }
 
     if (static_cast<size_t>(label[i]) >= label_gain_.size()) {
