@@ -59,6 +59,10 @@ class DataParallelTreeLearner: public TREELEARNER_T {
   void ResetConfig(const Config* config) override;
 
  protected:
+  // the root's rows on all machines (num_data_ is this machine's)
+  data_size_t RootLeafCount() const override { return global_data_count_in_leaf_[0]; }
+
+ protected:
   void BeforeTrain() override;
   void FindBestSplits(const Tree* tree) override;
   void FindBestSplitsFromHistograms(const std::vector<int8_t>& is_feature_used, bool use_subtract, const Tree* tree) override;
@@ -120,6 +124,11 @@ class VotingParallelTreeLearner: public TREELEARNER_T {
   ~VotingParallelTreeLearner() { }
   void Init(const Dataset* train_data, bool is_constant_hessian) override;
   void ResetConfig(const Config* config) override;
+
+ protected:
+  // the root output from the global sums (smaller_leaf_splits_ holds this machine's)
+  const LeafSplits* RootLeafSplits() const override { return smaller_leaf_splits_global_.get(); }
+  data_size_t RootLeafCount() const override { return global_data_count_in_leaf_[0]; }
 
  protected:
   void BeforeTrain() override;

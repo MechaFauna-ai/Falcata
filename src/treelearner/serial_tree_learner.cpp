@@ -219,10 +219,11 @@ Tree* SerialTreeLearner::Train(const score_t* gradients, const score_t *hessians
   constraints_->ShareTreePointer(tree_ptr);
 
   // set the root value by hand, as it is not handled by splits
+  const LeafSplits* root_splits = RootLeafSplits();
   tree->SetLeafOutput(0, FeatureHistogram::CalculateSplittedLeafOutput<true, true, true, false>(
-    smaller_leaf_splits_->sum_gradients(), smaller_leaf_splits_->sum_hessians(),
+    root_splits->sum_gradients(), root_splits->sum_hessians(),
     config_->lambda_l1, config_->lambda_l2, config_->max_delta_step,
-    BasicConstraint(), config_->path_smooth, static_cast<data_size_t>(num_data_), 0));
+    BasicConstraint(), config_->path_smooth, RootLeafCount(), 0));
 
   // root leaf
   int left_leaf = 0;
