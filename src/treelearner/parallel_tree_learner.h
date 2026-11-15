@@ -19,6 +19,30 @@
 namespace Falcata {
 
 /*!
+ * \brief Check that a parameter has the same value on every machine. The parallel learners exchange buffers sized
+ *        from num_leaves, max_cat_threshold and top_k and split the leaves the machines agree on: a machine with a
+ *        different value read or split past its own arrays (a SEGV in SplitInner with num_leaves 4 against 63).
+ *        Every machine runs the same collectives, so all of them stop with the same error.
+ */
+inline void CheckSameOnAllMachines(const char* name, int value) {
+  const int min_value = Network::GlobalSyncUpByMin(value);
+  const int max_value = Network::GlobalSyncUpByMax(value);
+  if (min_value != max_value) {
+    Log::Fatal("Parameter %s differs across machines (from %d to %d): parallel training needs the same value on "
+               "every machine", name, min_value, max_value);
+  }
+}
+
+inline void CheckParallelConfigAgrees(const Config& config, bool voting) {
+  CheckSameOnAllMachines("num_leaves", config.num_leaves);
+  CheckSameOnAllMachines("max_depth", config.max_depth);
+  CheckSameOnAllMachines("max_cat_threshold", config.max_cat_threshold);
+  if (voting) {
+    CheckSameOnAllMachines("top_k", config.top_k);
+  }
+}
+
+/*!
 * \brief Feature parallel learning algorithm.
 *        Different machine will find best split on different features, then sync global best split
 *        It is recommended used when #data is small or #feature is large

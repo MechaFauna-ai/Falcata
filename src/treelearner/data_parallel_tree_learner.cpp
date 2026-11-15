@@ -27,6 +27,7 @@ void DataParallelTreeLearner<TREELEARNER_T>::Init(const Dataset* train_data, boo
   // Get local rank and global machine size
   rank_ = Network::rank();
   num_machines_ = Network::num_machines();
+  CheckParallelConfigAgrees(*this->config_, false);
 
   auto max_cat_threshold = this->config_->max_cat_threshold;
   // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit
@@ -54,6 +55,7 @@ void DataParallelTreeLearner<TREELEARNER_T>::Init(const Dataset* train_data, boo
 template <typename TREELEARNER_T>
 void DataParallelTreeLearner<TREELEARNER_T>::ResetConfig(const Config* config) {
   TREELEARNER_T::ResetConfig(config);
+  CheckParallelConfigAgrees(*this->config_, false);
   global_data_count_in_leaf_.resize(this->config_->num_leaves);
 }
 
