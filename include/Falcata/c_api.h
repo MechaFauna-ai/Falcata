@@ -1883,6 +1883,10 @@ FALCATA_C_EXPORT int FLC_BoosterGetLeafValue(BoosterHandle handle,
 
 /*!
  * \brief Set leaf value.
+ * \note This changes the model only. The scores the booster keeps for its training data and its validation data are
+ *       not updated: ``FLC_BoosterGetEval``, ``FLC_BoosterGetPredict`` (the inner scores) and further training with
+ *       ``FLC_BoosterUpdateOneIter`` go on using the scores computed before the change. Predictions and saved models
+ *       use the new value. Validation data added after the change is scored with the current trees.
  * \param handle Handle of booster
  * \param tree_idx Index of tree
  * \param leaf_idx Index of leaf

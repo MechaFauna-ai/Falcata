@@ -5845,6 +5845,14 @@ class Booster:
     ) -> "Booster":
         """Set the output of a leaf.
 
+        .. note::
+
+            This changes the model only. It does not update the scores the Booster keeps for its training data and
+            for the validation data added with ``add_valid()``. ``eval_train()``, ``eval_valid()``, early stopping
+            and any further training (``update()``) go on using the scores computed before the change. ``predict()``
+            and saved models use the new value. To evaluate the changed model, predict on the data, or pass a newly
+            constructed Dataset to ``eval()``, which scores it with the current trees.
+
         Parameters
         ----------
         tree_id : int
