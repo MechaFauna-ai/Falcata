@@ -233,6 +233,20 @@ nanoarrow::UniqueArray MakeStructArray(const nanoarrow::UniqueSchema& schema,
   return array;
 }
 
+nanoarrow::UniqueArray MakeStructArray(ArrowSchema* schema, const std::vector<double>& dat0,
+                                       const std::vector<double>& dat1) {
+  nanoarrow::UniqueArray array;
+  EXPECT_EQ(ArrowArrayInitFromSchema(array.get(), schema, nullptr), NANOARROW_OK);
+  EXPECT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
+  for (size_t i = 0; i < dat0.size(); ++i) {
+    EXPECT_EQ(ArrowArrayAppendDouble(array->children[0], dat0[i]), NANOARROW_OK);
+    EXPECT_EQ(ArrowArrayAppendDouble(array->children[1], dat1[i]), NANOARROW_OK);
+    EXPECT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
+  }
+  EXPECT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
+  return array;
+}
+
 void NoopRelease(struct ArrowArray* array) { array->release = nullptr; }
 
 // Hand a corrupted shallow copy of `chunk` (whose release does nothing, so `chunk` still frees the
@@ -247,6 +261,15 @@ void ExpectRejected(const nanoarrow::UniqueSchema& schema, const nanoarrow::Uniq
   struct ArrowSchema raw_schema;
   schema_copy.move(&raw_schema);
   EXPECT_THROW(ArrowChunkedArray chunked_array(1, &shallow, &raw_schema), std::exception);
+}
+
+std::vector<double> ReadField(const ArrowChunkedArray& chunked_array, int64_t field_idx) {
+  std::vector<double> out;
+  chunked_array.view().field(field_idx).visit<double>([&](auto v) {
+    for (auto it = v.begin(); it != v.end(); ++it) out.push_back(*it);
+    EXPECT_EQ(v.end() - v.begin(), static_cast<int64_t>(out.size()));
+  });
+  return out;
 }
 
 }  // namespace
@@ -293,4 +316,52 @@ TEST(ArrowChunkedArrayTest, NegativeChunkCountIsRejected) {
   struct ArrowSchema raw_schema;
   schema.move(&raw_schema);
   EXPECT_THROW(ArrowChunkedArray chunked_array(-1, nullptr, &raw_schema), std::exception);
+}
+
+TEST(ArrowChunkedArrayTest, SlicedStructFields) {
+  // A sliced struct keeps its offset and length on the parent and leaves its children whole, so
+  // element i of a field is element (parent offset + i) of the child. The fields used to be read
+  // with the child's own offset and length: the wrong rows, and more of them than the struct has.
+  auto schema = MakeStructSchema({NANOARROW_TYPE_DOUBLE, NANOARROW_TYPE_DOUBLE});
+  std::vector<nanoarrow::UniqueArray> chunks;
+  chunks.emplace_back(MakeStructArray(schema.get(), {0, 1, 2, 3, 4, 5}, {10, 11, 12, 13, 14, 15}));
+  chunks.back()->offset = 2;  // rows 2, 3, 4
+  chunks.back()->length = 3;
+  chunks.emplace_back(MakeStructArray(schema.get(), {6, 7, 8}, {16, 17, 18}));
+  chunks.back()->children[1]->offset = 1;  // the child's own slice adds to the parent's
+  chunks.back()->children[1]->length = 2;
+  chunks.back()->offset = 1;  // row 1 only: element 1 of child 0, element 2 of child 1's buffer
+  chunks.back()->length = 1;
+  ArrowChunkedArray chunked_array(MakeStream(std::move(schema), std::move(chunks)).get());
+
+  ASSERT_EQ(chunked_array.get_length(), 4);
+  EXPECT_EQ(ReadField(chunked_array, 0), (std::vector<double>{2, 3, 4, 7}));
+  EXPECT_EQ(ReadField(chunked_array, 1), (std::vector<double>{12, 13, 14, 18}));
+
+  // random access through a concatenated view of both fields (the init_score path)
+  std::vector<ArrowChunkedArray::View> fields = {chunked_array.view().field(0),
+                                                 chunked_array.view().field(1)};
+  ArrowChunkedArray::View(fields).visit<double>([](auto v) {
+    ASSERT_EQ(v.end() - v.begin(), 8);
+    EXPECT_EQ(v.begin()[3], 7);
+    EXPECT_EQ(v.begin()[7], 18);
+  });
+
+  // a visitor copied out of visit() outlives the field view (the Arrow predict accessors)
+  std::function<double(int64_t)> accessor;
+  chunked_array.view().field(1).visit<double>([&](auto v) {
+    accessor = [v](int64_t i) { return v.begin()[i]; };
+  });
+  EXPECT_EQ(accessor(3), 18);
+}
+
+TEST(ArrowChunkedArrayTest, StructChildShorterThanParentSlice) {
+  // the parent's rows 1 and 2 need three elements of each child; child 0 has two. The chunk is
+  // rejected when it is validated against the schema, before any field is read.
+  auto schema = MakeStructSchema({NANOARROW_TYPE_FLOAT, NANOARROW_TYPE_DOUBLE});
+  auto array = MakeStructArray(schema.get(), {0, 1, 2}, {10, 11, 12});
+  array->children[0]->length = 2;
+  array->offset = 1;
+  array->length = 2;
+  ExpectRejected(schema, array, [](struct ArrowArray*) {});
 }
