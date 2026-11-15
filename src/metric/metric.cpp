@@ -145,6 +145,11 @@ Metric* Metric::CreateMetric(const std::string& type, const Config& config) {
   #ifdef USE_CUDA
   }
   #endif  // USE_CUDA
+  // "custom" (also none/null/na) asks for no built-in metric. Any other unknown name was skipped silently, so a typo
+  // (metric="aucc") trained with no metric at all -- and with nothing for early stopping to watch
+  if (type != std::string("custom")) {
+    Log::Fatal("Unknown metric type name: %s", type.c_str());
+  }
   return nullptr;
 }
 
