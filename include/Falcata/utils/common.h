@@ -416,11 +416,24 @@ inline static std::vector<T2> ArrayCast(const std::vector<T>& arr) {
   return ret;
 }
 
+// Element parsers of StringToArray (list-valued parameters such as monotone_constraints, max_bin_by_feature,
+// feature_contri, label_gain; linear-tree model fields). A token must be a whole number: Atoi alone read "x" as 0 and
+// "20x" as 20 (monotone_constraints=1,x silently meant "no constraint"), and std::stod failed with the bare message
+// "stod", also for subnormal values, which are valid.
 template<typename T, bool is_float>
 struct __StringToTHelper {
   T operator()(const std::string& str) const {
+    const char* p = str.c_str();
+    while (*p == ' ') {
+      ++p;
+    }
+    if (*p == '-' || *p == '+') {
+      ++p;
+    }
     T ret = 0;
-    Atoi(str.c_str(), &ret);
+    if (*p < '0' || *p > '9' || *Atoi(str.c_str(), &ret) != '\0') {
+      Log::Fatal("Cannot parse \"%s\" as an integer", str.c_str());
+    }
     return ret;
   }
 };
@@ -428,7 +441,18 @@ struct __StringToTHelper {
 template<typename T>
 struct __StringToTHelper<T, true> {
   T operator()(const std::string& str) const {
-    return static_cast<T>(std::stod(str));
+    const char* begin = str.c_str();
+    char* end = nullptr;
+    errno = 0;
+    const double value = std::strtod(begin, &end);
+    const bool overflow = errno == ERANGE && std::fabs(value) > 1.0;  // ERANGE on underflow still yields the value
+    while (*end == ' ') {
+      ++end;
+    }
+    if (end == begin || *end != '\0' || overflow) {
+      Log::Fatal("Cannot parse \"%s\" as a number", str.c_str());
+    }
+    return static_cast<T>(value);
   }
 };
 
