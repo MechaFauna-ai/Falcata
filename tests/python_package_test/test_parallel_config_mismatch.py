@@ -1,9 +1,11 @@
 # coding: utf-8
-"""Parallel training with a structural parameter that differs between machines is a clear error.
+"""Parallel training with a parameter that differs between machines is a clear error.
 
 The data- and voting-parallel learners size their exchange buffers from num_leaves, max_cat_threshold and
-top_k and split the leaves the machines agree on. A machine with a smaller num_leaves than its peer split a
-leaf past its arrays (SEGV in SerialTreeLearner::SplitInner); now every machine stops with the same error.
+top_k, split the leaves the machines agree on and lay out the histogram exchange from the sampled
+features. A machine with a smaller num_leaves than its peer split a leaf past its arrays (SEGV in
+SerialTreeLearner::SplitInner), a data-parallel machine against a voting one crashed in GlobalVoting, and a
+different feature_fraction overflowed the histogram buffers; now every machine stops with the same error.
 """
 
 import multiprocessing as mp
@@ -58,6 +60,8 @@ def _worker(rank, ports, tree_learner, overrides, queue):
         ("data", [{}, {"num_leaves": 63}], "num_leaves"),
         ("data", [{"max_depth": 2}, {}], "max_depth"),
         ("voting", [{"top_k": 1}, {"top_k": 5}], "top_k"),
+        ("data", [{}, {"tree_learner": "voting"}], "tree_learner"),
+        ("data", [{}, {"feature_fraction": 0.5}], "feature_fraction"),
     ],
 )
 def test_parallel_parameter_mismatch_is_an_error(tree_learner, overrides, name):

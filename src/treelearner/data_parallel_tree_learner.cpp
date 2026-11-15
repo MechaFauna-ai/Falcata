@@ -27,7 +27,6 @@ void DataParallelTreeLearner<TREELEARNER_T>::Init(const Dataset* train_data, boo
   // Get local rank and global machine size
   rank_ = Network::rank();
   num_machines_ = Network::num_machines();
-  CheckParallelConfigAgrees(*this->config_, false);
 
   auto max_cat_threshold = this->config_->max_cat_threshold;
   // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit
@@ -55,7 +54,6 @@ void DataParallelTreeLearner<TREELEARNER_T>::Init(const Dataset* train_data, boo
 template <typename TREELEARNER_T>
 void DataParallelTreeLearner<TREELEARNER_T>::ResetConfig(const Config* config) {
   TREELEARNER_T::ResetConfig(config);
-  CheckParallelConfigAgrees(*this->config_, false);
   global_data_count_in_leaf_.resize(this->config_->num_leaves);
 }
 
@@ -115,6 +113,7 @@ void DataParallelTreeLearner<TREELEARNER_T>::PrepareBufferPos(
 template <typename TREELEARNER_T>
 void DataParallelTreeLearner<TREELEARNER_T>::BeforeTrain() {
   TREELEARNER_T::BeforeTrain();
+  CheckParallelConfigAgrees(*this->config_, false);
   // generate feature partition for current tree
   std::vector<std::vector<int>> feature_distribution(num_machines_, std::vector<int>());
   std::vector<int> num_bins_distributed(num_machines_, 0);

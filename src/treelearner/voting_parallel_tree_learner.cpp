@@ -24,7 +24,6 @@ void VotingParallelTreeLearner<TREELEARNER_T>::Init(const Dataset* train_data, b
   TREELEARNER_T::Init(train_data, is_constant_hessian);
   rank_ = Network::rank();
   num_machines_ = Network::num_machines();
-  CheckParallelConfigAgrees(*this->config_, true);
 
   ResetTopKAndBuffers();
 
@@ -86,7 +85,6 @@ void VotingParallelTreeLearner<TREELEARNER_T>::ResetTopKAndBuffers() {
 template <typename TREELEARNER_T>
 void VotingParallelTreeLearner<TREELEARNER_T>::ResetConfig(const Config* config) {
   TREELEARNER_T::ResetConfig(config);
-  CheckParallelConfigAgrees(*this->config_, true);
   // top_k and max_cat_threshold may have changed: refresh top_k_ and the
   // buffers sized from them (they used to keep their Init values)
   ResetTopKAndBuffers();
@@ -104,6 +102,7 @@ void VotingParallelTreeLearner<TREELEARNER_T>::ResetConfig(const Config* config)
 template <typename TREELEARNER_T>
 void VotingParallelTreeLearner<TREELEARNER_T>::BeforeTrain() {
   TREELEARNER_T::BeforeTrain();
+  CheckParallelConfigAgrees(*this->config_, true);
   // sync global data sumup info
   std::tuple<data_size_t, double, double> data(this->smaller_leaf_splits_->num_data_in_leaf(), this->smaller_leaf_splits_->sum_gradients(), this->smaller_leaf_splits_->sum_hessians());
   int size = sizeof(std::tuple<data_size_t, double, double>);
