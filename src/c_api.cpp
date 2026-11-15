@@ -1494,6 +1494,37 @@ static void ApplyMissingSentinelToSample(
 
 // Guard for input formats that do not implement the sentinel rewrite: a
 // silently ignored sentinel would bin the sentinel as a real value.
+// CSC_RowIterator walks a column's stored rows in order and returns 0 for a row it has passed, so row
+// indices that are not strictly increasing within a column (unsorted, or a row stored twice) were read as
+// different values without any error: training and prediction silently used the wrong matrix.
+static void CheckCSCRowIndicesSorted(const void* col_ptr, int col_ptr_type, const int32_t* indices,
+                                     int64_t ncol_ptr, int64_t nelem, const char* what) {
+  if (col_ptr == nullptr || indices == nullptr || ncol_ptr < 2) {
+    return;
+  }
+  auto col_start = [col_ptr, col_ptr_type](int64_t j) -> int64_t {
+    return col_ptr_type == C_API_DTYPE_INT32 ? static_cast<const int32_t*>(col_ptr)[j]
+                                             : static_cast<const int64_t*>(col_ptr)[j];
+  };
+  if (col_ptr_type != C_API_DTYPE_INT32 && col_ptr_type != C_API_DTYPE_INT64) {
+    return;  // rejected where the column pointers are read
+  }
+  for (int64_t j = 0; j + 1 < ncol_ptr; ++j) {
+    const int64_t start = col_start(j);
+    const int64_t end = col_start(j + 1);
+    if (start < 0 || end > nelem || start > end) {
+      continue;  // a malformed range is not this check's to report
+    }
+    for (int64_t k = start + 1; k < end; ++k) {
+      if (indices[k] <= indices[k - 1]) {
+        Log::Fatal("%s: the row indices of column %s are not strictly increasing (row %d follows row %d). Sort "
+                   "each column's row indices and merge duplicate entries (scipy: sum_duplicates())",
+                   what, std::to_string(j).c_str(), indices[k], indices[k - 1]);
+      }
+    }
+  }
+}
+
 static void CheckNoMissingSentinel(const Config& config, const char* what) {
   if (!config.missing_sentinel.empty()) {
     Log::Fatal("missing_sentinel is not supported for %s input", what);
@@ -2874,6 +2905,7 @@ int FLC_DatasetCreateFromCSC(const void* col_ptr,
   CheckNoMissingSentinel(config, "CSC");
   std::unique_ptr<Dataset> ret;
   int32_t nrow = CheckedRowCount(num_row, "FLC_DatasetCreateFromCSC");
+  CheckCSCRowIndicesSorted(col_ptr, col_ptr_type, indices, ncol_ptr, nelem, "FLC_DatasetCreateFromCSC");
   if (reference == nullptr) {
     // sample data first
     auto sample_indices = CreateSampleIndices(nrow, config);
@@ -3733,6 +3765,7 @@ int FLC_BoosterPredictSparseOutput(BoosterHandle handle,
   } else if (matrix_type == C_API_MATRIX_TYPE_CSC) {
     int num_threads = OMP_NUM_THREADS();
     int ncol = static_cast<int>(nindptr - 1);
+    CheckCSCRowIndicesSorted(indptr, indptr_type, indices, nindptr, nelem, "FLC_BoosterPredictSparseOutput");
     // one iterator per column for each thread, built by the thread on its first row (in parallel, and only
     // for the threads that get rows)
     std::vector<std::vector<CSC_RowIterator>> iterators(num_threads, std::vector<CSC_RowIterator>());
@@ -3878,6 +3911,7 @@ int FLC_BoosterPredictForCSC(BoosterHandle handle,
   OMP_SET_NUM_THREADS(config.num_threads);
   int num_threads = OMP_NUM_THREADS();
   int ncol = static_cast<int>(ncol_ptr - 1);
+  CheckCSCRowIndicesSorted(col_ptr, col_ptr_type, indices, ncol_ptr, nelem, "FLC_BoosterPredictForCSC");
   // one iterator per column for each thread, built by the thread on its first row (in parallel, and only for
   // the threads that get rows)
   std::vector<std::vector<CSC_RowIterator>> iterators(num_threads, std::vector<CSC_RowIterator>());
