@@ -488,6 +488,15 @@ bool CheckMultiClassObjective(const std::string& objective) {
 }
 
 void Config::CheckParamConflict(const std::unordered_map<std::string, std::string>& params) {
+  // monotone_constraints takes -1, 0 or 1. Other values were accepted, and the learners disagree on them: most code
+  // tests the sign, but the advanced method's constraint propagation tests == 1 / == -1, so 2 trained a model that
+  // breaks the monotonicity 1 would have enforced
+  for (size_t i = 0; i < monotone_constraints.size(); ++i) {
+    if (monotone_constraints[i] < -1 || monotone_constraints[i] > 1) {
+      Log::Fatal("monotone_constraints must be -1, 0 or 1 for every feature, got %d for feature %zu",
+                 static_cast<int>(monotone_constraints[i]), i);
+    }
+  }
   // check if objective, metric, and num_class match
   int num_class_check = num_class;
   bool objective_type_multiclass = CheckMultiClassObjective(objective) || (objective == std::string("custom") && num_class_check > 1);
@@ -780,6 +789,15 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
   if (path_smooth > kEpsilon && min_data_in_leaf < 2) {
     min_data_in_leaf = 2;
     Log::Warning("min_data_in_leaf has been increased to 2 because this is required when path smoothing is active.");
+  }
+  // any other value silently fell back to the basic method (LeafConstraintsBase::Create tests the two other names,
+  // case-sensitively: "Intermediate" was basic too)
+  std::transform(monotone_constraints_method.begin(), monotone_constraints_method.end(),
+                 monotone_constraints_method.begin(), [](unsigned char c) { return std::tolower(c); });
+  if (monotone_constraints_method != std::string("basic") && monotone_constraints_method != std::string("intermediate") &&
+      monotone_constraints_method != std::string("advanced")) {
+    Log::Fatal("Unknown monotone_constraints_method \"%s\": must be basic, intermediate or advanced",
+               monotone_constraints_method.c_str());
   }
   if (is_parallel && (monotone_constraints_method == std::string("intermediate") || monotone_constraints_method == std::string("advanced"))) {
     // In distributed mode, local node doesn't have histograms on all features, cannot perform "intermediate" monotone constraints.
