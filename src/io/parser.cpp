@@ -6,6 +6,8 @@
 #include "parser.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <memory>
@@ -288,6 +290,35 @@ Parser* ParserFactory::getObject(std::string class_name, std::string config_str)
   }
 }
 
+/*!
+ * \brief precise_float_parser's value parser for text data: numbers go through fast_double_parser (strtod for what
+ *        it does not take: inf, nan, leading spaces, out-of-range values), exactly as Common::AtofPrecise. Everything
+ *        else reads as with the default parser: a token that is not a number (an empty field, NA, null) goes to
+ *        Common::Atof, which reads the missing-value tokens as NaN and refuses an unknown token, and the spaces after
+ *        a value are skipped. AtofPrecise alone refused empty fields and NA/null and stopped before trailing spaces,
+ *        so a file the default parser loads failed with "no conversion to double" or "Input format error".
+ */
+static const char* AtofPreciseText(const char* p, double* out) {
+  const char* end = fast_double_parser::parse_number(p, out);
+  if (end == nullptr) {
+    char* end2 = nullptr;
+    errno = 0;  // strtod reports overflow and underflow through errno only
+    const double value = std::strtod(p, &end2);
+    if (end2 == p) {
+      return Common::Atof(p, out);
+    }
+    if (errno == ERANGE) {
+      Log::Warning("convert to double got underflow or overflow: %s", p);
+    }
+    *out = value;
+    end = end2;
+  }
+  while (*end == ' ') {
+    ++end;
+  }
+  return end;
+}
+
 Parser* Parser::CreateParser(const char* filename, bool header, int num_features, int label_idx, bool precise_float_parser) {
   const int n_read_line = 32;
   auto lines = ReadKLineFromFile(filename, header, n_read_line);
@@ -298,7 +329,7 @@ Parser* Parser::CreateParser(const char* filename, bool header, int num_features
   }
   std::unique_ptr<Parser> ret;
   int output_label_index = -1;
-  AtofFunc atof = precise_float_parser ? Common::AtofPrecise : Common::Atof;
+  AtofFunc atof = precise_float_parser ? AtofPreciseText : Common::Atof;
   if (type == DataType::LIBSVM) {
     output_label_index = GetLabelIdxForLibsvm(lines[0], num_features, label_idx);
     ret.reset(new LibSVMParser(output_label_index, num_col, atof));
