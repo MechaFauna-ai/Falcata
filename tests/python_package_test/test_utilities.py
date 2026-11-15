@@ -187,10 +187,14 @@ def test_register_custom_logger():
     X = np.array([[1, 2, 3], [1, 2, 4], [1, 2, 4], [1, 2, 3]], dtype=np.float32)
     y = np.array([0, 1, 1, 0])
     lgb_data = lgb.Dataset(X, y, categorical_feature=[1])
+    # verbose=1 explicitly: without verbosity/verbose in the params the native log level is left as it is, and the
+    # calling thread keeps the level an earlier test set (most pass verbose=-1, which silences these messages)
     lgb.train(
-        {"objective": "binary", "metric": "auc"},
+        {"objective": "binary", "metric": "auc", "verbose": 1},
         lgb_data,
         num_boost_round=10,
         valid_sets=[lgb_data],
     )
     assert logged_messages, "custom logger was not called"
+    # the native library's messages reach the custom logger through its info method
+    assert any(msg.startswith("[Falcata] [") for msg in logged_messages), logged_messages

@@ -456,6 +456,8 @@ __global__ void SplitCategoricalKernel(  // split information
     if (num_cat == 0) {
       cuda_cat_boundaries[num_cat] = 0;
     }
+    // int, like the CPU Tree's cat_boundaries_ and the model format;
+    // ToHost copies this array verbatim.
     cuda_cat_boundaries[num_cat + 1] = cuda_cat_boundaries[num_cat] + cuda_bitset_len;
   } else if (thread_index == 16) {
     if (num_cat == 0) {

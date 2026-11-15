@@ -228,7 +228,8 @@ class SerialTreeLearner: public TreeLearner {
 
   /*! \brief stores best thresholds for all feature for smaller leaf */
   std::unique_ptr<LeafSplits> smaller_leaf_splits_;
-  /*! \brief stores best thresholds for all feature for larger leaf */
+  /*! \brief stores best thresholds for all feature for larger leaf; allocated in Init and never null,
+   *  leaf_index() < 0 means there is no larger leaf (e.g. at the root) */
   std::unique_ptr<LeafSplits> larger_leaf_splits_;
 #if defined(USE_GPU)
   /*! \brief gradients of current iteration, ordered for cache optimized, aligned to 4K page */

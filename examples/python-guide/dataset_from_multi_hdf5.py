@@ -22,6 +22,7 @@ class HDFSequence(flc.Sequence):
         """
         # We can also open HDF5 file once and get access to
         self.data = hdf_dataset
+        # read by flc.Dataset construction, which fetches rows in slices of batch_size via __getitem__
         self.batch_size = batch_size
 
     def __getitem__(self, idx):

@@ -231,6 +231,26 @@ TEST(LinkersSendRecv, BadHandshakeFailsTheSetup) {
   close(again);
 }
 
+// A rank whose higher-ranked peer never comes up used to run out of connect retries silently and
+// keep a NULL linker, which the first collective dereferenced. It is now an error naming the peer.
+// DISABLED_ because the hard-coded retry schedule (20 attempts, 0.2 s growing 1.3x) takes about
+// 125 s; run it with --gtest_also_run_disabled_tests --gtest_filter='*UnreachableHigherRank*'.
+TEST(LinkersSendRecv, DISABLED_UnreachableHigherRankIsAnError) {
+  Falcata::Config config;
+  const int port = FreePort();
+  const int peer_port = FreePort();  // nothing listens there
+  config.num_machines = 2;
+  config.machines = "127.0.0.1 " + std::to_string(port) + ",127.0.0.1 " + std::to_string(peer_port);
+  config.local_listen_port = port;
+  config.time_out = 1;
+  try {
+    Falcata::Linkers linkers(config);
+    FAIL() << "the network came up without rank 1";
+  } catch (const std::runtime_error& e) {
+    EXPECT_NE(std::string(e.what()).find("Could not connect to rank 1"), std::string::npos) << e.what();
+  }
+}
+
 // In distributed bin finding a machine can have no features to bin: it joins the Allgather with
 // an empty block whose buffer is NULL. Copying that block was memcpy(dst, nullptr, 0), undefined
 // behaviour that UBSan stops on. Every machine must get the other blocks, and the empty one.

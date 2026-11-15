@@ -58,9 +58,11 @@ TreeLearner* TreeLearner::CreateTreeLearner(const std::string& learner_type, con
     {"cpu", [](const std::string& lt, const Config* c, bool) {
       return MakeSerialFamily<SerialTreeLearner>(lt, c);
     }},
+    // device_type=gpu is the OpenCL learner
     {"gpu", [](const std::string& lt, const Config* c, bool) {
       return MakeSerialFamily<GPUTreeLearner>(lt, c);
     }},
+    // linear_tree is handled inside CUDASingleGPUTreeLearner (InitLinearTreeCUDA), not via LinearTreeLearner
     {"cuda", [](const std::string& lt, const Config* c, bool on_cuda) -> TreeLearner* {
       if (lt == std::string("serial") ||
           (lt == std::string("feature") && c->num_gpu > 1)) {

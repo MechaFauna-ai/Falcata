@@ -282,6 +282,7 @@ def _normalize_native_string(func: Callable[[str], None]) -> Callable[[str], Non
     @wraps(func)
     def wrapper(msg: str) -> None:
         nonlocal msg_normalized
+        # native Log::Write ends every message with a "\n" chunk, which flushes it
         if msg.strip() == "":
             msg = "".join(msg_normalized)
             msg_normalized = []
@@ -1248,6 +1249,21 @@ class _InnerPredictor:
         if pred_contrib:
             predict_type = _C_API_PREDICT_CONTRIB
 
+        # With pred_leaf the output size depends on the number of iterations. The C++ side resolves the range when it
+        # predicts, so if another thread trains this Booster after the buffer was sized, a range resolved there
+        # (num_iteration <= 0, or one reaching past the end of the model) gets longer and the prediction writes past
+        # the buffer. Resolve the range here, once, and size the buffer for that count (see __get_num_preds): the
+        # C++ side never predicts more iterations than an explicit num_iteration, and a concurrent rollback only
+        # makes the result shorter, which the length checks report.
+        empty_leaf_range = False
+        if predict_type == _C_API_PREDICT_LEAF_INDEX:
+            num_iteration = self.__num_remaining_iterations(start_iteration, num_iteration)
+            if num_iteration == 0:
+                # No iteration in range, and 0 cannot be passed (it means "all"). Run a raw-score prediction instead,
+                # whose size does not depend on the iterations, to validate the data and count its rows.
+                empty_leaf_range = True
+                predict_type = _C_API_PREDICT_RAW_SCORE
+
         if isinstance(data, (str, Path)):
             preds, nrow = self.__pred_for_file(
                 path=data,
@@ -1310,6 +1326,8 @@ class _InnerPredictor:
                 num_iteration=num_iteration,
                 predict_type=predict_type,
             )
+        if empty_leaf_range:
+            return np.empty((nrow, 0), dtype=np.int32)
         if pred_leaf:
             preds = preds.astype(np.int32)
         is_sparse = isinstance(preds, (list, scipy.sparse.spmatrix))
@@ -1325,6 +1343,14 @@ class _InnerPredictor:
             else:
                 raise ValueError(f"Length of predict result ({preds.size}) cannot be divide nrow ({nrow})")
         return preds
+
+    def __num_remaining_iterations(self, start_iteration: int, num_iteration: int) -> int:
+        """Resolve an iteration range to the number of iterations it covers now, the way the C++ side clamps it."""
+        out_iteration = ctypes.c_int(0)
+        _safe_call(_LIB.FLC_BoosterGetCurrentIteration(self._handle, ctypes.byref(out_iteration)))
+        total_iterations = out_iteration.value
+        remaining = total_iterations - min(max(start_iteration, 0), total_iterations)
+        return min(num_iteration, remaining) if num_iteration > 0 else remaining
 
     def __pred_for_file(
         self,
@@ -1378,6 +1404,12 @@ class _InnerPredictor:
                 "You can split your data into chunks "
                 "and then concatenate predictions for them"
             )
+        if predict_type == _C_API_PREDICT_LEAF_INDEX and num_iteration > 0:
+            # predict() resolved the range to this fixed count: size for it rather than asking the C++ side, whose
+            # answer would change if another thread trains or rolls back this Booster before the prediction runs
+            per_iteration = ctypes.c_int(0)
+            _safe_call(_LIB.FLC_BoosterNumModelPerIteration(self._handle, ctypes.byref(per_iteration)))
+            return nrow * num_iteration * per_iteration.value
         n_preds = ctypes.c_int64(0)
         _safe_call(
             _LIB.FLC_BoosterCalcNumPredict(
@@ -5812,6 +5844,14 @@ class Booster:
         value: float,
     ) -> "Booster":
         """Set the output of a leaf.
+
+        .. note::
+
+            This changes the model only. It does not update the scores the Booster keeps for its training data and
+            for the validation data added with ``add_valid()``. ``eval_train()``, ``eval_valid()``, early stopping
+            and any further training (``update()``) go on using the scores computed before the change. ``predict()``
+            and saved models use the new value. To evaluate the changed model, predict on the data, or pass a newly
+            constructed Dataset to ``eval()``, which scores it with the current trees.
 
         Parameters
         ----------

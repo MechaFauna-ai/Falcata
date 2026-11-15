@@ -88,6 +88,7 @@ def params_for(leaves, extra):
 
 def assert_selective_engaged():
     """A vacuous gate is worse than no gate: confirm the path actually runs."""
+    # the probe's params mirror params_for(127, {}); keep them in sync
     probe = textwrap.dedent("""
         import numpy as np, falcata as flc
         rng = np.random.default_rng(0)

@@ -410,6 +410,9 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
             const INDEX_T other_data_index = shared_indices[other_index];
             const VAL_T this_value = shared_values[threadIdx.x];
             const VAL_T other_value = shared_values[other_index];
+            // unlike the global-memory phase below, no this_index < len check is needed: a padding lane
+            // (this_index >= len) passes the guards above only when its partner is padding too,
+            // which other_data_index < len rejects
             if (other_data_index < len && (this_value > other_value || (STABLE && this_value == other_value && (ASCENDING ? this_data_index > other_data_index : this_data_index < other_data_index))) == ascending) {
               shared_indices[threadIdx.x] = other_data_index;
               shared_indices[other_index] = this_data_index;
