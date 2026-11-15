@@ -305,9 +305,19 @@ def _log_native(msg: str) -> None:
     getattr(_LOGGER, _INFO_METHOD_NAME)(msg)
 
 
+def _decode_native_text(msg: bytes) -> str:
+    """Decode a log or error message from the native library.
+
+    Messages quote input (data file tokens, column names, paths) that need not be UTF-8,
+    and the native side cuts long messages at a fixed byte count, possibly inside a
+    multi-byte character: neither may turn into a UnicodeDecodeError.
+    """
+    return msg.decode("utf-8", errors="replace")
+
+
 def _log_callback(msg: bytes) -> None:
     """Redirect logs from native library into Python."""
-    _log_native(str(msg.decode("utf-8")))
+    _log_native(_decode_native_text(msg))
 
 
 # connect the Python logger to logging in lib_falcata
@@ -316,7 +326,7 @@ if environ.get("FALCATA_BUILD_DOC", "False") != "True":
     callback = ctypes.CFUNCTYPE(None, ctypes.c_char_p)
     _LIB.callback = callback(_log_callback)  # type: ignore[attr-defined]
     if _LIB.FLC_RegisterLogCallback(_LIB.callback) != 0:
-        raise FalcataError(_LIB.FLC_GetLastError().decode("utf-8"))
+        raise FalcataError(_decode_native_text(_LIB.FLC_GetLastError()))
 
 
 _NUMERIC_TYPES = (int, float, bool)
@@ -331,7 +341,7 @@ def _safe_call(ret: int) -> None:
         The return value from C API calls.
     """
     if ret != 0:
-        raise FalcataError(_LIB.FLC_GetLastError().decode("utf-8"))
+        raise FalcataError(_decode_native_text(_LIB.FLC_GetLastError()))
 
 
 def _is_numeric(obj: Any) -> bool:
@@ -3048,7 +3058,7 @@ class Dataset:
                     update()
                     self._free_handle()
                 else:
-                    raise FalcataError(_LIB.FLC_GetLastError().decode("utf-8"))
+                    raise FalcataError(_decode_native_text(_LIB.FLC_GetLastError()))
         return self
 
     def _reverse_update_params(self) -> "Dataset":
