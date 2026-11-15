@@ -27,6 +27,7 @@
 
 #ifdef USE_CUDA
 #include <cuda_runtime.h>
+#include <Falcata/cuda/cuda_tree.hpp>
 #endif  // USE_CUDA
 
 namespace Falcata {
@@ -463,6 +464,8 @@ void GBDT::Train(int snapshot_freq, const std::string& model_output_path) {
   }
 }
 
+double ObtainAutomaticInitialScore(const ObjectiveFunction* fobj, int class_id);
+
 void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const size_t ncol) {
   if (leaf_value_dim_ > 1) {
     Log::Fatal(
@@ -500,6 +503,31 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
     tree_learner_->InitLinear(train_data_, max_leaves);
   }
 
+  // Training starts from the average (BoostFromAverage) and adds that score to the first iteration's trees
+  // (Tree::AddBias, which also sets their shrinkage to 1). Refit started from score 0 instead, so those trees got a
+  // full, unshrunk Newton step from 0 in place of "average + learning_rate * step": far off for log-link objectives
+  // (a leaf of ~mean(label) on the log scale for poisson / tweedie / gamma), and the next iteration's exp() gradients
+  // overflowed to inf and NaN. Start from the refit data's average as training does, and rebuild those trees as
+  // training built them. A first tree without the bias keeps the learning rate as its shrinkage and is refit as before.
+  std::vector<double> init_scores(num_tree_per_iteration_, 0.0);
+  // whether training added the bias to the tree: tracked apart from init_scores, since the refit data's average can
+  // be 0 while the tree still holds a bias and an unshrunk step
+  std::vector<bool> rebuild_first_tree(num_tree_per_iteration_, false);
+  if (num_iterations > 0 && !linear_tree_ && config_->boosting == std::string("gbdt") && objective_function_ != nullptr &&
+      !train_score_updater_->has_init_score() &&
+      (config_->boost_from_average || train_data_->num_features() == 0)) {
+    for (int tree_id = 0; tree_id < num_tree_per_iteration_; ++tree_id) {
+      if (std::fabs(models_[tree_id]->shrinkage() - 1.0) > kEpsilon) {
+        continue;  // the learning rate as shrinkage: training added no bias to this tree
+      }
+      rebuild_first_tree[tree_id] = true;
+      init_scores[tree_id] = ObtainAutomaticInitialScore(objective_function_, tree_id);
+      if (init_scores[tree_id] != 0.0) {
+        train_score_updater_->AddScore(init_scores[tree_id], tree_id);
+      }
+    }
+  }
+
   for (int iter = 0; iter < num_iterations; ++iter) {
     Boosting();
     for (int tree_id = 0; tree_id < num_tree_per_iteration_; ++tree_id) {
@@ -511,7 +539,34 @@ void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const s
       size_t offset = static_cast<size_t>(tree_id) * num_data_;
       auto grad = gradients_pointer_ + offset;
       auto hess = hessians_pointer_ + offset;
-      auto new_tree = tree_learner_->FitByExistingTree(models_[model_index].get(), leaf_pred, grad, hess);
+      const Tree* old_tree = models_[model_index].get();
+      auto new_tree = tree_learner_->FitByExistingTree(old_tree, leaf_pred, grad, hess);
+      if (iter == 0 && rebuild_first_tree[tree_id]) {
+        const double init_score = init_scores[tree_id];
+        // The learner blended new = d * old + (1 - d) * step with the tree's shrinkage of 1. Training built the leaf
+        // as init + learning_rate * step (init alone for a single-leaf tree), so the refit leaf is
+        // d * old + (1 - d) * (init + learning_rate * step), which is linear in the learner's result.
+        const double d = config_->refit_decay_rate;
+        const bool has_step = old_tree->num_leaves() > 1;
+        for (int leaf = 0; leaf < new_tree->num_leaves(); ++leaf) {
+          const double old_output = old_tree->LeafOutput(leaf);
+          const double blended = new_tree->LeafOutput(leaf);
+          const double output = has_step
+              ? shrinkage_rate_ * blended + d * (1.0 - shrinkage_rate_) * old_output + (1.0 - d) * init_score
+              : d * old_output + (1.0 - d) * init_score;
+          new_tree->SetLeafOutput(leaf, output);
+        }
+        #ifdef USE_CUDA
+        if (new_tree->is_cuda_tree()) {
+          // the CUDA learner scores with the device copy of the leaf outputs
+          static_cast<CUDATree*>(new_tree)->SyncLeafOutputFromHostToCUDA();
+        }
+        #endif  // USE_CUDA
+        // the scores already hold init_score: add the tree's part on top of it
+        if (init_score != 0.0) {
+          train_score_updater_->AddScore(-init_score, tree_id);
+        }
+      }
       train_score_updater_->AddScore(tree_learner_.get(), new_tree, tree_id);
       models_[model_index].reset(new_tree);
     }
@@ -886,7 +941,7 @@ std::string GBDT::OutputMetric(int iter) {
         tmp_buf << "Iteration:" << iter
           << ", training " << name[k]
           << " : " << scores[k];
-        Log::Info(tmp_buf.str().c_str());
+        Log::Info("%s", tmp_buf.str().c_str());
         if (early_stopping_round_ > 0) {
           msg_buf << tmp_buf.str() << '\n';
         }
@@ -905,7 +960,7 @@ std::string GBDT::OutputMetric(int iter) {
             << ", valid_" << i + 1 << " " << name[k]
             << " : " << test_scores[k];
           if (need_output) {
-            Log::Info(tmp_buf.str().c_str());
+            Log::Info("%s", tmp_buf.str().c_str());
           }
           if (early_stopping_round_ > 0) {
             msg_buf << tmp_buf.str() << '\n';

@@ -125,6 +125,8 @@ class GBDT : public GBDTBase {
     for (int i = 0; i < total_iter; ++i) {
       indices[i] = i;
     }
+    // Fixed seed, as in LightGBM: a given model and range always shuffle to the
+    // same order, independent of the training seed.
     Random tmp_rand(17);
     for (int i = start_iter; i < end_iter - 1; ++i) {
       int j = tmp_rand.NextShort(i + 1, end_iter);

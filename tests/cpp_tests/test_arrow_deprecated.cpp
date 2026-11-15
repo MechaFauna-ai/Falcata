@@ -18,6 +18,7 @@
 
 #include <Falcata/c_api.h>
 
+#include <string>
 #include <vector>
 
 #include <nanoarrow/nanoarrow.hpp>
@@ -208,6 +209,72 @@ TEST(ArrowDeprecatedTest, BoosterPredictForArrow) {
   for (int i = 0; i < n_predict_rows; ++i) {
     EXPECT_DOUBLE_EQ(arrow_out[i], mat_out[i]);
   }
+
+  ASSERT_EQ(FLC_BoosterFree(booster), 0);
+  ASSERT_EQ(FLC_DatasetFree(dataset), 0);
+}
+
+namespace {
+
+// Chunks that claim 2^30 rows each over a one-row buffer, 3 * 2^30 rows in all: past INT32_MAX,
+// which a Dataset or a prediction cannot hold. The count must be rejected before any row is read
+// (it used to be cast to int: -2^30 here).
+std::vector<ArrowArray> MakeHugeFloatStructChunks(const struct ArrowSchema* schema, int n_chunks) {
+  std::vector<ArrowArray> raw_chunks(n_chunks);
+  for (int i = 0; i < n_chunks; ++i) {
+    auto array = MakeFloatStructArray(schema, {{1.0f}, {2.0f}});
+    array->length = int64_t{1} << 30;
+    array->children[0]->length = array->length;
+    array->children[1]->length = array->length;
+    array.move(&raw_chunks[i]);
+  }
+  return raw_chunks;
+}
+
+}  // namespace
+
+TEST(ArrowDeprecatedTest, DatasetCreateFromArrowRejectsRowCountPastInt32) {
+  auto schema = MakeFloatStructSchema(2);
+  auto raw_chunks = MakeHugeFloatStructChunks(schema.get(), 3);
+  ArrowSchema raw_schema;
+  schema.move(&raw_schema);
+
+  DatasetHandle handle = nullptr;
+  EXPECT_NE(FLC_DatasetCreateFromArrow(static_cast<int64_t>(raw_chunks.size()), raw_chunks.data(),
+                                       &raw_schema, "max_bin=15 verbose=-1", nullptr, &handle),
+            0);
+  EXPECT_NE(std::string(FLC_GetLastError()).find("3221225472 rows is outside the supported range"),
+            std::string::npos)
+      << FLC_GetLastError();
+  EXPECT_EQ(handle, nullptr);
+}
+
+TEST(ArrowDeprecatedTest, BoosterPredictForArrowRejectsRowCountPastInt32) {
+  std::vector<double> data = {1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0};
+  std::vector<float> labels = {0, 0, 1, 1};
+  DatasetHandle dataset = nullptr;
+  ASSERT_EQ(FLC_DatasetCreateFromMat(data.data(), C_API_DTYPE_FLOAT64, 4, 2, 1,
+                                     "max_bin=15 min_data_in_bin=1 verbose=-1", nullptr, &dataset),
+            0);
+  ASSERT_EQ(FLC_DatasetSetField(dataset, "label", labels.data(), 4, C_API_DTYPE_FLOAT32), 0);
+  BoosterHandle booster = nullptr;
+  ASSERT_EQ(FLC_BoosterCreate(dataset, "objective=binary min_data_in_leaf=1 verbose=-1", &booster), 0);
+  int finished = 0;
+  ASSERT_EQ(FLC_BoosterUpdateOneIter(booster, &finished), 0);
+
+  auto schema = MakeFloatStructSchema(2);
+  auto raw_chunks = MakeHugeFloatStructChunks(schema.get(), 3);
+  ArrowSchema raw_schema;
+  schema.move(&raw_schema);
+  std::vector<double> out(4, 0.0);
+  int64_t written = 0;
+  EXPECT_NE(FLC_BoosterPredictForArrow(booster, static_cast<int64_t>(raw_chunks.size()), raw_chunks.data(),
+                                       &raw_schema, C_API_PREDICT_NORMAL, 0, -1, "", &written, out.data()),
+            0);
+  EXPECT_NE(std::string(FLC_GetLastError()).find("3221225472 rows is outside the supported range"),
+            std::string::npos)
+      << FLC_GetLastError();
+  EXPECT_EQ(written, 0);
 
   ASSERT_EQ(FLC_BoosterFree(booster), 0);
   ASSERT_EQ(FLC_DatasetFree(dataset), 0);

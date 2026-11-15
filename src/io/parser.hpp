@@ -61,6 +61,18 @@ inline const char* AtoiLibSVMIndex(const char* p, int* out) {
   return p;
 }
 
+/*!
+ * \brief the empty field after a CSV/TSV line's final delimiter: NaN, as Common::Atof reads an empty field
+ */
+inline void EmitEmptyLastField(int idx, int offset, int label_idx, std::vector<std::pair<int, double>>* out_features,
+                               double* out_label) {
+  if (idx == label_idx) {
+    *out_label = std::numeric_limits<double>::quiet_NaN();
+  } else {
+    out_features->emplace_back(idx + offset, std::numeric_limits<double>::quiet_NaN());
+  }
+}
+
 class CSVParser: public Parser {
  public:
   explicit CSVParser(int label_idx, int total_columns, AtofFunc atof)
@@ -83,6 +95,11 @@ class CSVParser: public Parser {
       ++idx;
       if (*str == ',') {
         ++str;
+        if (*str == '\0') {
+          // a delimiter at the end of the line opens one more, empty field: missing, like an empty field in the
+          // middle of the line (which atof_ reads as NaN), not an absent (zero) value
+          EmitEmptyLastField(idx, offset, label_idx_, out_features, out_label);
+        }
       } else if (*str != '\0') {
         Log::Fatal("Input format error when parsing as CSV");
       }
@@ -123,6 +140,11 @@ class TSVParser: public Parser {
       ++idx;
       if (*str == '\t') {
         ++str;
+        if (*str == '\0') {
+          // a delimiter at the end of the line opens one more, empty field: missing, like an empty field in the
+          // middle of the line (which atof_ reads as NaN), not an absent (zero) value
+          EmitEmptyLastField(idx, offset, label_idx_, out_features, out_label);
+        }
       } else if (*str != '\0') {
         Log::Fatal("Input format error when parsing as TSV");
       }

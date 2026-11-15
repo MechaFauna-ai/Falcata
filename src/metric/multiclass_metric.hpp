@@ -201,6 +201,13 @@ class AucMuMetric : public Metric {
   explicit AucMuMetric(const Config& config) : config_(config) {
     num_class_ = config.num_class;
     class_weights_ = config.auc_mu_weights_matrix;
+    if (class_weights_.empty() && num_class_ > 0) {
+      // no auc_mu_weights: equal weights for all pairs of classes (Config leaves this matrix to the metric)
+      class_weights_.assign(num_class_, std::vector<double>(num_class_, 1));
+      for (int i = 0; i < num_class_; ++i) {
+        class_weights_[i][i] = 0;
+      }
+    }
   }
 
   virtual ~AucMuMetric() {}

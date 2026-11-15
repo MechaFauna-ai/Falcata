@@ -28,9 +28,8 @@ void DataParallelTreeLearner<TREELEARNER_T>::Init(const Dataset* train_data, boo
   rank_ = Network::rank();
   num_machines_ = Network::num_machines();
 
-  auto max_cat_threshold = this->config_->max_cat_threshold;
-  // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit
-  size_t split_info_size = static_cast<size_t>(SplitInfo::Size(max_cat_threshold) * 2);
+  // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit, under any max_cat_threshold
+  size_t split_info_size = static_cast<size_t>(SplitInfo::Size(MaxCatThresholdInSplit(train_data))) * 2;
   size_t histogram_size =
     static_cast<size_t>(this->share_state_->num_hist_total_bin() * kHistEntrySize);
 
@@ -219,8 +218,11 @@ void DataParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(const 
   std::vector<SplitInfo> larger_bests_per_thread(this->share_state_->num_threads);
   std::vector<int8_t> smaller_node_used_features =
       this->col_sampler_.GetByNode(tree, this->smaller_leaf_splits_->leaf_index());
-  std::vector<int8_t> larger_node_used_features =
-      this->col_sampler_.GetByNode(tree, this->larger_leaf_splits_->leaf_index());
+  // no larger leaf at the root (leaf index -1): GetByNode would read the tree's branch features at -1
+  std::vector<int8_t> larger_node_used_features;
+  if (this->larger_leaf_splits_ != nullptr && this->larger_leaf_splits_->leaf_index() >= 0) {
+    larger_node_used_features = this->col_sampler_.GetByNode(tree, this->larger_leaf_splits_->leaf_index());
+  }
   double smaller_leaf_parent_output = this->GetParentOutput(tree, this->smaller_leaf_splits_.get());
   double larger_leaf_parent_output = this->GetParentOutput(tree, this->larger_leaf_splits_.get());
 
@@ -283,7 +285,7 @@ void DataParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(const 
   }
 
   // sync global best info
-  SyncUpGlobalBestSplit(input_buffer_.data(), input_buffer_.data(), &smaller_best_split, &larger_best_split, this->config_->max_cat_threshold);
+  SyncUpGlobalBestSplit(input_buffer_.data(), input_buffer_.data(), &smaller_best_split, &larger_best_split, SyncSplitInfoSize(this->train_data_, this->config_->max_cat_threshold));
 
   // set best split
   this->best_split_per_leaf_[this->smaller_leaf_splits_->leaf_index()] = smaller_best_split;

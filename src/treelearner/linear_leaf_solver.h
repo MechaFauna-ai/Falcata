@@ -52,6 +52,7 @@ inline void SolveAndStore(Tree* tree, int leaf, int num_feat,
     }
     XTg_mat(feat1) = xtg[feat1];
   }
+  // explicit inverse matches upstream LightGBM's linear-leaf numerics; solve() would change fitted coefficients
   Eigen::MatrixXd coeffs = -XTHX_mat.fullPivLu().inverse() * XTg_mat;
   std::vector<double> coeffs_vec;
   std::vector<int> features_new;

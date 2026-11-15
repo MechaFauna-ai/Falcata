@@ -528,6 +528,10 @@ class Dataset {
                                      int32_t nclasses,
                                      int32_t nthreads,
                                      int32_t omp_max_threads) {
+    // the push buffers are indexed by OpenMP thread + omp_max_threads * external thread id
+    if (nthreads <= 0) {
+      Log::Fatal("InitStreaming needs at least one external thread, got nthreads=%d", nthreads);
+    }
     // Initialize optional max thread count with either parameter or OMP setting
     if (omp_max_threads > 0) {
       omp_max_threads_ = omp_max_threads;
@@ -535,9 +539,24 @@ class Dataset {
       omp_max_threads_ = OMP_NUM_THREADS();
     }
 
+    if (static_cast<int64_t>(omp_max_threads_) * nthreads > std::numeric_limits<int32_t>::max()) {
+      Log::Fatal("InitStreaming: %d external threads x %d OpenMP threads is too many push buffers", nthreads,
+                 omp_max_threads_);
+    }
     metadata_.Init(num_data, has_weights, has_init_scores, has_queries, nclasses);
     for (int i = 0; i < num_groups_; ++i) {
       feature_groups_[i]->InitStreaming(nthreads, omp_max_threads_);
+    }
+    streaming_num_threads_ = nthreads;
+  }
+
+  /*! \brief Number of external threads registered by InitStreaming (0: not initialized for streaming) */
+  inline int streaming_num_threads() const { return streaming_num_threads_; }
+
+  /*! \brief Make room in the bins for pushes from OpenMP threads [0, num_thread) */
+  FALCATA_EXPORT void ReservePushThreads(int num_thread) {
+    for (int i = 0; i < num_groups_; ++i) {
+      feature_groups_[i]->ReservePushThreads(num_thread);
     }
   }
 
@@ -1047,6 +1066,9 @@ class Dataset {
   /*! \brief Get Number of data */
   inline data_size_t num_data() const { return num_data_; }
 
+  /*! \brief Whether FinishLoad has run: the bins are only complete (and readable) after it. */
+  inline bool is_finish_load() const { return is_finish_load_; }
+
   /*! \brief Get whether FinishLoad is automatically called when pushing last row. */
   inline bool wait_for_manual_finish() const { return wait_for_manual_finish_; }
 
@@ -1213,6 +1235,8 @@ class Dataset {
   std::vector<std::vector<float>> raw_data_;
   bool wait_for_manual_finish_ = false;
   int omp_max_threads_ = -1;
+  /*! \brief External threads registered by InitStreaming; 0 when the Dataset was not initialized for streaming */
+  int streaming_num_threads_ = 0;
   /*! \brief Incremented by every Set*Field call (label, weight, group, ...), see field_version() */
   uint64_t field_version_ = 0;
   bool has_raw_ = false;

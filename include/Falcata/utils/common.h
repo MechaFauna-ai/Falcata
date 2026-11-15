@@ -282,9 +282,14 @@ inline static const char* Atof(const char* p, double* out) {
       double right = 0.0;
       int nn = 0;
       ++p;
+      // Past 308 fraction digits both right and 10^nn overflow to inf and
+      // their quotient was NaN, so a long but finite literal read as a missing
+      // value. Such digits are worth < 1e-308: consume them without adding.
       while (*p >= '0' && *p <= '9') {
-        right = (*p - '0') + right * 10.0;
-        ++nn;
+        if (nn < 308) {
+          right = (*p - '0') + right * 10.0;
+          ++nn;
+        }
         ++p;
       }
       value += right / Pow(10.0, nn);
@@ -304,8 +309,12 @@ inline static const char* Atof(const char* p, double* out) {
         ++p;
       }
       // Get digits of exponent, if any.
+      // saturate: in uint32 a long exponent wrapped back below the 308 clamp,
+      // so 1e4294967296 parsed as 1
       for (expon = 0; *p >= '0' && *p <= '9'; ++p) {
-        expon = expon * 10 + (*p - '0');
+        if (expon <= 308) {
+          expon = expon * 10 + (*p - '0');
+        }
       }
       if (expon > 308) expon = 308;
       // Calculate scaling factor.

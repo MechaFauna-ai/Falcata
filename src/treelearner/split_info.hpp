@@ -89,7 +89,11 @@ struct SplitInfo {
     buffer += sizeof(monotone_type);
     std::memcpy(buffer, &num_cat_threshold, sizeof(num_cat_threshold));
     buffer += sizeof(num_cat_threshold);
-    std::memcpy(buffer, cat_threshold.data(), sizeof(uint32_t) * num_cat_threshold);
+    // a numerical split has no category thresholds, and the data() of an empty vector may be null: passing null to
+    // memcpy is undefined even for a zero size
+    if (num_cat_threshold > 0) {
+      std::memcpy(buffer, cat_threshold.data(), sizeof(uint32_t) * num_cat_threshold);
+    }
   }
 
   void CopyFrom(const char* buffer) {
@@ -126,7 +130,9 @@ struct SplitInfo {
     std::memcpy(&num_cat_threshold, buffer, sizeof(num_cat_threshold));
     buffer += sizeof(num_cat_threshold);
     cat_threshold.resize(num_cat_threshold);
-    std::memcpy(cat_threshold.data(), buffer, sizeof(uint32_t) * num_cat_threshold);
+    if (num_cat_threshold > 0) {
+      std::memcpy(cat_threshold.data(), buffer, sizeof(uint32_t) * num_cat_threshold);
+    }
   }
 
   inline void Reset() {

@@ -144,7 +144,18 @@ void SerialTreeLearner::ResetTrainingDataInner(const Dataset* train_data,
   data_partition_->ResetNumData(num_data_);
   if (reset_multi_val_bin) {
     col_sampler_.SetTrainingData(train_data_);
+    const int old_num_hist_total_bin = share_state_->num_hist_total_bin();
+    const std::vector<uint32_t> old_feature_hist_offsets = share_state_->feature_hist_offsets();
     GetShareStates(train_data_, is_constant_hessian, false);
+    // The new data can need another histogram layout even with the same bin mappers: the offsets follow how its
+    // feature groups are stored (multi-val, dense or sparse), which the new Dataset decides for its own rows. The
+    // cached histograms were laid out for the old data, so construction overflowed them and the feature histograms
+    // read misplaced bins (Booster.update(train_set=...) on sparse data).
+    if (share_state_->num_hist_total_bin() != old_num_hist_total_bin ||
+        share_state_->feature_hist_offsets() != old_feature_hist_offsets) {
+      histogram_pool_.ReLayout(train_data_, share_state_->num_hist_total_bin(), share_state_->feature_hist_offsets(),
+                               config_);
+    }
   }
 
   // initialize ordered gradients and hessians

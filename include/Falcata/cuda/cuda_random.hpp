@@ -53,6 +53,7 @@ class CUDARandom {
   */
   __device__ inline float NextFloat() {
     // get random float in [0,1)
+    // 15-bit draw, bit-identical to CPU Random::NextFloat: widening it breaks CPU/CUDA parity
     return static_cast<float>(RandInt16()) / (32768.0f);
   }
 
