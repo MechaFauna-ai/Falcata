@@ -840,8 +840,12 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
         continue;
       }
       bin_mappers[i].reset(new BinMapper());
-      bin_mappers[i]->CopyFrom(cp_ptr);
-      cp_ptr += bin_mappers[i]->SizesInByte();
+      // the gathered buffer comes from the other machines: read each mapper within what is left of it
+      const char* gathered_end = output_buffer.data() + output_buffer.size();
+      if (cp_ptr > gathered_end) {
+        Log::Fatal("The bin mappers gathered from the other machines are shorter than their features need");
+      }
+      cp_ptr += bin_mappers[i]->CopyFrom(cp_ptr, static_cast<size_t>(gathered_end - cp_ptr));
     }
   }
   CheckCategoricalFeatureNumBin(bin_mappers, config_.max_bin, config_.max_bin_by_feature);
@@ -1343,8 +1347,12 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
         continue;
       }
       bin_mappers[i].reset(new BinMapper());
-      bin_mappers[i]->CopyFrom(cp_ptr);
-      cp_ptr += bin_mappers[i]->SizesInByte();
+      // the gathered buffer comes from the other machines: read each mapper within what is left of it
+      const char* gathered_end = output_buffer.data() + output_buffer.size();
+      if (cp_ptr > gathered_end) {
+        Log::Fatal("The bin mappers gathered from the other machines are shorter than their features need");
+      }
+      cp_ptr += bin_mappers[i]->CopyFrom(cp_ptr, static_cast<size_t>(gathered_end - cp_ptr));
     }
   }
   CheckCategoricalFeatureNumBin(bin_mappers, config_.max_bin, config_.max_bin_by_feature);
