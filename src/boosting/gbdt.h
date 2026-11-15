@@ -214,12 +214,18 @@ class GBDT : public GBDTBase {
     std::stringstream str_buf;
     str_buf << "{";
     for (const auto& line : lines) {
-      const auto pair = Common::Split(line.c_str(), ":");
-      // a "[name: value]" line; skip anything else rather than index past it
-      if (pair.size() < 2 || pair[0].size() < 2 || pair[1].size() < 2 || pair[1] == " ]")
+      // a "[name: value]" line; skip anything else rather than index past it. The value may itself contain ':' (a
+      // Windows path, host:port in machines, a cuda_plan key:value override): split at the first ": " only -- the old
+      // split at every ':' returned "" or a cut value (minus its last character) to Booster.params and refit
+      const auto colon = line.find(": ");
+      if (line.size() < 4 || line.front() != '[' || line.back() != ']' || colon == std::string::npos || colon < 2) {
         continue;
-      const auto param = pair[0].substr(1);
-      const auto value_str = pair[1].substr(1, pair[1].size() - 2);
+      }
+      const auto param = line.substr(1, colon - 1);
+      const auto value_str = line.substr(colon + 2, line.size() - colon - 3);
+      if (value_str.empty()) {
+        continue;
+      }
       auto iter = param_types.find(param);
       if (iter == param_types.end()) {
         Log::Warning("Ignoring unrecognized parameter '%s' found in model string.", param.c_str());
@@ -234,7 +240,9 @@ class GBDT : public GBDTBase {
       }
       str_buf << param << "\": ";
       if (param_type == "string") {
-        str_buf << "\"" << value_str << "\"";
+        // JSON-escaped: a backslash (any Windows path) or a quote made the whole parameter JSON invalid, and Python
+        // could not load the model at all
+        str_buf << Json(value_str).dump();
       } else if (param_type == "int") {
         int value;
         Common::Atoi(value_str.c_str(), &value);
@@ -250,7 +258,9 @@ class GBDT : public GBDTBase {
         str_buf << "[";
         if (param_type.substr(7, 6) == "string") {
           const auto parts = Common::Split(value_str.c_str(), ",");
-          str_buf << "\"" << Common::Join(parts, "\",\"") << "\"";
+          for (size_t i = 0; i < parts.size(); ++i) {
+            str_buf << (i > 0 ? "," : "") << Json(parts[i]).dump();
+          }
         } else {
           str_buf << value_str;
         }
