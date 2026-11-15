@@ -1046,10 +1046,12 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_array_args.cpp
       tests/cpp_tests/test_arrow.cpp
       tests/cpp_tests/test_arrow_deprecated.cpp
+      tests/cpp_tests/test_bin_mapper_serialize.cpp
       tests/cpp_tests/test_binary_default_predicate.cpp
       tests/cpp_tests/test_byte_buffer.cpp
       tests/cpp_tests/test_c_api_error.cpp
       tests/cpp_tests/test_chunked_array.cpp
+      tests/cpp_tests/test_cli_custom_objective.cpp
       tests/cpp_tests/test_cli_refit_feature_count.cpp
       tests/cpp_tests/test_colwise_iterators.cpp
       tests/cpp_tests/test_common.cpp
@@ -1061,6 +1063,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_discretizer_zero_scale.cpp
       tests/cpp_tests/test_empty_binary_ranking_metrics.cpp
       tests/cpp_tests/test_empty_global_leaf.cpp
+      tests/cpp_tests/test_extreme_int_params.cpp
       tests/cpp_tests/test_falb_unaligned_view.cpp
       tests/cpp_tests/test_falb_writer_alignment.cpp
       tests/cpp_tests/test_find_groups.cpp

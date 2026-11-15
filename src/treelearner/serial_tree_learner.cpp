@@ -144,7 +144,18 @@ void SerialTreeLearner::ResetTrainingDataInner(const Dataset* train_data,
   data_partition_->ResetNumData(num_data_);
   if (reset_multi_val_bin) {
     col_sampler_.SetTrainingData(train_data_);
+    const int old_num_hist_total_bin = share_state_->num_hist_total_bin();
+    const std::vector<uint32_t> old_feature_hist_offsets = share_state_->feature_hist_offsets();
     GetShareStates(train_data_, is_constant_hessian, false);
+    // The new data can need another histogram layout even with the same bin mappers: the offsets follow how its
+    // feature groups are stored (multi-val, dense or sparse), which the new Dataset decides for its own rows. The
+    // cached histograms were laid out for the old data, so construction overflowed them and the feature histograms
+    // read misplaced bins (Booster.update(train_set=...) on sparse data).
+    if (share_state_->num_hist_total_bin() != old_num_hist_total_bin ||
+        share_state_->feature_hist_offsets() != old_feature_hist_offsets) {
+      histogram_pool_.ReLayout(train_data_, share_state_->num_hist_total_bin(), share_state_->feature_hist_offsets(),
+                               config_);
+    }
   }
 
   // initialize ordered gradients and hessians
@@ -468,8 +479,9 @@ bool SerialTreeLearner::BeforeFindBestSplit(const Tree* tree, int left_leaf, int
   data_size_t num_data_in_left_child = GetGlobalDataCountInLeaf(left_leaf);
   data_size_t num_data_in_right_child = GetGlobalDataCountInLeaf(right_leaf);
   // no enough data to continue
-  if (num_data_in_right_child < static_cast<data_size_t>(config_->min_data_in_leaf * 2)
-      && num_data_in_left_child < static_cast<data_size_t>(config_->min_data_in_leaf * 2)) {
+  // in 64 bits: min_data_in_leaf * 2 overflowed int for min_data_in_leaf > INT_MAX / 2
+  const int64_t min_data_to_split = 2 * static_cast<int64_t>(config_->min_data_in_leaf);
+  if (num_data_in_right_child < min_data_to_split && num_data_in_left_child < min_data_to_split) {
     best_split_per_leaf_[left_leaf].gain = kMinScore;
     if (right_leaf >= 0) {
       best_split_per_leaf_[right_leaf].gain = kMinScore;
@@ -823,8 +835,10 @@ bool SerialTreeLearner::SplitInner(Tree* tree, int best_leaf, int* left_leaf,
   // Do not commit tree, constraint, or feature-cost state for an empty child.
   auto commit_partition = [&]() {
     if (update_cnt) {
-      best_split_info.left_count = data_partition_->leaf_count(best_leaf);
-      best_split_info.right_count = data_partition_->leaf_count(next_leaf_id);
+      data_size_t left_count = 0, right_count = 0;
+      PartitionedChildCounts(best_leaf, next_leaf_id, &left_count, &right_count);
+      best_split_info.left_count = left_count;
+      best_split_info.right_count = right_count;
       if (best_split_info.left_count == 0 || best_split_info.right_count == 0) {
         data_partition_->UndoEmptySplit(best_leaf, next_leaf_id);
         *right_leaf = -1;

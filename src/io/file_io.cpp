@@ -50,11 +50,25 @@ struct LocalFile : VirtualFileReader, VirtualFileWriter {
     if (bytes == 0) {
       return 0;  // an empty array may hand over a null data(), which fwrite must not get
     }
-    return fwrite(buffer, bytes, 1, file_) == 1 ? bytes : 0;
+    if (fwrite(buffer, bytes, 1, file_) != 1) {
+      write_failed_ = true;
+      return 0;
+    }
+    return bytes;
+  }
+
+  bool Close() {
+    if (file_ == NULL) {
+      return false;
+    }
+    const bool closed = fclose(file_) == 0;
+    file_ = NULL;
+    return closed && !write_failed_;
   }
 
  private:
   FILE* file_ = NULL;
+  bool write_failed_ = false;
   const std::string filename_;
   const std::string mode_;
 };

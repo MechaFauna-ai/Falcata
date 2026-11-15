@@ -167,6 +167,10 @@ class Predictor {
         writer->Write("\n", 1);
       }
     });
+    if (!writer->Close()) {
+      Log::Fatal("Cannot write prediction results to %s (disk full or I/O error); the file is incomplete",
+                 result_filename);
+    }
   }
 
   /*!

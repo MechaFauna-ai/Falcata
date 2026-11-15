@@ -9,14 +9,67 @@
 #include <Falcata/network.h>
 #include <Falcata/utils/array_args.h>
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "gpu_tree_learner.h"
 #include "serial_tree_learner.h"
 
 namespace Falcata {
+
+/*!
+ * \brief Check that the parameters the machines must share have the same value on every machine. The parallel
+ *        learners exchange buffers sized from num_leaves, max_cat_threshold and top_k, split the leaves the
+ *        machines agree on, and lay out the histogram exchange from the features each machine sampled
+ *        (feature_fraction*, feature_fraction_seed), and min_data_in_leaf decides from the global leaf counts
+ *        whether a machine searches a leaf (and joins that search's collectives): a machine with a different
+ *        value, or a different parallel learner, read or split past its own arrays (SEGV in SplitInner with
+ *        num_leaves 4 against 63, in GlobalVoting with data against voting, heap-buffer-overflow with
+ *        feature_fraction 0.5 against 1, and in CopyLocalHistogram with min_data_in_leaf 100 against 1 once
+ *        one machine skipped the root search and the collectives fell out of step).
+ *        Called at the start of every tree, which every machine trains (a reset_parameter may run on one machine
+ *        only), as one allreduce by max of the values and their bitwise complements.
+ */
+inline void CheckParallelConfigAgrees(const Config& config, bool voting) {
+  auto bits = [](double value) {
+    int64_t out;
+    std::memcpy(&out, &value, sizeof(out));
+    return out;
+  };
+  static const char* const kNames[] = {"tree_learner", "num_leaves", "max_depth", "max_cat_threshold", "top_k",
+                                       "feature_fraction", "feature_fraction_bynode", "feature_fraction_seed",
+                                       "min_data_in_leaf"};
+  const int64_t values[] = {voting ? 2 : 1, config.num_leaves, config.max_depth, config.max_cat_threshold,
+                            voting ? config.top_k : 0, bits(config.feature_fraction),
+                            bits(config.feature_fraction_bynode), config.feature_fraction_seed,
+                            config.min_data_in_leaf};
+  constexpr int kNum = sizeof(values) / sizeof(values[0]);
+  std::vector<int64_t> local(2 * kNum), global(2 * kNum);
+  for (int i = 0; i < kNum; ++i) {
+    local[i] = values[i];
+    local[kNum + i] = ~values[i];  // max of the complements is the complement of the min
+  }
+  Network::Allreduce(reinterpret_cast<char*>(local.data()), static_cast<comm_size_t>(sizeof(int64_t) * 2 * kNum),
+                     sizeof(int64_t), reinterpret_cast<char*>(global.data()),
+                     [](const char* src, char* dst, int type_size, comm_size_t len) {
+                       for (comm_size_t pos = 0; pos < len; pos += type_size) {
+                         int64_t a, b;
+                         std::memcpy(&a, src + pos, sizeof(a));
+                         std::memcpy(&b, dst + pos, sizeof(b));
+                         b = std::max(a, b);
+                         std::memcpy(dst + pos, &b, sizeof(b));
+                       }
+                     });
+  for (int i = 0; i < kNum; ++i) {
+    if (global[i] != ~global[kNum + i]) {
+      Log::Fatal("Parameter %s differs across machines: parallel training needs the same value on every machine",
+                 kNames[i]);
+    }
+  }
+}
 
 /*!
 * \brief Feature parallel learning algorithm.
@@ -59,6 +112,16 @@ class DataParallelTreeLearner: public TREELEARNER_T {
   void ResetConfig(const Config* config) override;
 
  protected:
+  // the global counts of the children: every machine partitions its rows by the same split
+  void PartitionedChildCounts(int left_leaf, int right_leaf, data_size_t* left_count,
+                              data_size_t* right_count) const override {
+    std::vector<data_size_t> counts = {this->data_partition_->leaf_count(left_leaf),
+                                       this->data_partition_->leaf_count(right_leaf)};
+    counts = Network::GlobalSum(&counts);
+    *left_count = counts[0];
+    *right_count = counts[1];
+  }
+
   // the root's rows on all machines (num_data_ is this machine's)
   data_size_t RootLeafCount() const override { return global_data_count_in_leaf_[0]; }
 
@@ -126,6 +189,16 @@ class VotingParallelTreeLearner: public TREELEARNER_T {
   void ResetConfig(const Config* config) override;
 
  protected:
+  // the global counts of the children: every machine partitions its rows by the same split
+  void PartitionedChildCounts(int left_leaf, int right_leaf, data_size_t* left_count,
+                              data_size_t* right_count) const override {
+    std::vector<data_size_t> counts = {this->data_partition_->leaf_count(left_leaf),
+                                       this->data_partition_->leaf_count(right_leaf)};
+    counts = Network::GlobalSum(&counts);
+    *left_count = counts[0];
+    *right_count = counts[1];
+  }
+
   // the root output from the global sums (smaller_leaf_splits_ holds this machine's)
   const LeafSplits* RootLeafSplits() const override { return smaller_leaf_splits_global_.get(); }
   data_size_t RootLeafCount() const override { return global_data_count_in_leaf_[0]; }
@@ -207,10 +280,32 @@ class VotingParallelTreeLearner: public TREELEARNER_T {
   std::vector<FeatureMetainfo> feature_metas_;
 };
 
+/*!
+ * \brief The most category thresholds one split on train_data can carry
+ *
+ * The categorical searches cap a split at min(max_cat_threshold, (bins + 1) / 2) categories. Sizing the
+ * SyncUpGlobalBestSplit slots from max_cat_threshold alone (only checked > 0) wrapped SplitInfo::Size's int for a
+ * huge value, so the second slot overran the collective buffer; the bins bound the slot instead, whatever the config.
+ */
+inline int MaxCatThresholdInSplit(const Dataset* train_data) {
+  int most = 1;
+  for (int i = 0; i < train_data->num_features(); ++i) {
+    const BinMapper* bin_mapper = train_data->FeatureBinMapper(i);
+    if (bin_mapper->bin_type() == BinType::CategoricalBin) {
+      most = std::max(most, (bin_mapper->num_bin() + 1) / 2);
+    }
+  }
+  return most;
+}
+
+/*! \brief Slot size for one SplitInfo in SyncUpGlobalBestSplit under the current max_cat_threshold */
+inline int SyncSplitInfoSize(const Dataset* train_data, int max_cat_threshold) {
+  return SplitInfo::Size(std::min(max_cat_threshold, MaxCatThresholdInSplit(train_data)));
+}
+
 // To-do: reduce the communication cost by using bitset to communicate.
-inline void SyncUpGlobalBestSplit(char* input_buffer_, char* output_buffer_, SplitInfo* smaller_best_split, SplitInfo* larger_best_split, int max_cat_threshold) {
-  // sync global best info
-  int size = SplitInfo::Size(max_cat_threshold);
+inline void SyncUpGlobalBestSplit(char* input_buffer_, char* output_buffer_, SplitInfo* smaller_best_split, SplitInfo* larger_best_split, int size) {
+  // sync global best info; size is SyncSplitInfoSize(), and the buffers hold two slots of it
   smaller_best_split->CopyTo(input_buffer_);
   larger_best_split->CopyTo(input_buffer_ + size);
   Network::Allreduce(input_buffer_, size * 2, size, output_buffer_,

@@ -73,9 +73,8 @@ void VotingParallelTreeLearner<TREELEARNER_T>::ResetTopKAndBuffers() {
   }
   // calculate buffer size
   size_t buffer_size = 2 * top_k_ * std::max(max_bin * kHistEntrySize, sizeof(LightSplitInfo) * num_machines_);
-  auto max_cat_threshold = this->config_->max_cat_threshold;
-  // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit
-  size_t split_info_size = static_cast<size_t>(SplitInfo::Size(max_cat_threshold) * 2);
+  // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit, under any max_cat_threshold
+  size_t split_info_size = static_cast<size_t>(SplitInfo::Size(MaxCatThresholdInSplit(this->train_data_))) * 2;
   buffer_size = std::max(buffer_size, split_info_size);
   // left and right on same time, so need double size
   input_buffer_.resize(buffer_size);
@@ -102,6 +101,7 @@ void VotingParallelTreeLearner<TREELEARNER_T>::ResetConfig(const Config* config)
 template <typename TREELEARNER_T>
 void VotingParallelTreeLearner<TREELEARNER_T>::BeforeTrain() {
   TREELEARNER_T::BeforeTrain();
+  CheckParallelConfigAgrees(*this->config_, true);
   // sync global data sumup info
   std::tuple<data_size_t, double, double> data(this->smaller_leaf_splits_->num_data_in_leaf(), this->smaller_leaf_splits_->sum_gradients(), this->smaller_leaf_splits_->sum_hessians());
   int size = sizeof(std::tuple<data_size_t, double, double>);
@@ -411,8 +411,11 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(cons
   std::vector<SplitInfo> larger_bests_per_thread(this->share_state_->num_threads);
   std::vector<int8_t> smaller_node_used_features =
       this->col_sampler_.GetByNode(tree, this->smaller_leaf_splits_->leaf_index());
-  std::vector<int8_t> larger_node_used_features =
-      this->col_sampler_.GetByNode(tree, this->larger_leaf_splits_->leaf_index());
+  // no larger leaf at the root (leaf index -1): GetByNode would read the tree's branch features at -1
+  std::vector<int8_t> larger_node_used_features;
+  if (this->larger_leaf_splits_ != nullptr && this->larger_leaf_splits_->leaf_index() >= 0) {
+    larger_node_used_features = this->col_sampler_.GetByNode(tree, this->larger_leaf_splits_->leaf_index());
+  }
   double smaller_leaf_parent_output = this->GetParentOutput(tree, this->smaller_leaf_splits_global_.get());
   double larger_leaf_parent_output = this->GetParentOutput(tree, this->larger_leaf_splits_global_.get());
   // find best split from local aggregated histograms
@@ -477,7 +480,7 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(cons
     larger_best_split = this->best_split_per_leaf_[this->larger_leaf_splits_->leaf_index()];
   }
   // sync global best info
-  SyncUpGlobalBestSplit(input_buffer_.data(), input_buffer_.data(), &smaller_best_split, &larger_best_split, this->config_->max_cat_threshold);
+  SyncUpGlobalBestSplit(input_buffer_.data(), input_buffer_.data(), &smaller_best_split, &larger_best_split, SyncSplitInfoSize(this->train_data_, this->config_->max_cat_threshold));
 
   // copy back
   this->best_split_per_leaf_[smaller_leaf_splits_global_->leaf_index()] = smaller_best_split;
@@ -488,7 +491,12 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(cons
 
 template <typename TREELEARNER_T>
 bool VotingParallelTreeLearner<TREELEARNER_T>::Split(Tree* tree, int best_Leaf, int* left_leaf, int* right_leaf) {
-  TREELEARNER_T::SplitInner(tree, best_Leaf, left_leaf, right_leaf, false);
+  // exact global child counts (an inferred count is off for a non-constant hessian, which changed the
+  // min_data_in_leaf decisions against serial training); every machine sees the same counts, so a globally
+  // empty child is undone on all of them
+  if (!TREELEARNER_T::SplitInner(tree, best_Leaf, left_leaf, right_leaf, true)) {
+    return false;
+  }
   const SplitInfo& best_split_info = this->best_split_per_leaf_[best_Leaf];
   // set the global number of data for leaves
   global_data_count_in_leaf_[*left_leaf] = best_split_info.left_count;

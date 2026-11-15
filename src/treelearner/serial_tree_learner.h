@@ -184,6 +184,17 @@ class SerialTreeLearner: public TreeLearner {
                   bool update_cnt);
 
   /*!
+  * \brief Number of rows in the two children of a split, after partitioning. Overridden by the distributed
+  *        learners to sum their machines' counts: the counts inferred from the histograms (sum of hessians
+  *        times the leaf's rows per hessian) are only exact for a constant hessian.
+  */
+  virtual void PartitionedChildCounts(int left_leaf, int right_leaf, data_size_t* left_count,
+                                      data_size_t* right_count) const {
+    *left_count = data_partition_->leaf_count(left_leaf);
+    *right_count = data_partition_->leaf_count(right_leaf);
+  }
+
+  /*!
   * \brief Gradient and hessian sums of the root, for its output. The voting-parallel learner keeps its local sums
   *        in smaller_leaf_splits_ and the global ones apart, so it returns the global ones: a tree without a split
   *        took the machine's local root output, and the machines' models differed.
@@ -237,7 +248,8 @@ class SerialTreeLearner: public TreeLearner {
 
   /*! \brief stores best thresholds for all feature for smaller leaf */
   std::unique_ptr<LeafSplits> smaller_leaf_splits_;
-  /*! \brief stores best thresholds for all feature for larger leaf */
+  /*! \brief stores best thresholds for all feature for larger leaf; allocated in Init and never null,
+   *  leaf_index() < 0 means there is no larger leaf (e.g. at the root) */
   std::unique_ptr<LeafSplits> larger_leaf_splits_;
 #if defined(USE_GPU)
   /*! \brief gradients of current iteration, ordered for cache optimized, aligned to 4K page */

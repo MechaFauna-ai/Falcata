@@ -815,7 +815,7 @@ class HistogramPool {
         } else {
           ref_feature_meta[i].penalty = 1.0;
         }
-        ref_feature_meta[i].rand = Random(config->extra_seed + i);
+        ref_feature_meta[i].rand = Random(static_cast<int>(static_cast<uint32_t>(config->extra_seed) + static_cast<uint32_t>(i)));
       }
       ref_feature_meta[i].config = config;
     }
@@ -869,6 +869,24 @@ class HistogramPool {
       }
       OMP_THROW_EX();
     }
+  }
+
+  /*!
+   * \brief Lay every cached histogram out again for a new histogram layout (total bins and per-feature offsets),
+   *        keeping the cache size. DynamicChangeSize allocates only the entries it adds, so after the training data
+   *        changed to a layout with more bins the existing entries kept the old size and offsets: histogram
+   *        construction wrote past them (heap-buffer-overflow) and the feature histograms read misplaced bins.
+   */
+  void ReLayout(const Dataset* train_data, int num_total_bin, const std::vector<uint32_t>& offsets,
+                const Config* config) {
+    const int cache_size = static_cast<int>(pool_.size());
+    if (cache_size == 0) {
+      return;
+    }
+    const int total_size = total_size_;
+    pool_.clear();
+    data_.clear();
+    DynamicChangeSize(train_data, num_total_bin, offsets, config, cache_size, total_size);
   }
 
   void ResetConfig(const Dataset* train_data, const Config* config) {
