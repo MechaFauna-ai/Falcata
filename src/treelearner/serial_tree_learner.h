@@ -183,6 +183,17 @@ class SerialTreeLearner: public TreeLearner {
   bool SplitInner(Tree* tree, int best_leaf, int* left_leaf, int* right_leaf,
                   bool update_cnt);
 
+  /*!
+  * \brief Number of rows in the two children of a split, after partitioning. Overridden by the distributed
+  *        learners to sum their machines' counts: the counts inferred from the histograms (sum of hessians
+  *        times the leaf's rows per hessian) are only exact for a constant hessian.
+  */
+  virtual void PartitionedChildCounts(int left_leaf, int right_leaf, data_size_t* left_count,
+                                      data_size_t* right_count) const {
+    *left_count = data_partition_->leaf_count(left_leaf);
+    *right_count = data_partition_->leaf_count(right_leaf);
+  }
+
   /* Force splits with forced_split_json dict and then return num splits forced.*/
   int32_t ForceSplits(Tree* tree, int* left_leaf, int* right_leaf,
                       int* cur_depth);
