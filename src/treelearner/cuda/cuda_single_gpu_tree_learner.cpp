@@ -6794,6 +6794,14 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   }
   cuda_histogram_constructor_->ResetConfig(config);
   cuda_best_split_finder_->ResetConfig(config, cuda_histogram_constructor_->cuda_hist());
+  // per-node feature selection was decided once in Init: a reset that adds or removes interaction constraints or
+  // changes feature_fraction_bynode was ignored (the CPU learner's ColSampler takes it, #522)
+  select_features_by_node_ = !config_->interaction_constraints_vector.empty() || config_->feature_fraction_bynode < 1.0;
+  bynode_keyed_ = FalcataPlan::Get().level_bynode_masks && config_->feature_fraction_bynode < 1.0 &&
+    config_->interaction_constraints_vector.empty();
+  bynode_level_masks_ = bynode_keyed_ && vec_num_targets_ <= 1;
+  cuda_best_split_finder_->SetSelectFeaturesByNode(select_features_by_node_);
+  cuda_best_split_finder_->EnableLevelNodeMasks(bynode_level_masks_);
   cuda_data_partition_->ResetConfig(config, cuda_histogram_constructor_->cuda_hist_pointer());
   SyncHistFP32();
   // config changed: SerialTreeLearner::ResetConfig re-seeded the column
