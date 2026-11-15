@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <Falcata/config.h>
+#include <Falcata/network.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -247,6 +248,50 @@ TEST(LinkersSendRecv, DISABLED_UnreachableHigherRankIsAnError) {
     FAIL() << "the network came up without rank 1";
   } catch (const std::runtime_error& e) {
     EXPECT_NE(std::string(e.what()).find("Could not connect to rank 1"), std::string::npos) << e.what();
+  }
+}
+
+// In distributed bin finding a machine can have no features to bin: it joins the Allgather with
+// an empty block whose buffer is NULL. Copying that block was memcpy(dst, nullptr, 0), undefined
+// behaviour that UBSan stops on. Every machine must get the other blocks, and the empty one.
+TEST(NetworkAllgather, EmptyBlockWithNullBuffer) {
+  for (const int n : {2, 3, 4}) {  // recursive doubling (2, 4) and Bruck (3)
+    SCOPED_TRACE(n);
+    std::vector<int> ports;
+    std::string machines;
+    for (int i = 0; i < n; ++i) {
+      ports.push_back(FreePort());
+      machines += (i ? ",127.0.0.1 " : "127.0.0.1 ") + std::to_string(ports.back());
+    }
+    // rank r sends r + 1 bytes of value r, except the last rank, which sends nothing from NULL
+    std::vector<Falcata::comm_size_t> block_len(n), block_start(n, 0);
+    for (int r = 0; r < n; ++r) {
+      block_len[r] = r == n - 1 ? 0 : r + 1;
+      if (r > 0) block_start[r] = block_start[r - 1] + block_len[r - 1];
+    }
+    const Falcata::comm_size_t all_size = block_start[n - 1] + block_len[n - 1];
+    std::vector<std::future<std::vector<char>>> ranks;
+    for (int r = 0; r < n; ++r) {
+      ranks.push_back(std::async(std::launch::async, [&, r]() {
+        Falcata::Config config;
+        config.num_machines = n;
+        config.machines = machines;
+        config.local_listen_port = ports[r];
+        config.time_out = 1;
+        Falcata::Network::Init(config);
+        std::vector<char> input(block_len[r], static_cast<char>(r));
+        std::vector<char> output(all_size, -1);
+        Falcata::Network::Allgather(input.empty() ? nullptr : input.data(), block_start.data(), block_len.data(),
+                                    output.data(), all_size);
+        Falcata::Network::Dispose();
+        return output;
+      }));
+    }
+    std::vector<char> expected;
+    for (int r = 0; r < n - 1; ++r) expected.insert(expected.end(), r + 1, static_cast<char>(r));
+    for (auto& rank : ranks) {
+      EXPECT_EQ(rank.get(), expected);
+    }
   }
 }
 
