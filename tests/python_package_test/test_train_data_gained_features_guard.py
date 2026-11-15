@@ -46,8 +46,10 @@ def test_refit_and_add_valid_are_refused(booster_with_extended_data):
     )
     assert rc == -1
     assert "gained features" in _LIB.FLC_GetLastError().decode()
+    # the validation data matches the (extended) reference's 5 columns, so only the Booster's guard can refuse it
+    X_extended = np.hstack([X, np.random.default_rng(1).normal(size=(X.shape[0], 2))])
     with pytest.raises(flc.basic.FalcataError, match="gained features"):
-        booster.add_valid(flc.Dataset(X, y, reference=train), "v")
+        booster.add_valid(flc.Dataset(X_extended, y, reference=train), "v")
 
 
 def test_reset_training_data_is_refused(booster_with_extended_data):

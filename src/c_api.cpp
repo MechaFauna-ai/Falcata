@@ -1903,6 +1903,16 @@ int FLC_DatasetMarkFinished(DatasetHandle dataset) {
   API_END();
 }
 
+// A Dataset built against a reference takes the reference's bin mappers, one per column: a different column count put
+// values on the wrong features (fewer columns) or past them (more columns: a heap overflow in the CSC push, silently
+// dropped values for dense and CSR input). The Arrow path checks the same (#539).
+static void CheckReferenceColumns(const Dataset* reference, int64_t num_col, const char* what) {
+  if (num_col != reference->num_total_features()) {
+    Log::Fatal("%s has %lld columns, but its reference Dataset has %d", what, static_cast<long long>(num_col),  // NOLINT
+               reference->num_total_features());
+  }
+}
+
 int FLC_DatasetCreateFromMat(const void* data,
                               int data_type,
                               int32_t nrow,
@@ -2002,6 +2012,7 @@ int FLC_DatasetCreateFromMats(int32_t nmat,
                                              total_nrow,
                                              total_nrow));
   } else {
+    CheckReferenceColumns(reinterpret_cast<const Dataset*>(reference), ncol, "The matrix");
     ret.reset(new Dataset(total_nrow));
     ret->CreateValid(
       reinterpret_cast<const Dataset*>(reference));
@@ -2314,6 +2325,7 @@ int FLC_DatasetCreateFromMatDevice(const void* data,
                                              nrow,
                                              nrow));
   } else {
+    CheckReferenceColumns(reinterpret_cast<const Dataset*>(reference), ncol, "The matrix");
     ret.reset(new Dataset(nrow));
     ret->CreateValid(reinterpret_cast<const Dataset*>(reference));
     if (ret->has_raw()) {
@@ -2536,6 +2548,7 @@ class DeviceDatasetBuilder {
           total_nrow_));
       std::vector<uint8_t>().swap(sample_block_);
     } else {
+      CheckReferenceColumns(reference_, ncol_, "The matrix");
       dataset_.reset(new Dataset(total_nrow_));
       dataset_->CreateValid(reference_);
       if (dataset_->has_raw()) {
@@ -2822,6 +2835,7 @@ int FLC_DatasetCreateFromCSR(const void* indptr,
                                              nrow,
                                              nrow));
   } else {
+    CheckReferenceColumns(reinterpret_cast<const Dataset*>(reference), num_col, "The CSR matrix");
     ret.reset(new Dataset(nrow));
     ret->CreateValid(
       reinterpret_cast<const Dataset*>(reference));
@@ -2894,6 +2908,7 @@ int FLC_DatasetCreateFromCSRFunc(void* get_row_funptr,
                                              nrow,
                                              nrow));
   } else {
+    CheckReferenceColumns(reinterpret_cast<const Dataset*>(reference), num_col, "The CSR row function");
     ret.reset(new Dataset(nrow));
     ret->CreateValid(
       reinterpret_cast<const Dataset*>(reference));
@@ -2970,6 +2985,7 @@ int FLC_DatasetCreateFromCSC(const void* col_ptr,
                                              nrow,
                                              nrow));
   } else {
+    CheckReferenceColumns(reinterpret_cast<const Dataset*>(reference), ncol_ptr - 1, "The CSC matrix");
     ret.reset(new Dataset(nrow));
     ret->CreateValid(
       reinterpret_cast<const Dataset*>(reference));
