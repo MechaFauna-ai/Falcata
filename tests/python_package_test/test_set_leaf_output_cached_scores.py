@@ -28,9 +28,11 @@ def test_set_leaf_output_keeps_cached_scores_and_changes_predictions():
     for leaf in range(booster.dump_model()["tree_info"][0]["num_leaves"]):
         booster.set_leaf_output(0, leaf, 100.0)
 
-    # the cached scores are not updated
-    assert booster.eval_train() == train_before
-    assert booster.eval_valid() == valid_before
+    # the cached scores are not updated (compared with a tolerance: the metric's OpenMP sum can differ in the last
+    # bit between two evaluations of the same scores)
+    for after, before in ((booster.eval_train(), train_before), (booster.eval_valid(), valid_before)):
+        assert [(d, m, b) for d, m, _, b in after] == [(d, m, b) for d, m, _, b in before]
+        np.testing.assert_allclose([v for _, _, v, _ in after], [v for _, _, v, _ in before], rtol=1e-12)
     # predictions use the new value
     assert _l2(booster, X, y) > 1000 * train_before[0][2]
     # a Dataset added after the change is scored with the current trees
