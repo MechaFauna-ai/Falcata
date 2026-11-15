@@ -229,6 +229,15 @@ void DataParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(const 
   for (int feature_index = 0; feature_index < this->num_features_; ++feature_index) {
     OMP_LOOP_EX_BEGIN();
     if (!is_feature_aggregated_[feature_index]) continue;
+    // as the serial learner does: a feature the parent could not split on is not evaluated in its children (their
+    // best split then differed from serial training's whenever a child found a positive gain on it, e.g. with
+    // lambda_l2). This machine owns the feature, so it holds the parent's flag; the larger leaf's histogram is the
+    // parent's, which keeps the flag. Forced splits read every histogram, as in SerialTreeLearner::FindBestSplits.
+    if (this->forced_split_json_ == nullptr && this->parent_leaf_histogram_array_ != nullptr &&
+        !this->parent_leaf_histogram_array_[feature_index].is_splittable()) {
+      this->smaller_leaf_histogram_array_[feature_index].set_is_splittable(false);
+      continue;
+    }
     const int tid = omp_get_thread_num();
     const int real_feature_index = this->train_data_->RealFeatureIndex(feature_index);
     // restore global histograms from buffer
