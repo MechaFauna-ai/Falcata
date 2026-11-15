@@ -112,6 +112,7 @@ void DataParallelTreeLearner<TREELEARNER_T>::PrepareBufferPos(
 template <typename TREELEARNER_T>
 void DataParallelTreeLearner<TREELEARNER_T>::BeforeTrain() {
   TREELEARNER_T::BeforeTrain();
+  CheckParallelConfigAgrees(*this->config_, false);
   // generate feature partition for current tree
   std::vector<std::vector<int>> feature_distribution(num_machines_, std::vector<int>());
   std::vector<int> num_bins_distributed(num_machines_, 0);

@@ -12,12 +12,64 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "gpu_tree_learner.h"
 #include "serial_tree_learner.h"
 
 namespace Falcata {
+
+/*!
+ * \brief Check that the parameters the machines must share have the same value on every machine. The parallel
+ *        learners exchange buffers sized from num_leaves, max_cat_threshold and top_k, split the leaves the
+ *        machines agree on, and lay out the histogram exchange from the features each machine sampled
+ *        (feature_fraction*, feature_fraction_seed), and min_data_in_leaf decides from the global leaf counts
+ *        whether a machine searches a leaf (and joins that search's collectives): a machine with a different
+ *        value, or a different parallel learner, read or split past its own arrays (SEGV in SplitInner with
+ *        num_leaves 4 against 63, in GlobalVoting with data against voting, heap-buffer-overflow with
+ *        feature_fraction 0.5 against 1, and in CopyLocalHistogram with min_data_in_leaf 100 against 1 once
+ *        one machine skipped the root search and the collectives fell out of step).
+ *        Called at the start of every tree, which every machine trains (a reset_parameter may run on one machine
+ *        only), as one allreduce by max of the values and their bitwise complements.
+ */
+inline void CheckParallelConfigAgrees(const Config& config, bool voting) {
+  auto bits = [](double value) {
+    int64_t out;
+    std::memcpy(&out, &value, sizeof(out));
+    return out;
+  };
+  static const char* const kNames[] = {"tree_learner", "num_leaves", "max_depth", "max_cat_threshold", "top_k",
+                                       "feature_fraction", "feature_fraction_bynode", "feature_fraction_seed",
+                                       "min_data_in_leaf"};
+  const int64_t values[] = {voting ? 2 : 1, config.num_leaves, config.max_depth, config.max_cat_threshold,
+                            voting ? config.top_k : 0, bits(config.feature_fraction),
+                            bits(config.feature_fraction_bynode), config.feature_fraction_seed,
+                            config.min_data_in_leaf};
+  constexpr int kNum = sizeof(values) / sizeof(values[0]);
+  std::vector<int64_t> local(2 * kNum), global(2 * kNum);
+  for (int i = 0; i < kNum; ++i) {
+    local[i] = values[i];
+    local[kNum + i] = ~values[i];  // max of the complements is the complement of the min
+  }
+  Network::Allreduce(reinterpret_cast<char*>(local.data()), static_cast<comm_size_t>(sizeof(int64_t) * 2 * kNum),
+                     sizeof(int64_t), reinterpret_cast<char*>(global.data()),
+                     [](const char* src, char* dst, int type_size, comm_size_t len) {
+                       for (comm_size_t pos = 0; pos < len; pos += type_size) {
+                         int64_t a, b;
+                         std::memcpy(&a, src + pos, sizeof(a));
+                         std::memcpy(&b, dst + pos, sizeof(b));
+                         b = std::max(a, b);
+                         std::memcpy(dst + pos, &b, sizeof(b));
+                       }
+                     });
+  for (int i = 0; i < kNum; ++i) {
+    if (global[i] != ~global[kNum + i]) {
+      Log::Fatal("Parameter %s differs across machines: parallel training needs the same value on every machine",
+                 kNames[i]);
+    }
+  }
+}
 
 /*!
 * \brief Feature parallel learning algorithm.

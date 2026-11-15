@@ -101,6 +101,7 @@ void VotingParallelTreeLearner<TREELEARNER_T>::ResetConfig(const Config* config)
 template <typename TREELEARNER_T>
 void VotingParallelTreeLearner<TREELEARNER_T>::BeforeTrain() {
   TREELEARNER_T::BeforeTrain();
+  CheckParallelConfigAgrees(*this->config_, true);
   // sync global data sumup info
   std::tuple<data_size_t, double, double> data(this->smaller_leaf_splits_->num_data_in_leaf(), this->smaller_leaf_splits_->sum_gradients(), this->smaller_leaf_splits_->sum_hessians());
   int size = sizeof(std::tuple<data_size_t, double, double>);
