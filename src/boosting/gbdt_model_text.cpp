@@ -871,6 +871,8 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
 std::vector<double> GBDT::FeatureImportance(int num_iteration, int importance_type) const {
   int num_used_model = static_cast<int>(models_.size());
   if (num_iteration > 0) {
+    // no start_iteration: importance always counts from iteration 0, as in LightGBM,
+    // even when DumpModel/SaveModelToString start later
     num_iteration += 0;
     num_used_model = std::min(num_iteration * num_tree_per_iteration_, num_used_model);
   }

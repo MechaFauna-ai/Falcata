@@ -214,6 +214,7 @@ def _FalcataCpuCount(only_physical_cores: bool = True) -> int:
 
             ret = cpu_count(logical=not only_physical_cores) or 1
         except ImportError:
+            # stdlib cannot count physical cores: fall back to the logical count (as LightGBM does)
             from multiprocessing import cpu_count  # noqa: I001,PLC0415
 
             ret = cpu_count()

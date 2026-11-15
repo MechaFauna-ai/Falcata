@@ -90,6 +90,7 @@ Linkers::~Linkers() {
       }
     }
     TcpSocket::Finalize();
+    // network_time_ is accumulated by the inline SendRecv calls in linkers.h
     Log::Info("Finished linking network in %f seconds", network_time_ * 1e-3);
   }
 }

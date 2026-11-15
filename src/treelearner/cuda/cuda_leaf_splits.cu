@@ -34,6 +34,7 @@ __global__ void CUDAInitValuesKernel1(const score_t* cuda_gradients, const score
   __syncthreads();
   const double block_sum_hessian = ShuffleReduceSum<double>(hessian, shared_mem_buffer, blockDim.x);
   if (threadIdx.x == 0) {
+    // += : CUDALeafSplits::InitValues zeroes both buffers (cudaMemset) before this launch
     cuda_sum_of_gradients[blockIdx.x] += block_sum_gradient;
     cuda_sum_of_hessians[blockIdx.x] += block_sum_hessian;
   }
