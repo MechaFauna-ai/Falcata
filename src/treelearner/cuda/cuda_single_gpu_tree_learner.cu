@@ -919,6 +919,8 @@ void CUDASingleGPUTreeLearner::LaunchLinearAddScoreKernel(
 
 #endif  // USE_CUDA
 
+// Still CUDA-only: CMakeLists.txt compiles this file only for USE_CUDA/USE_ROCM builds
+// (both define USE_CUDA), so the NCCL code below is never built without it.
 namespace Falcata {
 
 // ---- NCCL compacted histogram reduce -------------------------------------

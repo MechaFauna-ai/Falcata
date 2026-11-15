@@ -235,32 +235,62 @@ void GetTreeLearnerType(const std::unordered_map<std::string, std::string>& para
 }
 
 void Config::GetAucMuWeights() {
+  // Only explicit weights are expanded here (their size is the user's): the default all-ones matrix is
+  // num_class x num_class and only the auc_mu metric reads it, so AucMuMetric builds it. Building it on every
+  // Config::Set took num_class^2 doubles for any Dataset, Booster, prediction or reset (num_class=65536: 32 GB).
+  auc_mu_weights_matrix.clear();
   if (auc_mu_weights.empty()) {
-    // equal weights for all classes
-    auc_mu_weights_matrix = std::vector<std::vector<double>> (num_class, std::vector<double>(num_class, 1));
-    for (size_t i = 0; i < static_cast<size_t>(num_class); ++i) {
-      auc_mu_weights_matrix[i][i] = 0;
-    }
-  } else {
-    auc_mu_weights_matrix = std::vector<std::vector<double>> (num_class, std::vector<double>(num_class, 0));
-    if (auc_mu_weights.size() != static_cast<size_t>(num_class * num_class)) {
-      Log::Fatal("auc_mu_weights must have %d elements, but found %zu", num_class * num_class, auc_mu_weights.size());
-    }
-    for (size_t i = 0; i < static_cast<size_t>(num_class); ++i) {
-      for (size_t j = 0; j < static_cast<size_t>(num_class); ++j) {
-        if (i == j) {
-          auc_mu_weights_matrix[i][j] = 0;
-          if (std::fabs(auc_mu_weights[i * num_class + j]) > kZeroThreshold) {
-            Log::Info("AUC-mu matrix must have zeros on diagonal. Overwriting value in position %zu of auc_mu_weights with 0.", i * num_class + j);
-          }
-        } else {
-          if (std::fabs(auc_mu_weights[i * num_class + j]) < kZeroThreshold) {
-            Log::Fatal("AUC-mu matrix must have non-zero values for non-diagonal entries. Found zero value in position %zu of auc_mu_weights.", i * num_class + j);
-          }
-          auc_mu_weights_matrix[i][j] = auc_mu_weights[i * num_class + j];
+    return;
+  }
+  const int64_t num_weights = static_cast<int64_t>(num_class) * num_class;
+  if (num_class <= 0 || static_cast<int64_t>(auc_mu_weights.size()) != num_weights) {
+    Log::Fatal("auc_mu_weights must have %s elements (num_class squared), but found %zu",
+               std::to_string(num_weights).c_str(), auc_mu_weights.size());
+  }
+  auc_mu_weights_matrix = std::vector<std::vector<double>> (num_class, std::vector<double>(num_class, 0));
+  for (size_t i = 0; i < static_cast<size_t>(num_class); ++i) {
+    for (size_t j = 0; j < static_cast<size_t>(num_class); ++j) {
+      if (i == j) {
+        auc_mu_weights_matrix[i][j] = 0;
+        if (std::fabs(auc_mu_weights[i * num_class + j]) > kZeroThreshold) {
+          Log::Info("AUC-mu matrix must have zeros on diagonal. Overwriting value in position %zu of auc_mu_weights with 0.", i * num_class + j);
         }
+      } else {
+        if (std::fabs(auc_mu_weights[i * num_class + j]) < kZeroThreshold) {
+          Log::Fatal("AUC-mu matrix must have non-zero values for non-diagonal entries. Found zero value in position %zu of auc_mu_weights.", i * num_class + j);
+        }
+        auc_mu_weights_matrix[i][j] = auc_mu_weights[i * num_class + j];
       }
     }
+  }
+}
+
+// interaction_constraints is a list of bracketed lists of feature indices ("[0,1],[2,3]", optionally inside one more
+// pair of brackets). SplitBrackets keeps whatever sits between a '[' and the next ']', so "x", "[[0,1]" or "[]x" were
+// read as fewer constraints (or none) without a word, and the raw string went into the saved model, which the Python
+// package then failed to load (its parameters are read back as JSON).
+static void CheckInteractionConstraintsSyntax(const std::string& value) {
+  int depth = 0;
+  bool ok = true;
+  for (const char c : value) {
+    if (c == '[') {
+      ok = ++depth <= 2;
+    } else if (c == ']') {
+      ok = --depth >= 0;
+    } else if (c == ',' || c == ' ' || c == '\t') {
+      continue;
+    } else if ((c >= '0' && c <= '9') || c == '-' || c == '+') {
+      ok = depth > 0;  // an index outside any list
+    } else {
+      ok = false;
+    }
+    if (!ok) {
+      break;
+    }
+  }
+  if (!ok || depth != 0) {
+    Log::Fatal("Invalid interaction_constraints '%s': expected lists of feature indices, such as [0,1],[2,3]",
+               value.c_str());
   }
 }
 
@@ -268,6 +298,7 @@ void Config::GetInteractionConstraints() {
   if (interaction_constraints == "") {
     interaction_constraints_vector = std::vector<std::vector<int>>();
   } else {
+    CheckInteractionConstraintsSyntax(interaction_constraints);
     interaction_constraints_vector = Common::StringToArrayofArrays<int>(interaction_constraints, '[', ']', ',');
   }
 }

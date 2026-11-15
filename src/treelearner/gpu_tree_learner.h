@@ -250,7 +250,7 @@ class GPUTreeLearner: public SerialTreeLearner {
   std::unique_ptr<boost::compute::vector<int>> sync_counters_;
   /*! \brief GPU memory object holding temporary sub-histograms per workgroup */
   std::unique_ptr<boost::compute::vector<char>> device_subhistograms_;
-  /*! \brief Host memory object for histogram output (GPU will write to Host memory directly) */
+  /*! \brief Host memory object for histogram output (alloc_host_ptr buffer, mapped; GPU writes host memory directly) */
   boost::compute::buffer device_histogram_outputs_;
   /*! \brief Host memory pointer for histogram outputs */
   void * host_histogram_outputs_;

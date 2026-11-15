@@ -6,6 +6,8 @@
 #include "parser.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <memory>
@@ -29,6 +31,30 @@ void GetStatistic(const char* str, int* comma_cnt, int* tab_cnt, int* colon_cnt)
   }
 }
 
+/*!
+ * \brief a sampled line without its surrounding spaces and line breaks. Tabs stay: Common::Trim also stripped them,
+ *        so a TSV line whose first or last field is empty lost a tab, and the format sniffer saw a different column
+ *        count on that line and rejected the file ("Unknown format of training data")
+ */
+static std::string TrimSampledLine(const std::string& line) {
+  const char* const blanks = " \f\n\r\v";
+  const size_t end = line.find_last_not_of(blanks);
+  if (end == std::string::npos) {
+    return std::string();
+  }
+  const size_t begin = line.find_first_not_of(blanks);
+  return line.substr(begin, end - begin + 1);
+}
+
+/*!
+ * \brief fields of a CSV/TSV line: its delimiters plus one, as GetDataType counts the columns and the parsers read
+ *        them. Common::Split drops empty tokens, so a line with a missing value counted one field short: a predict
+ *        file whose first line has a missing value was taken to carry a label column (and refused for its shape)
+ */
+static int CountFields(const std::string& line, char delimiter) {
+  return static_cast<int>(std::count(line.begin(), line.end(), delimiter)) + 1;
+}
+
 int GetLabelIdxForLibsvm(const std::string& str, int num_features, int label_idx) {
   if (num_features <= 0) {
     return label_idx;
@@ -47,9 +73,7 @@ int GetLabelIdxForTSV(const std::string& str, int num_features, int label_idx) {
   if (num_features <= 0) {
     return label_idx;
   }
-  auto str2 = Common::Trim(str);
-  auto tokens = Common::Split(str2.c_str(), '\t');
-  if (static_cast<int>(tokens.size()) == num_features) {
+  if (CountFields(str, '\t') == num_features) {
     return -1;
   } else {
     return label_idx;
@@ -60,9 +84,7 @@ int GetLabelIdxForCSV(const std::string& str, int num_features, int label_idx) {
   if (num_features <= 0) {
     return label_idx;
   }
-  auto str2 = Common::Trim(str);
-  auto tokens = Common::Split(str2.c_str(), ',');
-  if (static_cast<int>(tokens.size()) == num_features) {
+  if (CountFields(str, ',') == num_features) {
     return -1;
   } else {
     return label_idx;
@@ -117,7 +139,7 @@ std::vector<std::string> ReadKLineFromFile(const char* filename, bool header, in
   for (int i = 0; i < k; ++i) {
     if (!tmp_file.eof()) {
       GetLine(&tmp_file, &cur_line, reader.get(), &buffer, buffer_size);
-      cur_line = Common::Trim(cur_line);
+      cur_line = TrimSampledLine(cur_line);
       if (!cur_line.empty()) {
         ret.push_back(cur_line);
       }
@@ -288,6 +310,35 @@ Parser* ParserFactory::getObject(std::string class_name, std::string config_str)
   }
 }
 
+/*!
+ * \brief precise_float_parser's value parser for text data: numbers go through fast_double_parser (strtod for what
+ *        it does not take: inf, nan, leading spaces, out-of-range values), exactly as Common::AtofPrecise. Everything
+ *        else reads as with the default parser: a token that is not a number (an empty field, NA, null) goes to
+ *        Common::Atof, which reads the missing-value tokens as NaN and refuses an unknown token, and the spaces after
+ *        a value are skipped. AtofPrecise alone refused empty fields and NA/null and stopped before trailing spaces,
+ *        so a file the default parser loads failed with "no conversion to double" or "Input format error".
+ */
+static const char* AtofPreciseText(const char* p, double* out) {
+  const char* end = fast_double_parser::parse_number(p, out);
+  if (end == nullptr) {
+    char* end2 = nullptr;
+    errno = 0;  // strtod reports overflow and underflow through errno only
+    const double value = std::strtod(p, &end2);
+    if (end2 == p) {
+      return Common::Atof(p, out);
+    }
+    if (errno == ERANGE) {
+      Log::Warning("convert to double got underflow or overflow: %s", p);
+    }
+    *out = value;
+    end = end2;
+  }
+  while (*end == ' ') {
+    ++end;
+  }
+  return end;
+}
+
 Parser* Parser::CreateParser(const char* filename, bool header, int num_features, int label_idx, bool precise_float_parser) {
   const int n_read_line = 32;
   auto lines = ReadKLineFromFile(filename, header, n_read_line);
@@ -298,7 +349,7 @@ Parser* Parser::CreateParser(const char* filename, bool header, int num_features
   }
   std::unique_ptr<Parser> ret;
   int output_label_index = -1;
-  AtofFunc atof = precise_float_parser ? Common::AtofPrecise : Common::Atof;
+  AtofFunc atof = precise_float_parser ? AtofPreciseText : Common::Atof;
   if (type == DataType::LIBSVM) {
     output_label_index = GetLabelIdxForLibsvm(lines[0], num_features, label_idx);
     ret.reset(new LibSVMParser(output_label_index, num_col, atof));
@@ -336,6 +387,12 @@ Parser* Parser::CreateParser(const char* filename, bool header, int num_features
 }
 
 std::string Parser::GenerateParserConfigStr(const char* filename, const char* parser_config_filename, bool header, int label_idx) {
+  // a parser config the user names must exist: TextReader reads a missing file as empty, and the data was then parsed
+  // with the default parser instead of the configured one, without a word
+  if (parser_config_filename != nullptr && parser_config_filename[0] != '\0' &&
+      !VirtualFileReader::Make(parser_config_filename)->Init()) {
+    Log::Fatal("Could not open parser config file %s", parser_config_filename);
+  }
   TextReader<data_size_t> parser_config_reader(parser_config_filename, false);
   parser_config_reader.ReadAllLines();
   std::string parser_config_str = parser_config_reader.JoinedLines();

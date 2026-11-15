@@ -1239,7 +1239,7 @@ TrainingShareStates* Dataset::GetShareStates(
 
     Log::Debug(
       "init for col-wise cost %f seconds, init for row-wise cost %f seconds",
-      col_wise_init_time * 1e-3, row_wise_init_time * 1e-3);
+      col_wise_init_time.count() * 1e-3, row_wise_init_time.count() * 1e-3);
 
     col_wise_state->is_col_wise = true;
     col_wise_state->is_constant_hessian = is_constant_hessian;
@@ -1265,7 +1265,7 @@ TrainingShareStates* Dataset::GetShareStates(
           "Auto-choosing col-wise multi-threading, the overhead of testing was "
           "%f seconds.\n"
           "You can set `force_col_wise=true` to remove the overhead.",
-          overhead_cost * 1e-3);
+          overhead_cost.count() * 1e-3);
       return col_wise_state.release();
     } else {
       auto overhead_cost = col_wise_init_time + row_wise_time + col_wise_time;
@@ -1274,7 +1274,7 @@ TrainingShareStates* Dataset::GetShareStates(
           "%f seconds.\n"
           "You can set `force_row_wise=true` to remove the overhead.\n"
           "And if memory is not enough, you can set `force_col_wise=true`.",
-          overhead_cost * 1e-3);
+          overhead_cost.count() * 1e-3);
       if (row_wise_state->IsSparseRowwise()) {
         Log::Debug("Using Sparse Multi-Val Bin");
       } else {
@@ -1308,6 +1308,8 @@ void Dataset::CopyFeatureMapperFrom(const Dataset* dataset) {
   num_features_ = dataset->num_features_;
   num_groups_ = dataset->num_groups_;
   has_raw_ = dataset->has_raw();
+  // numeric_feature_map_ is not copied here: CopySubrow/CopySubrowToDevice,
+  // which every caller runs next, copy it with the rows.
   // copy feature bin mapper data
   for (int i = 0; i < num_groups_; ++i) {
     feature_groups_.emplace_back(
@@ -1716,6 +1718,9 @@ void Dataset::SaveBinaryFile(const char* bin_filename) {
         }
       }
     }
+    if (!writer->Close()) {
+      Log::Fatal("Cannot write binary data to %s (disk full or I/O error); the file is incomplete", bin_filename);
+    }
   }
 }
 
@@ -1878,7 +1883,11 @@ void Dataset::DumpTextFile(const char* text_filename) {
       }
     }
   }
-  fclose(file);
+  // fprintf only buffers: a full disk shows up in the stream's error flag or the final flush
+  const bool write_failed = ferror(file) != 0;
+  if (fclose(file) != 0 || write_failed) {
+    Log::Fatal("Cannot write the dataset dump to %s (disk full or I/O error); the file is incomplete", text_filename);
+  }
 }
 
 void Dataset::InitTrain(const std::vector<int8_t>& is_feature_used,

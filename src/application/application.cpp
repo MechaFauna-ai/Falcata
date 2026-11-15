@@ -32,6 +32,19 @@
 
 namespace Falcata {
 
+namespace {
+
+// objective=custom (and its aliases) has no objective function: the caller supplies the gradients, which the C API
+// and the language packages can do and the command line cannot. The CLI dereferenced the missing objective.
+void CheckCliObjective(const ObjectiveFunction* objective, const std::string& name) {
+  if (objective == nullptr) {
+    Log::Fatal("objective=%s needs gradients computed by the caller, which the command-line interface cannot "
+               "provide: choose a built-in objective", name.c_str());
+  }
+}
+
+}  // namespace
+
 Application::Application(int argc, char** argv) {
   LoadParameters(argc, argv);
   // set number of threads for openmp
@@ -207,6 +220,7 @@ void Application::InitTrain() {
     Log::Info("Save data as binary finished, exit");
     exit(0);
   }
+  CheckCliObjective(objective_fun_.get(), config_.objective);  // save_binary needs no objective
   // initialize the objective function
   objective_fun_->Init(train_data_->metadata(), train_data_->num_data());
   // initialize the boosting
@@ -274,6 +288,7 @@ void Application::Predict() {
     train_metric_.clear();
     objective_fun_.reset(ObjectiveFunction::CreateObjectiveFunction(config_.objective,
                                                                     config_));
+    CheckCliObjective(objective_fun_.get(), config_.objective);
     objective_fun_->Init(train_data_->metadata(), train_data_->num_data());
     boosting_->Init(&config_, train_data_.get(), objective_fun_.get(),
                     Common::ConstPtrInVectorWrapper<Metric>(train_metric_));

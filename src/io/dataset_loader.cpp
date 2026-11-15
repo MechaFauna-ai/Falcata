@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -811,12 +812,12 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
         bin_mappers[i]->FindBin(sample_values[start[rank] + i], num_per_col[start[rank] + i],
                                 total_sample_size, config_.max_bin, config_.min_data_in_bin,
                                 filter_cnt, config_.feature_pre_filter, bin_type, config_.use_missing, config_.zero_as_missing,
-                                forced_bin_bounds[i]);
+                                forced_bin_bounds[start[rank] + i]);
       } else {
         bin_mappers[i]->FindBin(sample_values[start[rank] + i], num_per_col[start[rank] + i],
                                 total_sample_size, config_.max_bin_by_feature[start[rank] + i],
                                 config_.min_data_in_bin, filter_cnt, config_.feature_pre_filter, bin_type, config_.use_missing,
-                                config_.zero_as_missing, forced_bin_bounds[i]);
+                                config_.zero_as_missing, forced_bin_bounds[start[rank] + i]);
       }
       OMP_LOOP_EX_END();
     }
@@ -856,8 +857,12 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
         continue;
       }
       bin_mappers[i].reset(new BinMapper());
-      bin_mappers[i]->CopyFrom(cp_ptr);
-      cp_ptr += bin_mappers[i]->SizesInByte();
+      // the gathered buffer comes from the other machines: read each mapper within what is left of it
+      const char* gathered_end = output_buffer.data() + output_buffer.size();
+      if (cp_ptr > gathered_end) {
+        Log::Fatal("The bin mappers gathered from the other machines are shorter than their features need");
+      }
+      cp_ptr += bin_mappers[i]->CopyFrom(cp_ptr, static_cast<size_t>(gathered_end - cp_ptr));
     }
   }
   CheckCategoricalFeatureNumBin(bin_mappers, config_.max_bin, config_.max_bin_by_feature);
@@ -921,6 +926,13 @@ void DatasetLoader::LoadHeaderFromMemory(Dataset* dataset, const char* buffer, s
     uint64_t boundary;
     std::memcpy(&boundary, boundaries + sizeof(uint64_t) * i, sizeof(boundary));
     dataset->group_bin_boundaries_.push_back(boundary);
+  }
+  // the boundaries are the groups' offsets into the histogram buffer, which is sized from the groups' own bin
+  // counts: the per-group widths are checked against the feature groups once they are loaded, so the first
+  // offset must be 0 for the last one to stay inside the buffer
+  if (dataset->group_bin_boundaries_.front() != 0) {
+    Log::Fatal("Binary dataset header is corrupt: group bin boundaries start at %llu, not 0",
+               static_cast<unsigned long long>(dataset->group_bin_boundaries_.front()));  // NOLINT(runtime/int): %llu format
   }
   // group_feature_start_, group_feature_cnt_
   dataset->group_feature_start_ = read_ints(num_groups, true);
@@ -1317,13 +1329,13 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
                                 static_cast<int>(sample_values[start[rank] + i].size()),
                                 sample_data.size(), config_.max_bin, config_.min_data_in_bin,
                                 filter_cnt, config_.feature_pre_filter, bin_type, config_.use_missing, config_.zero_as_missing,
-                                forced_bin_bounds[i]);
+                                forced_bin_bounds[start[rank] + i]);
       } else {
         bin_mappers[i]->FindBin(sample_values[start[rank] + i].data(),
                                 static_cast<int>(sample_values[start[rank] + i].size()),
-                                sample_data.size(), config_.max_bin_by_feature[i],
+                                sample_data.size(), config_.max_bin_by_feature[start[rank] + i],
                                 config_.min_data_in_bin, filter_cnt, config_.feature_pre_filter, bin_type,
-                                config_.use_missing, config_.zero_as_missing, forced_bin_bounds[i]);
+                                config_.use_missing, config_.zero_as_missing, forced_bin_bounds[start[rank] + i]);
       }
       OMP_LOOP_EX_END();
     }
@@ -1363,8 +1375,12 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
         continue;
       }
       bin_mappers[i].reset(new BinMapper());
-      bin_mappers[i]->CopyFrom(cp_ptr);
-      cp_ptr += bin_mappers[i]->SizesInByte();
+      // the gathered buffer comes from the other machines: read each mapper within what is left of it
+      const char* gathered_end = output_buffer.data() + output_buffer.size();
+      if (cp_ptr > gathered_end) {
+        Log::Fatal("The bin mappers gathered from the other machines are shorter than their features need");
+      }
+      cp_ptr += bin_mappers[i]->CopyFrom(cp_ptr, static_cast<size_t>(gathered_end - cp_ptr));
     }
   }
   CheckCategoricalFeatureNumBin(bin_mappers, config_.max_bin, config_.max_bin_by_feature);
@@ -1377,7 +1393,7 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
 
   auto t2 = std::chrono::high_resolution_clock::now();
   Log::Info("Construct bin mappers from text data time %.2f seconds",
-            std::chrono::duration<double, std::milli>(t2 - t1) * 1e-3);
+            std::chrono::duration<double, std::milli>(t2 - t1).count() * 1e-3);
 }
 
 /*! \brief Extract local features from memory */
@@ -1632,7 +1648,9 @@ std::vector<std::vector<double>> DatasetLoader::GetForcedBins(std::string forced
   if (forced_bins_path != "") {
     std::ifstream forced_bins_stream(forced_bins_path.c_str());
     if (forced_bins_stream.fail()) {
-      Log::Warning("Could not open %s. Will ignore.", forced_bins_path.c_str());
+      // a file the user names must exist: this was a warning (hidden at verbose < 0), and a mistyped path trained
+      // without the forced bins; a missing forcedsplits_filename is already an error
+      Log::Fatal("Could not open forced bins file %s", forced_bins_path.c_str());
     } else {
       std::stringstream buffer;
       buffer << forced_bins_stream.rdbuf();
@@ -1646,15 +1664,33 @@ std::vector<std::vector<double>> DatasetLoader::GetForcedBins(std::string forced
       }
       std::vector<Json> forced_bins_arr = forced_bins_json.array_items();
       for (size_t i = 0; i < forced_bins_arr.size(); ++i) {
-        int feature_num = forced_bins_arr[i]["feature"].int_value();
-        if (feature_num < 0 || feature_num >= num_total_features) {
-          Log::Fatal("Forced bins file %s names feature %d, outside [0, %d)", forced_bins_path.c_str(),
-                     feature_num, num_total_features);
+        // json11 reads a missing or non-numeric value as 0: "feature": "x" (or null, or no key) put the bounds on
+        // feature 0, a non-numeric bound became 0.0, and a bin_upper_bound that is not an array was ignored
+        const Json& entry = forced_bins_arr[i];
+        if (!entry.is_object() || !entry["feature"].is_number() || !entry["bin_upper_bound"].is_array()) {
+          Log::Fatal("Forced bins file %s: each entry needs an integer \"feature\" and a \"bin_upper_bound\" array, got %s",
+                     forced_bins_path.c_str(), entry.dump().c_str());
         }
+        const double feature_number = entry["feature"].number_value();
+        for (const Json& bound : entry["bin_upper_bound"].array_items()) {
+          if (!bound.is_number()) {
+            Log::Fatal("Forced bins file %s: bin_upper_bound values must be numbers, got %s", forced_bins_path.c_str(),
+                       bound.dump().c_str());
+          }
+        }
+        if (feature_number != std::floor(feature_number)) {
+          Log::Fatal("Forced bins file %s: \"feature\" must be an integer feature index, got %s", forced_bins_path.c_str(),
+                     entry["feature"].dump().c_str());
+        }
+        if (feature_number < 0 || feature_number >= num_total_features) {
+          Log::Fatal("Forced bins file %s names feature %s, outside [0, %d)", forced_bins_path.c_str(),
+                     entry["feature"].dump().c_str(), num_total_features);
+        }
+        const int feature_num = static_cast<int>(feature_number);
         if (categorical_features.count(feature_num)) {
           Log::Warning("Feature %d is categorical. Will ignore forced bins for this feature.", feature_num);
         } else {
-          std::vector<Json> bounds_arr = forced_bins_arr[i]["bin_upper_bound"].array_items();
+          std::vector<Json> bounds_arr = entry["bin_upper_bound"].array_items();
           for (size_t j = 0; j < bounds_arr.size(); ++j) {
             forced_bins[feature_num].push_back(bounds_arr[j].number_value());
           }

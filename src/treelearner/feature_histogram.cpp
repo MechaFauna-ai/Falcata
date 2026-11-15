@@ -394,17 +394,22 @@ void FeatureHistogram::FindBestThresholdCategoricalInner(double sum_gradient,
   // non-finite gradients): there is no split to emit, and best_threshold + offset would
   // index the category tables out of range
   if (is_splittable_ && best_threshold >= 0) {
+    // the constraint only matters with USE_MC, which is also what initialised the cumulative constraints: without
+    // it the advanced constraints read their empty cumulative arrays (monotone_constraints_method=advanced with no
+    // monotone constraint segfaulted on the first categorical split)
+    const BasicConstraint left_constraint = USE_MC ? constraints->LeftToBasicConstraint() : BasicConstraint();
+    const BasicConstraint right_constraint = USE_MC ? constraints->RightToBasicConstraint() : BasicConstraint();
     output->left_output = CalculateSplittedLeafOutput<USE_MC, USE_L1, USE_MAX_OUTPUT, USE_SMOOTHING>(
         best_sum_left_gradient, best_sum_left_hessian,
         meta_->config->lambda_l1, l2, meta_->config->max_delta_step,
-        constraints->LeftToBasicConstraint(), meta_->config->path_smooth, best_left_count, parent_output);
+        left_constraint, meta_->config->path_smooth, best_left_count, parent_output);
     output->left_count = best_left_count;
     output->left_sum_gradient = best_sum_left_gradient;
     output->left_sum_hessian = best_sum_left_hessian - kEpsilon;
     output->right_output = CalculateSplittedLeafOutput<USE_MC, USE_L1, USE_MAX_OUTPUT, USE_SMOOTHING>(
         sum_gradient - best_sum_left_gradient,
         sum_hessian - best_sum_left_hessian, meta_->config->lambda_l1, l2,
-        meta_->config->max_delta_step, constraints->RightToBasicConstraint(), meta_->config->path_smooth,
+        meta_->config->max_delta_step, right_constraint, meta_->config->path_smooth,
         num_data - best_left_count, parent_output);
     output->right_count = num_data - best_left_count;
     output->right_sum_gradient = sum_gradient - best_sum_left_gradient;

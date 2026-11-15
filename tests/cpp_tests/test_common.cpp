@@ -229,6 +229,38 @@ TEST(CommonAtoi, SaturatesInsteadOfOverflowing) {
   EXPECT_EQ(w, std::numeric_limits<int64_t>::max());
 }
 
+// Common::Atof (the default text-data parser) read a literal with more than
+// 308 fraction digits as NaN (inf / inf), i.e. as a missing value, and let a
+// long exponent wrap around uint32 back below its 308 clamp.
+TEST(CommonAtof, LongFractionAndExponentStayFinite) {
+  double v = 0.0;
+  const std::string ones = "0." + std::string(400, '1');
+  const char* end = Falcata::Common::Atof(ones.c_str(), &v);
+  EXPECT_EQ(end, ones.c_str() + ones.size());
+  EXPECT_NEAR(v, 1.0 / 9.0, 1e-15);
+  const std::string nines = "-0." + std::string(400, '9');
+  Falcata::Common::Atof(nines.c_str(), &v);
+  EXPECT_NEAR(v, -1.0, 1e-15);
+  const std::string tiny = "0." + std::string(300, '0') + "12345678901";
+  Falcata::Common::Atof(tiny.c_str(), &v);
+  EXPECT_GT(v, 1.2e-301);
+  EXPECT_LT(v, 1.3e-301);
+  // short literals are unchanged
+  Falcata::Common::Atof("0.125", &v);
+  EXPECT_EQ(v, 0.125);
+  Falcata::Common::Atof("2.5e3", &v);
+  EXPECT_EQ(v, 2500.0);
+  // a huge exponent saturates like any exponent beyond 308
+  double clamped = 0.0;
+  Falcata::Common::Atof("1e309", &clamped);
+  Falcata::Common::Atof("1e4294967296", &v);  // 2^32: used to wrap to 1e0
+  EXPECT_EQ(v, clamped);
+  Falcata::Common::Atof("1e4294967297", &v);  // used to wrap to 1e1
+  EXPECT_EQ(v, clamped);
+  Falcata::Common::Atof("1e-4294967296", &v);
+  EXPECT_LT(v, 1e-300);
+}
+
 TEST(CommonCStringToArrayFast, ShortStringFails) {
   EXPECT_EQ(Falcata::CommonC::StringToArrayFast<int>("1 2 3", 3), (std::vector<int>{1, 2, 3}));
   EXPECT_THROW(Falcata::CommonC::StringToArrayFast<int>("1 2", 3), std::exception);
@@ -324,6 +356,38 @@ TEST(RoundInt, RoundsHalfAwayFromZeroAndSaturates) {
   }
 }
 
+// A numerical bin's upper bound is just above the midpoint of the values on either side. For +inf, and for finite
+// values whose sum overflows, the midpoint overflowed and the two values shared a bin (with +inf the final +inf bin
+// stayed empty): a model could not split np.inf -- or the largest finite values -- off from the value next to them.
+TEST(BinMapper, InfAndHugeValuesGetTheirOwnBins) {
+  const double inf = std::numeric_limits<double>::infinity();
+  const double big = std::numeric_limits<double>::max();
+  for (const std::vector<double>& distinct : {std::vector<double>{1.0, 2.0, 3.0, inf},
+                                               std::vector<double>{1.0, 1e308, 1.7e308, big},
+                                               std::vector<double>{-big, -1.7e308, -1e308, -1.0},
+                                               std::vector<double>{-inf, -1.0, 1.0, inf}}) {
+    std::vector<double> values;
+    for (int i = 0; i < 40; ++i) {
+      values.insert(values.end(), distinct.begin(), distinct.end());
+    }
+    for (const int max_bin : {8, 255}) {
+      std::vector<double> work = values;
+      Falcata::BinMapper mapper;
+      mapper.FindBin(work.data(), static_cast<int>(work.size()), work.size(), max_bin, 1, 1, false,
+                     Falcata::BinType::NumericalBin, false, false, {});
+      ASSERT_LE(mapper.num_bin(), max_bin);
+      const auto& ub = mapper.bin_upper_bound();
+      for (size_t i = 1; i < ub.size(); ++i) {
+        EXPECT_LT(ub[i - 1], ub[i]) << distinct[1] << " " << i;
+      }
+      for (size_t i = 1; i < distinct.size(); ++i) {
+        EXPECT_LT(mapper.ValueToBin(distinct[i - 1]), mapper.ValueToBin(distinct[i])) << distinct[i - 1] << " "
+                                                                                     << distinct[i];
+      }
+    }
+  }
+}
+
 // Softmax read rec[0] / input[0] and ObtainMinMaxSum read w[0] and w[1] (the
 // even-count branch) without checking for an empty input.
 TEST(Softmax, EmptyInputIsANoOp) {
@@ -374,6 +438,30 @@ TEST(ObtainMinMaxSum, EmptyInputGivesZeros) {
   }
 }
 
+// GreedyFindBin opened a bin before checking the bin count, so asked for one bin (here: the zero bin's share of a
+// forced-bins split rounds to one sub-bin) over a range where one value holds the whole count and the rest are
+// empty -- FindBin inserts a zero-count 0.0 between negative and positive samples -- it wrote one double past its
+// bounds vector (ASan: heap-buffer-overflow) and returned two bounds, so the next range asked for zero bins and
+// FindBin failed "Check failed: (max_bin) > (0)". Samples given through FLC_DatasetCreateFromSampledColumn are not
+// filtered for |v| <= kZeroThreshold, so -1e-40 reaches FindBin there.
+TEST(BinMapper, ForcedBinsZeroRangeWithOneSubBin) {
+  for (const int max_bin : {3, 4, 255}) {
+    std::vector<double> values = {-3.0, -1e-40, 1e-34};
+    Falcata::BinMapper mapper;
+    mapper.FindBin(values.data(), static_cast<int>(values.size()), values.size(), max_bin, 1, 1, false,
+                   Falcata::BinType::NumericalBin, false, false, {2.0});
+    const auto& ub = mapper.bin_upper_bound();
+    ASSERT_GE(mapper.num_bin(), 2) << max_bin;
+    ASSERT_LE(mapper.num_bin(), max_bin);
+    EXPECT_EQ(ub.back(), std::numeric_limits<double>::infinity());
+    for (size_t i = 1; i < ub.size(); ++i) {
+      EXPECT_LT(ub[i - 1], ub[i]) << max_bin << " " << i;
+    }
+    EXPECT_LT(mapper.ValueToBin(-3.0), mapper.ValueToBin(0.0));
+    EXPECT_LT(mapper.ValueToBin(0.0), mapper.ValueToBin(3.0));
+  }
+}
+
 // TextReader's end-of-line skip read buffer_process[i] before checking
 // i < read_cnt, so a line terminator in the last byte of a full 16 MiB block
 // read one byte past the block (visible under AddressSanitizer).
@@ -419,6 +507,41 @@ TEST(PipelineReader, SkipsMoreThanOneBlock) {
   EXPECT_EQ(seen, "hello");
 }
 
+// Categorical FindBin cast every sampled value to int before any range check, which is undefined for +-inf and
+// values outside int's range (UBSan: "3e+09 is outside the range of representable values of type 'int'"; x86
+// happens to give INT_MIN, a CPU that saturates gives INT_MAX, a category ValueToBin can never return). Such
+// values are not categories: they go to the NaN bin, like the negative ones.
+TEST(BinMapper, CategoricalFindBinOutOfRangeValues) {
+  const double inf = std::numeric_limits<double>::infinity();
+  std::vector<double> values;
+  for (int i = 0; i < 300; ++i) {
+    values.push_back(i % 3);
+  }
+  // the out-of-range values are the most frequent ones, so a bogus category would be kept
+  for (double v : {3e9, -3e9, 2147483648.0, 1e300, inf, -inf}) {
+    values.insert(values.end(), 200, v);
+  }
+  values.insert(values.end(), 50, -0.5);  // still category 0, as before
+  for (const bool use_missing : {true, false}) {
+    std::vector<double> work = values;
+    Falcata::BinMapper mapper;
+    mapper.FindBin(work.data(), static_cast<int>(work.size()), work.size(), 255, 3, 1, false,
+                   Falcata::BinType::CategoricalBin, use_missing, false, {});
+    ASSERT_EQ(mapper.num_bin(), 4) << use_missing;
+    std::vector<int> categories;
+    for (int bin = 1; bin < mapper.num_bin(); ++bin) {
+      categories.push_back(static_cast<int>(mapper.BinToValue(bin)));
+    }
+    std::sort(categories.begin(), categories.end());
+    EXPECT_EQ(categories, (std::vector<int>{0, 1, 2})) << use_missing;
+    EXPECT_EQ(mapper.missing_type(), Falcata::MissingType::NaN) << use_missing;
+    for (double v : {3e9, -3e9, 2147483648.0, 1e300, inf, -inf}) {
+      EXPECT_EQ(mapper.ValueToBin(v), 0u) << v;
+    }
+    EXPECT_EQ(mapper.ValueToBin(-0.5), mapper.ValueToBin(0.0));
+  }
+}
+
 // Categorical ValueToBin used to cast the double to int before any range
 // check, which is undefined for +-inf and values outside int's range (UBSan:
 // "1e+20 is outside the range of representable values of type 'int'").
@@ -439,4 +562,62 @@ TEST(BinMapper, CategoricalValueToBinOutOfRange) {
                    -std::numeric_limits<double>::infinity()}) {
     EXPECT_EQ(mapper.ValueToBin(v), 0u) << v;
   }
+}
+
+// A row that lists the same feature twice (a repeated index in a LibSVM line, duplicate column indices in a CSR
+// row) gives FindBin more sampled values than sampled rows. The zero count went negative and the sparse rate above
+// 1; with every row duplicated (one row: -9 and NaN for the same feature, from a fuzzed 8-byte LibSVM file),
+// FindBinWithZeroAsOneBin divided by a zero non-zero count and cast the infinity to int (UBSan
+// float-cast-overflow). Each duplicate now counts as a row.
+TEST(BinMapper, MoreSampledValuesThanRows) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const auto& sample : std::vector<std::vector<double>>{{-9.0, nan}, {-9.0, 3.0, 4.0}, {-9.0, -9.0},
+                                                             {2.0, 2.0, 5.0}}) {
+    for (auto bin_type : {Falcata::BinType::NumericalBin, Falcata::BinType::CategoricalBin}) {
+      Falcata::BinMapper mapper;
+      std::vector<double> values = sample;
+      // one sampled row
+      mapper.FindBin(values.data(), static_cast<int>(values.size()), 1, 255, 1, 1, false, bin_type, true, false, {});
+      EXPECT_GE(mapper.sparse_rate(), 0.0) << sample.size() << " values, bin type " << static_cast<int>(bin_type);
+      EXPECT_LE(mapper.sparse_rate(), 1.0) << sample.size() << " values, bin type " << static_cast<int>(bin_type);
+      EXPECT_GE(mapper.num_bin(), 1);
+    }
+  }
+}
+
+// Common::StringToArray (list-valued parameters, linear-tree model fields): every token must be a whole number
+TEST(CommonStringToArray, RejectsTokensThatAreNotNumbers) {
+  using Falcata::Common::StringToArray;
+  EXPECT_EQ(StringToArray<int>("+1,-1, 3 ", ','), (std::vector<int>{1, -1, 3}));
+  EXPECT_THROW(StringToArray<int>("1,x", ','), std::exception);
+  EXPECT_THROW(StringToArray<int>("10,20x", ','), std::exception);
+  EXPECT_THROW(StringToArray<int>("1,-", ','), std::exception);
+  EXPECT_THROW(StringToArray<int>("1,  ", ','), std::exception);
+  EXPECT_EQ(StringToArray<double>("1.5,-2e-310,inf", ','), (std::vector<double>{1.5, -2e-310, INFINITY}));
+  EXPECT_THROW(StringToArray<double>("1,abc", ','), std::exception);
+  EXPECT_THROW(StringToArray<double>("1,2junk", ','), std::exception);
+  EXPECT_THROW(StringToArray<double>("1e999", ','), std::exception);
+  EXPECT_THROW(StringToArray<double>("1,  ", ','), std::exception);
+  EXPECT_EQ(StringToArray<double>("4.9406564584124654e-324 0.25", 2), (std::vector<double>{4.9406564584124654e-324, 0.25}));
+}
+
+// scalar parameters: a token without digits is not a number, and is reported as such (not as a data-file token)
+TEST(CommonAtoxAndCheck, RejectsTokensWithoutDigits) {
+  int i = 7;
+  EXPECT_TRUE(Falcata::Common::AtoiAndCheck("-3", &i));
+  EXPECT_EQ(i, -3);
+  EXPECT_FALSE(Falcata::Common::AtoiAndCheck("-", &i));
+  EXPECT_FALSE(Falcata::Common::AtoiAndCheck("+", &i));
+  EXPECT_FALSE(Falcata::Common::AtoiAndCheck("", &i));
+  double d = 7;
+  EXPECT_TRUE(Falcata::Common::AtofAndCheck("0.25", &d));
+  EXPECT_EQ(d, 0.25);
+  EXPECT_TRUE(Falcata::Common::AtofAndCheck("-inf", &d));
+  EXPECT_TRUE(Falcata::Common::AtofAndCheck("NA", &d));
+  EXPECT_TRUE(std::isnan(d));
+  EXPECT_FALSE(Falcata::Common::AtofAndCheck("abc", &d));  // used to throw "Unknown token abc in data file"
+  EXPECT_FALSE(Falcata::Common::AtofAndCheck("0.1abc", &d));
+  EXPECT_TRUE(Falcata::Common::AtofAndCheck("-.25", &d));  // no strtod: independent of LC_NUMERIC
+  EXPECT_EQ(d, -0.25);
+  EXPECT_FALSE(Falcata::Common::AtofAndCheck("e5", &d));
 }

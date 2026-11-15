@@ -353,6 +353,8 @@ void MultiValBinWrapper::CopyMultiValBinSubset(
     lower_bound.push_back(num_total_bin);
     upper_bound.push_back(num_total_bin);
     data_size_t num_data = is_use_subrow_ ? bagging_indices_cnt : num_data_;
+    // expected entries per row of the column subset: the selected columns' summed
+    // densities, the counterpart of num_element_per_row() in the row-only branch
     if (multi_val_bin_subset_ == nullptr) {
       multi_val_bin_subset_.reset(multi_val_bin_->CreateLike(
           num_data, new_num_total_bin, num_used, sum_used_dense_ratio, offsets));

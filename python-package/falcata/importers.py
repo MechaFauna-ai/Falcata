@@ -522,6 +522,8 @@ def _oblivious_to_text(
         level = int(math.floor(math.log2(node + 1)))
         sp = splits[depth - 1 - level]
         split_feature.append(int(sp["float_feature_index"]))
+        # CatBoost borders are float32 and the JSON value parses to exactly that float32:
+        # unlike XGBoost's shortest decimals, no float32 round-trip is needed
         threshold.append(float(np.float64(sp["border"])))
         # NaN routing comes from the feature's nan_value_treatment, resolved by
         # the caller into "nan_left"

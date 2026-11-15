@@ -510,3 +510,21 @@ def test_get_data_arrow_table_subset(rng):
         returned_col = subset_data[column_name]
         assert expected_col.type == returned_col.type
         assert pyarrow_array_equal(expected_col, returned_col)
+
+
+def test_dataset_with_reference_rejects_extra_arrow_columns(rng):
+    # each Arrow column is pushed as the reference's column of the same index: a column past the
+    # reference's features used to write outside its feature maps (heap-buffer-overflow)
+    X = rng.normal(size=(100, 3))
+    reference = lgb.Dataset(X, label=X[:, 0], free_raw_data=False).construct()
+    wider = pa.table({f"c{i}": rng.normal(size=50) for i in range(4)})
+    valid = lgb.Dataset(wider, label=np.zeros(50), reference=reference)
+    with pytest.raises(lgb.basic.FalcataError, match=r"number of columns in the Arrow data \(4\) is not the same"):
+        valid.construct()
+
+    # the same number of columns still works, and bins the values like the reference does
+    same = pa.table({f"c{i}": X[:50, i] for i in range(3)})
+    valid = lgb.Dataset(same, label=np.zeros(50), reference=reference).construct()
+    assert valid.num_feature() == 3
+    expected = lgb.Dataset(X[:50], label=np.zeros(50), reference=reference).construct()
+    assert valid.feature_num_bin(0) == expected.feature_num_bin(0)

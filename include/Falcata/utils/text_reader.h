@@ -129,9 +129,14 @@ class TextReader {
       size_t cnt = 0;
       size_t i = 0;
       size_t last_i = 0;
-      // skip the break between \r and \n
-      if (last_line_.size() == 0 && buffer_process[0] == '\n') {
-        i = 1;
+      // with no line pending, the chunk's leading line breaks end nothing: skip them all, as the loop below skips
+      // every break after the first. Skipping only one '\n' (the second half of a \r\n split by the chunk
+      // boundary) passed a blank line at the start of the file, or one whose \r\n straddled the chunk boundary,
+      // to process_fun as an empty data row (all zeros, label 0) that the same blank line elsewhere did not give
+      if (last_line_.size() == 0) {
+        while (i < read_cnt && (buffer_process[i] == '\n' || buffer_process[i] == '\r')) {
+          ++i;
+        }
         last_i = i;
       }
       while (i < read_cnt) {
@@ -306,9 +311,14 @@ class TextReader {
       size_t i = 0;
       size_t last_i = 0;
       INDEX_T start_idx = used_cnt;
-      // skip the break between \r and \n
-      if (last_line_.size() == 0 && buffer_process[0] == '\n') {
-        i = 1;
+      // with no line pending, the chunk's leading line breaks end nothing: skip them all, as the loop below skips
+      // every break after the first. Skipping only one '\n' (the second half of a \r\n split by the chunk
+      // boundary) passed a blank line at the start of the file, or one whose \r\n straddled the chunk boundary,
+      // to process_fun as an empty data row (all zeros, label 0) that the same blank line elsewhere did not give
+      if (last_line_.size() == 0) {
+        while (i < read_cnt && (buffer_process[i] == '\n' || buffer_process[i] == '\r')) {
+          ++i;
+        }
         last_i = i;
       }
       while (i < read_cnt) {
