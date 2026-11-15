@@ -882,7 +882,10 @@ class Booster {
         matrix_offsets[m] = 0;
       }
       if (m + 1 < num_matrices) {
-        matrix_offsets[m + 1] = static_cast<int64_t>(matrix_offsets[m] + row_matrix_offsets[row_vector_cnt - 1] + row_sizes[row_vector_cnt - 1]);
+        // matrix m ends where its last row does; with no rows it is empty (there is no last row to read)
+        const int64_t matrix_size =
+            agg.empty() ? 0 : row_matrix_offsets[row_vector_cnt - 1] + row_sizes[row_vector_cnt - 1];
+        matrix_offsets[m + 1] = matrix_offsets[m] + matrix_size;
       }
     }
     // copy vector results to output for each row
