@@ -503,8 +503,12 @@ def _json_default_with_numpy(obj: Any) -> Any:
         return obj.item()
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
-    else:
-        return obj
+    # returning obj itself made json report "Circular reference detected"
+    raise TypeError(
+        f"Cannot store a pandas category of type {type(obj).__name__} ({obj!r}) in the model: "
+        "only str, int, float and bool categories can be saved. Convert the categories, "
+        "e.g. with df[col].cat.rename_categories(str), before training."
+    )
 
 
 def _to_string(x: Union[int, float, str, List]) -> str:
@@ -5015,6 +5019,8 @@ class Booster:
             stripped = [x for x in suffixes if x != ".gz"]
             format = "falb" if stripped and stripped[-1] == ".falb" else "txt"
         if format == "falb":
+            # serialized first: categories that cannot be stored must fail before a file is written
+            categorical_str = _dump_pandas_categorical(self.pandas_categorical)
             blob = self._model_to_binary_payload(
                 num_iteration=num_iteration,
                 start_iteration=start_iteration,
@@ -5023,16 +5029,18 @@ class Booster:
             )
             with open(filename, "wb") as f:
                 f.write(blob)
-            # appended AFTER the binary payload: the loader addresses sections
-            # through its table and ignores trailing bytes, so both formats
-            # carry the pandas categories the same way
-            _dump_pandas_categorical(self.pandas_categorical, filename)
+                # appended AFTER the binary payload: the loader addresses sections
+                # through its table and ignores trailing bytes, so both formats
+                # carry the pandas categories the same way
+                f.write(categorical_str.encode("utf-8"))
             return self
         if binary_kwargs:
             raise ValueError(f"binary options {sorted(binary_kwargs)} are not valid for a text model")
         if num_iteration is None:
             num_iteration = self.best_iteration
         importance_type_int = _FEATURE_IMPORTANCE_TYPE_MAPPER[importance_type]
+        # serialized first: categories that cannot be stored must fail before the native save writes the file
+        categorical_str = _dump_pandas_categorical(self.pandas_categorical)
         _safe_call(
             _LIB.FLC_BoosterSaveModel(
                 self._handle,
@@ -5042,7 +5050,8 @@ class Booster:
                 _c_str(str(filename)),
             )
         )
-        _dump_pandas_categorical(self.pandas_categorical, filename)
+        with open(filename, "a") as f:
+            f.write(categorical_str)
         return self
 
     def model_to_binary(
