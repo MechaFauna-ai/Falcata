@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "init_score_layout.hpp"
+#include "parser.hpp"
 
 namespace Falcata {
 
@@ -363,6 +364,41 @@ Dataset* DatasetLoader::LoadFromFile(const char* filename, int rank, int num_mac
 }
 
 Dataset* DatasetLoader::LoadFromFileAlignWithOtherDataset(const char* filename, const Dataset* train_data) {
+  // validation data is read by position into the training data's bins: a header naming the training file's columns in
+  // another order silently scrambled them (and with them the validation metrics and early stopping). Both headers are
+  // read from the files themselves: the CLI reuses the training data's loader (and its feature_names_) for every
+  // validation file, and user-set feature names need not describe the training file. Headers naming other columns
+  // entirely, and training data that did not come from a text file with a header, are read by position as before.
+  // each file drops its own label column (with label_column=name:... the two can sit at different positions)
+  const auto header_names = [this](const std::string& path, int label_index) {
+    std::vector<std::string> names;
+    // existence first: CheckCanLoadFromBin is fatal for a missing file, and the training file may be gone by now
+    if (!path.empty() && VirtualFileReader::Make(path)->Init() && CheckCanLoadFromBin(path.c_str()).empty()) {
+      TextReader<data_size_t> header_reader(path.c_str(), true);
+      names = Common::Split(header_reader.first_line().c_str(), "\t,");
+      if (label_index >= 0 && label_index < static_cast<int>(names.size())) {
+        names.erase(names.begin() + label_index);
+      }
+    }
+    return names;
+  };
+  if (config_.header && train_data->parser_config_str_.empty()) {
+    const auto valid_names = header_names(filename, label_idx_);
+    const auto train_names = valid_names.empty() ? std::vector<std::string>()
+                                                 : header_names(train_data->data_filename_, train_data->label_idx_);
+    std::unordered_map<std::string, int> train_position;
+    for (int i = 0; i < static_cast<int>(train_names.size()); ++i) {
+      train_position[train_names[i]] = i;
+    }
+    for (int j = 0; j < static_cast<int>(valid_names.size()) && !train_position.empty(); ++j) {
+      const auto it = train_position.find(valid_names[j]);
+      if (it != train_position.end() && it->second != j) {
+        Log::Fatal("Column \"%s\" is feature %d of %s but feature %d of the training data; validation data is read "
+                   "by position, so give it the training data's column order", valid_names[j].c_str(), j, filename,
+                   it->second);
+      }
+    }
+  }
   data_size_t num_global_data = 0;
   std::vector<data_size_t> used_data_indices;
   auto dataset = std::unique_ptr<Dataset>(new Dataset());
@@ -375,6 +411,13 @@ Dataset* DatasetLoader::LoadFromFileAlignWithOtherDataset(const char* filename, 
                                                                config_.precise_float_parser, train_data->parser_config_str_));
     if (parser == nullptr) {
       Log::Fatal("Could not recognize data format of %s", filename);
+    }
+    // a CSV/TSV validation file is read by position: an extra column was dropped and a missing one read as 0, without
+    // a word. (A LibSVM file may leave out trailing features; a custom parser defines its own columns.)
+    if (train_data->parser_config_str_.empty() && dynamic_cast<const LibSVMParser*>(parser.get()) == nullptr &&
+        parser->NumFeatures() != train_data->num_total_features()) {
+      Log::Fatal("%s has %d feature columns, but the training data has %d", filename, parser->NumFeatures(),
+                 train_data->num_total_features());
     }
     dataset->data_filename_ = filename;
     dataset->label_idx_ = label_idx_;

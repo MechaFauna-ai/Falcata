@@ -1053,6 +1053,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_chunked_array.cpp
       tests/cpp_tests/test_cli_custom_objective.cpp
       tests/cpp_tests/test_cli_refit_feature_count.cpp
+      tests/cpp_tests/test_cli_valid_header_order.cpp
       tests/cpp_tests/test_colwise_iterators.cpp
       tests/cpp_tests/test_common.cpp
       tests/cpp_tests/test_csc_row_iterator.cpp
