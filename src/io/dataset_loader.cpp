@@ -906,6 +906,13 @@ void DatasetLoader::LoadHeaderFromMemory(Dataset* dataset, const char* buffer, s
     std::memcpy(&boundary, boundaries + sizeof(uint64_t) * i, sizeof(boundary));
     dataset->group_bin_boundaries_.push_back(boundary);
   }
+  // the boundaries are the groups' offsets into the histogram buffer, which is sized from the groups' own bin
+  // counts: the per-group widths are checked against the feature groups once they are loaded, so the first
+  // offset must be 0 for the last one to stay inside the buffer
+  if (dataset->group_bin_boundaries_.front() != 0) {
+    Log::Fatal("Binary dataset header is corrupt: group bin boundaries start at %llu, not 0",
+               static_cast<unsigned long long>(dataset->group_bin_boundaries_.front()));  // NOLINT(runtime/int): %llu format
+  }
   // group_feature_start_, group_feature_cnt_
   dataset->group_feature_start_ = read_ints(num_groups, true);
   dataset->group_feature_cnt_ = read_ints(num_groups, true);

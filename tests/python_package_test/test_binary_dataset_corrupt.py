@@ -103,3 +103,20 @@ def test_corrupt_bin_values_are_refused(tmp_path, binary_file):
     blob = bytearray(binary_file)
     blob[-64:] = b"\xff" * 64
     assert "REFUSED" in _run(tmp_path, bytes(blob))
+
+
+def test_shifted_group_bin_boundaries_are_refused(tmp_path, binary_file):
+    # group_bin_boundaries are the groups' offsets into the histogram buffer, which is sized from the groups' own
+    # bin counts. Shifting every boundary by the same amount kept them non-decreasing and kept each group's width,
+    # so the header checks passed and histogram construction wrote past the buffer (heap-buffer-overflow).
+    (num_features,) = struct.unpack_from("<i", binary_file, _NUM_FEATURES)
+    (num_groups,) = struct.unpack_from("<i", binary_file, _NUM_GROUPS)
+    per_feature = (4 * num_features + 7) // 8 * 8  # an int array padded to 8 bytes
+    boundaries = _NUM_GROUPS + 8 + 3 * per_feature  # after real_feature_idx, feature2group, feature2subfeature
+    values = struct.unpack_from(f"<{num_groups + 1}Q", binary_file, boundaries)
+    assert values[0] == 0
+    assert list(values) == sorted(values)
+    for shift in (1, 16, 4096):
+        blob = bytearray(binary_file)
+        struct.pack_into(f"<{num_groups + 1}Q", blob, boundaries, *[v + shift for v in values])
+        assert "REFUSED" in _run(tmp_path, bytes(blob))
