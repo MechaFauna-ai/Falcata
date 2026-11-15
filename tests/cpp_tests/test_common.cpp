@@ -440,3 +440,19 @@ TEST(BinMapper, CategoricalValueToBinOutOfRange) {
     EXPECT_EQ(mapper.ValueToBin(v), 0u) << v;
   }
 }
+
+// Common::StringToArray (list-valued parameters, linear-tree model fields): every token must be a whole number
+TEST(CommonStringToArray, RejectsTokensThatAreNotNumbers) {
+  using Falcata::Common::StringToArray;
+  EXPECT_EQ(StringToArray<int>("+1,-1, 3 ", ','), (std::vector<int>{1, -1, 3}));
+  EXPECT_THROW(StringToArray<int>("1,x", ','), std::exception);
+  EXPECT_THROW(StringToArray<int>("10,20x", ','), std::exception);
+  EXPECT_THROW(StringToArray<int>("1,-", ','), std::exception);
+  EXPECT_THROW(StringToArray<int>("1,  ", ','), std::exception);
+  EXPECT_EQ(StringToArray<double>("1.5,-2e-310,inf", ','), (std::vector<double>{1.5, -2e-310, INFINITY}));
+  EXPECT_THROW(StringToArray<double>("1,abc", ','), std::exception);
+  EXPECT_THROW(StringToArray<double>("1,2junk", ','), std::exception);
+  EXPECT_THROW(StringToArray<double>("1e999", ','), std::exception);
+  EXPECT_THROW(StringToArray<double>("1,  ", ','), std::exception);
+  EXPECT_EQ(StringToArray<double>("4.9406564584124654e-324 0.25", 2), (std::vector<double>{4.9406564584124654e-324, 0.25}));
+}

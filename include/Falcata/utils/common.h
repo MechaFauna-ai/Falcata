@@ -445,11 +445,12 @@ struct __StringToTHelper<T, true> {
     char* end = nullptr;
     errno = 0;
     const double value = std::strtod(begin, &end);
+    const bool converted = end != begin;  // before skipping trailing spaces: "  " converts nothing
     const bool overflow = errno == ERANGE && std::fabs(value) > 1.0;  // ERANGE on underflow still yields the value
     while (*end == ' ') {
       ++end;
     }
-    if (end == begin || *end != '\0' || overflow) {
+    if (!converted || *end != '\0' || overflow) {
       Log::Fatal("Cannot parse \"%s\" as a number", str.c_str());
     }
     return static_cast<T>(value);
