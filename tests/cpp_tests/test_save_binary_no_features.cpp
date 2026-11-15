@@ -21,6 +21,8 @@ TEST(SaveBinary, DatasetWithoutUsableFeaturesRoundTrips) {
   ASSERT_EQ(0, FLC_DatasetSetField(ds, "label", label.data(), 4, C_API_DTYPE_FLOAT32));
 
   const std::string path = ::testing::TempDir() + "save_binary_no_features.bin";
+  // SaveBinaryFile keeps an existing file, so a file left by an earlier (crashed) run would be read back instead
+  std::remove(path.c_str());
   ASSERT_EQ(0, FLC_DatasetSaveBinary(ds, path.c_str()));
 
   DatasetHandle loaded = nullptr;
