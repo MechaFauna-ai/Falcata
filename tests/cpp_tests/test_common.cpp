@@ -472,3 +472,24 @@ TEST(BinMapper, CategoricalValueToBinOutOfRange) {
     EXPECT_EQ(mapper.ValueToBin(v), 0u) << v;
   }
 }
+
+// A row that lists the same feature twice (a repeated index in a LibSVM line, duplicate column indices in a CSR
+// row) gives FindBin more sampled values than sampled rows. The zero count went negative and the sparse rate above
+// 1; with every row duplicated (one row: -9 and NaN for the same feature, from a fuzzed 8-byte LibSVM file),
+// FindBinWithZeroAsOneBin divided by a zero non-zero count and cast the infinity to int (UBSan
+// float-cast-overflow). Each duplicate now counts as a row.
+TEST(BinMapper, MoreSampledValuesThanRows) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const auto& sample : std::vector<std::vector<double>>{{-9.0, nan}, {-9.0, 3.0, 4.0}, {-9.0, -9.0},
+                                                             {2.0, 2.0, 5.0}}) {
+    for (auto bin_type : {Falcata::BinType::NumericalBin, Falcata::BinType::CategoricalBin}) {
+      Falcata::BinMapper mapper;
+      std::vector<double> values = sample;
+      // one sampled row
+      mapper.FindBin(values.data(), static_cast<int>(values.size()), 1, 255, 1, 1, false, bin_type, true, false, {});
+      EXPECT_GE(mapper.sparse_rate(), 0.0) << sample.size() << " values, bin type " << static_cast<int>(bin_type);
+      EXPECT_LE(mapper.sparse_rate(), 1.0) << sample.size() << " values, bin type " << static_cast<int>(bin_type);
+      EXPECT_GE(mapper.num_bin(), 1);
+    }
+  }
+}
