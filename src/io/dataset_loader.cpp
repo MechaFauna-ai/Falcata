@@ -336,7 +336,17 @@ Dataset* DatasetLoader::LoadFromFileAlignWithOtherDataset(const char* filename, 
   // validation data is read by position into the training data's bins: a header naming the training features in
   // another order silently scrambled them (and with them the validation metrics and early stopping). Headers that
   // name other columns entirely are still read by position, as before.
-  if (config_.header && train_data->parser_config_str_.empty() && !feature_names_.empty()) {
+  // the header is read from this file: the CLI reuses the training data's loader (and its feature_names_) for every
+  // validation file
+  std::vector<std::string> valid_names;
+  if (config_.header && train_data->parser_config_str_.empty() && CheckCanLoadFromBin(filename).empty()) {
+    TextReader<data_size_t> header_reader(filename, true);
+    valid_names = Common::Split(header_reader.first_line().c_str(), "\t,");
+    if (label_idx_ >= 0 && label_idx_ < static_cast<int>(valid_names.size())) {
+      valid_names.erase(valid_names.begin() + label_idx_);
+    }
+  }
+  if (!valid_names.empty()) {
     const auto stored = [](std::string name) {
       std::replace(name.begin(), name.end(), ' ', '_');  // as Dataset::set_feature_names stores it
       return name;
@@ -346,11 +356,11 @@ Dataset* DatasetLoader::LoadFromFileAlignWithOtherDataset(const char* filename, 
     for (int i = 0; i < static_cast<int>(train_names.size()); ++i) {
       train_position[train_names[i]] = i;
     }
-    for (int j = 0; j < static_cast<int>(feature_names_.size()); ++j) {
-      const auto it = train_position.find(stored(feature_names_[j]));
+    for (int j = 0; j < static_cast<int>(valid_names.size()); ++j) {
+      const auto it = train_position.find(stored(valid_names[j]));
       if (it != train_position.end() && it->second != j) {
         Log::Fatal("Column \"%s\" is feature %d of %s but feature %d of the training data; validation data is read "
-                   "by position, so give it the training data's column order", feature_names_[j].c_str(), j, filename,
+                   "by position, so give it the training data's column order", valid_names[j].c_str(), j, filename,
                    it->second);
       }
     }
