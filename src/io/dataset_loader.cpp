@@ -738,7 +738,8 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
   // get forced split
   std::string forced_bins_path = config_.forcedbins_filename;
   std::vector<std::vector<double>> forced_bin_bounds = DatasetLoader::GetForcedBins(forced_bins_path, num_col, categorical_features_);
-  CheckFeatureIndexParams(categorical_features_, ignore_features_, num_col);
+  // against the global count: in distributed construction a worker may lack trailing features the others have
+  CheckFeatureIndexParams(categorical_features_, ignore_features_, num_total_features);
 
   const data_size_t filter_cnt = static_cast<data_size_t>(
     static_cast<double>(config_.min_data_in_leaf * total_sample_size) / num_dist_data);
