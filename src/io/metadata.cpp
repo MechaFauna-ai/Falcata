@@ -534,6 +534,12 @@ void Metadata::SetWeightsFromIterator(It first, It last) {
   if (last - first == 0) {
     weights_.clear();
     num_weights_ = 0;
+    #ifdef USE_CUDA
+    if (cuda_metadata_ != nullptr) {
+      // the device copy too: CUDA objectives and metrics kept training with the cleared weights
+      cuda_metadata_->SetWeights(nullptr, 0);
+    }
+    #endif  // USE_CUDA
     return;
   }
   if (num_data_ != last - first) {

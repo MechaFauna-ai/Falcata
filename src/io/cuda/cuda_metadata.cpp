@@ -48,6 +48,11 @@ void CUDAMetadata::SetLabel(const label_t* label, data_size_t len) {
 }
 
 void CUDAMetadata::SetWeights(const label_t* weights, data_size_t len) {
+  if (weights == nullptr || len == 0) {
+    // no weights: a null device pointer is how the CUDA objectives and metrics tell unweighted data
+    cuda_weights_.Clear();
+    return;
+  }
   cuda_weights_.InitFromHostMemory(weights, static_cast<size_t>(len));
 }
 
