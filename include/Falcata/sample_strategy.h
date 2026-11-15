@@ -16,6 +16,7 @@
 #include <Falcata/tree_learner.h>
 #include <Falcata/objective_function.h>
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -76,7 +77,8 @@ class SampleStrategy {
     bagging_rands_.clear();
     bagging_rands_.reserve(num_blocks);
     for (size_t i = 0; i < num_blocks; ++i) {
-      bagging_rands_.emplace_back(config_->bagging_seed + static_cast<int>(i));
+      // wrap in unsigned arithmetic: bagging_seed + i overflowed int for seeds near INT_MAX (UB)
+      bagging_rands_.emplace_back(static_cast<int>(static_cast<uint32_t>(config_->bagging_seed) + static_cast<uint32_t>(i)));
     }
     bagging_rands_seed_ = config_->bagging_seed;
   }
