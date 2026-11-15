@@ -5,6 +5,11 @@ GOSSStrategy::Bagging computed static_cast<int>(1.0f / learning_rate). Below
 learning_rate ~4.7e-10 the quotient exceeds INT_MAX and the cast was undefined
 behaviour; on x86 it gave INT_MIN, so GOSS subsampled from the first iteration
 instead of never (for such a learning rate no iteration count reaches the threshold).
+
+quant_mode=none is pinned for device_type=cuda (an unset device_type on a CUDA build): there deterministic=true
+otherwise selects quantized training at a resolution that depends on whether the hessians are constant, and GOSS
+declares them non-constant from the start (it rescales the sampled rows' hessians once it samples), so even its
+unsampled warm-up trees are quantized differently from plain gbdt. quant_mode=none is the CPU default.
 """
 
 import numpy as np
@@ -16,7 +21,7 @@ def _model(**params):
     rng = np.random.default_rng(0)
     X = rng.random((2000, 5))
     y = X[:, 0] + rng.normal(0, 0.1, 2000)
-    base = {"verbose": -1, "num_threads": 1, "seed": 1, "deterministic": True}
+    base = {"verbose": -1, "num_threads": 1, "seed": 1, "deterministic": True, "quant_mode": "none"}
     booster = flc.train({**base, **params}, flc.Dataset(X, y), 12)
     return booster.model_to_string().split("parameters:")[0]
 
