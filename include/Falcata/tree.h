@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Falcata {
@@ -811,11 +812,17 @@ inline void Tree::PredictContribByMap(const std::unordered_map<int, double>& fea
 
 inline void Tree::RecomputeLeafDepths(int node, int depth) {
   if (node == 0) leaf_depth_.resize(num_leaves());
-  if (node < 0) {
-    leaf_depth_[~node] = depth;
-  } else {
-    RecomputeLeafDepths(left_child_[node], depth + 1);
-    RecomputeLeafDepths(right_child_[node], depth + 1);
+  // iterative: one stack frame per level overflowed the stack on deep trees
+  std::vector<std::pair<int, int>> stack(1, {node, depth});
+  while (!stack.empty()) {
+    const std::pair<int, int> cur = stack.back();
+    stack.pop_back();
+    if (cur.first < 0) {
+      leaf_depth_[~cur.first] = cur.second;
+    } else {
+      stack.emplace_back(right_child_[cur.first], cur.second + 1);
+      stack.emplace_back(left_child_[cur.first], cur.second + 1);
+    }
   }
 }
 
