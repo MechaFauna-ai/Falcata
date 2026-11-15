@@ -882,7 +882,10 @@ class Booster {
         matrix_offsets[m] = 0;
       }
       if (m + 1 < num_matrices) {
-        matrix_offsets[m + 1] = static_cast<int64_t>(matrix_offsets[m] + row_matrix_offsets[row_vector_cnt - 1] + row_sizes[row_vector_cnt - 1]);
+        // matrix m ends where its last row does; with no rows it is empty (there is no last row to read)
+        const int64_t matrix_size =
+            agg.empty() ? 0 : row_matrix_offsets[row_vector_cnt - 1] + row_sizes[row_vector_cnt - 1];
+        matrix_offsets[m + 1] = matrix_offsets[m] + matrix_size;
       }
     }
     // copy vector results to output for each row
@@ -1090,6 +1093,7 @@ class Booster {
   }
 
   void SaveModelToFile(int start_iteration, int num_iteration, int feature_importance_type, const char* filename) const {
+    SHARED_LOCK(mutex_)
     boosting_->SaveModelToFile(start_iteration, num_iteration, feature_importance_type, filename);
   }
 
@@ -1100,6 +1104,7 @@ class Booster {
 
   std::string SaveModelToString(int start_iteration, int num_iteration,
                                 int feature_importance_type) const {
+    SHARED_LOCK(mutex_)
     return boosting_->SaveModelToString(start_iteration,
                                         num_iteration, feature_importance_type);
   }
@@ -1108,6 +1113,7 @@ class Booster {
                                 int feature_importance_type, bool with_stats,
                                 bool with_diagnostics, bool f32_leaves,
                                 int compress_level) const {
+    SHARED_LOCK(mutex_)
     return boosting_->SaveModelToBinary(start_iteration, num_iteration,
                                         feature_importance_type, with_stats,
                                         with_diagnostics, f32_leaves,
@@ -1120,12 +1126,26 @@ class Booster {
 
   std::string DumpModel(int start_iteration, int num_iteration,
                         int feature_importance_type) const {
+    SHARED_LOCK(mutex_)
     return boosting_->DumpModel(start_iteration, num_iteration,
                                 feature_importance_type);
   }
 
   std::vector<double> FeatureImportance(int num_iteration, int importance_type) const {
+    SHARED_LOCK(mutex_)
     return boosting_->FeatureImportance(num_iteration, importance_type);
+  }
+
+  // Read under the shared lock: another thread training this Booster appends to the model vector meanwhile.
+  int GetCurrentIteration() const {
+    SHARED_LOCK(mutex_)
+    return boosting_->GetCurrentIteration();
+  }
+
+  int64_t CalcNumPredict(int num_row, int predict_type, int start_iteration, int num_iteration) const {
+    SHARED_LOCK(mutex_)
+    return static_cast<int64_t>(num_row) * boosting_->NumPredictOneRow(start_iteration, num_iteration,
+      predict_type == C_API_PREDICT_LEAF_INDEX, predict_type == C_API_PREDICT_CONTRIB);
   }
 
   double UpperBoundValue() const {
@@ -1300,11 +1320,30 @@ static int32_t CheckedRowCount(int64_t nrow, const char* what) {
 // The streaming push functions write rows [start_row, start_row + nrow) of a Dataset allocated for num_data rows:
 // a range outside it wrote past the bins (heap-buffer-overflow).
 static void CheckPushRowRange(const Dataset* dataset, int64_t start_row, int64_t nrow) {
+  // a finished Dataset ignores pushed values, so rows pushed after the push that reached the last row
+  // (the automatic finish) were dropped without a word
+  if (dataset->is_finish_load()) {
+    Log::Fatal("Cannot push rows at start_row %s: the Dataset has already finished loading. Without "
+               "FLC_DatasetSetWaitForManualFinish, it finishes when a push reaches its last row, so push the rows "
+               "in order, or set it and call FLC_DatasetMarkFinished after the last push",
+               std::to_string(start_row).c_str());
+  }
   const int64_t num_data = dataset->num_data();
   // compare against the remaining rows, so a huge start_row (CSR takes an int64_t) cannot overflow the check
   if (start_row < 0 || nrow < 0 || start_row > num_data || nrow > num_data - start_row) {
     Log::Fatal("Cannot push %s rows at start_row %s: the Dataset has %d rows", std::to_string(nrow).c_str(),
                std::to_string(start_row).c_str(), dataset->num_data());
+  }
+}
+
+// A Dataset filled by the push functions holds complete bins only after FinishLoad (which merges the per-thread
+// push buffers): reading it earlier reads uninitialized bin state. It finishes when a push reaches its last row,
+// or on FLC_DatasetMarkFinished when FLC_DatasetSetWaitForManualFinish is set.
+static void CheckDatasetFinished(const Dataset* dataset, const char* what) {
+  if (dataset != nullptr && !dataset->is_finish_load()) {
+    Log::Fatal("Cannot %s: the Dataset has not finished loading. Push all of its rows (the push that reaches the "
+               "last row finishes it), or call FLC_DatasetMarkFinished when FLC_DatasetSetWaitForManualFinish is set",
+               what);
   }
 }
 
@@ -1454,6 +1493,62 @@ static void ApplyMissingSentinelToSample(
       }
     }
   }
+}
+
+// CSC_RowIterator walks a column's stored rows in order and returns 0 for a row it has passed, so row
+// indices that are not strictly increasing within a column (unsorted, or a row stored twice) were read as
+// different values without any error: training and prediction silently used the wrong matrix.
+static void CheckCSCRowIndicesSorted(const void* col_ptr, int col_ptr_type, const int32_t* indices,
+                                     int64_t ncol_ptr, int64_t nelem, const char* what) {
+  if (col_ptr == nullptr || indices == nullptr || ncol_ptr < 2) {
+    return;
+  }
+  auto col_start = [col_ptr, col_ptr_type](int64_t j) -> int64_t {
+    return col_ptr_type == C_API_DTYPE_INT32 ? static_cast<const int32_t*>(col_ptr)[j]
+                                             : static_cast<const int64_t*>(col_ptr)[j];
+  };
+  if (col_ptr_type != C_API_DTYPE_INT32 && col_ptr_type != C_API_DTYPE_INT64) {
+    return;  // rejected where the column pointers are read
+  }
+  for (int64_t j = 0; j + 1 < ncol_ptr; ++j) {
+    const int64_t start = col_start(j);
+    const int64_t end = col_start(j + 1);
+    if (start < 0 || end > nelem || start > end) {
+      continue;  // a malformed range is not this check's to report
+    }
+    for (int64_t k = start + 1; k < end; ++k) {
+      if (indices[k] <= indices[k - 1]) {
+        Log::Fatal("%s: the row indices of column %s are not strictly increasing (row %d follows row %d). Sort "
+                   "each column's row indices and merge duplicate entries (scipy: sum_duplicates())",
+                   what, std::to_string(j).c_str(), indices[k], indices[k - 1]);
+      }
+    }
+  }
+}
+
+// The push buffers of a sparse bin are indexed by OpenMP thread id (plus omp_max_threads * tid after
+// InitStreaming). They were sized by the thread counts at bin creation / InitStreaming, but a push ran with the
+// OpenMP thread count of the moment and took any tid: a larger count, or a tid past those InitStreaming
+// registered, wrote past the buffers. Returns the OpenMP threads the push may use.
+static int PreparePushThreads(Dataset* dataset, int32_t tid) {
+  if (dataset->streaming_num_threads() > 0) {
+    if (tid < 0 || tid >= dataset->streaming_num_threads()) {
+      Log::Fatal("Push thread id %d is outside the %d threads registered by FLC_DatasetInitStreaming", tid,
+                 dataset->streaming_num_threads());
+    }
+    // concurrent pushes share the buffers sized by InitStreaming: stay within them rather than grow them
+    return std::max(1, std::min(OMP_NUM_THREADS(), dataset->omp_max_threads()));
+  }
+  if (tid < 0) {
+    Log::Fatal("Push thread id %d must be non-negative", tid);
+  }
+  const int num_threads = OMP_NUM_THREADS();
+  if (tid == 0) {
+    // grow-only, so it does not reallocate under a concurrent push from another external thread (without
+    // InitStreaming, such pushes keep their old layout: omp thread + num_threads * tid)
+    dataset->ReservePushThreads(num_threads);
+  }
+  return num_threads;
 }
 
 // Guard for input formats that do not implement the sentinel rewrite: a
@@ -1640,8 +1735,9 @@ int FLC_DatasetPushRows(DatasetHandle dataset,
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
+  const int push_threads = PreparePushThreads(p_dataset, 0);
   OMP_INIT_EX();
-  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  #pragma omp parallel for num_threads(push_threads) schedule(static)
   for (int i = 0; i < nrow; ++i) {
     OMP_LOOP_EX_BEGIN();
     const int tid = omp_get_thread_num();
@@ -1681,10 +1777,12 @@ int FLC_DatasetPushRowsWithMetadata(DatasetHandle dataset,
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
 
-  const int max_omp_threads = p_dataset->omp_max_threads() > 0 ? p_dataset->omp_max_threads() : OMP_NUM_THREADS();
+  const int push_threads = PreparePushThreads(p_dataset, tid);
+  // the stride of the external thread ids: the buffers InitStreaming made per external thread
+  const int max_omp_threads = p_dataset->streaming_num_threads() > 0 ? p_dataset->omp_max_threads() : push_threads;
 
   OMP_INIT_EX();
-#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+#pragma omp parallel for num_threads(push_threads) schedule(static)
   for (int i = 0; i < nrow; ++i) {
     OMP_LOOP_EX_BEGIN();
     // convert internal thread id to be unique based on external thread id
@@ -1721,8 +1819,9 @@ int FLC_DatasetPushRowsByCSR(DatasetHandle dataset,
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
+  const int push_threads = PreparePushThreads(p_dataset, 0);
   OMP_INIT_EX();
-  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  #pragma omp parallel for num_threads(push_threads) schedule(static)
   for (int i = 0; i < nrow; ++i) {
     OMP_LOOP_EX_BEGIN();
     const int tid = omp_get_thread_num();
@@ -1766,10 +1865,12 @@ int FLC_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
 
-  const int max_omp_threads = p_dataset->omp_max_threads() > 0 ? p_dataset->omp_max_threads() : OMP_NUM_THREADS();
+  const int push_threads = PreparePushThreads(p_dataset, tid);
+  // the stride of the external thread ids: the buffers InitStreaming made per external thread
+  const int max_omp_threads = p_dataset->streaming_num_threads() > 0 ? p_dataset->omp_max_threads() : push_threads;
 
   OMP_INIT_EX();
-#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+#pragma omp parallel for num_threads(push_threads) schedule(static)
   for (int i = 0; i < nrow; ++i) {
     OMP_LOOP_EX_BEGIN();
     // convert internal thread id to be unique based on external thread id
@@ -2838,6 +2939,7 @@ int FLC_DatasetCreateFromCSC(const void* col_ptr,
   CheckNoMissingSentinel(config, "CSC");
   std::unique_ptr<Dataset> ret;
   int32_t nrow = CheckedRowCount(num_row, "FLC_DatasetCreateFromCSC");
+  CheckCSCRowIndicesSorted(col_ptr, col_ptr_type, indices, ncol_ptr, nelem, "FLC_DatasetCreateFromCSC");
   if (reference == nullptr) {
     // sample data first
     auto sample_indices = CreateSampleIndices(nrow, config);
@@ -2926,11 +3028,12 @@ void DatasetCreateFromArrowChunkedArray(ArrowChunkedArray& chunked_array,
 
   std::unique_ptr<Dataset> ret;
   auto chunked_array_view = chunked_array.view();
+  const int32_t num_rows = CheckedRowCount(chunked_array.get_length(), "FLC_DatasetCreateFromArrow");
 
   // Initialize the dataset
   if (reference == nullptr) {
     // If there is no reference dataset, we first sample indices
-    auto sample_indices = CreateSampleIndices(static_cast<int32_t>(chunked_array.get_length()), config);
+    auto sample_indices = CreateSampleIndices(num_rows, config);
     auto sample_count = static_cast<int>(sample_indices.size());
     std::vector<std::vector<double>> sample_values(chunked_array.get_num_fields());
     std::vector<std::vector<int>> sample_idx(chunked_array.get_num_fields());
@@ -2972,13 +3075,20 @@ void DatasetCreateFromArrowChunkedArray(ArrowChunkedArray& chunked_array,
                                              static_cast<int>(chunked_array.get_num_fields()),
                                              VectorSize<double>(sample_values).data(),
                                              sample_count,
-                                             static_cast<int>(chunked_array.get_length()),
-                                             static_cast<int>(chunked_array.get_length())));
+                                             num_rows,
+                                             num_rows));
   } else {
-    ret.reset(new Dataset(static_cast<data_size_t>(chunked_array.get_length())));
+    // every Arrow field is pushed as the reference's column of the same index: a field past the
+    // reference's columns would index its feature maps out of bounds
+    const int reference_num_features = reinterpret_cast<const Dataset*>(reference)->num_total_features();
+    if (chunked_array.get_num_fields() != reference_num_features) {
+      Log::Fatal("The number of columns in the Arrow data (%s) is not the same as in the reference Dataset (%d)",
+                 std::to_string(chunked_array.get_num_fields()).c_str(), reference_num_features);
+    }
+    ret.reset(new Dataset(num_rows));
     ret->CreateValid(reinterpret_cast<const Dataset*>(reference));
     if (ret->has_raw()) {
-      ret->ResizeRaw(static_cast<int>(chunked_array.get_length()));
+      ret->ResizeRaw(num_rows);
     }
   }
 
@@ -3040,6 +3150,7 @@ int FLC_DatasetGetSubset(
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   auto full_dataset = reinterpret_cast<const Dataset*>(handle);
+  CheckDatasetFinished(full_dataset, "take a subset of the Dataset");
   CHECK_GT(num_used_row_indices, 0);
   const int32_t lower = 0;
   const int32_t upper = full_dataset->num_data() - 1;
@@ -3110,6 +3221,7 @@ int FLC_DatasetSaveBinary(DatasetHandle handle,
                            const char* filename) {
   API_BEGIN();
   auto dataset = reinterpret_cast<Dataset*>(handle);
+  CheckDatasetFinished(dataset, "save the Dataset");
   dataset->SaveBinaryFile(filename);
   API_END();
 }
@@ -3274,6 +3386,7 @@ int FLC_BoosterCreate(const DatasetHandle train_data,
                        BoosterHandle* out) {
   API_BEGIN();
   const Dataset* p_train_data = reinterpret_cast<const Dataset*>(train_data);
+  CheckDatasetFinished(p_train_data, "train on the Dataset");
   auto ret = std::unique_ptr<Booster>(new Booster(p_train_data, parameters));
   *out = ret.release();
   API_END();
@@ -3347,6 +3460,7 @@ int FLC_BoosterAddValidData(BoosterHandle handle,
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   const Dataset* p_dataset = reinterpret_cast<const Dataset*>(valid_data);
+  CheckDatasetFinished(p_dataset, "validate on the Dataset");
   ref_booster->AddValidData(p_dataset);
   API_END();
 }
@@ -3356,6 +3470,7 @@ int FLC_BoosterResetTrainingData(BoosterHandle handle,
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   const Dataset* p_dataset = reinterpret_cast<const Dataset*>(train_data);
+  CheckDatasetFinished(p_dataset, "train on the Dataset");
   ref_booster->ResetTrainingData(p_dataset);
   API_END();
 }
@@ -3442,7 +3557,7 @@ int FLC_BoosterRollbackOneIter(BoosterHandle handle) {
 int FLC_BoosterGetCurrentIteration(BoosterHandle handle, int* out_iteration) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
-  *out_iteration = ref_booster->GetBoosting()->GetCurrentIteration();
+  *out_iteration = ref_booster->GetCurrentIteration();
   API_END();
 }
 
@@ -3598,8 +3713,7 @@ int FLC_BoosterCalcNumPredict(BoosterHandle handle,
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   Falcata::CheckPredictType(predict_type);
-  *out_len = static_cast<int64_t>(num_row) * ref_booster->GetBoosting()->NumPredictOneRow(start_iteration,
-    num_iteration, predict_type == C_API_PREDICT_LEAF_INDEX, predict_type == C_API_PREDICT_CONTRIB);
+  *out_len = ref_booster->CalcNumPredict(num_row, predict_type, start_iteration, num_iteration);
   API_END();
 }
 
@@ -3685,6 +3799,7 @@ int FLC_BoosterPredictSparseOutput(BoosterHandle handle,
   } else if (matrix_type == C_API_MATRIX_TYPE_CSC) {
     int num_threads = OMP_NUM_THREADS();
     int ncol = static_cast<int>(nindptr - 1);
+    CheckCSCRowIndicesSorted(indptr, indptr_type, indices, nindptr, nelem, "FLC_BoosterPredictSparseOutput");
     // one iterator per column for each thread, built by the thread on its first row (in parallel, and only
     // for the threads that get rows)
     std::vector<std::vector<CSC_RowIterator>> iterators(num_threads, std::vector<CSC_RowIterator>());
@@ -3830,6 +3945,7 @@ int FLC_BoosterPredictForCSC(BoosterHandle handle,
   OMP_SET_NUM_THREADS(config.num_threads);
   int num_threads = OMP_NUM_THREADS();
   int ncol = static_cast<int>(ncol_ptr - 1);
+  CheckCSCRowIndicesSorted(col_ptr, col_ptr_type, indices, ncol_ptr, nelem, "FLC_BoosterPredictForCSC");
   // one iterator per column for each thread, built by the thread on its first row (in parallel, and only for
   // the threads that get rows)
   std::vector<std::vector<CSC_RowIterator>> iterators(num_threads, std::vector<CSC_RowIterator>());
@@ -4026,7 +4142,7 @@ void FLC_BoosterPredictForArrowChunkedArray(BoosterHandle handle,
   ref_booster->Predict(start_iteration,
                        num_iteration,
                        predict_type,
-                       static_cast<int>(chunked_array.get_length()),
+                       CheckedRowCount(chunked_array.get_length(), "FLC_BoosterPredictForArrow"),
                        static_cast<int>(chunked_array.get_num_fields()),
                        row_fn,
                        config,

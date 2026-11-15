@@ -538,6 +538,7 @@ SEXP FLC_DatasetGetField_R(SEXP handle,
     auto p_data = reinterpret_cast<const double*>(res);
     std::copy(p_data, p_data + out_len, REAL(field_data));
   } else {
+    // only label and weight reach here (Dataset$get_field() limits names to .INFO_KEYS()), both float32
     auto p_data = reinterpret_cast<const float*>(res);
     std::copy(p_data, p_data + out_len, REAL(field_data));
   }

@@ -795,12 +795,12 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
         bin_mappers[i]->FindBin(sample_values[start[rank] + i], num_per_col[start[rank] + i],
                                 total_sample_size, config_.max_bin, config_.min_data_in_bin,
                                 filter_cnt, config_.feature_pre_filter, bin_type, config_.use_missing, config_.zero_as_missing,
-                                forced_bin_bounds[i]);
+                                forced_bin_bounds[start[rank] + i]);
       } else {
         bin_mappers[i]->FindBin(sample_values[start[rank] + i], num_per_col[start[rank] + i],
                                 total_sample_size, config_.max_bin_by_feature[start[rank] + i],
                                 config_.min_data_in_bin, filter_cnt, config_.feature_pre_filter, bin_type, config_.use_missing,
-                                config_.zero_as_missing, forced_bin_bounds[i]);
+                                config_.zero_as_missing, forced_bin_bounds[start[rank] + i]);
       }
       OMP_LOOP_EX_END();
     }
@@ -840,8 +840,12 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
         continue;
       }
       bin_mappers[i].reset(new BinMapper());
-      bin_mappers[i]->CopyFrom(cp_ptr);
-      cp_ptr += bin_mappers[i]->SizesInByte();
+      // the gathered buffer comes from the other machines: read each mapper within what is left of it
+      const char* gathered_end = output_buffer.data() + output_buffer.size();
+      if (cp_ptr > gathered_end) {
+        Log::Fatal("The bin mappers gathered from the other machines are shorter than their features need");
+      }
+      cp_ptr += bin_mappers[i]->CopyFrom(cp_ptr, static_cast<size_t>(gathered_end - cp_ptr));
     }
   }
   CheckCategoricalFeatureNumBin(bin_mappers, config_.max_bin, config_.max_bin_by_feature);
@@ -905,6 +909,13 @@ void DatasetLoader::LoadHeaderFromMemory(Dataset* dataset, const char* buffer, s
     uint64_t boundary;
     std::memcpy(&boundary, boundaries + sizeof(uint64_t) * i, sizeof(boundary));
     dataset->group_bin_boundaries_.push_back(boundary);
+  }
+  // the boundaries are the groups' offsets into the histogram buffer, which is sized from the groups' own bin
+  // counts: the per-group widths are checked against the feature groups once they are loaded, so the first
+  // offset must be 0 for the last one to stay inside the buffer
+  if (dataset->group_bin_boundaries_.front() != 0) {
+    Log::Fatal("Binary dataset header is corrupt: group bin boundaries start at %llu, not 0",
+               static_cast<unsigned long long>(dataset->group_bin_boundaries_.front()));  // NOLINT(runtime/int): %llu format
   }
   // group_feature_start_, group_feature_cnt_
   dataset->group_feature_start_ = read_ints(num_groups, true);
@@ -1297,13 +1308,13 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
                                 static_cast<int>(sample_values[start[rank] + i].size()),
                                 sample_data.size(), config_.max_bin, config_.min_data_in_bin,
                                 filter_cnt, config_.feature_pre_filter, bin_type, config_.use_missing, config_.zero_as_missing,
-                                forced_bin_bounds[i]);
+                                forced_bin_bounds[start[rank] + i]);
       } else {
         bin_mappers[i]->FindBin(sample_values[start[rank] + i].data(),
                                 static_cast<int>(sample_values[start[rank] + i].size()),
-                                sample_data.size(), config_.max_bin_by_feature[i],
+                                sample_data.size(), config_.max_bin_by_feature[start[rank] + i],
                                 config_.min_data_in_bin, filter_cnt, config_.feature_pre_filter, bin_type,
-                                config_.use_missing, config_.zero_as_missing, forced_bin_bounds[i]);
+                                config_.use_missing, config_.zero_as_missing, forced_bin_bounds[start[rank] + i]);
       }
       OMP_LOOP_EX_END();
     }
@@ -1343,8 +1354,12 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
         continue;
       }
       bin_mappers[i].reset(new BinMapper());
-      bin_mappers[i]->CopyFrom(cp_ptr);
-      cp_ptr += bin_mappers[i]->SizesInByte();
+      // the gathered buffer comes from the other machines: read each mapper within what is left of it
+      const char* gathered_end = output_buffer.data() + output_buffer.size();
+      if (cp_ptr > gathered_end) {
+        Log::Fatal("The bin mappers gathered from the other machines are shorter than their features need");
+      }
+      cp_ptr += bin_mappers[i]->CopyFrom(cp_ptr, static_cast<size_t>(gathered_end - cp_ptr));
     }
   }
   CheckCategoricalFeatureNumBin(bin_mappers, config_.max_bin, config_.max_bin_by_feature);

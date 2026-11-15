@@ -292,6 +292,7 @@ class GammaDevianceMetric : public RegressionMetric<GammaDevianceMetric> {
   inline static const char* Name() {
     return "gamma_deviance";
   }
+  // total (not weight-averaged) deviance on purpose, matching LightGBM's gamma_deviance
   inline static double AverageLoss(double sum_loss, double) {
     return sum_loss * 2;
   }

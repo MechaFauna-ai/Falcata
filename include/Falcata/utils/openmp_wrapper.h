@@ -85,7 +85,7 @@ class ThreadExceptionHelper {
 #define OMP_LOOP_EX_END()                 \
   }                                       \
   catch (std::exception & ex) {           \
-    Log::Warning(ex.what());              \
+    Log::Warning("%s", ex.what());        \
     omp_except_helper.CaptureException(); \
   }                                       \
   catch (...) {                           \

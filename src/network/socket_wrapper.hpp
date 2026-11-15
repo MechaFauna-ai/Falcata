@@ -339,6 +339,8 @@ class TcpSocket {
 
   inline int Recv(char *buf_, int len, int flags = 0) {
     int cur_cnt = recv(sockfd_, buf_ , len , flags);
+    // every error, SO_RCVTIMEO timeouts included, is fatal: a collective cannot
+    // continue once a peer stops responding
     if (cur_cnt == SOCKET_ERROR) {
       int err_code = GetLastError();
 #if defined(_WIN32)

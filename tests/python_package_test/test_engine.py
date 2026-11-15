@@ -1744,6 +1744,7 @@ def test_feature_name():
     feature_names_with_space = [f"f {i}" for i in range(X_train.shape[-1])]
     lgb_train.set_feature_name(feature_names_with_space)
     gbm = lgb.train(params, lgb_train, num_boost_round=5)
+    # spaces in feature names are replaced with '_', so the original names come back
     assert feature_names == gbm.feature_name()
 
 

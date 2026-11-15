@@ -289,6 +289,16 @@ class FeatureGroup {
   * \param num_thread The number of external threads that will be calling the push APIs
   * \param omp_max_threads The maximum number of OpenMP threads to allocate for
   */
+  void ReservePushThreads(int num_thread) {
+    if (is_multi_val_) {
+      for (int i = 0; i < num_feature_; ++i) {
+        multi_bin_data_[i]->ReservePushThreads(num_thread);
+      }
+    } else {
+      bin_data_->ReservePushThreads(num_thread);
+    }
+  }
+
   void InitStreaming(int32_t num_thread, int32_t omp_max_threads) {
     if (is_multi_val_) {
       for (int i = 0; i < num_feature_; ++i) {

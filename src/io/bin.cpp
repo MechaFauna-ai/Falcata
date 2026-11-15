@@ -137,6 +137,29 @@ bool NeedFilter(const std::vector<int>& cnt_in_bin, int total_cnt, int filter_cn
   return true;
 }
 
+/*!
+ * \brief upper bound of the bin that ends at value a when the next bin starts at b (a < b): just above their
+ *        midpoint. When the midpoint overflows -- b is +inf, or a + b overflows either way -- that bound put a and b
+ *        in one bin (with +inf, the final +inf bin was left empty), so a model could never split +inf, or the
+ *        largest finite values of either sign, off from the value next to them. Then the midpoint is taken finite:
+ *        a / 2 + b / 2 for finite values, the largest double for b == +inf (whose upper bound would round up to
+ *        +inf again). a == -inf already gets -DBL_MAX, which separates it. Every other pair keeps the exact
+ *        historical bound.
+ */
+static double BinUpperBoundBetween(double a, double b) {
+  double mid = (a + b) / 2.0;
+  if (std::isinf(mid)) {
+    if (std::isinf(b) && b > 0.0) {
+      return std::numeric_limits<double>::max();
+    }
+    if (!std::isinf(a)) {
+      mid = a / 2.0 + b / 2.0;
+    }
+  }
+  const double bound = Common::GetDoubleUpperBound(mid);
+  return std::isinf(bound) && bound > 0.0 ? std::numeric_limits<double>::max() : bound;
+}
+
 std::vector<double> GreedyFindBin(const double* distinct_values, const int* counts,
                                   int num_distinct_values, int max_bin,
                                   size_t total_cnt, int min_data_in_bin) {
@@ -148,7 +171,7 @@ std::vector<double> GreedyFindBin(const double* distinct_values, const int* coun
     for (int i = 0; i < num_distinct_values - 1; ++i) {
       cur_cnt_inbin += counts[i];
       if (cur_cnt_inbin >= min_data_in_bin) {
-        auto val = Common::GetDoubleUpperBound((distinct_values[i] + distinct_values[i + 1]) / 2.0);
+        auto val = BinUpperBoundBetween(distinct_values[i], distinct_values[i + 1]);
         if (bin_upper_bound.empty() || !Common::CheckDoubleEqualOrdered(bin_upper_bound.back(), val)) {
           bin_upper_bound.push_back(val);
           cur_cnt_inbin = 0;
@@ -161,6 +184,13 @@ std::vector<double> GreedyFindBin(const double* distinct_values, const int* coun
     if (min_data_in_bin > 0) {
       max_bin = std::min(max_bin, static_cast<int>(total_cnt / min_data_in_bin));
       max_bin = std::max(max_bin, 1);
+    }
+    if (max_bin == 1) {
+      // one bin holds everything. The loop below opens a bin before it checks bin_cnt against max_bin - 1, so with
+      // max_bin == 1 a value holding the whole count (the others empty: FindBin inserts a zero-count 0.0 between
+      // negative and positive values) wrote lower_bounds[1] past its one element and returned two bounds
+      bin_upper_bound.push_back(std::numeric_limits<double>::infinity());
+      return bin_upper_bound;
     }
     double mean_bin_size = static_cast<double>(total_cnt) / max_bin;
 
@@ -207,7 +237,7 @@ std::vector<double> GreedyFindBin(const double* distinct_values, const int* coun
     // update bin upper bound
     bin_upper_bound.clear();
     for (int i = 0; i < bin_cnt - 1; ++i) {
-      auto val = Common::GetDoubleUpperBound((upper_bounds[i] + lower_bounds[i + 1]) / 2.0);
+      auto val = BinUpperBoundBetween(upper_bounds[i], lower_bounds[i + 1]);
       if (bin_upper_bound.empty() || !Common::CheckDoubleEqualOrdered(bin_upper_bound.back(), val)) {
         bin_upper_bound.push_back(val);
       }
@@ -376,6 +406,17 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
                         int max_bin, int min_data_in_bin, int min_split_data, bool pre_filter, BinType bin_type,
                         bool use_missing, bool zero_as_missing,
                         const std::vector<double>& forced_upper_bounds) {
+  if (static_cast<size_t>(num_sample_values) > total_sample_cnt) {
+    // More sampled values than sampled rows: a row lists this feature more than once (a repeated index in a LibSVM
+    // line, duplicate column indices in a CSR row). Count each value as a row of its own. Otherwise the zero count
+    // below goes negative, a sparse rate exceeds 1, and when every row has the feature more than once,
+    // FindBinWithZeroAsOneBin divides by a zero non-zero count and casts the infinity to int (UB).
+    Log::Warning("A feature has %d sampled values in %zu sampled rows: some row lists the same feature more than "
+                 "once (a repeated index in a LibSVM line or duplicate column indices in a sparse row). Each "
+                 "duplicate is counted as a separate row when finding the bins.",
+                 num_sample_values, total_sample_cnt);
+    total_sample_cnt = static_cast<size_t>(num_sample_values);
+  }
   int na_cnt = 0;
   int non_na_cnt = 0;
   for (int i = 0; i < num_sample_values; ++i) {
@@ -399,6 +440,7 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
 
   bin_type_ = bin_type;
   default_bin_ = 0;
+  most_freq_bin_ = 0;  // a trivial feature keeps it, and is still serialized
   int zero_cnt = static_cast<int>(total_sample_cnt - num_sample_values - na_cnt);
   // find distinct_values first
   std::vector<double> distinct_values;
@@ -481,7 +523,15 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
     std::vector<int> distinct_values_int;
     std::vector<int> counts_int;
     for (size_t i = 0; i < distinct_values.size(); ++i) {
-      int val = static_cast<int>(distinct_values[i]);
+      // test the double before the cast, as ValueToBin does: casting +-inf or a value outside int's range to
+      // int is undefined. Such a value cannot be a category key, and ValueToBin sends it to the NaN bin (0)
+      const double value = distinct_values[i];
+      if (!(value < 2147483648.0)) {
+        na_cnt += counts[i];
+        Log::Warning("Met categorical value %g beyond the int range, will convert it to NaN", value);
+        continue;
+      }
+      int val = value > -1.0 ? static_cast<int>(value) : -1;
       if (val < 0) {
         na_cnt += counts[i];
         Log::Warning("Met negative value in categorical features, will convert it to NaN");
@@ -504,6 +554,8 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
       // sort by counts in descending order
       Common::SortForPair<int, int>(&counts_int, &distinct_values_int, 0, true);
       // will ignore the categorical of small counts
+      // 0.99f (float) is LightGBM's expression; kept so categorical bins match it.
+      // It differs from double only for counts above ~229k.
       int cut_cnt = static_cast<int>(
           Common::RoundInt((total_sample_cnt - na_cnt) * 0.99f));
       size_t cur_cat_idx = 0;  // index of current category.
