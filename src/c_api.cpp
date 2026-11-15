@@ -3992,7 +3992,8 @@ int FLC_BoosterValidateFeatureNames(BoosterHandle handle,
     return -1;
   }
   for (int i = 0; i < booster_num_features; ++i) {
-    if (strcmp(data_names[i], booster_names[i]) != 0) {
+    // training stored "a b" as "a_b" (Dataset::set_feature_names): the frame it was trained on must still validate
+    if (Dataset::StoredFeatureName(data_names[i]) != booster_names[i]) {
       Log::Fatal("Expected '%s' at position %d but found '%s'", booster_names[i], i, data_names[i]);
     }
   }
