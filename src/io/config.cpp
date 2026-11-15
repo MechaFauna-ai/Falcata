@@ -759,6 +759,15 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     min_data_in_leaf = 2;
     Log::Warning("min_data_in_leaf has been increased to 2 because this is required when path smoothing is active.");
   }
+  // any other value silently fell back to the basic method (LeafConstraintsBase::Create tests the two other names,
+  // case-sensitively: "Intermediate" was basic too)
+  std::transform(monotone_constraints_method.begin(), monotone_constraints_method.end(),
+                 monotone_constraints_method.begin(), [](unsigned char c) { return std::tolower(c); });
+  if (monotone_constraints_method != std::string("basic") && monotone_constraints_method != std::string("intermediate") &&
+      monotone_constraints_method != std::string("advanced")) {
+    Log::Fatal("Unknown monotone_constraints_method \"%s\": must be basic, intermediate or advanced",
+               monotone_constraints_method.c_str());
+  }
   if (is_parallel && (monotone_constraints_method == std::string("intermediate") || monotone_constraints_method == std::string("advanced"))) {
     // In distributed mode, local node doesn't have histograms on all features, cannot perform "intermediate" monotone constraints.
     Log::Warning("Cannot use \"intermediate\" or \"advanced\" monotone constraints in distributed learning, auto set to \"basic\" method.");

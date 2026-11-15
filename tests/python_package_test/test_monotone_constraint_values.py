@@ -33,3 +33,22 @@ def test_valid_monotone_constraints_still_train(method):
     X, y = _data()
     params = {"verbose": -1, "monotone_constraints": [1, -1, 0], "monotone_constraints_method": method}
     flc.train(params, flc.Dataset(X, y), 2)
+
+
+def test_unknown_monotone_constraints_method_is_rejected():
+    # any other name silently trained with the basic method
+    X, y = _data()
+    params = {"verbose": -1, "monotone_constraints": [1, 0, 0], "monotone_constraints_method": "advnaced"}
+    with pytest.raises(flc.basic.FalcataError, match='Unknown monotone_constraints_method "advnaced"'):
+        flc.train(params, flc.Dataset(X, y), 1)
+
+
+def test_monotone_constraints_method_is_case_insensitive():
+    # "Advanced" used to fall back to basic: it must train exactly like "advanced"
+    X, y = _data()
+
+    def model(method):
+        params = {"verbose": -1, "monotone_constraints": [1, -1, 0], "monotone_constraints_method": method}
+        return flc.train(params, flc.Dataset(X, y), 3).model_to_string().split("parameters:")[0]
+
+    assert model("Advanced") == model("advanced")
