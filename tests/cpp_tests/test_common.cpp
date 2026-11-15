@@ -451,6 +451,41 @@ TEST(PipelineReader, SkipsMoreThanOneBlock) {
   EXPECT_EQ(seen, "hello");
 }
 
+// Categorical FindBin cast every sampled value to int before any range check, which is undefined for +-inf and
+// values outside int's range (UBSan: "3e+09 is outside the range of representable values of type 'int'"; x86
+// happens to give INT_MIN, a CPU that saturates gives INT_MAX, a category ValueToBin can never return). Such
+// values are not categories: they go to the NaN bin, like the negative ones.
+TEST(BinMapper, CategoricalFindBinOutOfRangeValues) {
+  const double inf = std::numeric_limits<double>::infinity();
+  std::vector<double> values;
+  for (int i = 0; i < 300; ++i) {
+    values.push_back(i % 3);
+  }
+  // the out-of-range values are the most frequent ones, so a bogus category would be kept
+  for (double v : {3e9, -3e9, 2147483648.0, 1e300, inf, -inf}) {
+    values.insert(values.end(), 200, v);
+  }
+  values.insert(values.end(), 50, -0.5);  // still category 0, as before
+  for (const bool use_missing : {true, false}) {
+    std::vector<double> work = values;
+    Falcata::BinMapper mapper;
+    mapper.FindBin(work.data(), static_cast<int>(work.size()), work.size(), 255, 3, 1, false,
+                   Falcata::BinType::CategoricalBin, use_missing, false, {});
+    ASSERT_EQ(mapper.num_bin(), 4) << use_missing;
+    std::vector<int> categories;
+    for (int bin = 1; bin < mapper.num_bin(); ++bin) {
+      categories.push_back(static_cast<int>(mapper.BinToValue(bin)));
+    }
+    std::sort(categories.begin(), categories.end());
+    EXPECT_EQ(categories, (std::vector<int>{0, 1, 2})) << use_missing;
+    EXPECT_EQ(mapper.missing_type(), Falcata::MissingType::NaN) << use_missing;
+    for (double v : {3e9, -3e9, 2147483648.0, 1e300, inf, -inf}) {
+      EXPECT_EQ(mapper.ValueToBin(v), 0u) << v;
+    }
+    EXPECT_EQ(mapper.ValueToBin(-0.5), mapper.ValueToBin(0.0));
+  }
+}
+
 // Categorical ValueToBin used to cast the double to int before any range
 // check, which is undefined for +-inf and values outside int's range (UBSan:
 // "1e+20 is outside the range of representable values of type 'int'").

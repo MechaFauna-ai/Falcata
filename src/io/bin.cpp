@@ -493,7 +493,15 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
     std::vector<int> distinct_values_int;
     std::vector<int> counts_int;
     for (size_t i = 0; i < distinct_values.size(); ++i) {
-      int val = static_cast<int>(distinct_values[i]);
+      // test the double before the cast, as ValueToBin does: casting +-inf or a value outside int's range to
+      // int is undefined. Such a value cannot be a category key, and ValueToBin sends it to the NaN bin (0)
+      const double value = distinct_values[i];
+      if (!(value < 2147483648.0)) {
+        na_cnt += counts[i];
+        Log::Warning("Met categorical value %g beyond the int range, will convert it to NaN", value);
+        continue;
+      }
+      int val = value > -1.0 ? static_cast<int>(value) : -1;
       if (val < 0) {
         na_cnt += counts[i];
         Log::Warning("Met negative value in categorical features, will convert it to NaN");
