@@ -37,7 +37,11 @@ def _data():
 def test_bad_list_token_is_rejected(key, value, token):
     X, y = _data()
     params = {"verbose": -1, key: value}
-    with pytest.raises(flc.basic.FalcataError, match=f'Cannot parse "{re.escape(token)}" as an? (integer|number)'):
+    expected = f'Cannot parse "{re.escape(token)}" as an? (integer|number)'
+    if key == "interaction_constraints":
+        # the interaction_constraints syntax check (#585) may reject the list before its tokens are parsed
+        expected += "|Invalid interaction_constraints"
+    with pytest.raises(flc.basic.FalcataError, match=expected):
         flc.train(params, flc.Dataset(X, y, params=params), 1)
 
 
