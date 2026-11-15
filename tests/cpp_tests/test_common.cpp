@@ -406,6 +406,30 @@ TEST(ObtainMinMaxSum, EmptyInputGivesZeros) {
   }
 }
 
+// GreedyFindBin opened a bin before checking the bin count, so asked for one bin (here: the zero bin's share of a
+// forced-bins split rounds to one sub-bin) over a range where one value holds the whole count and the rest are
+// empty -- FindBin inserts a zero-count 0.0 between negative and positive samples -- it wrote one double past its
+// bounds vector (ASan: heap-buffer-overflow) and returned two bounds, so the next range asked for zero bins and
+// FindBin failed "Check failed: (max_bin) > (0)". Samples given through FLC_DatasetCreateFromSampledColumn are not
+// filtered for |v| <= kZeroThreshold, so -1e-40 reaches FindBin there.
+TEST(BinMapper, ForcedBinsZeroRangeWithOneSubBin) {
+  for (const int max_bin : {3, 4, 255}) {
+    std::vector<double> values = {-3.0, -1e-40, 1e-34};
+    Falcata::BinMapper mapper;
+    mapper.FindBin(values.data(), static_cast<int>(values.size()), values.size(), max_bin, 1, 1, false,
+                   Falcata::BinType::NumericalBin, false, false, {2.0});
+    const auto& ub = mapper.bin_upper_bound();
+    ASSERT_GE(mapper.num_bin(), 2) << max_bin;
+    ASSERT_LE(mapper.num_bin(), max_bin);
+    EXPECT_EQ(ub.back(), std::numeric_limits<double>::infinity());
+    for (size_t i = 1; i < ub.size(); ++i) {
+      EXPECT_LT(ub[i - 1], ub[i]) << max_bin << " " << i;
+    }
+    EXPECT_LT(mapper.ValueToBin(-3.0), mapper.ValueToBin(0.0));
+    EXPECT_LT(mapper.ValueToBin(0.0), mapper.ValueToBin(3.0));
+  }
+}
+
 // TextReader's end-of-line skip read buffer_process[i] before checking
 // i < read_cnt, so a line terminator in the last byte of a full 16 MiB block
 // read one byte past the block (visible under AddressSanitizer).

@@ -162,6 +162,13 @@ std::vector<double> GreedyFindBin(const double* distinct_values, const int* coun
       max_bin = std::min(max_bin, static_cast<int>(total_cnt / min_data_in_bin));
       max_bin = std::max(max_bin, 1);
     }
+    if (max_bin == 1) {
+      // one bin holds everything. The loop below opens a bin before it checks bin_cnt against max_bin - 1, so with
+      // max_bin == 1 a value holding the whole count (the others empty: FindBin inserts a zero-count 0.0 between
+      // negative and positive values) wrote lower_bounds[1] past its one element and returned two bounds
+      bin_upper_bound.push_back(std::numeric_limits<double>::infinity());
+      return bin_upper_bound;
+    }
     double mean_bin_size = static_cast<double>(total_cnt) / max_bin;
 
     // mean size for one bin
