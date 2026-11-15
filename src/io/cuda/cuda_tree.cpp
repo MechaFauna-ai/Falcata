@@ -500,6 +500,7 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
     if (readback_staging_device != nullptr && readback_staging_bytes >= slab_bytes) {
       // cuda_plan key readback_kernel: copy kernel on the default stream into the caller's mapped pinned buffer
       // (cuda_plan key final_readback_first: already copied there and synchronized, see LaunchSlabReadback)
+      // CopyFromCUDADeviceToMappedHost syncs stream 0 before returning, so p is safe to read immediately
       if (!slab_in_staging) {
         CopyFromCUDADeviceToMappedHost(readback_staging_device, readback_staging_host, slab, slab_bytes,
                                        __FILE__, __LINE__);

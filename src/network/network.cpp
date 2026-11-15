@@ -17,6 +17,18 @@
 
 namespace Falcata {
 
+namespace {
+
+// A machine can own an empty block (e.g. no features to bin in distributed bin finding), whose
+// buffer is then NULL: memcpy through a null pointer is undefined even for 0 bytes.
+inline void CopyBlock(char* dst, const char* src, comm_size_t len) {
+  if (len > 0) {
+    std::memcpy(dst, src, len);
+  }
+}
+
+}  // namespace
+
 // static member definition
 THREAD_LOCAL int Network::num_machines_ = 1;
 THREAD_LOCAL int Network::rank_ = 0;
@@ -127,7 +139,7 @@ void Network::AllreduceByAllGather(char* input, comm_size_t input_size, int type
     reducer(buffer_.data() + block_start_[i], buffer_.data() + block_start_[0], type_size, input_size);
   }
   // copy back
-  std::memcpy(output, buffer_.data(), input_size);
+  CopyBlock(output, buffer_.data(), input_size);
 }
 
 void Network::Allgather(char* input, comm_size_t send_size, char* output) {
@@ -168,7 +180,7 @@ void Network::Allgather(char* input, const comm_size_t* block_start, const comm_
 void Network::AllgatherBruck(char* input, const comm_size_t* block_start, const comm_size_t* block_len, char* output, comm_size_t all_size) {
   comm_size_t write_pos = 0;
   // use output as receive buffer
-  std::memcpy(output, input, block_len[rank_]);
+  CopyBlock(output, input, block_len[rank_]);
   write_pos += block_len[rank_];
   int accumulated_block = 1;
   for (int i = 0; i < bruck_map_.k; ++i) {
@@ -199,7 +211,7 @@ void Network::AllgatherBruck(char* input, const comm_size_t* block_start, const 
 
 void Network::AllgatherRecursiveDoubling(char* input, const comm_size_t* block_start, const comm_size_t* block_len, char* output, comm_size_t) {
   // use output as receive buffer
-  std::memcpy(output + block_start[rank_], input, block_len[rank_]);
+  CopyBlock(output + block_start[rank_], input, block_len[rank_]);
   for (int i = 0; i < bruck_map_.k; ++i) {
     // get current local block size
     int cur_step = 1 << i;
@@ -227,7 +239,7 @@ void Network::AllgatherRecursiveDoubling(char* input, const comm_size_t* block_s
 
 void Network::AllgatherRing(char* input, const comm_size_t* block_start, const comm_size_t* block_len, char* output, comm_size_t) {
   // use output as receive buffer
-  std::memcpy(output + block_start[rank_], input, block_len[rank_]);
+  CopyBlock(output + block_start[rank_], input, block_len[rank_]);
   int out_rank = (rank_ + 1) % num_machines_;
   int in_rank = (rank_ - 1 + num_machines_) % num_machines_;
   int out_block = rank_;
@@ -309,7 +321,7 @@ void Network::ReduceScatterRecursiveHalving(char* input, comm_size_t input_size,
     }
   }
   // copy result
-  std::memcpy(output, input + block_start[rank_], block_len[rank_]);
+  CopyBlock(output, input + block_start[rank_], block_len[rank_]);
 }
 
 void Network::ReduceScatterRing(char* input, comm_size_t, int type_size,
@@ -326,7 +338,7 @@ void Network::ReduceScatterRing(char* input, comm_size_t, int type_size,
     out_block = (out_block - 1 + num_machines_) % num_machines_;
     in_block = (in_block - 1 + num_machines_) % num_machines_;
   }
-  std::memcpy(output, input + block_start[rank_], block_len[rank_]);
+  CopyBlock(output, input + block_start[rank_], block_len[rank_]);
 }
 
 int Network::rank() {

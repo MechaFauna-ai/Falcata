@@ -113,11 +113,7 @@ class GOSSStrategy : public SampleStrategy {
     balanced_bagging_ = false;
     bag_data_indices_.resize(num_data_);
     bagging_runner_.ReSize(num_data_);
-    bagging_rands_.clear();
-    for (int i = 0;
-         i < (num_data_ + bagging_rand_block_ - 1) / bagging_rand_block_; ++i) {
-      bagging_rands_.emplace_back(config_->bagging_seed + i);
-    }
+    ResetBaggingRands(is_change_dataset);
     is_use_subset_ = false;
     if (config_->top_rate + config_->other_rate <= 0.5) {
       auto bag_data_cnt = static_cast<data_size_t>((config_->top_rate + config_->other_rate) * num_data_);
@@ -152,6 +148,7 @@ class GOSSStrategy : public SampleStrategy {
         tmp_gradients[i] += std::fabs(gradients[idx] * hessians[idx]);
       }
     }
+    // top_k/other_k are per partition (cnt rows), not global, matching LightGBM's GOSS.
     data_size_t top_k = static_cast<data_size_t>(cnt * config_->top_rate);
     data_size_t other_k = static_cast<data_size_t>(cnt * config_->other_rate);
     top_k = std::max(1, top_k);
@@ -164,6 +161,8 @@ class GOSSStrategy : public SampleStrategy {
     data_size_t big_weight_cnt = 0;
     for (data_size_t i = 0; i < cnt; ++i) {
       auto cur_idx = start + i;
+      // Recompute the row's weight: ArgMaxAtK reordered tmp_gradients, so
+      // tmp_gradients[i] no longer belongs to row start + i.
       score_t grad = 0.0f;
       for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
         size_t idx = static_cast<size_t>(cur_tree_id) * num_data_ + cur_idx;

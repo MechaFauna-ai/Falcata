@@ -469,8 +469,9 @@ void Metadata::SetLabelsFromIterator(It first, It last) {
     label_.resize(len);
   }
 
+  // len is a multiple of #data and may pass INT32_MAX (multi-target labels from Arrow)
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 512) if (len >= 1024)
-  for (data_size_t i = 0; i < static_cast<data_size_t>(len); ++i) {
+  for (int64_t i = 0; i < static_cast<int64_t>(len); ++i) {
     label_[i] = Common::AvoidInf(first[i]);
   }
 
@@ -603,6 +604,11 @@ void Metadata::SetQueriesFromIterator(It first, It last) {
     return;
   }
 
+  // the query count is a data_size_t: an Arrow array of more counts would be truncated
+  if (last - first > static_cast<int64_t>(std::numeric_limits<data_size_t>::max())) {
+    Log::Fatal("Too many query counts (%" PRId64 "), at most %i are supported",
+               static_cast<int64_t>(last - first), std::numeric_limits<data_size_t>::max());
+  }
   // a negative count would make the query boundaries go backwards (the ranking objectives
   // and metrics then index outside the data); sum in 64 bits so the check cannot wrap
   int64_t sum = 0;

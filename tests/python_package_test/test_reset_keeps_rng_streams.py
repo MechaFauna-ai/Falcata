@@ -105,3 +105,48 @@ def test_dart_reset_keeps_drop_state(drop_rate):
         # nothing is ever dropped: every tree keeps its learning-rate shrinkage
         shrinkage = [tree["shrinkage"] for tree in with_reset.dump_model()["tree_info"]]
         np.testing.assert_allclose(shrinkage[1:], 0.1)
+
+
+# GOSS samples from iteration 1 / learning_rate on, so a large learning_rate makes it sample within a few iterations
+ROW_SAMPLED = [
+    {"data_sample_strategy": "goss", "learning_rate": 0.5},
+    {"data_sample_strategy": "goss", "learning_rate": 0.5, "top_rate": 0.4, "other_rate": 0.3},
+    {"bagging_fraction": 0.5, "bagging_freq": 1},
+    {"bagging_fraction": 0.3, "bagging_freq": 2},
+]
+
+
+def _boosted_with_reset(params, reset, at=3, num_rounds=10):
+    x, y = _data()
+    booster = flc.Booster({**BASE, **params}, flc.Dataset(x, y))
+    for i in range(num_rounds):
+        if reset is not None and i == at:
+            booster.reset_parameter(reset)
+        booster.update()
+    return booster.predict(x)
+
+
+@pytest.mark.parametrize("params", ROW_SAMPLED)
+@pytest.mark.parametrize("reset", [{"verbose": -1}, {"min_gain_to_split": 0.0}])
+def test_noop_reset_keeps_the_row_sample_stream(params, reset):
+    # GOSS rebuilt its row sampling generators from bagging_seed on every reset, so the iterations after a reset that
+    # changes nothing redrew the samples of the first iterations
+    np.testing.assert_array_equal(_boosted_with_reset(params, reset), _boosted_with_reset(params, None))
+
+
+@pytest.mark.parametrize("params", ROW_SAMPLED)
+def test_reset_bagging_seed_takes_effect(params):
+    # bagging ignored a reset of bagging_seed alone (it kept the old generators); a new seed must draw new samples
+    assert not np.array_equal(_boosted_with_reset(params, {"bagging_seed": 7}), _boosted_with_reset(params, None))
+    # and resetting to the seed it already uses changes nothing
+    np.testing.assert_array_equal(
+        _boosted_with_reset(params, {"bagging_seed": _boosted_seed(params)}), _boosted_with_reset(params, None)
+    )
+
+
+def _boosted_seed(params):
+    # bagging_seed is derived from seed; the model text lists the value in use
+    booster = flc.Booster({**BASE, **params}, flc.Dataset(*_data()))
+    booster.update()
+    (line,) = [s for s in booster.model_to_string().splitlines() if s.startswith("[bagging_seed: ")]
+    return int(line[len("[bagging_seed: ") : -1])

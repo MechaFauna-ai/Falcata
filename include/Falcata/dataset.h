@@ -1066,6 +1066,9 @@ class Dataset {
   /*! \brief Get Number of data */
   inline data_size_t num_data() const { return num_data_; }
 
+  /*! \brief Whether FinishLoad has run: the bins are only complete (and readable) after it. */
+  inline bool is_finish_load() const { return is_finish_load_; }
+
   /*! \brief Get whether FinishLoad is automatically called when pushing last row. */
   inline bool wait_for_manual_finish() const { return wait_for_manual_finish_; }
 

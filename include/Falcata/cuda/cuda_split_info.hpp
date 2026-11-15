@@ -135,11 +135,14 @@ class CUDASplitInfo {
     // the selective flow's SelectiveApplied records depend on the count
     // surviving vector push_back / struct assignment.)
     num_cat_threshold = other.num_cat_threshold;
+    // Every slab slot holds max_num_categories_in_split_ entries and the finder caps
+    // num_cat_threshold there, so the copies below cannot overrun the destination.
     if (num_cat_threshold > 0 && cat_threshold != nullptr) {
       if (other.cat_threshold != nullptr) {
         for (int i = 0; i < num_cat_threshold; ++i) {
           cat_threshold[i] = other.cat_threshold[i];
         }
+        // cat_threshold and cat_threshold_real are always assigned (or scrubbed) together
         if (cat_threshold_real != nullptr && other.cat_threshold_real != nullptr) {
           for (int i = 0; i < num_cat_threshold; ++i) {
             cat_threshold_real[i] = other.cat_threshold_real[i];
