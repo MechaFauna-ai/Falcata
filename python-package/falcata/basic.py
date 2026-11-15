@@ -2452,12 +2452,23 @@ class Dataset:
             sample_data, col_indices = self.__sample(seqs=seqs, total_nrow=total_nrow)
             self._init_from_sample(sample_data, col_indices, sample_cnt, total_nrow)
 
+        # the batches must add up to the rows the Dataset was made for: a negative batch_size pushed nothing and
+        # a batch shorter than its slice left rows unpushed, and either way the Dataset was trained on rows that
+        # were never filled in
         for seq in seqs:
             nrow = len(seq)
             batch_size = getattr(seq, "batch_size", None) or Sequence.batch_size
+            if not isinstance(batch_size, (int, np.integer)) or batch_size <= 0:
+                raise ValueError(f"Sequence.batch_size must be a positive integer, got {batch_size!r}")
             for start in range(0, nrow, batch_size):
                 end = min(start + batch_size, nrow)
-                self._push_rows(seq[start:end])
+                batch = np.asarray(seq[start:end])
+                if batch.ndim != 2 or batch.shape[0] != end - start:
+                    raise ValueError(
+                        f"Sequence returned a batch of shape {batch.shape} for rows [{start}, {end}): "
+                        f"expected {end - start} rows"
+                    )
+                self._push_rows(batch)
         return self
 
     def __init_from_np2d(
