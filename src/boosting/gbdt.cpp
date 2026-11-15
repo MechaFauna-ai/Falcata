@@ -352,13 +352,35 @@ void GBDT::CheckForcedSplitFeatures(const Json& forced_splits) const {
   }
   std::queue<Json> forced_split_nodes;
   forced_split_nodes.push(forced_splits);
+  bool is_root = true;
   while (!forced_split_nodes.empty()) {
     Json node = forced_split_nodes.front();
     forced_split_nodes.pop();
-    const int feature_index = node["feature"].int_value();
-    if (feature_index < 0 || feature_index > max_feature_idx_) {
-      Log::Fatal("Forced splits file includes feature index %d, but feature indices in dataset are 0 to %d",
-        feature_index, max_feature_idx_);
+    // json11 reads a missing or non-numeric value as 0: "feature": "x" (or null, or no key) forced a split on feature 0,
+    // 1.7 forced feature 1, and a node without a numeric threshold was dropped without a word. A child with neither key
+    // is the documented way to force nothing below a split; anything else must be a complete split.
+    if (!node.is_object()) {
+      Log::Fatal("Forced splits: every split must be a JSON object, got %s", node.dump().c_str());
+    }
+    const bool has_feature = node.object_items().count("feature") > 0;
+    const bool has_threshold = node.object_items().count("threshold") > 0;
+    if (!is_root && !has_feature && !has_threshold) {
+      continue;
+    }
+    is_root = false;
+    if (!has_feature || !has_threshold) {
+      Log::Fatal("Forced splits: a split needs both \"feature\" and \"threshold\", got %s", node.dump().c_str());
+    }
+    const double feature_number = node["feature"].number_value();
+    if (!node["feature"].is_number() || feature_number != std::floor(feature_number)) {
+      Log::Fatal("Forced splits: \"feature\" must be an integer feature index, got %s", node["feature"].dump().c_str());
+    }
+    if (!node["threshold"].is_number()) {
+      Log::Fatal("Forced splits: \"threshold\" must be a number, got %s", node["threshold"].dump().c_str());
+    }
+    if (feature_number < 0 || feature_number > max_feature_idx_) {
+      Log::Fatal("Forced splits file includes feature index %.17g, but feature indices in dataset are 0 to %d",
+        feature_number, max_feature_idx_);
     }
     if (node.object_items().count("left") > 0) {
       forced_split_nodes.push(node["left"]);
