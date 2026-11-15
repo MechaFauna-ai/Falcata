@@ -248,11 +248,16 @@ void VotingParallelTreeLearner<TREELEARNER_T>::CopyLocalHistogram(const std::vec
 
 template <typename TREELEARNER_T>
 void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplits(const Tree* tree) {
-  // use local data to find local best splits
+  // use local data to find local best splits. A feature the parent could not split on (locally) gets no local
+  // split candidate, as in the serial learner, but its local histograms are still built: the global voting may
+  // pick it from the other machines' votes, and its histograms are then summed across machines. Skipping them
+  // summed stale histograms (gains above the root's, out-of-range leaf values with lambda_l2).
   std::vector<int8_t> is_feature_used(this->num_features_, 0);
+  std::vector<int8_t> is_histogram_used(this->num_features_, 0);
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int feature_index = 0; feature_index < this->num_features_; ++feature_index) {
     if (!this->col_sampler_.is_feature_used_bytree()[feature_index]) continue;
+    is_histogram_used[feature_index] = 1;
     if (this->parent_leaf_histogram_array_ != nullptr
       && !this->parent_leaf_histogram_array_[feature_index].is_splittable()) {
       this->smaller_leaf_histogram_array_[feature_index].set_is_splittable(false);
@@ -264,7 +269,7 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplits(const Tree* tree) 
   if (this->parent_leaf_histogram_array_ == nullptr) {
     use_subtract = false;
   }
-  TREELEARNER_T::ConstructHistograms(is_feature_used, use_subtract);
+  TREELEARNER_T::ConstructHistograms(is_histogram_used, use_subtract);
 
   const int smaller_leaf_index = this->smaller_leaf_splits_->leaf_index();
   const data_size_t local_data_on_smaller_leaf = this->data_partition_->leaf_count(smaller_leaf_index);
@@ -275,7 +280,7 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplits(const Tree* tree) 
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (int feature_index = 0; feature_index < this->num_features_; ++feature_index) {
       OMP_LOOP_EX_BEGIN();
-      if (!is_feature_used[feature_index]) {
+      if (!is_histogram_used[feature_index]) {
         continue;
       }
       const BinMapper* feature_bin_mapper = this->train_data_->FeatureBinMapper(feature_index);
@@ -297,7 +302,7 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplits(const Tree* tree) 
         #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
         for (int feature_index = 0; feature_index < this->num_features_; ++feature_index) {
           OMP_LOOP_EX_BEGIN();
-          if (!is_feature_used[feature_index]) {
+          if (!is_histogram_used[feature_index]) {
             continue;
           }
           const BinMapper* feature_bin_mapper = this->train_data_->FeatureBinMapper(feature_index);
@@ -321,7 +326,7 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplits(const Tree* tree) 
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int feature_index = 0; feature_index < this->num_features_; ++feature_index) {
     OMP_LOOP_EX_BEGIN();
-    if (!is_feature_used[feature_index]) {
+    if (!is_histogram_used[feature_index]) {
       continue;
     }
     const int real_feature_index = this->train_data_->RealFeatureIndex(feature_index);
@@ -329,12 +334,14 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplits(const Tree* tree) 
       this->smaller_leaf_splits_->sum_gradients(), this->smaller_leaf_splits_->sum_hessians(),
       this->smaller_leaf_histogram_array_[feature_index].RawData());
 
-    this->ComputeBestSplitForFeature(
-        this->smaller_leaf_histogram_array_, feature_index, real_feature_index,
-        true, this->smaller_leaf_splits_->num_data_in_leaf(),
-        this->smaller_leaf_splits_.get(),
-        &smaller_bestsplit_per_features[feature_index],
-        smaller_leaf_parent_output);
+    if (is_feature_used[feature_index]) {
+      this->ComputeBestSplitForFeature(
+          this->smaller_leaf_histogram_array_, feature_index, real_feature_index,
+          true, this->smaller_leaf_splits_->num_data_in_leaf(),
+          this->smaller_leaf_splits_.get(),
+          &smaller_bestsplit_per_features[feature_index],
+          smaller_leaf_parent_output);
+    }
     // only has root leaf
     if (this->larger_leaf_splits_ == nullptr || this->larger_leaf_splits_->leaf_index() < 0) {
       continue;
@@ -345,6 +352,9 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplits(const Tree* tree) 
     } else {
       this->train_data_->FixHistogram(feature_index, this->larger_leaf_splits_->sum_gradients(), this->larger_leaf_splits_->sum_hessians(),
         this->larger_leaf_histogram_array_[feature_index].RawData());
+    }
+    if (!is_feature_used[feature_index]) {
+      continue;  // the larger leaf's histogram is the parent's, whose flag says it cannot split either
     }
     this->ComputeBestSplitForFeature(
         this->larger_leaf_histogram_array_, feature_index, real_feature_index,
