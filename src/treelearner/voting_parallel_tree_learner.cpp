@@ -491,7 +491,12 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(cons
 
 template <typename TREELEARNER_T>
 bool VotingParallelTreeLearner<TREELEARNER_T>::Split(Tree* tree, int best_Leaf, int* left_leaf, int* right_leaf) {
-  TREELEARNER_T::SplitInner(tree, best_Leaf, left_leaf, right_leaf, false);
+  // exact global child counts (an inferred count is off for a non-constant hessian, which changed the
+  // min_data_in_leaf decisions against serial training); every machine sees the same counts, so a globally
+  // empty child is undone on all of them
+  if (!TREELEARNER_T::SplitInner(tree, best_Leaf, left_leaf, right_leaf, true)) {
+    return false;
+  }
   const SplitInfo& best_split_info = this->best_split_per_leaf_[best_Leaf];
   // set the global number of data for leaves
   global_data_count_in_leaf_[*left_leaf] = best_split_info.left_count;

@@ -834,8 +834,10 @@ bool SerialTreeLearner::SplitInner(Tree* tree, int best_leaf, int* left_leaf,
   // Do not commit tree, constraint, or feature-cost state for an empty child.
   auto commit_partition = [&]() {
     if (update_cnt) {
-      best_split_info.left_count = data_partition_->leaf_count(best_leaf);
-      best_split_info.right_count = data_partition_->leaf_count(next_leaf_id);
+      data_size_t left_count = 0, right_count = 0;
+      PartitionedChildCounts(best_leaf, next_leaf_id, &left_count, &right_count);
+      best_split_info.left_count = left_count;
+      best_split_info.right_count = right_count;
       if (best_split_info.left_count == 0 || best_split_info.right_count == 0) {
         data_partition_->UndoEmptySplit(best_leaf, next_leaf_id);
         *right_leaf = -1;

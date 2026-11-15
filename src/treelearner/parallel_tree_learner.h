@@ -112,6 +112,17 @@ class DataParallelTreeLearner: public TREELEARNER_T {
   void ResetConfig(const Config* config) override;
 
  protected:
+  // the global counts of the children: every machine partitions its rows by the same split
+  void PartitionedChildCounts(int left_leaf, int right_leaf, data_size_t* left_count,
+                              data_size_t* right_count) const override {
+    std::vector<data_size_t> counts = {this->data_partition_->leaf_count(left_leaf),
+                                       this->data_partition_->leaf_count(right_leaf)};
+    counts = Network::GlobalSum(&counts);
+    *left_count = counts[0];
+    *right_count = counts[1];
+  }
+
+ protected:
   void BeforeTrain() override;
   void FindBestSplits(const Tree* tree) override;
   void FindBestSplitsFromHistograms(const std::vector<int8_t>& is_feature_used, bool use_subtract, const Tree* tree) override;
@@ -173,6 +184,17 @@ class VotingParallelTreeLearner: public TREELEARNER_T {
   ~VotingParallelTreeLearner() { }
   void Init(const Dataset* train_data, bool is_constant_hessian) override;
   void ResetConfig(const Config* config) override;
+
+ protected:
+  // the global counts of the children: every machine partitions its rows by the same split
+  void PartitionedChildCounts(int left_leaf, int right_leaf, data_size_t* left_count,
+                              data_size_t* right_count) const override {
+    std::vector<data_size_t> counts = {this->data_partition_->leaf_count(left_leaf),
+                                       this->data_partition_->leaf_count(right_leaf)};
+    counts = Network::GlobalSum(&counts);
+    *left_count = counts[0];
+    *right_count = counts[1];
+  }
 
  protected:
   void BeforeTrain() override;
