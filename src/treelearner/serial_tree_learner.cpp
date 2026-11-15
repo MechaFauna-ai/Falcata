@@ -204,6 +204,11 @@ void SerialTreeLearner::ResetConfig(const Config* config) {
       cegb_.reset(new CostEfficientGradientBoosting(this));
     }
     cegb_->Init();
+  } else {
+    // a config without CEGB, e.g. the old one restored after a rejected reset_parameter: drop the CEGB state.
+    // It was sized for the config that enabled it (num_leaves x features), and DeltaGain kept writing into it
+    // for every leaf of the restored config (heap-buffer-overflow after a rejected reset with max_depth)
+    cegb_.reset();
   }
   constraints_.reset(LeafConstraintsBase::Create(config_, config_->num_leaves, train_data_->num_features()));
 }
