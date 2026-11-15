@@ -449,7 +449,9 @@ void Metadata::InsertInitScores(const double* init_scores, data_size_t start_ind
     const size_t dest_offset = InitScoreOffset(col, num_data_, start_index);
     // We need to use source_size here, because len might not equal size (due to a partially loaded dataset)
     const size_t source_offset = InitScoreOffset(col, source_size);
-    memcpy(init_score_.data() + dest_offset, init_scores + source_offset, sizeof(double) * len);
+    for (data_size_t i = 0; i < len; ++i) {
+      init_score_[dest_offset + i] = Common::AvoidInf(init_scores[source_offset + i]);  // as SetInitScore does
+    }
   }
   init_score_load_from_file_ = false;
   // CUDA is handled after all insertions are complete
@@ -516,7 +518,10 @@ void Metadata::InsertLabels(const label_t* labels, data_size_t start_index, data
     label_.resize(num_data_);
   }
 
-  memcpy(label_.data() + start_index, labels, sizeof(label_t) * len);
+  // as SetLabel does (AvoidInf: NaN to 0, +-inf clamped): a NaN label pushed with the rows made every gradient NaN
+  for (data_size_t i = 0; i < len; ++i) {
+    label_[start_index + i] = Common::AvoidInf(labels[i]);
+  }
 
   // CUDA is handled after all insertions are complete
 }
@@ -587,7 +592,9 @@ void Metadata::InsertWeights(const label_t* weights, data_size_t start_index, da
     weights_.resize(num_weights_);
   }
 
-  memcpy(weights_.data() + start_index, weights, sizeof(label_t) * len);
+  for (data_size_t i = 0; i < len; ++i) {
+    weights_[start_index + i] = Common::AvoidInf(weights[i]);  // as SetWeights does
+  }
 
   weight_load_from_file_ = false;
   // CUDA is handled after all insertions are complete
