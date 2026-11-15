@@ -330,6 +330,12 @@ Parser* Parser::CreateParser(const char* filename, bool header, int num_features
 }
 
 std::string Parser::GenerateParserConfigStr(const char* filename, const char* parser_config_filename, bool header, int label_idx) {
+  // a parser config the user names must exist: TextReader reads a missing file as empty, and the data was then parsed
+  // with the default parser instead of the configured one, without a word
+  if (parser_config_filename != nullptr && parser_config_filename[0] != '\0' &&
+      !VirtualFileReader::Make(parser_config_filename)->Init()) {
+    Log::Fatal("Could not open parser config file %s", parser_config_filename);
+  }
   TextReader<data_size_t> parser_config_reader(parser_config_filename, false);
   parser_config_reader.ReadAllLines();
   std::string parser_config_str = parser_config_reader.JoinedLines();

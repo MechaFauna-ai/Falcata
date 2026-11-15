@@ -1612,7 +1612,9 @@ std::vector<std::vector<double>> DatasetLoader::GetForcedBins(std::string forced
   if (forced_bins_path != "") {
     std::ifstream forced_bins_stream(forced_bins_path.c_str());
     if (forced_bins_stream.fail()) {
-      Log::Warning("Could not open %s. Will ignore.", forced_bins_path.c_str());
+      // a file the user names must exist: this was a warning (hidden at verbose < 0), and a mistyped path trained
+      // without the forced bins; a missing forcedsplits_filename is already an error
+      Log::Fatal("Could not open forced bins file %s", forced_bins_path.c_str());
     } else {
       std::stringstream buffer;
       buffer << forced_bins_stream.rdbuf();
