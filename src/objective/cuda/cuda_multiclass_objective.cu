@@ -19,6 +19,8 @@ namespace Falcata {
 // Softmax over a row's len values, which sit `stride` elements apart: the scratch is class-major (class k of row r at
 // k * num_rows + r, the layout of the scores), so the threads of a warp, consecutive rows, touch consecutive doubles
 // on every pass. (A row-major scratch put them num_class doubles apart, an uncoalesced access per pass.)
+// Softmax in double on purpose: the CPU objective computes it in double, and a float softmax changes most
+// gradients and breaks CPU parity.
 __device__ void SoftmaxCUDA(double* softmax_buffer, const int len, const size_t stride) {
   double wmax = softmax_buffer[0];
   for (int i = 1; i < len; ++i) {

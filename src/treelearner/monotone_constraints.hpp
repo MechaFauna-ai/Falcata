@@ -215,6 +215,8 @@ struct CumulativeFeatureConstraint {
     }
   }
 
+  // Only called from the REVERSE (right-to-left) threshold sweep with threshold >= 1, so the
+  // indices start at the end and only move down.
   void Update(int threshold) {
     while (
         static_cast<int>(

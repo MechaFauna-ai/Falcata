@@ -2043,6 +2043,7 @@ def main():
     if args.baseline or args.update:
         FINGERPRINT_FILE.write_text(json.dumps({"cells": dict(sorted(new_fp.items()))}, indent=1) + "\n")
         print(f"fingerprints written -> {FINGERPRINT_FILE}")
+        # check() already put every newly seen cell into new_fp, written above, so these are not failures
         failures = [f for f in failures if "no fingerprint" not in f and "no metric baseline" not in f]
 
     if failures:

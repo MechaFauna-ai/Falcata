@@ -51,6 +51,7 @@ FLC_HOSTDEV inline T CalculateLeafOutput(T sum_gradients, T sum_hessians,
       ret = ret >= static_cast<T>(0) ? max_delta_step : -max_delta_step;
     }
   }
+  // callers select USE_SMOOTHING only when path_smooth > 0 (> kEpsilon on CPU), so the divisor is nonzero
   if (USE_SMOOTHING) {
     ret = ret * (num_data / path_smooth) / (num_data / path_smooth + 1)
         + parent_output / (num_data / path_smooth + 1);

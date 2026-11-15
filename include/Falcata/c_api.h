@@ -535,7 +535,8 @@ FALCATA_C_EXPORT int FLC_DatasetCreateFromMatsDevice(int32_t nmat,
  *        is streamed through a pinned staging ring. The declared
  *        ``missing_sentinel`` dataset parameter is honored (integer/float16
  *        data types only).
- * \param total_nrow Total number of rows over all chunks
+ * \param total_nrow Total number of rows over all chunks (int32 suffices: Dataset rows are
+ *        ``data_size_t``, i.e. int32, so no dataset exceeds INT32_MAX rows)
  * \param ncol Number of columns
  * \param data_type Type of the chunk pointers, can be ``C_API_DTYPE_FLOAT32``, ``C_API_DTYPE_FLOAT64``, ``C_API_DTYPE_INT8``, ``C_API_DTYPE_INT16``, ``C_API_DTYPE_UINT8``, ``C_API_DTYPE_UINT16`` or ``C_API_DTYPE_FLOAT16``
  * \param parameters Additional parameters

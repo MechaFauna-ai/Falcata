@@ -31,6 +31,8 @@ class CUDARegressionMetricInterface: public CUDAPointwiseMetricInterface<HOST_ME
   std::vector<double> Eval(const double* score, const ObjectiveFunction* objective) const override;
 };
 
+// Per-point metrics stay in double to match the CPU metrics in regression_metric.hpp;
+// a float version would shift reported values away from device_type=cpu.
 class CUDARMSEMetric: public CUDARegressionMetricInterface<RMSEMetric, CUDARMSEMetric> {
  public:
   explicit CUDARMSEMetric(const Config& config);
@@ -136,6 +138,8 @@ class CUDAPoissonMetric : public CUDARegressionMetricInterface<PoissonMetric, CU
   virtual ~CUDAPoissonMetric() {}
 
   __device__ inline static double MetricOnPointCUDA(label_t label, double score,  double /*alpha*/) {
+    // 1e-10f (float literal) on purpose: the CPU PoissonMetric uses the same value,
+    // and 1e-10 would change results relative to device_type=cpu
     const double eps = 1e-10f;
     if (score < eps) {
       score = eps;
@@ -192,6 +196,7 @@ class CUDATweedieMetric : public CUDARegressionMetricInterface<TweedieMetric, CU
 
   __device__ inline static double MetricOnPointCUDA(label_t label, double score,  double tweedie_variance_power) {
     const double rho = tweedie_variance_power;
+    // 1e-10f on purpose, as in the CPU TweedieMetric (see CUDAPoissonMetric)
     const double eps = 1e-10f;
     if (score < eps) {
       score = eps;
