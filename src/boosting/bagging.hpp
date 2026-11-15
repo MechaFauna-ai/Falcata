@@ -213,7 +213,7 @@ class BaggingSampleStrategy : public SampleStrategy {
       bagging_rands_.clear();
       for (int i = 0;
           i < (num_data_ + bagging_rand_block_ - 1) / bagging_rand_block_; ++i) {
-        bagging_rands_.emplace_back(config_->bagging_seed + i);
+        bagging_rands_.emplace_back(static_cast<int>(static_cast<uint32_t>(config_->bagging_seed) + static_cast<uint32_t>(i)));
       }
 
       double average_bag_rate =

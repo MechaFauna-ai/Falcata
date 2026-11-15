@@ -815,7 +815,7 @@ class HistogramPool {
         } else {
           ref_feature_meta[i].penalty = 1.0;
         }
-        ref_feature_meta[i].rand = Random(config->extra_seed + i);
+        ref_feature_meta[i].rand = Random(static_cast<int>(static_cast<uint32_t>(config->extra_seed) + static_cast<uint32_t>(i)));
       }
       ref_feature_meta[i].config = config;
     }

@@ -467,8 +467,9 @@ bool SerialTreeLearner::BeforeFindBestSplit(const Tree* tree, int left_leaf, int
   data_size_t num_data_in_left_child = GetGlobalDataCountInLeaf(left_leaf);
   data_size_t num_data_in_right_child = GetGlobalDataCountInLeaf(right_leaf);
   // no enough data to continue
-  if (num_data_in_right_child < static_cast<data_size_t>(config_->min_data_in_leaf * 2)
-      && num_data_in_left_child < static_cast<data_size_t>(config_->min_data_in_leaf * 2)) {
+  // in 64 bits: min_data_in_leaf * 2 overflowed int for min_data_in_leaf > INT_MAX / 2
+  const int64_t min_data_to_split = 2 * static_cast<int64_t>(config_->min_data_in_leaf);
+  if (num_data_in_right_child < min_data_to_split && num_data_in_left_child < min_data_to_split) {
     best_split_per_leaf_[left_leaf].gain = kMinScore;
     if (right_leaf >= 0) {
       best_split_per_leaf_[right_leaf].gain = kMinScore;
