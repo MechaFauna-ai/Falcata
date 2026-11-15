@@ -59,6 +59,18 @@ void DatasetLoader::SetHeader(const char* filename) {
     // get column names
     if (config_.header) {
       std::string first_line = text_reader.first_line();
+      // Common::Split drops empty fields, so an empty column name (pandas' to_csv writes one for the index column:
+      // ",a,b,c") moved every later name onto the wrong column and the load died on an internal size CHECK
+      for (size_t i = 0, start = 0, column = 0; i <= first_line.size(); ++i) {
+        if (i == first_line.size() || first_line[i] == ',' || first_line[i] == '\t') {
+          if (Common::Trim(first_line.substr(start, i - start)).empty()) {
+            Log::Fatal("The header line of %s has an empty name for column %zu; give every column a name", filename,
+                       column);
+          }
+          start = i + 1;
+          ++column;
+        }
+      }
       feature_names_ = Common::Split(first_line.c_str(), "\t,");
     } else if (!config_.parser_config_file.empty()) {
       // support to get header from parser config, so could utilize following label name to id mapping logic.
