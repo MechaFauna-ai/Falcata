@@ -264,10 +264,40 @@ void Config::GetAucMuWeights() {
   }
 }
 
+// interaction_constraints is a list of bracketed lists of feature indices ("[0,1],[2,3]", optionally inside one more
+// pair of brackets). SplitBrackets keeps whatever sits between a '[' and the next ']', so "x", "[[0,1]" or "[]x" were
+// read as fewer constraints (or none) without a word, and the raw string went into the saved model, which the Python
+// package then failed to load (its parameters are read back as JSON).
+static void CheckInteractionConstraintsSyntax(const std::string& value) {
+  int depth = 0;
+  bool ok = true;
+  for (const char c : value) {
+    if (c == '[') {
+      ok = ++depth <= 2;
+    } else if (c == ']') {
+      ok = --depth >= 0;
+    } else if (c == ',' || c == ' ' || c == '\t') {
+      continue;
+    } else if ((c >= '0' && c <= '9') || c == '-' || c == '+') {
+      ok = depth > 0;  // an index outside any list
+    } else {
+      ok = false;
+    }
+    if (!ok) {
+      break;
+    }
+  }
+  if (!ok || depth != 0) {
+    Log::Fatal("Invalid interaction_constraints '%s': expected lists of feature indices, such as [0,1],[2,3]",
+               value.c_str());
+  }
+}
+
 void Config::GetInteractionConstraints() {
   if (interaction_constraints == "") {
     interaction_constraints_vector = std::vector<std::vector<int>>();
   } else {
+    CheckInteractionConstraintsSyntax(interaction_constraints);
     interaction_constraints_vector = Common::StringToArrayofArrays<int>(interaction_constraints, '[', ']', ',');
   }
 }
