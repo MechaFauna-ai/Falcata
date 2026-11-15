@@ -50,3 +50,17 @@ def test_same_or_renamed_header_still_loads(train_file, header):
     tmp_path, X, y = train_file
     _write(tmp_path / "valid.csv", header, X, y, [0, 1, 2])
     assert _valid_l2(tmp_path, "valid.csv") < 0.5
+
+
+@pytest.mark.parametrize("ncol", [2, 4])
+def test_csv_validation_file_column_count_must_match(tmp_path, ncol):
+    # read by position: an extra column was dropped and a missing one read as 0, silently
+    rng = np.random.default_rng(0)
+    X = rng.random((200, 4))
+    y = X[:, 0]
+    for name, k in [("train.csv", 3), ("valid.csv", ncol)]:
+        rows = "\n".join(",".join(str(v) for v in [y[i], *X[i, :k]]) for i in range(200))
+        (tmp_path / name).write_text(rows + "\n")
+    train = flc.Dataset(str(tmp_path / "train.csv"), params={"verbose": -1})
+    with pytest.raises(flc.basic.FalcataError, match=f"has {ncol} feature columns, but the training data has 3"):
+        flc.Dataset(str(tmp_path / "valid.csv"), params={"verbose": -1}, reference=train).construct()

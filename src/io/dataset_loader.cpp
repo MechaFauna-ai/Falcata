@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "init_score_layout.hpp"
+#include "parser.hpp"
 
 namespace Falcata {
 
@@ -377,6 +378,13 @@ Dataset* DatasetLoader::LoadFromFileAlignWithOtherDataset(const char* filename, 
                                                                config_.precise_float_parser, train_data->parser_config_str_));
     if (parser == nullptr) {
       Log::Fatal("Could not recognize data format of %s", filename);
+    }
+    // a CSV/TSV validation file is read by position: an extra column was dropped and a missing one read as 0, without
+    // a word. (A LibSVM file may leave out trailing features; a custom parser defines its own columns.)
+    if (train_data->parser_config_str_.empty() && dynamic_cast<const LibSVMParser*>(parser.get()) == nullptr &&
+        parser->NumFeatures() != train_data->num_total_features()) {
+      Log::Fatal("%s has %d feature columns, but the training data has %d", filename, parser->NumFeatures(),
+                 train_data->num_total_features());
     }
     dataset->data_filename_ = filename;
     dataset->label_idx_ = label_idx_;
