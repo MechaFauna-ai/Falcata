@@ -1718,6 +1718,9 @@ void Dataset::SaveBinaryFile(const char* bin_filename) {
         }
       }
     }
+    if (!writer->Close()) {
+      Log::Fatal("Cannot write binary data to %s (disk full or I/O error); the file is incomplete", bin_filename);
+    }
   }
 }
 
@@ -1880,7 +1883,11 @@ void Dataset::DumpTextFile(const char* text_filename) {
       }
     }
   }
-  fclose(file);
+  // fprintf only buffers: a full disk shows up in the stream's error flag or the final flush
+  const bool write_failed = ferror(file) != 0;
+  if (fclose(file) != 0 || write_failed) {
+    Log::Fatal("Cannot write the dataset dump to %s (disk full or I/O error); the file is incomplete", text_filename);
+  }
 }
 
 void Dataset::InitTrain(const std::vector<int8_t>& is_feature_used,

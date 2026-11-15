@@ -387,8 +387,11 @@ bool GBDT::SaveModelToIfElse(int num_iteration, const char* filename) const {
 
   ifs.close();
   output_file.close();
-
-  return static_cast<bool>(output_file);
+  // the CLI callers (convert_model) ignore the return value: a full disk or an unwritable path must not pass silently
+  if (!output_file) {
+    Log::Fatal("Cannot write the if-else model to %s (disk full or I/O error); the file is incomplete", filename);
+  }
+  return true;
 }
 
 std::string GBDT::SaveModelToString(int start_iteration, int num_iteration, int feature_importance_type) const {
@@ -515,6 +518,9 @@ bool GBDT::SaveModelToFile(int start_iteration, int num_iteration, int feature_i
   }
   std::string str_to_write = SaveModelToString(start_iteration, num_iteration, feature_importance_type);
   auto size = writer->Write(str_to_write.c_str(), str_to_write.size());
+  if (size != str_to_write.size() || !writer->Close()) {
+    Log::Fatal("Cannot write model to %s (disk full or I/O error); the file is incomplete", filename);
+  }
   return size > 0;
 }
 
