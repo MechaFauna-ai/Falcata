@@ -218,8 +218,11 @@ void DataParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(const 
   std::vector<SplitInfo> larger_bests_per_thread(this->share_state_->num_threads);
   std::vector<int8_t> smaller_node_used_features =
       this->col_sampler_.GetByNode(tree, this->smaller_leaf_splits_->leaf_index());
-  std::vector<int8_t> larger_node_used_features =
-      this->col_sampler_.GetByNode(tree, this->larger_leaf_splits_->leaf_index());
+  // no larger leaf at the root (leaf index -1): GetByNode would read the tree's branch features at -1
+  std::vector<int8_t> larger_node_used_features;
+  if (this->larger_leaf_splits_ != nullptr && this->larger_leaf_splits_->leaf_index() >= 0) {
+    larger_node_used_features = this->col_sampler_.GetByNode(tree, this->larger_leaf_splits_->leaf_index());
+  }
   double smaller_leaf_parent_output = this->GetParentOutput(tree, this->smaller_leaf_splits_.get());
   double larger_leaf_parent_output = this->GetParentOutput(tree, this->larger_leaf_splits_.get());
 
