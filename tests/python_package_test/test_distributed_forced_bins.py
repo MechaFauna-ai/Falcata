@@ -84,10 +84,15 @@ def _distributed_bins(tmp_path, params, data_file=None):
     ]
     for p in procs:
         p.start()
-    bins = dict(queue.get(timeout=120) for _ in procs)
-    for p in procs:
-        p.join(timeout=60)
-        assert p.exitcode == 0
+    try:
+        bins = dict(queue.get(timeout=120) for _ in procs)
+    finally:
+        for p in procs:
+            p.join(timeout=60)
+            if p.is_alive():  # a hung worker would keep the test process from exiting
+                p.terminate()
+                p.join()
+    assert [p.exitcode for p in procs] == [0, 0]
     return bins
 
 
