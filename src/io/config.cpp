@@ -458,13 +458,6 @@ bool CheckMultiClassObjective(const std::string& objective) {
 }
 
 void Config::CheckParamConflict(const std::unordered_map<std::string, std::string>& params) {
-  // libgomp lays out a parallel team's start-up state on the calling thread's stack (alloca), so num_threads=100000
-  // overflowed the stack and the process segfaulted in the first parallel region. More threads than this never help.
-  const int max_num_threads = std::max(1024, 4 * static_cast<int>(std::thread::hardware_concurrency()));
-  if (num_threads > max_num_threads) {
-    Log::Fatal("num_threads=%d is more than the supported %d (4 x the %u hardware threads, at least 1024)", num_threads,
-               max_num_threads, std::thread::hardware_concurrency());
-  }
   // check if objective, metric, and num_class match
   int num_class_check = num_class;
   bool objective_type_multiclass = CheckMultiClassObjective(objective) || (objective == std::string("custom") && num_class_check > 1);
@@ -803,6 +796,13 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
   if (bagging_by_query && data_sample_strategy != std::string("bagging")) {
     Log::Warning("bagging_by_query=true is only compatible with data_sample_strategy=bagging. Setting bagging_by_query=false.");
     bagging_by_query = false;
+  }
+  // libgomp lays out a parallel team's start-up state on the calling thread's stack (alloca), so num_threads=100000
+  // overflowed the stack and the process segfaulted in the first parallel region. More threads than this never help.
+  const int max_num_threads = std::max(1024, 4 * static_cast<int>(std::thread::hardware_concurrency()));
+  if (num_threads > max_num_threads) {
+    Log::Fatal("num_threads=%d is more than the supported %d (4 x the %u hardware threads, at least 1024)", num_threads,
+               max_num_threads, std::thread::hardware_concurrency());
   }
 }
 
