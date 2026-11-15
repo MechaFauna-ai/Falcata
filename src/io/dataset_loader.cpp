@@ -711,6 +711,22 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
   return dataset.release();
 }
 
+// categorical_feature and ignore_column name feature indices (not counting the label); one at or past the feature
+// count used to be ignored silently, so a mistyped index left the intended feature numerical (or used)
+static void CheckFeatureIndexParams(const std::unordered_set<int>& categorical_features,
+                                    const std::unordered_set<int>& ignore_features, int num_features) {
+  for (const int index : categorical_features) {
+    if (index < 0 || index >= num_features) {
+      Log::Fatal("categorical_feature %d is out of range: the data has %d features", index, num_features);
+    }
+  }
+  for (const int index : ignore_features) {
+    if (index < 0 || index >= num_features) {
+      Log::Fatal("ignore_column %d is out of range: the data has %d features", index, num_features);
+    }
+  }
+}
+
 Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
                                                 int** sample_indices,
                                                 int num_col,
@@ -739,6 +755,8 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
   // get forced split
   std::string forced_bins_path = config_.forcedbins_filename;
   std::vector<std::vector<double>> forced_bin_bounds = DatasetLoader::GetForcedBins(forced_bins_path, num_col, categorical_features_);
+  // against the global count: in distributed construction a worker may lack trailing features the others have
+  CheckFeatureIndexParams(categorical_features_, ignore_features_, num_total_features);
 
   const data_size_t filter_cnt = static_cast<data_size_t>(
     static_cast<double>(config_.min_data_in_leaf * total_sample_size) / num_dist_data);
@@ -1258,6 +1276,7 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
     }
   }
   dataset->set_feature_names(feature_names_);
+  CheckFeatureIndexParams(categorical_features_, ignore_features_, dataset->num_total_features_);
   std::vector<std::unique_ptr<BinMapper>> bin_mappers(dataset->num_total_features_);
   const data_size_t filter_cnt = static_cast<data_size_t>(
     static_cast<double>(config_.min_data_in_leaf* sample_data.size()) / dataset->num_data_);
