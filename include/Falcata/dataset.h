@@ -1003,22 +1003,37 @@ class Dataset {
   /*! \brief Get content of parser config file */
   inline const std::string parser_config_str() const { return parser_config_str_; }
 
+  /*!
+   * \brief The name a feature is stored under: ' ', '\n' and '\r' become '_', because the text model keeps the names on
+   *        one space-separated line. Comparisons against user-given names (validate_features) must apply it too.
+   */
+  static std::string StoredFeatureName(std::string name) {
+    std::replace_if(name.begin(), name.end(), [](char c) { return c == ' ' || c == '\n' || c == '\r'; }, '_');
+    return name;
+  }
+
   inline void set_feature_names(const std::vector<std::string>& feature_names) {
     if (feature_names.size() != static_cast<size_t>(num_total_features_)) {
       Log::Fatal("Size of feature_names error, should equal with total number of features");
     }
     feature_names_ = std::vector<std::string>(feature_names);
     std::unordered_set<std::string> feature_name_set;
-    // replace ' ' in feature_names with '_'
+    // replace ' ', '\n' and '\r' in feature_names with '_': the text model stores the names on one space-separated
+    // line, so a newline in a name (or an empty name) trained fine and then failed to load ("Wrong size of
+    // feature_names"), which flc.train hit in its own final round trip
     bool spaceInFeatureName = false;
-    for (auto& feature_name : feature_names_) {
+    for (size_t i = 0; i < feature_names_.size(); ++i) {
+      auto& feature_name = feature_names_[i];
+      if (feature_name.empty()) {
+        Log::Fatal("Feature name %zu is empty; every feature needs a name the model file can store", i);
+      }
       // check JSON
       if (!Common::CheckAllowedJSON(feature_name)) {
         Log::Fatal("Do not support special JSON characters in feature name.");
       }
-      if (feature_name.find(' ') != std::string::npos) {
+      if (feature_name.find_first_of(" \n\r") != std::string::npos) {
         spaceInFeatureName = true;
-        std::replace(feature_name.begin(), feature_name.end(), ' ', '_');
+        feature_name = StoredFeatureName(feature_name);
       }
       if (feature_name_set.count(feature_name) > 0) {
         Log::Fatal("Feature (%s) appears more than one time.", feature_name.c_str());
