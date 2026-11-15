@@ -11,6 +11,11 @@ import pytest
 
 import falcata as flc
 
+# CUDA implements only the basic method and rejects the others by design ("CUDA only supports the basic
+# monotone_constraints_method"); on a CUDA build an unset device_type auto-selects cuda, so the tests of the other
+# methods pin the CPU learner, which implements all three
+_DEVICE = {"basic": {}, "intermediate": {"device_type": "cpu"}, "advanced": {"device_type": "cpu"}}
+
 
 def _data():
     rng = np.random.default_rng(0)
@@ -31,7 +36,12 @@ def test_monotone_constraint_outside_minus_one_to_one_is_rejected(value):
 @pytest.mark.parametrize("method", ["basic", "intermediate", "advanced"])
 def test_valid_monotone_constraints_still_train(method):
     X, y = _data()
-    params = {"verbose": -1, "monotone_constraints": [1, -1, 0], "monotone_constraints_method": method}
+    params = {
+        "verbose": -1,
+        "monotone_constraints": [1, -1, 0],
+        "monotone_constraints_method": method,
+        **_DEVICE[method],
+    }
     flc.train(params, flc.Dataset(X, y), 2)
 
 
@@ -48,7 +58,12 @@ def test_monotone_constraints_method_is_case_insensitive():
     X, y = _data()
 
     def model(method):
-        params = {"verbose": -1, "monotone_constraints": [1, -1, 0], "monotone_constraints_method": method}
+        params = {
+            "verbose": -1,
+            "monotone_constraints": [1, -1, 0],
+            "monotone_constraints_method": method,
+            **_DEVICE["advanced"],
+        }
         return flc.train(params, flc.Dataset(X, y), 3).model_to_string().split("parameters:")[0]
 
     assert model("Advanced") == model("advanced")
