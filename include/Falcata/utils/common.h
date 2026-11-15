@@ -395,22 +395,21 @@ inline static bool AtoiAndCheck(const char* p, int* out) {
 
 inline static bool AtofAndCheck(const char* p, double* out) {
   // a token Atof cannot read makes it fail with "Unknown token ... in data file", which misleads for a parameter: report
-  // it as not a number instead. strtod reads every numeric form (and nan/inf); Atof's other words are na and null.
-  char* end = nullptr;
-  std::strtod(p, &end);
-  if (end == p) {
-    const char* q = p;
-    while (*q == ' ') {
-      ++q;
-    }
-    if (*q == '-' || *q == '+') {
-      ++q;
-    }
+  // it as not a number instead. Checked lexically (strtod depends on LC_NUMERIC; Atof does not): after an optional sign
+  // a number starts with a digit or '.', anything else must be one of Atof's words.
+  const char* q = p;
+  while (*q == ' ') {
+    ++q;
+  }
+  if (*q == '-' || *q == '+') {
+    ++q;
+  }
+  if ((*q < '0' || *q > '9') && *q != '.') {
     std::string word;
     for (; *q != '\0' && *q != ' '; ++q) {
       word.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*q))));
     }
-    if (word != "na" && word != "null") {
+    if (word != "na" && word != "nan" && word != "null" && word != "inf" && word != "infinity") {
       return false;
     }
   }

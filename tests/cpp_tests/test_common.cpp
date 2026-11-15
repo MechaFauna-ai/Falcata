@@ -473,4 +473,7 @@ TEST(CommonAtoxAndCheck, RejectsTokensWithoutDigits) {
   EXPECT_TRUE(std::isnan(d));
   EXPECT_FALSE(Falcata::Common::AtofAndCheck("abc", &d));  // used to throw "Unknown token abc in data file"
   EXPECT_FALSE(Falcata::Common::AtofAndCheck("0.1abc", &d));
+  EXPECT_TRUE(Falcata::Common::AtofAndCheck("-.25", &d));  // no strtod: independent of LC_NUMERIC
+  EXPECT_EQ(d, -0.25);
+  EXPECT_FALSE(Falcata::Common::AtofAndCheck("e5", &d));
 }
