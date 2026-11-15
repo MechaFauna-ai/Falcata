@@ -45,6 +45,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void ResetTrainingData(const Dataset* train_data,
                          bool is_constant_hessian) override;
 
+  void ResetIsConstantHessian(bool is_constant_hessian) override;
+
   Tree* Train(const score_t* gradients, const score_t *hessians, bool is_first_tree) override;
 
   void SetBaggingData(const Dataset* subset, const data_size_t* used_indices, data_size_t num_data) override;
@@ -745,6 +747,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<double> vec_root_sum_hessians_;
   // Refuse dataset/config shapes the vector flow does not cover.
   void CheckVectorLeafSupported() const;
+
+  /*! \brief resolve effective_quant_bins_ and fixedpoint_robust_scale_ for quantized training: both depend on
+   *  whether the hessians are constant (Init, ResetIsConstantHessian) */
+  void ResolveQuantBins(bool is_constant_hessian);
   // Root init of the plane structs (BeforeTrain tail).
   void VectorInitRootPlanes(const data_size_t* leaf_splits_init_indices,
                             const data_size_t root_num_data);

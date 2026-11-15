@@ -105,6 +105,9 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   /*! \brief The tree counter (advanced by one per DiscretizeGradients): the Philox stream of the stochastic rounding
    *  noise and, modulo the slot count, the error-feedback slot (cuda_plan key forest_batched sets it per tree) */
   int iteration() const { return iter_; }
+  /*! \brief the learner resolved the bin count again (CUDASingleGPUTreeLearner::ResetIsConstantHessian); Init must
+   *  follow, as the error-feedback residuals are in units of the old bins */
+  void SetNumGradQuantBins(const int num_grad_quant_bins) { num_grad_quant_bins_ = num_grad_quant_bins; }
   void SetIteration(const int iter) { iter_ = iter; }
 
   // Error-feedback accumulation (fixed-point only). num_slots = trees per

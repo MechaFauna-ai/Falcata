@@ -697,6 +697,9 @@ class CUDAHistogramConstructor {
   void LaunchDeviceLevelPairJoint(const CUDAHybridPairDescriptor* pair_descs);
   int DeviceLevelConstructMinGridDimY() const { return min_grid_dim_y_; }
   int DeviceLevelNumGradQuantBins() const { return use_quantized_grad_ ? num_grad_quant_bins_ : 0; }
+  /*! \brief the learner resolved the quantization bin count again (CUDASingleGPUTreeLearner::ResetIsConstantHessian):
+   *  every launch shape reads it per call */
+  void SetNumGradQuantBins(const int num_grad_quant_bins) { num_grad_quant_bins_ = num_grad_quant_bins; }
   /*! \brief cuda_plan key device_level_graph, non-quantized training: the construct instantiation a captured level
    *  bakes in (fixed point, interleaved gradient pairs, fp32 histograms) */
   int NonquantDeviceLevelKey() const {
@@ -1566,7 +1569,7 @@ class CUDAHistogramConstructor {
   /*! \brief whether to use quantized gradients */
   const bool use_quantized_grad_;
   /*! \brief the number of bins to quantized gradients */
-  const int num_grad_quant_bins_;
+  int num_grad_quant_bins_;
 };
 
 }  // namespace Falcata

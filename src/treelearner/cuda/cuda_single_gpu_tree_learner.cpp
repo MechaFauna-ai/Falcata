@@ -144,163 +144,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // down to quant_mode=stochastic or none, not tune the scale.
   const QuantMode quant_mode = config_->ResolvedQuantMode();
   fixedpoint_quant_ = (quant_mode == QuantMode::kFixedPoint);
-  effective_quant_bins_ = config_->num_grad_quant_bins;
-  if (config_->use_quantized_grad) {
-    // The packed histogram accumulates quantized gradients in (at most) 32-bit
-    // halves; the per-bin worst case is num_data * (bins/2). Beyond int32 that
-    // sum is unrepresentable and training silently emits garbage trees (found
-    // empirically: quant_bins=1024 at 5M rows -> constant predictions), so
-    // refuse loudly instead. Ceiling: bins < 2^32 / num_data.
-    // HESSIANS bound the range, not gradients: hessians quantize to the FULL
-    // bin count (gradients only to +/-bins/2), so the worst per-bin sum is
-    // num_data * bins. The old bins/2 bound let e.g. 515k rows x 4096 bins
-    // through and training emitted inf predictions (hessian sums wrapped).
-    const uint64_t worst_per_bin = static_cast<uint64_t>(num_data_) *
-        static_cast<uint64_t>(effective_quant_bins_);
-    if (worst_per_bin >= (1ULL << 31)) {
-      const int max_bins = static_cast<int>((1ULL << 31) / static_cast<uint64_t>(num_data_));
-      if (config_->quant_bins_from_auto && max_bins >= 2) {
-        // the bin count was the mode's auto default, not a user choice: pick
-        // the finest dataset-safe count instead of refusing (the guard exists
-        // to prevent silent int32 wrap, not to make big data unusable)
-        Log::Warning(
-            "quant_bins auto default %d exceeds the 32-bit histogram range for "
-            "%d rows; using the dataset-safe quant_bins=%d instead (set "
-            "quant_bins explicitly to override).",
-            effective_quant_bins_, num_data_, max_bins);
-        effective_quant_bins_ = max_bins;
-      } else {
-        Log::Fatal(
-            "quant_bins=%d is too large for %d rows: the per-bin gradient sum can "
-            "exceed the 32-bit histogram range. Use quant_bins <= %d for this dataset.",
-            effective_quant_bins_, num_data_, max_bins);
-      }
-    }
-  }
-  // Stochastic small-leaf auto-raise: with the historical 4-bin
-  // auto default, deep regimes whose leaves get small fit rounding noise and
-  // test quality DECLINES mid-training (measured: epsilon-deep peaks at iter
-  // ~300 then loses 0.005 AUC; year-deep peaks at ~75 then loses +4.9 MSE;
-  // higgs at ~10k rows/leaf is immune). The rounding scheme is innocent --
-  // stochastic@64 exactly matches fixedpoint@64 quality -- the resolution is
-  // just too coarse for small per-leaf sums, and renew_leaf recovers only
-  // ~1/3 of the damage (split-selection noise dominates). So when the bin
-  // count is the mode's auto default and the expected leaf is small, use 64
-  // bins (fixedpoint's count, capped by the int32 guard ceiling). Costs +28%
-  // on epsilon-deep (= fixedpoint's cost) and nothing on big-leaf shapes,
-  // which keep the 4-bin speed.
-  if (config_->use_quantized_grad && !fixedpoint_quant_ &&
-      config_->quant_bins_from_auto) {
-    const int64_t depth_leaf_cap = (GrowthMaxDepth() > 0 && GrowthMaxDepth() < 31) ?
-        (1LL << GrowthMaxDepth()) : std::numeric_limits<int64_t>::max();
-    const int64_t effective_leaves = std::min<int64_t>(config_->num_leaves, depth_leaf_cap);
-    const data_size_t rows_per_leaf = static_cast<data_size_t>(
-        num_data_ / std::max<int64_t>(1, effective_leaves));
-    constexpr data_size_t kSmallLeafRows = 4096;
-    // the raise needs BOTH conditions: on small datasets (gate-profile scale)
-    // 4-bin stochastic noise acts as regularization and finer bins measurably
-    // HURT (lattice: dense rmse +5%, unbalance AUC -0.08 even at 16); the
-    // fit-the-noise drift only emerges when a big dataset drives many small
-    // leaves (year/epsilon deep, >=400k rows)
-    constexpr data_size_t kMinRowsForRaise = 100000;
-    // extreme binary imbalance defeats finer stochastic bins outright
-    // (fraud-deep 577:1 measured AUC .956@4 -> .870@16: rare-class outlier
-    // gradients pin the global-max scale, the same no-robust-scale failure
-    // mode fixedpoint guards against) -- keep the 4-bin default there. 50:1
-    // matches the objective's imbalance-warning threshold.
-    bool extreme_imbalance = false;
-    if (config_->objective == std::string("binary")) {
-      const label_t* labels = train_data_->metadata().label();
-      data_size_t pos = 0;
-      for (data_size_t i = 0; i < num_data_; ++i) pos += (labels[i] > 0);
-      const data_size_t minority = std::min(pos, num_data_ - pos);
-      extreme_imbalance = (minority == 0) ||
-          (static_cast<int64_t>(num_data_ - minority) >= 50LL * minority);
-    }
-    // Multiclass is excluded for the same reason as extreme binary imbalance,
-    // which it structurally resembles: each per-class tree sees only ~1/k
-    // positives, so the rare-class gradients pin the global-max scale and the
-    // finer bins buy resolution the bulk cannot use. Measured on covtype
-    // (7 classes, 464k rows, ~454 rows/leaf -- squarely inside the raise
-    // window): accuracy .91841 at the 4-bin default vs .91510 raised to 16.
-    // The shapes the raise was built for (year-deep regression, epsilon-deep
-    // binary) are untouched.
-    const bool multiclass = config_->num_class > 1;
-    if (num_data_ >= kMinRowsForRaise && rows_per_leaf < kSmallLeafRows &&
-        !extreme_imbalance && !multiclass) {
-      // constant-hessian objectives take the full 64 (fixedpoint's count,
-      // drift-free on year); non-constant ones take 16 -- enough to kill the
-      // drift (epsilon: zero at 16) without the imbalanced-binary quality
-      // loss the gate lattice showed at 64 (unbalance AUC .94 -> .81: coarse
-      // global-max scale + rare-class outliers, the failure mode fixedpoint's
-      // robust scale exists for; stochastic has no robust scale)
-      const int target = is_constant_hessian ? 64 : 16;
-      const uint64_t guard_cap = (1ULL << 31) / static_cast<uint64_t>(num_data_) - 1;
-      const int raised = static_cast<int>(std::min<uint64_t>(target, guard_cap));
-      if (raised > effective_quant_bins_) {
-        effective_quant_bins_ = raised;
-        Log::Info("stochastic quant_bins auto-raised to %d: ~%d rows/leaf is too "
-                  "small for the 4-bin default (test quality would degrade "
-                  "mid-training); set quant_bins explicitly to override.",
-                  effective_quant_bins_, rows_per_leaf);
-      }
-    }
-  }
-  // The outlier-robust scale protects COARSE quantization (its measured win
-  // is fraud AUC .9825-vs-.8001 at the 64-bin default): re-anchoring to the
-  // bulk buys resolution at the cost of clamping outliers. At fine bin
-  // counts the global-max scale already resolves the bulk, and the clamped
-  // outlier mass turns into measured quality LOSS that grows with bins
-  // (covtype-deep acc .945/.838/.807 at 1024/2048/4096 vs .963 without).
-  // 256 keeps every historical behavior (default 64 and the 256-bin gate
-  // cell inclusive) and frees fine-grained fixedpoint to behave like the
-  // near-lossless mode it is.
-  constexpr int kRobustScaleMaxBins = 256;
-  // Multiclass is excluded. The guard looks for a SMALL cluster of outlier
-  // gradients sitting above a magnitude gap, and re-anchors the quant scale to
-  // the bulk below it -- the shape produced by extreme binary imbalance, which
-  // is what it was built for. Softmax gradients are bounded and bimodal by
-  // construction (p-1 for the true class, p for the rest), so the "outliers"
-  // it finds are the most informative gradients in the problem, and clipping
-  // them costs real accuracy: measured multi_logloss 1.2219 with the guard vs
-  // 1.0956 without, against a 1.0954 full-precision reference (7 classes,
-  // max_bin 5). It does not fire at all for binary or regression, so nothing
-  // it was designed for is lost here.
-  fixedpoint_robust_scale_ = fixedpoint_quant_ && FalcataPlan::Get().robust_scale &&
-      effective_quant_bins_ <= kRobustScaleMaxBins && config_->num_class <= 1;
-  // INTERIM CLAMP (tracked): with NON-constant hessians (binary/multiclass),
-  // high quant_bins corrupts training; the threshold is data-dependent
-  // (covtype breaks at 2048, imbalanced fraud already at 1024 -- auc .4996;
-  // constant-hessian regression is immune at any guard-passing bins).
-  // 256 is the verified-safe line across every measured case; clamp there
-  // until the corruption is root-caused.
-  if (effective_quant_bins_ > 256 && !is_constant_hessian) {
-    Log::Warning("quant_bins=%d clamped to 256 for this objective: larger "
-                 "values with non-constant hessians corrupt training on "
-                 "some data (under investigation); constant-hessian "
-                 "regression objectives are unaffected.", effective_quant_bins_);
-    effective_quant_bins_ = 256;
-  }
-  // deterministic=true with auto bin count (quant_bins=0): pick the finest
-  // SAFE resolution instead of the historical default -- near-lossless
-  // deterministic training is the stated intent. Constant-hessian
-  // objectives take the finest guard-passing count up to 2048 (verified
-  // lossless-equivalent on year); others stay at the 256 safety line.
-  // Test quant_bins_from_auto, not quant_bins == 0: ResolveFalcataParams
-  // rewrites the 0 sentinel to the mode default at parse time, so it never
-  // reaches here.
-  if (config_->deterministic && fixedpoint_quant_ && config_->quant_bins_from_auto) {
-    const uint64_t guard_cap = (1ULL << 31) / static_cast<uint64_t>(num_data_) - 1;
-    const int safe_cap = static_cast<int>(std::min<uint64_t>(guard_cap, is_constant_hessian ? 2048 : 256));
-    if (safe_cap > effective_quant_bins_) {
-      effective_quant_bins_ = safe_cap;
-      Log::Info("deterministic=true: quant_bins auto-raised to %d (near-lossless "
-                "fixedpoint resolution for this dataset)", effective_quant_bins_);
-    }
-  }
-  if (fixedpoint_quant_) {
-    Log::Info("quant_mode=fixedpoint: non-stochastic quant with %d bins", effective_quant_bins_);
-  }
+  ResolveQuantBins(is_constant_hessian);
   construct_saturation_floor_ = 0;
   if (config_->use_quantized_grad) {
     // the batched quantized construct's saturation floor (FalcataPlan::batch_construct_saturation_floor): 160 was
@@ -6705,6 +6549,169 @@ void CUDASingleGPUTreeLearner::UpdateLeafConstraints(
   }
 }
 
+// The gradient quantization resolution: the bin count (effective_quant_bins_) and the outlier-robust scale. Both
+// depend on whether the hessians are constant (the objective, dataset weights, a hessian-changing sample strategy),
+// so ResetIsConstantHessian resolves them again when that changes.
+void CUDASingleGPUTreeLearner::ResolveQuantBins(bool is_constant_hessian) {
+  effective_quant_bins_ = config_->num_grad_quant_bins;
+  if (config_->use_quantized_grad) {
+    // The packed histogram accumulates quantized gradients in (at most) 32-bit
+    // halves; the per-bin worst case is num_data * (bins/2). Beyond int32 that
+    // sum is unrepresentable and training silently emits garbage trees (found
+    // empirically: quant_bins=1024 at 5M rows -> constant predictions), so
+    // refuse loudly instead. Ceiling: bins < 2^32 / num_data.
+    // HESSIANS bound the range, not gradients: hessians quantize to the FULL
+    // bin count (gradients only to +/-bins/2), so the worst per-bin sum is
+    // num_data * bins. The old bins/2 bound let e.g. 515k rows x 4096 bins
+    // through and training emitted inf predictions (hessian sums wrapped).
+    const uint64_t worst_per_bin = static_cast<uint64_t>(num_data_) *
+        static_cast<uint64_t>(effective_quant_bins_);
+    if (worst_per_bin >= (1ULL << 31)) {
+      const int max_bins = static_cast<int>((1ULL << 31) / static_cast<uint64_t>(num_data_));
+      if (config_->quant_bins_from_auto && max_bins >= 2) {
+        // the bin count was the mode's auto default, not a user choice: pick
+        // the finest dataset-safe count instead of refusing (the guard exists
+        // to prevent silent int32 wrap, not to make big data unusable)
+        Log::Warning(
+            "quant_bins auto default %d exceeds the 32-bit histogram range for "
+            "%d rows; using the dataset-safe quant_bins=%d instead (set "
+            "quant_bins explicitly to override).",
+            effective_quant_bins_, num_data_, max_bins);
+        effective_quant_bins_ = max_bins;
+      } else {
+        Log::Fatal(
+            "quant_bins=%d is too large for %d rows: the per-bin gradient sum can "
+            "exceed the 32-bit histogram range. Use quant_bins <= %d for this dataset.",
+            effective_quant_bins_, num_data_, max_bins);
+      }
+    }
+  }
+  // Stochastic small-leaf auto-raise: with the historical 4-bin
+  // auto default, deep regimes whose leaves get small fit rounding noise and
+  // test quality DECLINES mid-training (measured: epsilon-deep peaks at iter
+  // ~300 then loses 0.005 AUC; year-deep peaks at ~75 then loses +4.9 MSE;
+  // higgs at ~10k rows/leaf is immune). The rounding scheme is innocent --
+  // stochastic@64 exactly matches fixedpoint@64 quality -- the resolution is
+  // just too coarse for small per-leaf sums, and renew_leaf recovers only
+  // ~1/3 of the damage (split-selection noise dominates). So when the bin
+  // count is the mode's auto default and the expected leaf is small, use 64
+  // bins (fixedpoint's count, capped by the int32 guard ceiling). Costs +28%
+  // on epsilon-deep (= fixedpoint's cost) and nothing on big-leaf shapes,
+  // which keep the 4-bin speed.
+  if (config_->use_quantized_grad && !fixedpoint_quant_ &&
+      config_->quant_bins_from_auto) {
+    const int64_t depth_leaf_cap = (GrowthMaxDepth() > 0 && GrowthMaxDepth() < 31) ?
+        (1LL << GrowthMaxDepth()) : std::numeric_limits<int64_t>::max();
+    const int64_t effective_leaves = std::min<int64_t>(config_->num_leaves, depth_leaf_cap);
+    const data_size_t rows_per_leaf = static_cast<data_size_t>(
+        num_data_ / std::max<int64_t>(1, effective_leaves));
+    constexpr data_size_t kSmallLeafRows = 4096;
+    // the raise needs BOTH conditions: on small datasets (gate-profile scale)
+    // 4-bin stochastic noise acts as regularization and finer bins measurably
+    // HURT (lattice: dense rmse +5%, unbalance AUC -0.08 even at 16); the
+    // fit-the-noise drift only emerges when a big dataset drives many small
+    // leaves (year/epsilon deep, >=400k rows)
+    constexpr data_size_t kMinRowsForRaise = 100000;
+    // extreme binary imbalance defeats finer stochastic bins outright
+    // (fraud-deep 577:1 measured AUC .956@4 -> .870@16: rare-class outlier
+    // gradients pin the global-max scale, the same no-robust-scale failure
+    // mode fixedpoint guards against) -- keep the 4-bin default there. 50:1
+    // matches the objective's imbalance-warning threshold.
+    bool extreme_imbalance = false;
+    if (config_->objective == std::string("binary")) {
+      const label_t* labels = train_data_->metadata().label();
+      data_size_t pos = 0;
+      for (data_size_t i = 0; i < num_data_; ++i) pos += (labels[i] > 0);
+      const data_size_t minority = std::min(pos, num_data_ - pos);
+      extreme_imbalance = (minority == 0) ||
+          (static_cast<int64_t>(num_data_ - minority) >= 50LL * minority);
+    }
+    // Multiclass is excluded for the same reason as extreme binary imbalance,
+    // which it structurally resembles: each per-class tree sees only ~1/k
+    // positives, so the rare-class gradients pin the global-max scale and the
+    // finer bins buy resolution the bulk cannot use. Measured on covtype
+    // (7 classes, 464k rows, ~454 rows/leaf -- squarely inside the raise
+    // window): accuracy .91841 at the 4-bin default vs .91510 raised to 16.
+    // The shapes the raise was built for (year-deep regression, epsilon-deep
+    // binary) are untouched.
+    const bool multiclass = config_->num_class > 1;
+    if (num_data_ >= kMinRowsForRaise && rows_per_leaf < kSmallLeafRows &&
+        !extreme_imbalance && !multiclass) {
+      // constant-hessian objectives take the full 64 (fixedpoint's count,
+      // drift-free on year); non-constant ones take 16 -- enough to kill the
+      // drift (epsilon: zero at 16) without the imbalanced-binary quality
+      // loss the gate lattice showed at 64 (unbalance AUC .94 -> .81: coarse
+      // global-max scale + rare-class outliers, the failure mode fixedpoint's
+      // robust scale exists for; stochastic has no robust scale)
+      const int target = is_constant_hessian ? 64 : 16;
+      const uint64_t guard_cap = (1ULL << 31) / static_cast<uint64_t>(num_data_) - 1;
+      const int raised = static_cast<int>(std::min<uint64_t>(target, guard_cap));
+      if (raised > effective_quant_bins_) {
+        effective_quant_bins_ = raised;
+        Log::Info("stochastic quant_bins auto-raised to %d: ~%d rows/leaf is too "
+                  "small for the 4-bin default (test quality would degrade "
+                  "mid-training); set quant_bins explicitly to override.",
+                  effective_quant_bins_, rows_per_leaf);
+      }
+    }
+  }
+  // The outlier-robust scale protects COARSE quantization (its measured win
+  // is fraud AUC .9825-vs-.8001 at the 64-bin default): re-anchoring to the
+  // bulk buys resolution at the cost of clamping outliers. At fine bin
+  // counts the global-max scale already resolves the bulk, and the clamped
+  // outlier mass turns into measured quality LOSS that grows with bins
+  // (covtype-deep acc .945/.838/.807 at 1024/2048/4096 vs .963 without).
+  // 256 keeps every historical behavior (default 64 and the 256-bin gate
+  // cell inclusive) and frees fine-grained fixedpoint to behave like the
+  // near-lossless mode it is.
+  constexpr int kRobustScaleMaxBins = 256;
+  // Multiclass is excluded. The guard looks for a SMALL cluster of outlier
+  // gradients sitting above a magnitude gap, and re-anchors the quant scale to
+  // the bulk below it -- the shape produced by extreme binary imbalance, which
+  // is what it was built for. Softmax gradients are bounded and bimodal by
+  // construction (p-1 for the true class, p for the rest), so the "outliers"
+  // it finds are the most informative gradients in the problem, and clipping
+  // them costs real accuracy: measured multi_logloss 1.2219 with the guard vs
+  // 1.0956 without, against a 1.0954 full-precision reference (7 classes,
+  // max_bin 5). It does not fire at all for binary or regression, so nothing
+  // it was designed for is lost here.
+  fixedpoint_robust_scale_ = fixedpoint_quant_ && FalcataPlan::Get().robust_scale &&
+      effective_quant_bins_ <= kRobustScaleMaxBins && config_->num_class <= 1;
+  // INTERIM CLAMP (tracked): with NON-constant hessians (binary/multiclass),
+  // high quant_bins corrupts training; the threshold is data-dependent
+  // (covtype breaks at 2048, imbalanced fraud already at 1024 -- auc .4996;
+  // constant-hessian regression is immune at any guard-passing bins).
+  // 256 is the verified-safe line across every measured case; clamp there
+  // until the corruption is root-caused.
+  if (effective_quant_bins_ > 256 && !is_constant_hessian) {
+    Log::Warning("quant_bins=%d clamped to 256 for this objective: larger "
+                 "values with non-constant hessians corrupt training on "
+                 "some data (under investigation); constant-hessian "
+                 "regression objectives are unaffected.", effective_quant_bins_);
+    effective_quant_bins_ = 256;
+  }
+  // deterministic=true with auto bin count (quant_bins=0): pick the finest
+  // SAFE resolution instead of the historical default -- near-lossless
+  // deterministic training is the stated intent. Constant-hessian
+  // objectives take the finest guard-passing count up to 2048 (verified
+  // lossless-equivalent on year); others stay at the 256 safety line.
+  // Test quant_bins_from_auto, not quant_bins == 0: ResolveFalcataParams
+  // rewrites the 0 sentinel to the mode default at parse time, so it never
+  // reaches here.
+  if (config_->deterministic && fixedpoint_quant_ && config_->quant_bins_from_auto) {
+    const uint64_t guard_cap = (1ULL << 31) / static_cast<uint64_t>(num_data_) - 1;
+    const int safe_cap = static_cast<int>(std::min<uint64_t>(guard_cap, is_constant_hessian ? 2048 : 256));
+    if (safe_cap > effective_quant_bins_) {
+      effective_quant_bins_ = safe_cap;
+      Log::Info("deterministic=true: quant_bins auto-raised to %d (near-lossless "
+                "fixedpoint resolution for this dataset)", effective_quant_bins_);
+    }
+  }
+  if (fixedpoint_quant_) {
+    Log::Info("quant_mode=fixedpoint: non-stochastic quant with %d bins", effective_quant_bins_);
+  }
+}
+
 void CUDASingleGPUTreeLearner::ResetTrainingData(
   const Dataset* train_data,
   bool is_constant_hessian) {
@@ -6756,6 +6763,34 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
   colmajor_fill_trees_seen_ = 0;
   // colmajor_direct: the old data's view is gone; choose a regime for the new data and build its view
   InitViewRegime("update(train_set=...)");
+}
+
+void CUDASingleGPUTreeLearner::ResetIsConstantHessian(bool is_constant_hessian) {
+  // the objective was rebuilt for the same Dataset (its weights were set or cleared after the Booster was created,
+  // #533): the quantization resolution chosen at Init for the old hessians must follow, or training differs from a
+  // Booster created with the new metadata (deterministic=true resolves 2048 bins for constant hessians, 256 otherwise)
+  const bool changed = is_constant_hessian != share_state_->is_constant_hessian;
+  SerialTreeLearner::ResetIsConstantHessian(is_constant_hessian);
+  if (!changed || cuda_gradient_discretizer_ == nullptr) {
+    return;
+  }
+  const int old_quant_bins = effective_quant_bins_;
+  const bool old_robust_scale = fixedpoint_robust_scale_;
+  ResolveQuantBins(is_constant_hessian);
+  if (effective_quant_bins_ == old_quant_bins && fixedpoint_robust_scale_ == old_robust_scale) {
+    return;
+  }
+  cuda_histogram_constructor_->SetNumGradQuantBins(effective_quant_bins_);
+  cuda_gradient_discretizer_->SetNumGradQuantBins(effective_quant_bins_);
+  cuda_gradient_discretizer_->SetRobustScale(fixedpoint_robust_scale_);
+  // the error-feedback residuals are in units of the old bins: start them again, keeping the Philox tree counter (as
+  // ResetTrainingData does)
+  const int iteration = cuda_gradient_discretizer_->iteration();
+  cuda_gradient_discretizer_->Init(num_data_, config_->num_leaves, train_data_->num_features(), train_data_);
+  cuda_gradient_discretizer_->SetIteration(iteration);
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  ReleaseDeviceLevelGraphs();  // a captured level bakes in the bin count
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 }
 
 void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
