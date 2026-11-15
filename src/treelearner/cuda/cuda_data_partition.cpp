@@ -806,6 +806,15 @@ void CUDADataPartition::CalcBlockDim(const data_size_t num_data_in_leaf) {
 }
 
 void CUDADataPartition::SetUsedDataIndices(const data_size_t* used_indices, const data_size_t num_used_indices) {
+  if (used_indices == nullptr) {
+    // bagging turned off by a parameter reset: train on every row again (BeforeTrain refills the identity
+    // indices) and forget the bag, whose buffer the sample strategy frees next
+    EnsureLevelPartitioned();
+    use_bagging_ = false;
+    used_indices_ = nullptr;
+    num_used_indices_ = 0;
+    return;
+  }
   pending_device_level_role_undo_ = false;
   level_partition_pending_ = false;  // cuda_plan key final_map_only: the main array is rewritten below
   level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
