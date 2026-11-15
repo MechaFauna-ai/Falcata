@@ -457,6 +457,15 @@ bool CheckMultiClassObjective(const std::string& objective) {
 }
 
 void Config::CheckParamConflict(const std::unordered_map<std::string, std::string>& params) {
+  // monotone_constraints takes -1, 0 or 1. Other values were accepted, and the learners disagree on them: most code
+  // tests the sign, but the advanced method's constraint propagation tests == 1 / == -1, so 2 trained a model that
+  // breaks the monotonicity 1 would have enforced
+  for (size_t i = 0; i < monotone_constraints.size(); ++i) {
+    if (monotone_constraints[i] < -1 || monotone_constraints[i] > 1) {
+      Log::Fatal("monotone_constraints must be -1, 0 or 1 for every feature, got %d for feature %zu",
+                 static_cast<int>(monotone_constraints[i]), i);
+    }
+  }
   // check if objective, metric, and num_class match
   int num_class_check = num_class;
   bool objective_type_multiclass = CheckMultiClassObjective(objective) || (objective == std::string("custom") && num_class_check > 1);
