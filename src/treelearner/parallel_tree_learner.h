@@ -122,6 +122,9 @@ class DataParallelTreeLearner: public TREELEARNER_T {
     *right_count = counts[1];
   }
 
+  // the root's rows on all machines (num_data_ is this machine's)
+  data_size_t RootLeafCount() const override { return global_data_count_in_leaf_[0]; }
+
  protected:
   void BeforeTrain() override;
   void FindBestSplits(const Tree* tree) override;
@@ -195,6 +198,10 @@ class VotingParallelTreeLearner: public TREELEARNER_T {
     *left_count = counts[0];
     *right_count = counts[1];
   }
+
+  // the root output from the global sums (smaller_leaf_splits_ holds this machine's)
+  const LeafSplits* RootLeafSplits() const override { return smaller_leaf_splits_global_.get(); }
+  data_size_t RootLeafCount() const override { return global_data_count_in_leaf_[0]; }
 
  protected:
   void BeforeTrain() override;

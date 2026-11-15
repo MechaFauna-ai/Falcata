@@ -194,6 +194,15 @@ class SerialTreeLearner: public TreeLearner {
     *right_count = data_partition_->leaf_count(right_leaf);
   }
 
+  /*!
+  * \brief Gradient and hessian sums of the root, for its output. The voting-parallel learner keeps its local sums
+  *        in smaller_leaf_splits_ and the global ones apart, so it returns the global ones: a tree without a split
+  *        took the machine's local root output, and the machines' models differed.
+  */
+  virtual const LeafSplits* RootLeafSplits() const { return smaller_leaf_splits_.get(); }
+  /*! \brief Rows of the root for its (path-smoothed) output: the parallel learners use the global count */
+  virtual data_size_t RootLeafCount() const { return num_data_; }
+
   /* Force splits with forced_split_json dict and then return num splits forced.*/
   int32_t ForceSplits(Tree* tree, int* left_leaf, int* right_leaf,
                       int* cur_depth);
