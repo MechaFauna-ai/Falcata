@@ -189,7 +189,7 @@ class SerialTreeLearner: public TreeLearner {
   *        took the machine's local root output, and the machines' models differed.
   */
   virtual const LeafSplits* RootLeafSplits() const { return smaller_leaf_splits_.get(); }
-  /*! rief Rows of the root for its (path-smoothed) output: the parallel learners use the global count */
+  /*! \brief Rows of the root for its (path-smoothed) output: the parallel learners use the global count */
   virtual data_size_t RootLeafCount() const { return num_data_; }
 
   /* Force splits with forced_split_json dict and then return num splits forced.*/
