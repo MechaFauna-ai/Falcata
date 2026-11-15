@@ -309,6 +309,12 @@ Parser* Parser::CreateParser(const char* filename, bool header, int num_features
     output_label_index = GetLabelIdxForCSV(lines[0], num_features, label_idx);
     ret.reset(new CSVParser(output_label_index, num_col, atof));
   }
+  // a label column past the last one was accepted when it was exactly one past (the loader's range check compares
+  // against the feature count, which then includes every column): every label read as 0. Training data only: a
+  // prediction file (num_features > 0) need not carry the label.
+  if (num_features <= 0 && (type == DataType::CSV || type == DataType::TSV) && output_label_index >= num_col) {
+    Log::Fatal("label_column %d is out of range: the data file %s has %d columns", output_label_index, filename, num_col);
+  }
 
   if (output_label_index < 0 && label_idx >= 0) {
     Log::Info("Data file %s doesn't contain a label column.", filename);

@@ -3040,7 +3040,9 @@ int FLC_DatasetGetSubset(
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   auto full_dataset = reinterpret_cast<const Dataset*>(handle);
-  CHECK_GT(num_used_row_indices, 0);
+  if (num_used_row_indices <= 0) {
+    Log::Fatal("Cannot create a subset with no rows (num_used_row_indices=%d)", num_used_row_indices);
+  }
   const int32_t lower = 0;
   const int32_t upper = full_dataset->num_data() - 1;
   CheckElementsIntervalClosed(used_row_indices, lower, upper, num_used_row_indices, "Used indices of subset");
