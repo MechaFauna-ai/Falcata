@@ -7,6 +7,7 @@
 #define FALCATA_SRC_OBJECTIVE_XENTROPY_OBJECTIVE_HPP_
 
 #include <Falcata/meta.h>
+#include <Falcata/network.h>
 #include <Falcata/objective_function.h>
 #include <Falcata/utils/common.h>
 
@@ -163,6 +164,12 @@ class CrossEntropy: public ObjectiveFunction {
         suml += label_[i];
       }
     }
+    // the machines' label sums, as BinaryLogloss does: the boosting averages the init scores of the machines,
+    // and an average of local scores is not the global one when the machines hold different numbers of rows
+    if (Network::num_machines() > 1) {
+      suml = Network::GlobalSyncUpBySum(suml);
+      sumw = Network::GlobalSyncUpBySum(sumw);
+    }
     double pavg = suml / sumw;
     pavg = std::min(pavg, 1.0 - kEpsilon);
     pavg = std::max<double>(pavg, kEpsilon);
@@ -300,6 +307,12 @@ class CrossEntropyLambda: public ObjectiveFunction {
       for (data_size_t i = 0; i < num_data_; ++i) {
         suml += label_[i];
       }
+    }
+    // the machines' label sums, as BinaryLogloss does: the boosting averages the init scores of the machines,
+    // and an average of local scores is not the global one when the machines hold different numbers of rows
+    if (Network::num_machines() > 1) {
+      suml = Network::GlobalSyncUpBySum(suml);
+      sumw = Network::GlobalSyncUpBySum(sumw);
     }
     double havg = suml / sumw;
     double initscore = std::log(std::expm1(havg));

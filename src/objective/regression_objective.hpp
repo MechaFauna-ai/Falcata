@@ -7,6 +7,7 @@
 #define FALCATA_SRC_OBJECTIVE_REGRESSION_OBJECTIVE_HPP_
 
 #include <Falcata/meta.h>
+#include <Falcata/network.h>
 #include <Falcata/objective_function.h>
 #include <Falcata/utils/array_args.h>
 
@@ -186,6 +187,12 @@ class RegressionL2loss: public ObjectiveFunction {
       for (data_size_t i = 0; i < num_data_; ++i) {
         suml += label_[i];
       }
+    }
+    // the machines' label sums, as BinaryLogloss does: the boosting averages the init scores of the machines,
+    // and an average of local means is not the global mean when the machines hold different numbers of rows
+    if (Network::num_machines() > 1) {
+      suml = Network::GlobalSyncUpBySum(suml);
+      sumw = Network::GlobalSyncUpBySum(sumw);
     }
     return suml / sumw;
   }
