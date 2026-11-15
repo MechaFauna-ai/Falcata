@@ -74,3 +74,18 @@ def test_user_feature_names_do_not_trigger_the_order_check(train_file):
     train = flc.Dataset(str(tmp_path / "train.csv"), params=params, feature_name=["c", "b", "a"])
     valid = flc.Dataset(str(tmp_path / "valid.csv"), params=params, reference=train)
     flc.train({"verbose": -1, "metric": "l2"}, train, 2, valid_sets=[valid])
+
+
+def test_named_label_at_different_positions_still_loads(tmp_path):
+    # with label_column=name:..., each file has its own label position; the features keep the same order
+    rng = np.random.default_rng(0)
+    X = rng.random((200, 3))
+    y = X[:, 0]
+    train_rows = "\n".join(",".join(str(v) for v in [*X[i], y[i]]) for i in range(200))
+    valid_rows = "\n".join(",".join(str(v) for v in [y[i], *X[i]]) for i in range(200))
+    (tmp_path / "train.csv").write_text("a,b,c,label\n" + train_rows + "\n")
+    (tmp_path / "valid.csv").write_text("label,a,b,c\n" + valid_rows + "\n")
+    params = {"verbose": -1, "header": True, "label_column": "name:label"}
+    train = flc.Dataset(str(tmp_path / "train.csv"), params=params)
+    valid = flc.Dataset(str(tmp_path / "valid.csv"), params=params, reference=train)
+    flc.train({"verbose": -1, "metric": "l2"}, train, 2, valid_sets=[valid])

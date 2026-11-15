@@ -339,20 +339,22 @@ Dataset* DatasetLoader::LoadFromFileAlignWithOtherDataset(const char* filename, 
   // read from the files themselves: the CLI reuses the training data's loader (and its feature_names_) for every
   // validation file, and user-set feature names need not describe the training file. Headers naming other columns
   // entirely, and training data that did not come from a text file with a header, are read by position as before.
-  const auto header_names = [this](const std::string& path) {
+  // each file drops its own label column (with label_column=name:... the two can sit at different positions)
+  const auto header_names = [this](const std::string& path, int label_index) {
     std::vector<std::string> names;
     if (!path.empty() && CheckCanLoadFromBin(path.c_str()).empty() && VirtualFileReader::Make(path)->Init()) {
       TextReader<data_size_t> header_reader(path.c_str(), true);
       names = Common::Split(header_reader.first_line().c_str(), "\t,");
-      if (label_idx_ >= 0 && label_idx_ < static_cast<int>(names.size())) {
-        names.erase(names.begin() + label_idx_);
+      if (label_index >= 0 && label_index < static_cast<int>(names.size())) {
+        names.erase(names.begin() + label_index);
       }
     }
     return names;
   };
   if (config_.header && train_data->parser_config_str_.empty()) {
-    const auto valid_names = header_names(filename);
-    const auto train_names = valid_names.empty() ? std::vector<std::string>() : header_names(train_data->data_filename_);
+    const auto valid_names = header_names(filename, label_idx_);
+    const auto train_names = valid_names.empty() ? std::vector<std::string>()
+                                                 : header_names(train_data->data_filename_, train_data->label_idx_);
     std::unordered_map<std::string, int> train_position;
     for (int i = 0; i < static_cast<int>(train_names.size()); ++i) {
       train_position[train_names[i]] = i;
