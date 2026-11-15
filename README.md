@@ -45,8 +45,8 @@ What makes it fast
   constant-hessian objectives) on large data with small leaves (at least 100k
   rows and fewer than 4,096 expected rows per leaf; not for multiclass or
   ≥50:1-imbalanced binary). Override with `quant_bins` (any value in
-  `[2, 65534]` — training refuses counts whose histogram sums could overflow at
-  your row count). Both modes are bit-reproducible — not just run to run, but
+  `[2, 32767]`, the int16 range of the per-row quantized hessian — training also
+  refuses counts whose histogram sums could overflow at your row count). Both modes are bit-reproducible — not just run to run, but
   across GPU models and host machines: the same seed trains the bit-identical
   model on any CUDA device (verified sm_89 vs sm_120 on a pre-launch build; the
   integer-only Philox stream keeps the guarantee by construction);

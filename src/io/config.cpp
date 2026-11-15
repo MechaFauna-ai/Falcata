@@ -464,13 +464,16 @@ void Config::ResolveFalcataParams() {
                "Use device_type=cuda, or set quant_mode=none.");
   }
   // quant_bins: 0 means auto (the Falcata-historical 4 for stochastic; 64 for
-  // fixedpoint, whose deterministic rounding needs the finer scale). The int16
-  // discretized gradient holds +/-(bins/2), so cap well inside that range.
+  // fixedpoint, whose deterministic rounding needs the finer scale). The CUDA
+  // discretizer stores each row's quantized gradient (up to bins/2) AND hessian
+  // (up to bins: a constant hessian quantizes to exactly bins) as int16, so bins
+  // must fit int16 itself. Above 32767 the hessian saturated and training with a
+  // constant-hessian objective silently grew trees without a single split.
   quant_bins_from_auto = (num_grad_quant_bins == 0);
   if (num_grad_quant_bins == 0) {
     num_grad_quant_bins = (mode == std::string("fixedpoint")) ? 64 : 4;
-  } else if (num_grad_quant_bins < 2 || num_grad_quant_bins > 65534) {
-    Log::Fatal("quant_bins=%d is out of range: must be 0 (auto) or in [2, 65534]",
+  } else if (num_grad_quant_bins < 2 || num_grad_quant_bins > 32767) {
+    Log::Fatal("quant_bins=%d is out of range: must be 0 (auto) or in [2, 32767]",
                num_grad_quant_bins);
   }
   // cuda_precision
