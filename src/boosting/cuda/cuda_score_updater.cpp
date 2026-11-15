@@ -79,6 +79,18 @@ inline void CUDAScoreUpdater::AddScore(const Tree* tree, int cur_tree_id) {
     }
     return;
   }
+  if (dynamic_cast<const CUDATree*>(tree) == nullptr) {
+    // a host Tree: GBDT's own constant tree for an iteration the learner did not train (a dataset without a usable
+    // feature, or a class that needs no training) is a plain Tree, and its AddPredictionToScore adds the constant on
+    // the host, through cuda_score_'s device pointer: a segfault when update(train_set=...) or a validation set
+    // rescored such a model. A constant goes through the device kernel, anything else through the host evaluator.
+    if (tree->num_leaves() <= 1) {
+      AddScore(tree->LeafOutput(0), cur_tree_id);
+    } else {
+      ScoreLinearTreeOnHost(tree, offset, nullptr, 0);
+    }
+    return;
+  }
   tree->AddPredictionToScore(data_, num_data_, cuda_score_.RawData() + offset);
   if (!boosting_on_cuda_) {
     CopyFromCUDADeviceToHost<double>(score_.data() + offset, cuda_score_.RawData() + offset, static_cast<size_t>(num_data_), __FILE__, __LINE__);
@@ -216,6 +228,11 @@ inline void CUDAScoreUpdater::AddScore(const Tree* tree, const data_size_t* data
     if (!ScoreLinearTreeOnDevice(tree, offset, data_indices, data_cnt)) {
       ScoreLinearTreeOnHost(tree, offset, data_indices, data_cnt);
     }
+    return;
+  }
+  if (dynamic_cast<const CUDATree*>(tree) == nullptr) {
+    // a host Tree (see AddScore above) would write through the device score pointer on the host
+    ScoreLinearTreeOnHost(tree, offset, data_indices, data_cnt);
     return;
   }
   tree->AddPredictionToScore(data_, data_indices, data_cnt, cuda_score_.RawData() + offset);
