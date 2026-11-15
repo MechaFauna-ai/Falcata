@@ -1357,7 +1357,7 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
 
   auto t2 = std::chrono::high_resolution_clock::now();
   Log::Info("Construct bin mappers from text data time %.2f seconds",
-            std::chrono::duration<double, std::milli>(t2 - t1) * 1e-3);
+            std::chrono::duration<double, std::milli>(t2 - t1).count() * 1e-3);
 }
 
 /*! \brief Extract local features from memory */

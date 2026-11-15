@@ -11,6 +11,7 @@
 #include <Falcata/sample_strategy.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -31,7 +32,9 @@ class GOSSStrategy : public SampleStrategy {
   void Bagging(int iter, TreeLearner* tree_learner, score_t* gradients, score_t* hessians) override {
     bag_data_cnt_ = num_data_;
     // not subsample for first iterations
-    if (iter < static_cast<int>(1.0f / config_->learning_rate)) {
+    // the same truncated 1 / learning_rate, compared in double: it exceeds INT_MAX for learning_rate < ~4.7e-10, where the
+    // cast to int was undefined behaviour (on x86 it gave INT_MIN, so GOSS sampled from the first iteration, not never)
+    if (iter < std::floor(1.0 / config_->learning_rate)) {
       return;
     }
     data_size_t left_cnt = 0;

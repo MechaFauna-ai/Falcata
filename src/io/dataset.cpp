@@ -1239,7 +1239,7 @@ TrainingShareStates* Dataset::GetShareStates(
 
     Log::Debug(
       "init for col-wise cost %f seconds, init for row-wise cost %f seconds",
-      col_wise_init_time * 1e-3, row_wise_init_time * 1e-3);
+      col_wise_init_time.count() * 1e-3, row_wise_init_time.count() * 1e-3);
 
     col_wise_state->is_col_wise = true;
     col_wise_state->is_constant_hessian = is_constant_hessian;
@@ -1265,7 +1265,7 @@ TrainingShareStates* Dataset::GetShareStates(
           "Auto-choosing col-wise multi-threading, the overhead of testing was "
           "%f seconds.\n"
           "You can set `force_col_wise=true` to remove the overhead.",
-          overhead_cost * 1e-3);
+          overhead_cost.count() * 1e-3);
       return col_wise_state.release();
     } else {
       auto overhead_cost = col_wise_init_time + row_wise_time + col_wise_time;
@@ -1274,7 +1274,7 @@ TrainingShareStates* Dataset::GetShareStates(
           "%f seconds.\n"
           "You can set `force_row_wise=true` to remove the overhead.\n"
           "And if memory is not enough, you can set `force_col_wise=true`.",
-          overhead_cost * 1e-3);
+          overhead_cost.count() * 1e-3);
       if (row_wise_state->IsSparseRowwise()) {
         Log::Debug("Using Sparse Multi-Val Bin");
       } else {
