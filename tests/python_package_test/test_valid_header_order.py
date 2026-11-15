@@ -64,3 +64,13 @@ def test_csv_validation_file_column_count_must_match(tmp_path, ncol):
     train = flc.Dataset(str(tmp_path / "train.csv"), params={"verbose": -1})
     with pytest.raises(flc.basic.FalcataError, match=f"has {ncol} feature columns, but the training data has 3"):
         flc.Dataset(str(tmp_path / "valid.csv"), params={"verbose": -1}, reference=train).construct()
+
+
+def test_user_feature_names_do_not_trigger_the_order_check(train_file):
+    # display names set by the user need not describe the training file's header: the check reads the file
+    tmp_path, X, y = train_file
+    _write(tmp_path / "valid.csv", "label,a,b,c", X, y, [0, 1, 2])
+    params = {"verbose": -1, "header": True}
+    train = flc.Dataset(str(tmp_path / "train.csv"), params=params, feature_name=["c", "b", "a"])
+    valid = flc.Dataset(str(tmp_path / "valid.csv"), params=params, reference=train)
+    flc.train({"verbose": -1, "metric": "l2"}, train, 2, valid_sets=[valid])
