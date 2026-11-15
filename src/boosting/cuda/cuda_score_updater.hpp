@@ -61,8 +61,9 @@ class CUDAScoreUpdater: public ScoreUpdater {
   void InitCUDA(const size_t total_size);
 
   /*! \brief Add a linear tree's predictions using the host evaluator, the only
-   *  one that applies the leaf regressions. data_indices == nullptr scores every
-   *  row; otherwise only the data_cnt rows it lists. */
+   *  one that applies the leaf regressions (also used for a host Tree, which has
+   *  no device traversal). data_indices == nullptr scores every row; otherwise
+   *  only the data_cnt rows it lists. */
   void ScoreLinearTreeOnHost(const Tree* tree, size_t offset,
                              const data_size_t* data_indices, data_size_t data_cnt);
 
