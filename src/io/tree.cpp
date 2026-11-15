@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Falcata {
@@ -496,12 +497,13 @@ std::string Tree::LinearModelToJSON(int index) const {
   return str_buf.str();
 }
 
-std::string Tree::NodeToJSON(int index) const {
+std::string Tree::NodeToJSON(int root) const {
+  // iterative, with an explicit stack: one stack frame (and one stringstream) per level overflowed the stack on deep
+  // trees -- a valid chain of 10,000 nodes crashed dump_model -- and the output is unchanged
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
   str_buf << std::setprecision(std::numeric_limits<double>::digits10 + 2);
-  if (index >= 0) {
-    // non-leaf
+  const auto open_node = [this, &str_buf](int index) {
     str_buf << "{" << '\n';
     str_buf << "\"split_index\":" << index << "," << '\n';
     str_buf << "\"split_feature\":" << split_feature_[index] << "," << '\n';
@@ -540,12 +542,9 @@ std::string Tree::NodeToJSON(int index) const {
     str_buf << "\"internal_value\":" << internal_value_[index] << "," << '\n';
     str_buf << "\"internal_weight\":" << internal_weight_[index] << "," << '\n';
     str_buf << "\"internal_count\":" << internal_count_[index] << "," << '\n';
-    str_buf << "\"left_child\":" << NodeToJSON(left_child_[index]) << "," << '\n';
-    str_buf << "\"right_child\":" << NodeToJSON(right_child_[index]) << '\n';
-    str_buf << "}";
-  } else {
-    // leaf
-    index = ~index;
+    str_buf << "\"left_child\":";
+  };
+  const auto write_leaf = [this, &str_buf](int index) {
     str_buf << "{" << '\n';
     str_buf << "\"leaf_index\":" << index << "," << '\n';
     if (leaf_value_dim_ == 1) {
@@ -566,6 +565,26 @@ std::string Tree::NodeToJSON(int index) const {
       str_buf << "\"leaf_count\":" << leaf_count_[index] << '\n';
     }
     str_buf << "}";
+  };
+  // (node, stage): 0 = not opened, 1 = left subtree written, 2 = right subtree written
+  std::vector<std::pair<int, int>> stack(1, {root, 0});
+  while (!stack.empty()) {
+    const int node = stack.back().first;
+    if (node < 0) {
+      write_leaf(~node);
+      stack.pop_back();
+    } else if (stack.back().second == 0) {
+      open_node(node);
+      stack.back().second = 1;
+      stack.emplace_back(left_child_[node], 0);
+    } else if (stack.back().second == 1) {
+      str_buf << "," << '\n' << "\"right_child\":";
+      stack.back().second = 2;
+      stack.emplace_back(right_child_[node], 0);
+    } else {
+      str_buf << '\n' << "}";
+      stack.pop_back();
+    }
   }
   return str_buf.str();
 }
@@ -699,67 +718,85 @@ std::string Tree::ToIfElse(int index, bool predict_leaf_index) const {
   return str_buf.str();
 }
 
-std::string Tree::NodeToIfElse(int index, bool predict_leaf_index) const {
+std::string Tree::NodeToIfElse(int root, bool predict_leaf_index) const {
+  // iterative for the same reason as NodeToJSON: recursion overflowed the stack on deep trees
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
   str_buf << std::setprecision(std::numeric_limits<double>::digits10 + 2);
-  if (index >= 0) {
-    // non-leaf
-    str_buf << "fval = arr[" << split_feature_[index] << "];";
-    if (GetDecisionType(decision_type_[index], kCategoricalMask) == 0) {
-      str_buf << NumericalDecisionIfElse(index);
+  std::vector<std::pair<int, int>> stack(1, {root, 0});
+  while (!stack.empty()) {
+    const int index = stack.back().first;
+    if (index < 0) {
+      // leaf
+      str_buf << "return ";
+      if (predict_leaf_index) {
+        str_buf << ~index;
+      } else {
+        str_buf << DoubleToCppLiteral(leaf_value_[~index]);
+      }
+      str_buf << ";";
+      stack.pop_back();
+    } else if (stack.back().second == 0) {
+      // non-leaf: the test, then the left subtree
+      str_buf << "fval = arr[" << split_feature_[index] << "];";
+      if (GetDecisionType(decision_type_[index], kCategoricalMask) == 0) {
+        str_buf << NumericalDecisionIfElse(index);
+      } else {
+        str_buf << CategoricalDecisionIfElse(index);
+      }
+      stack.back().second = 1;
+      stack.emplace_back(left_child_[index], 0);
+    } else if (stack.back().second == 1) {
+      // right subtree
+      str_buf << " } else { ";
+      stack.back().second = 2;
+      stack.emplace_back(right_child_[index], 0);
     } else {
-      str_buf << CategoricalDecisionIfElse(index);
+      str_buf << " }";
+      stack.pop_back();
     }
-    // left subtree
-    str_buf << NodeToIfElse(left_child_[index], predict_leaf_index);
-    str_buf << " } else { ";
-    // right subtree
-    str_buf << NodeToIfElse(right_child_[index], predict_leaf_index);
-    str_buf << " }";
-  } else {
-    // leaf
-    str_buf << "return ";
-    if (predict_leaf_index) {
-      str_buf << ~index;
-    } else {
-      str_buf << DoubleToCppLiteral(leaf_value_[~index]);
-    }
-    str_buf << ";";
   }
-
   return str_buf.str();
 }
 
-std::string Tree::NodeToIfElseByMap(int index, bool predict_leaf_index) const {
+std::string Tree::NodeToIfElseByMap(int root, bool predict_leaf_index) const {
+  // iterative for the same reason as NodeToJSON: recursion overflowed the stack on deep trees
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
   str_buf << std::setprecision(std::numeric_limits<double>::digits10 + 2);
-  if (index >= 0) {
-    // non-leaf
-    str_buf << "fval = arr.count(" << split_feature_[index] << ") > 0 ? arr.at(" << split_feature_[index] << ") : 0.0f;";
-    if (GetDecisionType(decision_type_[index], kCategoricalMask) == 0) {
-      str_buf << NumericalDecisionIfElse(index);
+  std::vector<std::pair<int, int>> stack(1, {root, 0});
+  while (!stack.empty()) {
+    const int index = stack.back().first;
+    if (index < 0) {
+      // leaf
+      str_buf << "return ";
+      if (predict_leaf_index) {
+        str_buf << ~index;
+      } else {
+        str_buf << DoubleToCppLiteral(leaf_value_[~index]);
+      }
+      str_buf << ";";
+      stack.pop_back();
+    } else if (stack.back().second == 0) {
+      // non-leaf: the test, then the left subtree
+      str_buf << "fval = arr.count(" << split_feature_[index] << ") > 0 ? arr.at(" << split_feature_[index] << ") : 0.0f;";
+      if (GetDecisionType(decision_type_[index], kCategoricalMask) == 0) {
+        str_buf << NumericalDecisionIfElse(index);
+      } else {
+        str_buf << CategoricalDecisionIfElse(index);
+      }
+      stack.back().second = 1;
+      stack.emplace_back(left_child_[index], 0);
+    } else if (stack.back().second == 1) {
+      // right subtree
+      str_buf << " } else { ";
+      stack.back().second = 2;
+      stack.emplace_back(right_child_[index], 0);
     } else {
-      str_buf << CategoricalDecisionIfElse(index);
+      str_buf << " }";
+      stack.pop_back();
     }
-    // left subtree
-    str_buf << NodeToIfElseByMap(left_child_[index], predict_leaf_index);
-    str_buf << " } else { ";
-    // right subtree
-    str_buf << NodeToIfElseByMap(right_child_[index], predict_leaf_index);
-    str_buf << " }";
-  } else {
-    // leaf
-    str_buf << "return ";
-    if (predict_leaf_index) {
-      str_buf << ~index;
-    } else {
-      str_buf << DoubleToCppLiteral(leaf_value_[~index]);
-    }
-    str_buf << ";";
   }
-
   return str_buf.str();
 }
 
