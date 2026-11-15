@@ -3193,6 +3193,12 @@ class Dataset:
                 dtype = np.float32
             data = _list_to_1d_numpy(data=data, dtype=dtype, name=field_name)
 
+        if len(data) > _MAX_INT32:
+            # FLC_DatasetSetField takes an int element count, and ctypes.c_int wraps silently: 2**28 rows x 17
+            # classes of init_score arrived as exactly 2**28 entries and passed as a one-class init score
+            raise ValueError(
+                f"Field {field_name} has {len(data)} entries, more than the {_MAX_INT32} a Dataset field can hold"
+            )
         ptr_data: Union[_ctypes_float_ptr, _ctypes_int_ptr]
         if data.dtype == np.float32 or data.dtype == np.float64:
             ptr_data, type_data, _ = _c_float_array(data)
