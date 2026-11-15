@@ -1492,8 +1492,6 @@ static void ApplyMissingSentinelToSample(
   }
 }
 
-// Guard for input formats that do not implement the sentinel rewrite: a
-// silently ignored sentinel would bin the sentinel as a real value.
 // CSC_RowIterator walks a column's stored rows in order and returns 0 for a row it has passed, so row
 // indices that are not strictly increasing within a column (unsorted, or a row stored twice) were read as
 // different values without any error: training and prediction silently used the wrong matrix.
@@ -1525,6 +1523,33 @@ static void CheckCSCRowIndicesSorted(const void* col_ptr, int col_ptr_type, cons
   }
 }
 
+// The push buffers of a sparse bin are indexed by OpenMP thread id (plus omp_max_threads * tid after
+// InitStreaming). They were sized by the thread counts at bin creation / InitStreaming, but a push ran with the
+// OpenMP thread count of the moment and took any tid: a larger count, or a tid past those InitStreaming
+// registered, wrote past the buffers. Returns the OpenMP threads the push may use.
+static int PreparePushThreads(Dataset* dataset, int32_t tid) {
+  if (dataset->streaming_num_threads() > 0) {
+    if (tid < 0 || tid >= dataset->streaming_num_threads()) {
+      Log::Fatal("Push thread id %d is outside the %d threads registered by FLC_DatasetInitStreaming", tid,
+                 dataset->streaming_num_threads());
+    }
+    // concurrent pushes share the buffers sized by InitStreaming: stay within them rather than grow them
+    return std::max(1, std::min(OMP_NUM_THREADS(), dataset->omp_max_threads()));
+  }
+  if (tid < 0) {
+    Log::Fatal("Push thread id %d must be non-negative", tid);
+  }
+  const int num_threads = OMP_NUM_THREADS();
+  if (tid == 0) {
+    // grow-only, so it does not reallocate under a concurrent push from another external thread (without
+    // InitStreaming, such pushes keep their old layout: omp thread + num_threads * tid)
+    dataset->ReservePushThreads(num_threads);
+  }
+  return num_threads;
+}
+
+// Guard for input formats that do not implement the sentinel rewrite: a
+// silently ignored sentinel would bin the sentinel as a real value.
 static void CheckNoMissingSentinel(const Config& config, const char* what) {
   if (!config.missing_sentinel.empty()) {
     Log::Fatal("missing_sentinel is not supported for %s input", what);
@@ -1707,8 +1732,9 @@ int FLC_DatasetPushRows(DatasetHandle dataset,
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
+  const int push_threads = PreparePushThreads(p_dataset, 0);
   OMP_INIT_EX();
-  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  #pragma omp parallel for num_threads(push_threads) schedule(static)
   for (int i = 0; i < nrow; ++i) {
     OMP_LOOP_EX_BEGIN();
     const int tid = omp_get_thread_num();
@@ -1748,10 +1774,12 @@ int FLC_DatasetPushRowsWithMetadata(DatasetHandle dataset,
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
 
-  const int max_omp_threads = p_dataset->omp_max_threads() > 0 ? p_dataset->omp_max_threads() : OMP_NUM_THREADS();
+  const int push_threads = PreparePushThreads(p_dataset, tid);
+  // the stride of the external thread ids: the buffers InitStreaming made per external thread
+  const int max_omp_threads = p_dataset->streaming_num_threads() > 0 ? p_dataset->omp_max_threads() : push_threads;
 
   OMP_INIT_EX();
-#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+#pragma omp parallel for num_threads(push_threads) schedule(static)
   for (int i = 0; i < nrow; ++i) {
     OMP_LOOP_EX_BEGIN();
     // convert internal thread id to be unique based on external thread id
@@ -1788,8 +1816,9 @@ int FLC_DatasetPushRowsByCSR(DatasetHandle dataset,
   if (p_dataset->has_raw()) {
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
+  const int push_threads = PreparePushThreads(p_dataset, 0);
   OMP_INIT_EX();
-  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  #pragma omp parallel for num_threads(push_threads) schedule(static)
   for (int i = 0; i < nrow; ++i) {
     OMP_LOOP_EX_BEGIN();
     const int tid = omp_get_thread_num();
@@ -1833,10 +1862,12 @@ int FLC_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
     p_dataset->ResizeRaw(p_dataset->num_data());
   }
 
-  const int max_omp_threads = p_dataset->omp_max_threads() > 0 ? p_dataset->omp_max_threads() : OMP_NUM_THREADS();
+  const int push_threads = PreparePushThreads(p_dataset, tid);
+  // the stride of the external thread ids: the buffers InitStreaming made per external thread
+  const int max_omp_threads = p_dataset->streaming_num_threads() > 0 ? p_dataset->omp_max_threads() : push_threads;
 
   OMP_INIT_EX();
-#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+#pragma omp parallel for num_threads(push_threads) schedule(static)
   for (int i = 0; i < nrow; ++i) {
     OMP_LOOP_EX_BEGIN();
     // convert internal thread id to be unique based on external thread id

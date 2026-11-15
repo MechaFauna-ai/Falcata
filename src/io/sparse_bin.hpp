@@ -91,6 +91,13 @@ class SparseBin : public Bin {
     push_buffers_.resize(omp_max_threads * num_thread);
   };
 
+  void ReservePushThreads(int num_thread) override {
+    // sized by the OpenMP thread count when the bin was made: a push under a larger count indexed past it
+    if (num_thread > 0 && push_buffers_.size() < static_cast<size_t>(num_thread)) {
+      push_buffers_.resize(num_thread);
+    }
+  }
+
   void ReSize(data_size_t num_data) override { num_data_ = num_data; }
 
   void Push(int tid, data_size_t idx, uint32_t value) override {
