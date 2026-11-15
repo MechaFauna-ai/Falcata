@@ -1433,6 +1433,25 @@ void CUDAHistogramConstructor::InvalidateCompactPrefill() {
   }
 }
 
+// Per-row-tile partials of the deterministic float-mode SPARSE construct (CUDAConstructHistogramSparse*Deterministic
+// Kernel): [pipeline][tile][2 * num_total_bin_]. det_tile_alloc_ is kept for every dataset, because the dense
+// deterministic construct clamps its tile grid with it, but the buffer is only allocated when a sparse
+// deterministic construct can run: non-quantized training on sparse row data. Otherwise it would be dead memory of
+// kNumHistPipelines * kDetTileCap * 2 * sizeof(hist_t) = 8 KB per histogram bin (issue #534).
+void CUDAHistogramConstructor::InitDeterministicTileScratch(const data_size_t num_data) {
+  det_tile_alloc_ = std::min(kDetTileCap, (num_data + kDetRowsPerThread - 1) / kDetRowsPerThread);
+  if (!use_quantized_grad_ && cuda_row_data_->is_sparse()) {
+    // One region per histogram pipeline: pipelined pair-constructs run on
+    // different pipeline streams, so a shared region would let one construct's
+    // tiles overwrite another's before its merge reads them. Launches clamp
+    // their tile grid to det_tile_alloc_, so the buffer can never be written
+    // past its end.
+    cuda_det_tile_partials_.Resize(static_cast<size_t>(kNumHistPipelines) * det_tile_alloc_ * 2 * num_total_bin_);
+  } else {
+    cuda_det_tile_partials_.Clear();
+  }
+}
+
 // Slots span the full histogram; each pipeline owns a disjoint scratch region.
 void CUDAHistogramConstructor::InitDeterministicDenseScratch() {
   const std::vector<uint32_t>& dense_part_offsets = cuda_row_data_->host_partition_hist_offsets();
@@ -1461,10 +1480,6 @@ void CUDAHistogramConstructor::InitDeterministicDenseScratch() {
 void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStates* share_state) {
   cuda_hist_.Resize(CUDAHistSlabElements(num_total_bin_, num_leaves_, num_hist_planes_));
   cuda_hist_.SetValue(0);
-  // Deterministic float-mode construct scratch (see ResetTrainingData; both
-  // entry points size it because either can be the only one a flow calls).
-  det_tile_alloc_ = std::min(kDetTileCap, (train_data->num_data() + kDetRowsPerThread - 1) / kDetRowsPerThread);
-  cuda_det_tile_partials_.Resize(static_cast<size_t>(kNumHistPipelines) * det_tile_alloc_ * 2 * num_total_bin_);
 
   cuda_feature_num_bins_.InitFromHostVector(feature_num_bins_);
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);
@@ -1480,6 +1495,9 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
     cuda_row_data_->Init(train_data, share_state);
   }
 
+  // Deterministic float-mode construct scratch (see ResetTrainingData; both
+  // entry points size it because either can be the only one a flow calls).
+  InitDeterministicTileScratch(train_data->num_data());
   InitDeterministicDenseScratch();
 
   // fp32-pair global histograms: dense shared-memory non-quantized layout only
@@ -2241,13 +2259,6 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
 
   cuda_hist_.Resize(CUDAHistSlabElements(num_total_bin_, num_leaves_, num_hist_planes_));
   cuda_hist_.SetValue(0);
-  // Deterministic float-mode construct scratch: launches clamp their tile
-  // grid to det_tile_alloc_, so the buffer can never be written past its end.
-  det_tile_alloc_ = std::min(kDetTileCap, (num_data_ + kDetRowsPerThread - 1) / kDetRowsPerThread);
-  // One region per histogram pipeline: pipelined pair-constructs run on
-  // different pipeline streams, so a shared region would let one construct's
-  // tiles overwrite another's before its merge reads them.
-  cuda_det_tile_partials_.Resize(static_cast<size_t>(kNumHistPipelines) * det_tile_alloc_ * 2 * num_total_bin_);
   num_dirty_leaves_ = -1;
   cuda_feature_num_bins_.InitFromHostVector(feature_num_bins_);
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);
@@ -2265,6 +2276,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
   cuda_row_data_->Init(train_data, share_states);
 
+  InitDeterministicTileScratch(num_data_);
   InitDeterministicDenseScratch();
 
   // (not under cuda_plan key nonquant_deterministic: the deterministic and fixed-point constructs store hist_t; the
