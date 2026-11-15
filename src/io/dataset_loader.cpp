@@ -30,6 +30,23 @@
 
 namespace Falcata {
 
+namespace {
+// max_bin_by_feature used to be checked with CHECK_*, whose message ("Check failed: (static_cast<size_t>(num_col)) ==
+// (config_.max_bin_by_feature.size()) at <file>") named neither the parameter's length nor the feature count
+void CheckMaxBinByFeature(const std::vector<int32_t>& max_bin_by_feature, int num_features) {
+  if (max_bin_by_feature.size() != static_cast<size_t>(num_features)) {
+    Log::Fatal("max_bin_by_feature has %zu values, but the data has %d features; give one per feature",
+               max_bin_by_feature.size(), num_features);
+  }
+  for (size_t i = 0; i < max_bin_by_feature.size(); ++i) {
+    if (max_bin_by_feature[i] <= 1) {
+      Log::Fatal("max_bin_by_feature must be greater than 1 for every feature, got %d for feature %zu",
+                 max_bin_by_feature[i], i);
+    }
+  }
+}
+}  // namespace
+
 using json11_internal_lightgbm::Json;
 
 DatasetLoader::DatasetLoader(const Config& io_config, const PredictFunction& predict_fun, int num_class, const char* filename)
@@ -716,8 +733,7 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
     }
   }
   if (!config_.max_bin_by_feature.empty()) {
-    CHECK_EQ(static_cast<size_t>(num_col), config_.max_bin_by_feature.size());
-    CHECK_GT(*(std::min_element(config_.max_bin_by_feature.begin(), config_.max_bin_by_feature.end())), 1);
+    CheckMaxBinByFeature(config_.max_bin_by_feature, num_col);
   }
 
   // get forced split
@@ -951,8 +967,7 @@ void DatasetLoader::LoadHeaderFromMemory(Dataset* dataset, const char* buffer, s
   }
 
   if (!config_.max_bin_by_feature.empty()) {
-    CHECK_EQ(static_cast<size_t>(dataset->num_total_features_), config_.max_bin_by_feature.size());
-    CHECK_GT(*(std::min_element(config_.max_bin_by_feature.begin(), config_.max_bin_by_feature.end())), 1);
+    CheckMaxBinByFeature(config_.max_bin_by_feature, dataset->num_total_features_);
     dataset->max_bin_by_feature_.resize(dataset->num_total_features_);
     dataset->max_bin_by_feature_.assign(config_.max_bin_by_feature.begin(), config_.max_bin_by_feature.end());
     reader.TakeArray(static_cast<size_t>(num_total_features), sizeof(int32_t), true);
@@ -1210,8 +1225,7 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
   }
 
   if (!config_.max_bin_by_feature.empty()) {
-    CHECK_EQ(static_cast<size_t>(dataset->num_total_features_), config_.max_bin_by_feature.size());
-    CHECK_GT(*(std::min_element(config_.max_bin_by_feature.begin(), config_.max_bin_by_feature.end())), 1);
+    CheckMaxBinByFeature(config_.max_bin_by_feature, dataset->num_total_features_);
   }
 
   // get forced split
@@ -1223,11 +1237,17 @@ void DatasetLoader::ConstructBinMappersFromTextData(int rank, int num_machines,
   // check the range of label_idx, weight_idx and group_idx
   // skip label check if user input parser config file,
   // because label id is got from raw features while dataset features are consistent with customized parser.
-  if (dataset->parser_config_str_.empty()) {
-    CHECK(label_idx_ >= 0 && label_idx_ <= dataset->num_total_features_);
+  if (dataset->parser_config_str_.empty() && (label_idx_ < 0 || label_idx_ > dataset->num_total_features_)) {
+    Log::Fatal("label_column %d is out of range for the columns of the data", label_idx_);
   }
-  CHECK(weight_idx_ < 0 || weight_idx_ < dataset->num_total_features_);
-  CHECK(group_idx_ < 0 || group_idx_ < dataset->num_total_features_);
+  if (weight_idx_ >= dataset->num_total_features_) {
+    Log::Fatal("weight_column %d is out of range: the data has %d columns besides the label", weight_idx_,
+               dataset->num_total_features_);
+  }
+  if (group_idx_ >= dataset->num_total_features_) {
+    Log::Fatal("group_column %d is out of range: the data has %d columns besides the label", group_idx_,
+               dataset->num_total_features_);
+  }
 
   // fill feature_names_ if not header
   if (feature_names_.empty()) {

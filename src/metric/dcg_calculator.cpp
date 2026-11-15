@@ -26,7 +26,9 @@ void DCGCalculator::DefaultEvalAt(std::vector<int>* eval_at) {
     }
   } else {
     for (size_t i = 0; i < eval_at->size(); ++i) {
-      CHECK_GT(ref_eval_at[i], 0);
+      if (ref_eval_at[i] <= 0) {
+        Log::Fatal("eval_at positions must be positive, got %d", ref_eval_at[i]);
+      }
     }
   }
 }
