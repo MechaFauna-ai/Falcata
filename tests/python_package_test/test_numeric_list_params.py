@@ -68,3 +68,20 @@ def test_linear_tree_model_with_subnormal_coefficient_loads():
     loaded = flc.Booster(model_str=edited)
     # the coefficient is ~0: predictions move by at most that term's former contribution
     assert np.all(np.isfinite(loaded.predict(X[:5])))
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "kind"),
+    [
+        # Atof failed with "Unknown token abc in data file" for a parameter
+        ("learning_rate", "abc", "double"),
+        # Atoi consumed the sign and returned 0
+        ("max_depth", "-", "int"),
+    ],
+)
+def test_bad_scalar_value_is_a_type_error(key, value, kind):
+    X, y = _data()
+    with pytest.raises(
+        flc.basic.FalcataError, match=f'Parameter {key} should be of type {kind}, got "{re.escape(value)}"'
+    ):
+        flc.train({"verbose": -1, key: value}, flc.Dataset(X, y), 1)

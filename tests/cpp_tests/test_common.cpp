@@ -456,3 +456,21 @@ TEST(CommonStringToArray, RejectsTokensThatAreNotNumbers) {
   EXPECT_THROW(StringToArray<double>("1,  ", ','), std::exception);
   EXPECT_EQ(StringToArray<double>("4.9406564584124654e-324 0.25", 2), (std::vector<double>{4.9406564584124654e-324, 0.25}));
 }
+
+// scalar parameters: a token without digits is not a number, and is reported as such (not as a data-file token)
+TEST(CommonAtoxAndCheck, RejectsTokensWithoutDigits) {
+  int i = 7;
+  EXPECT_TRUE(Falcata::Common::AtoiAndCheck("-3", &i));
+  EXPECT_EQ(i, -3);
+  EXPECT_FALSE(Falcata::Common::AtoiAndCheck("-", &i));
+  EXPECT_FALSE(Falcata::Common::AtoiAndCheck("+", &i));
+  EXPECT_FALSE(Falcata::Common::AtoiAndCheck("", &i));
+  double d = 7;
+  EXPECT_TRUE(Falcata::Common::AtofAndCheck("0.25", &d));
+  EXPECT_EQ(d, 0.25);
+  EXPECT_TRUE(Falcata::Common::AtofAndCheck("-inf", &d));
+  EXPECT_TRUE(Falcata::Common::AtofAndCheck("NA", &d));
+  EXPECT_TRUE(std::isnan(d));
+  EXPECT_FALSE(Falcata::Common::AtofAndCheck("abc", &d));  // used to throw "Unknown token abc in data file"
+  EXPECT_FALSE(Falcata::Common::AtofAndCheck("0.1abc", &d));
+}

@@ -381,8 +381,9 @@ inline static bool AtoiAndCheck(const char* p, int* out) {
   errno = 0;
   char* end = nullptr;
   const long long wide = std::strtoll(p, &end, 10);  // NOLINT(runtime/int)
-  if (end != p && (errno == ERANGE || wide < std::numeric_limits<int>::min() ||
-                   wide > std::numeric_limits<int>::max())) {
+  // no digits at all ("", "-", "+") is not an integer: Atoi consumed the sign and returned 0
+  if (end == p || errno == ERANGE || wide < std::numeric_limits<int>::min() ||
+      wide > std::numeric_limits<int>::max()) {
     return false;
   }
   const char* after = Atoi(p, out);
@@ -393,6 +394,26 @@ inline static bool AtoiAndCheck(const char* p, int* out) {
 }
 
 inline static bool AtofAndCheck(const char* p, double* out) {
+  // a token Atof cannot read makes it fail with "Unknown token ... in data file", which misleads for a parameter: report
+  // it as not a number instead. strtod reads every numeric form (and nan/inf); Atof's other words are na and null.
+  char* end = nullptr;
+  std::strtod(p, &end);
+  if (end == p) {
+    const char* q = p;
+    while (*q == ' ') {
+      ++q;
+    }
+    if (*q == '-' || *q == '+') {
+      ++q;
+    }
+    std::string word;
+    for (; *q != '\0' && *q != ' '; ++q) {
+      word.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*q))));
+    }
+    if (word != "na" && word != "null") {
+      return false;
+    }
+  }
   const char* after = Atof(p, out);
   if (*after != '\0') {
     return false;
