@@ -89,3 +89,14 @@ def test_named_label_at_different_positions_still_loads(tmp_path):
     train = flc.Dataset(str(tmp_path / "train.csv"), params=params)
     valid = flc.Dataset(str(tmp_path / "valid.csv"), params=params, reference=train)
     flc.train({"verbose": -1, "metric": "l2"}, train, 2, valid_sets=[valid])
+
+
+def test_deleted_training_file_does_not_block_validation(train_file):
+    # the order check reads the training file's header when it can; a constructed Dataset is enough without it
+    tmp_path, X, y = train_file
+    _write(tmp_path / "valid.csv", "label,a,b,c", X, y, [0, 1, 2])
+    params = {"verbose": -1, "header": True}
+    train = flc.Dataset(str(tmp_path / "train.csv"), params=params).construct()
+    (tmp_path / "train.csv").unlink()
+    valid = flc.Dataset(str(tmp_path / "valid.csv"), params=params, reference=train)
+    flc.train({"verbose": -1, "metric": "l2"}, train, 2, valid_sets=[valid])

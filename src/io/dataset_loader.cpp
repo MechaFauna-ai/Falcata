@@ -342,7 +342,8 @@ Dataset* DatasetLoader::LoadFromFileAlignWithOtherDataset(const char* filename, 
   // each file drops its own label column (with label_column=name:... the two can sit at different positions)
   const auto header_names = [this](const std::string& path, int label_index) {
     std::vector<std::string> names;
-    if (!path.empty() && CheckCanLoadFromBin(path.c_str()).empty() && VirtualFileReader::Make(path)->Init()) {
+    // existence first: CheckCanLoadFromBin is fatal for a missing file, and the training file may be gone by now
+    if (!path.empty() && VirtualFileReader::Make(path)->Init() && CheckCanLoadFromBin(path.c_str()).empty()) {
       TextReader<data_size_t> header_reader(path.c_str(), true);
       names = Common::Split(header_reader.first_line().c_str(), "\t,");
       if (label_index >= 0 && label_index < static_cast<int>(names.size())) {
