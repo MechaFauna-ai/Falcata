@@ -308,6 +308,11 @@ class Bin {
   */
   virtual void InitStreaming(uint32_t /*num_thread*/, int32_t /*omp_max_threads*/) { }
   /*!
+  * \brief Make room for pushes from thread ids [0, num_thread) (single-threaded, before a parallel push)
+  * \param num_thread Number of pushing threads
+  */
+  virtual void ReservePushThreads(int /*num_thread*/) { }
+  /*!
   * \brief Push one record
   * \param tid Thread id
   * \param idx Index of record
