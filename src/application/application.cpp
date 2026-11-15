@@ -214,13 +214,13 @@ void Application::InitTrain() {
   objective_fun_.reset(
     ObjectiveFunction::CreateObjectiveFunction(config_.objective,
                                                config_));
-  CheckCliObjective(objective_fun_.get(), config_.objective);
   // load training data
   LoadData();
   if (config_.task == TaskType::kSaveBinary) {
     Log::Info("Save data as binary finished, exit");
     exit(0);
   }
+  CheckCliObjective(objective_fun_.get(), config_.objective);  // save_binary needs no objective
   // initialize the objective function
   objective_fun_->Init(train_data_->metadata(), train_data_->num_data());
   // initialize the boosting
