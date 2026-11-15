@@ -125,12 +125,12 @@ def test_push_tid_outside_the_streaming_threads(tid):
         _safe_call(_LIB.FLC_DatasetFree(handle))
 
 
-def test_push_tid_without_init_streaming():
+def test_push_negative_tid_without_init_streaming():
     X, y = _data()
     handle = _by_reference(_reference(X, y, num_threads=2))
     try:
-        with pytest.raises(FalcataError, match="needs FLC_DatasetInitStreaming"):
-            _push_with_metadata(handle, X, y, 1)
+        with pytest.raises(FalcataError, match="must be non-negative"):
+            _push_with_metadata(handle, X, y, -1)
     finally:
         _safe_call(_LIB.FLC_DatasetFree(handle))
 

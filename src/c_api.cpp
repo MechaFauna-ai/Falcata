@@ -1471,11 +1471,15 @@ static int PreparePushThreads(Dataset* dataset, int32_t tid) {
     // concurrent pushes share the buffers sized by InitStreaming: stay within them rather than grow them
     return std::max(1, std::min(OMP_NUM_THREADS(), dataset->omp_max_threads()));
   }
-  if (tid != 0) {
-    Log::Fatal("Push thread id %d needs FLC_DatasetInitStreaming with more than %d threads", tid, tid);
+  if (tid < 0) {
+    Log::Fatal("Push thread id %d must be non-negative", tid);
   }
   const int num_threads = OMP_NUM_THREADS();
-  dataset->ReservePushThreads(num_threads);
+  if (tid == 0) {
+    // grow-only, so it does not reallocate under a concurrent push from another external thread (without
+    // InitStreaming, such pushes keep their old layout: omp thread + num_threads * tid)
+    dataset->ReservePushThreads(num_threads);
+  }
   return num_threads;
 }
 
