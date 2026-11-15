@@ -333,6 +333,28 @@ Dataset* DatasetLoader::LoadFromFile(const char* filename, int rank, int num_mac
 }
 
 Dataset* DatasetLoader::LoadFromFileAlignWithOtherDataset(const char* filename, const Dataset* train_data) {
+  // validation data is read by position into the training data's bins: a header naming the training features in
+  // another order silently scrambled them (and with them the validation metrics and early stopping). Headers that
+  // name other columns entirely are still read by position, as before.
+  if (config_.header && train_data->parser_config_str_.empty() && !feature_names_.empty()) {
+    const auto stored = [](std::string name) {
+      std::replace(name.begin(), name.end(), ' ', '_');  // as Dataset::set_feature_names stores it
+      return name;
+    };
+    std::unordered_map<std::string, int> train_position;
+    const auto train_names = train_data->feature_names();
+    for (int i = 0; i < static_cast<int>(train_names.size()); ++i) {
+      train_position[train_names[i]] = i;
+    }
+    for (int j = 0; j < static_cast<int>(feature_names_.size()); ++j) {
+      const auto it = train_position.find(stored(feature_names_[j]));
+      if (it != train_position.end() && it->second != j) {
+        Log::Fatal("Column \"%s\" is feature %d of %s but feature %d of the training data; validation data is read "
+                   "by position, so give it the training data's column order", feature_names_[j].c_str(), j, filename,
+                   it->second);
+      }
+    }
+  }
   data_size_t num_global_data = 0;
   std::vector<data_size_t> used_data_indices;
   auto dataset = std::unique_ptr<Dataset>(new Dataset());
