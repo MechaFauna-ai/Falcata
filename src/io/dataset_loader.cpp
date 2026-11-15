@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -1626,15 +1627,33 @@ std::vector<std::vector<double>> DatasetLoader::GetForcedBins(std::string forced
       }
       std::vector<Json> forced_bins_arr = forced_bins_json.array_items();
       for (size_t i = 0; i < forced_bins_arr.size(); ++i) {
-        int feature_num = forced_bins_arr[i]["feature"].int_value();
-        if (feature_num < 0 || feature_num >= num_total_features) {
-          Log::Fatal("Forced bins file %s names feature %d, outside [0, %d)", forced_bins_path.c_str(),
-                     feature_num, num_total_features);
+        // json11 reads a missing or non-numeric value as 0: "feature": "x" (or null, or no key) put the bounds on
+        // feature 0, a non-numeric bound became 0.0, and a bin_upper_bound that is not an array was ignored
+        const Json& entry = forced_bins_arr[i];
+        if (!entry.is_object() || !entry["feature"].is_number() || !entry["bin_upper_bound"].is_array()) {
+          Log::Fatal("Forced bins file %s: each entry needs an integer \"feature\" and a \"bin_upper_bound\" array, got %s",
+                     forced_bins_path.c_str(), entry.dump().c_str());
         }
+        const double feature_number = entry["feature"].number_value();
+        for (const Json& bound : entry["bin_upper_bound"].array_items()) {
+          if (!bound.is_number()) {
+            Log::Fatal("Forced bins file %s: bin_upper_bound values must be numbers, got %s", forced_bins_path.c_str(),
+                       bound.dump().c_str());
+          }
+        }
+        if (feature_number != std::floor(feature_number)) {
+          Log::Fatal("Forced bins file %s: \"feature\" must be an integer feature index, got %s", forced_bins_path.c_str(),
+                     entry["feature"].dump().c_str());
+        }
+        if (feature_number < 0 || feature_number >= num_total_features) {
+          Log::Fatal("Forced bins file %s names feature %s, outside [0, %d)", forced_bins_path.c_str(),
+                     entry["feature"].dump().c_str(), num_total_features);
+        }
+        const int feature_num = static_cast<int>(feature_number);
         if (categorical_features.count(feature_num)) {
           Log::Warning("Feature %d is categorical. Will ignore forced bins for this feature.", feature_num);
         } else {
-          std::vector<Json> bounds_arr = forced_bins_arr[i]["bin_upper_bound"].array_items();
+          std::vector<Json> bounds_arr = entry["bin_upper_bound"].array_items();
           for (size_t j = 0; j < bounds_arr.size(); ++j) {
             forced_bins[feature_num].push_back(bounds_arr[j].number_value());
           }
