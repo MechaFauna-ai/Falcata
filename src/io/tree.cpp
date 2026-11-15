@@ -1245,6 +1245,12 @@ void Tree::CheckLoadedStructure(int num_features) const {
         Log::Fatal("Tree model is corrupt: node %d splits on feature %d, the model has %d features",
                    node, feature, num_features);
       }
+      // the writer stores MissingType (0..2) in bits 2-3; 3 is no missing type. Prediction and the if-else code
+      // read it as None while the JSON dump reports NaN, so the dump would describe a different model
+      if (GetMissingType(decision_type_[node]) > MissingType::NaN) {
+        Log::Fatal("Tree model is corrupt: node %d has decision_type %d, whose missing type %d is not 0, 1 or 2",
+                   node, static_cast<int>(decision_type_[node]), static_cast<int>(GetMissingType(decision_type_[node])));
+      }
       if (GetDecisionType(decision_type_[node], kCategoricalMask)) {
         const double t = threshold_[node];
         if (!(t >= 0.0 && t < static_cast<double>(num_cat_)) || t != std::floor(t)) {
