@@ -78,6 +78,9 @@ def test_parallel_learners_with_interaction_constraints(tree_learner):
     finally:
         for p in procs:
             p.join(timeout=60)
+            if p.is_alive():  # a hung worker would keep the test process from exiting
+                p.terminate()
+                p.join()
     assert [p.exitcode for p in procs] == [0, 0]
 
     def structure(model):
