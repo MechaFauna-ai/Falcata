@@ -9,6 +9,7 @@
 #include <Falcata/network.h>
 #include <Falcata/utils/array_args.h>
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -198,10 +199,32 @@ class VotingParallelTreeLearner: public TREELEARNER_T {
   std::vector<FeatureMetainfo> feature_metas_;
 };
 
+/*!
+ * \brief The most category thresholds one split on train_data can carry
+ *
+ * The categorical searches cap a split at min(max_cat_threshold, (bins + 1) / 2) categories. Sizing the
+ * SyncUpGlobalBestSplit slots from max_cat_threshold alone (only checked > 0) wrapped SplitInfo::Size's int for a
+ * huge value, so the second slot overran the collective buffer; the bins bound the slot instead, whatever the config.
+ */
+inline int MaxCatThresholdInSplit(const Dataset* train_data) {
+  int most = 1;
+  for (int i = 0; i < train_data->num_features(); ++i) {
+    const BinMapper* bin_mapper = train_data->FeatureBinMapper(i);
+    if (bin_mapper->bin_type() == BinType::CategoricalBin) {
+      most = std::max(most, (bin_mapper->num_bin() + 1) / 2);
+    }
+  }
+  return most;
+}
+
+/*! \brief Slot size for one SplitInfo in SyncUpGlobalBestSplit under the current max_cat_threshold */
+inline int SyncSplitInfoSize(const Dataset* train_data, int max_cat_threshold) {
+  return SplitInfo::Size(std::min(max_cat_threshold, MaxCatThresholdInSplit(train_data)));
+}
+
 // To-do: reduce the communication cost by using bitset to communicate.
-inline void SyncUpGlobalBestSplit(char* input_buffer_, char* output_buffer_, SplitInfo* smaller_best_split, SplitInfo* larger_best_split, int max_cat_threshold) {
-  // sync global best info
-  int size = SplitInfo::Size(max_cat_threshold);
+inline void SyncUpGlobalBestSplit(char* input_buffer_, char* output_buffer_, SplitInfo* smaller_best_split, SplitInfo* larger_best_split, int size) {
+  // sync global best info; size is SyncSplitInfoSize(), and the buffers hold two slots of it
   smaller_best_split->CopyTo(input_buffer_);
   larger_best_split->CopyTo(input_buffer_ + size);
   Network::Allreduce(input_buffer_, size * 2, size, output_buffer_,

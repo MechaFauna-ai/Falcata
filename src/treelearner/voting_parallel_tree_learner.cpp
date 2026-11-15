@@ -73,9 +73,8 @@ void VotingParallelTreeLearner<TREELEARNER_T>::ResetTopKAndBuffers() {
   }
   // calculate buffer size
   size_t buffer_size = 2 * top_k_ * std::max(max_bin * kHistEntrySize, sizeof(LightSplitInfo) * num_machines_);
-  auto max_cat_threshold = this->config_->max_cat_threshold;
-  // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit
-  size_t split_info_size = static_cast<size_t>(SplitInfo::Size(max_cat_threshold) * 2);
+  // need to be able to hold smaller and larger best splits in SyncUpGlobalBestSplit, under any max_cat_threshold
+  size_t split_info_size = static_cast<size_t>(SplitInfo::Size(MaxCatThresholdInSplit(this->train_data_))) * 2;
   buffer_size = std::max(buffer_size, split_info_size);
   // left and right on same time, so need double size
   input_buffer_.resize(buffer_size);
@@ -477,7 +476,7 @@ void VotingParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(cons
     larger_best_split = this->best_split_per_leaf_[this->larger_leaf_splits_->leaf_index()];
   }
   // sync global best info
-  SyncUpGlobalBestSplit(input_buffer_.data(), input_buffer_.data(), &smaller_best_split, &larger_best_split, this->config_->max_cat_threshold);
+  SyncUpGlobalBestSplit(input_buffer_.data(), input_buffer_.data(), &smaller_best_split, &larger_best_split, SyncSplitInfoSize(this->train_data_, this->config_->max_cat_threshold));
 
   // copy back
   this->best_split_per_leaf_[smaller_leaf_splits_global_->leaf_index()] = smaller_best_split;
