@@ -1317,11 +1317,30 @@ static int32_t CheckedRowCount(int64_t nrow, const char* what) {
 // The streaming push functions write rows [start_row, start_row + nrow) of a Dataset allocated for num_data rows:
 // a range outside it wrote past the bins (heap-buffer-overflow).
 static void CheckPushRowRange(const Dataset* dataset, int64_t start_row, int64_t nrow) {
+  // a finished Dataset ignores pushed values, so rows pushed after the push that reached the last row
+  // (the automatic finish) were dropped without a word
+  if (dataset->is_finish_load()) {
+    Log::Fatal("Cannot push rows at start_row %s: the Dataset has already finished loading. Without "
+               "FLC_DatasetSetWaitForManualFinish, it finishes when a push reaches its last row, so push the rows "
+               "in order, or set it and call FLC_DatasetMarkFinished after the last push",
+               std::to_string(start_row).c_str());
+  }
   const int64_t num_data = dataset->num_data();
   // compare against the remaining rows, so a huge start_row (CSR takes an int64_t) cannot overflow the check
   if (start_row < 0 || nrow < 0 || start_row > num_data || nrow > num_data - start_row) {
     Log::Fatal("Cannot push %s rows at start_row %s: the Dataset has %d rows", std::to_string(nrow).c_str(),
                std::to_string(start_row).c_str(), dataset->num_data());
+  }
+}
+
+// A Dataset filled by the push functions holds complete bins only after FinishLoad (which merges the per-thread
+// push buffers): reading it earlier reads uninitialized bin state. It finishes when a push reaches its last row,
+// or on FLC_DatasetMarkFinished when FLC_DatasetSetWaitForManualFinish is set.
+static void CheckDatasetFinished(const Dataset* dataset, const char* what) {
+  if (dataset != nullptr && !dataset->is_finish_load()) {
+    Log::Fatal("Cannot %s: the Dataset has not finished loading. Push all of its rows (the push that reaches the "
+               "last row finishes it), or call FLC_DatasetMarkFinished when FLC_DatasetSetWaitForManualFinish is set",
+               what);
   }
 }
 
@@ -3065,6 +3084,7 @@ int FLC_DatasetGetSubset(
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   auto full_dataset = reinterpret_cast<const Dataset*>(handle);
+  CheckDatasetFinished(full_dataset, "take a subset of the Dataset");
   CHECK_GT(num_used_row_indices, 0);
   const int32_t lower = 0;
   const int32_t upper = full_dataset->num_data() - 1;
@@ -3135,6 +3155,7 @@ int FLC_DatasetSaveBinary(DatasetHandle handle,
                            const char* filename) {
   API_BEGIN();
   auto dataset = reinterpret_cast<Dataset*>(handle);
+  CheckDatasetFinished(dataset, "save the Dataset");
   dataset->SaveBinaryFile(filename);
   API_END();
 }
@@ -3299,6 +3320,7 @@ int FLC_BoosterCreate(const DatasetHandle train_data,
                        BoosterHandle* out) {
   API_BEGIN();
   const Dataset* p_train_data = reinterpret_cast<const Dataset*>(train_data);
+  CheckDatasetFinished(p_train_data, "train on the Dataset");
   auto ret = std::unique_ptr<Booster>(new Booster(p_train_data, parameters));
   *out = ret.release();
   API_END();
@@ -3372,6 +3394,7 @@ int FLC_BoosterAddValidData(BoosterHandle handle,
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   const Dataset* p_dataset = reinterpret_cast<const Dataset*>(valid_data);
+  CheckDatasetFinished(p_dataset, "validate on the Dataset");
   ref_booster->AddValidData(p_dataset);
   API_END();
 }
@@ -3381,6 +3404,7 @@ int FLC_BoosterResetTrainingData(BoosterHandle handle,
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   const Dataset* p_dataset = reinterpret_cast<const Dataset*>(train_data);
+  CheckDatasetFinished(p_dataset, "train on the Dataset");
   ref_booster->ResetTrainingData(p_dataset);
   API_END();
 }
