@@ -5,7 +5,9 @@ The data- and voting-parallel learners size their exchange buffers from num_leav
 top_k, split the leaves the machines agree on and lay out the histogram exchange from the sampled
 features. A machine with a smaller num_leaves than its peer split a leaf past its arrays (SEGV in
 SerialTreeLearner::SplitInner), a data-parallel machine against a voting one crashed in GlobalVoting, and a
-different feature_fraction overflowed the histogram buffers; now every machine stops with the same error.
+different feature_fraction overflowed the histogram buffers, and a machine whose min_data_in_leaf
+ruled out the root skipped the histogram exchange its peer entered (heap-buffer-overflow in
+VotingParallelTreeLearner::CopyLocalHistogram); now every machine stops with the same error.
 """
 
 import multiprocessing as mp
@@ -62,6 +64,16 @@ def _worker(rank, ports, tree_learner, overrides, queue):
         ("voting", [{"top_k": 1}, {"top_k": 5}], "top_k"),
         ("data", [{}, {"tree_learner": "voting"}], "tree_learner"),
         ("data", [{}, {"feature_fraction": 0.5}], "feature_fraction"),
+        (
+            "voting",
+            [{"min_data_in_leaf": 400, "feature_pre_filter": False}, {"feature_pre_filter": False}],
+            "min_data_in_leaf",
+        ),
+        (
+            "data",
+            [{"min_data_in_leaf": 400, "feature_pre_filter": False}, {"feature_pre_filter": False}],
+            "min_data_in_leaf",
+        ),
     ],
 )
 def test_parallel_parameter_mismatch_is_an_error(tree_learner, overrides, name):

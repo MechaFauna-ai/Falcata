@@ -24,9 +24,12 @@ namespace Falcata {
  * \brief Check that the parameters the machines must share have the same value on every machine. The parallel
  *        learners exchange buffers sized from num_leaves, max_cat_threshold and top_k, split the leaves the
  *        machines agree on, and lay out the histogram exchange from the features each machine sampled
- *        (feature_fraction*, feature_fraction_seed): a machine with a different value, or a different parallel
- *        learner, read or split past its own arrays (SEGV in SplitInner with num_leaves 4 against 63, in
- *        GlobalVoting with data against voting, heap-buffer-overflow with feature_fraction 0.5 against 1).
+ *        (feature_fraction*, feature_fraction_seed), and min_data_in_leaf decides from the global leaf counts
+ *        whether a machine searches a leaf (and joins that search's collectives): a machine with a different
+ *        value, or a different parallel learner, read or split past its own arrays (SEGV in SplitInner with
+ *        num_leaves 4 against 63, in GlobalVoting with data against voting, heap-buffer-overflow with
+ *        feature_fraction 0.5 against 1, and in CopyLocalHistogram with min_data_in_leaf 100 against 1 once
+ *        one machine skipped the root search and the collectives fell out of step).
  *        Called at the start of every tree, which every machine trains (a reset_parameter may run on one machine
  *        only), as one allreduce by max of the values and their bitwise complements.
  */
@@ -37,10 +40,12 @@ inline void CheckParallelConfigAgrees(const Config& config, bool voting) {
     return out;
   };
   static const char* const kNames[] = {"tree_learner", "num_leaves", "max_depth", "max_cat_threshold", "top_k",
-                                       "feature_fraction", "feature_fraction_bynode", "feature_fraction_seed"};
+                                       "feature_fraction", "feature_fraction_bynode", "feature_fraction_seed",
+                                       "min_data_in_leaf"};
   const int64_t values[] = {voting ? 2 : 1, config.num_leaves, config.max_depth, config.max_cat_threshold,
                             voting ? config.top_k : 0, bits(config.feature_fraction),
-                            bits(config.feature_fraction_bynode), config.feature_fraction_seed};
+                            bits(config.feature_fraction_bynode), config.feature_fraction_seed,
+                            config.min_data_in_leaf};
   constexpr int kNum = sizeof(values) / sizeof(values[0]);
   std::vector<int64_t> local(2 * kNum), global(2 * kNum);
   for (int i = 0; i < kNum; ++i) {
