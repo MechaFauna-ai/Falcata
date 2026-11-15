@@ -376,6 +376,17 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
                         int max_bin, int min_data_in_bin, int min_split_data, bool pre_filter, BinType bin_type,
                         bool use_missing, bool zero_as_missing,
                         const std::vector<double>& forced_upper_bounds) {
+  if (static_cast<size_t>(num_sample_values) > total_sample_cnt) {
+    // More sampled values than sampled rows: a row lists this feature more than once (a repeated index in a LibSVM
+    // line, duplicate column indices in a CSR row). Count each value as a row of its own. Otherwise the zero count
+    // below goes negative, a sparse rate exceeds 1, and when every row has the feature more than once,
+    // FindBinWithZeroAsOneBin divides by a zero non-zero count and casts the infinity to int (UB).
+    Log::Warning("A feature has %d sampled values in %zu sampled rows: some row lists the same feature more than "
+                 "once (a repeated index in a LibSVM line or duplicate column indices in a sparse row). Each "
+                 "duplicate is counted as a separate row when finding the bins.",
+                 num_sample_values, total_sample_cnt);
+    total_sample_cnt = static_cast<size_t>(num_sample_values);
+  }
   int na_cnt = 0;
   int non_na_cnt = 0;
   for (int i = 0; i < num_sample_values; ++i) {
@@ -399,6 +410,7 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
 
   bin_type_ = bin_type;
   default_bin_ = 0;
+  most_freq_bin_ = 0;  // a trivial feature keeps it, and is still serialized
   int zero_cnt = static_cast<int>(total_sample_cnt - num_sample_values - na_cnt);
   // find distinct_values first
   std::vector<double> distinct_values;
@@ -481,7 +493,15 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
     std::vector<int> distinct_values_int;
     std::vector<int> counts_int;
     for (size_t i = 0; i < distinct_values.size(); ++i) {
-      int val = static_cast<int>(distinct_values[i]);
+      // test the double before the cast, as ValueToBin does: casting +-inf or a value outside int's range to
+      // int is undefined. Such a value cannot be a category key, and ValueToBin sends it to the NaN bin (0)
+      const double value = distinct_values[i];
+      if (!(value < 2147483648.0)) {
+        na_cnt += counts[i];
+        Log::Warning("Met categorical value %g beyond the int range, will convert it to NaN", value);
+        continue;
+      }
+      int val = value > -1.0 ? static_cast<int>(value) : -1;
       if (val < 0) {
         na_cnt += counts[i];
         Log::Warning("Met negative value in categorical features, will convert it to NaN");
@@ -504,6 +524,8 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
       // sort by counts in descending order
       Common::SortForPair<int, int>(&counts_int, &distinct_values_int, 0, true);
       // will ignore the categorical of small counts
+      // 0.99f (float) is LightGBM's expression; kept so categorical bins match it.
+      // It differs from double only for counts above ~229k.
       int cut_cnt = static_cast<int>(
           Common::RoundInt((total_sample_cnt - na_cnt) * 0.99f));
       size_t cur_cat_idx = 0;  // index of current category.

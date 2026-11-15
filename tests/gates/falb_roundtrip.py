@@ -322,6 +322,7 @@ def contrib_suite():
         contrib(load_falb(save_falb(booster, 1, 1)))
         _junk = [bytearray(1 << 20) for _ in range(16)]
         del _junk
+    # no assertion: the check is that the cycles above did not crash the process with a heap smash
     print("  PASS  pred_contrib repeated save/load/contrib cycles leave the heap intact")
     # without the stats section it must REFUSE, not return NaN/Inf
     core = load_falb(save_falb(booster, 0, 0))

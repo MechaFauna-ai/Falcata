@@ -60,10 +60,11 @@ class DenseBin : public Bin {
   friend DenseBinIterator<VAL_T, IS_4BIT>;
   explicit DenseBin(data_size_t num_data)
       : num_data_(num_data) {
+    // data_ must start zeroed: rows in the most-frequent bin are never pushed.
     if (IS_4BIT) {
       CHECK_EQ(sizeof(VAL_T), 1);
       data_.resize((num_data_ + 1) / 2, static_cast<uint8_t>(0));
-      // zeroed by calloc: the kernel supplies the zero pages on first touch,
+      // buf_ (the odd-nibble buffer) is zeroed by calloc: the kernel supplies the zero pages on first touch,
       // and a construct that never writes the odd nibbles (the GPU binner
       // writes the packed bins itself) never touches them
       const size_t buf_bytes = (static_cast<size_t>(num_data_) + 1) / 2;

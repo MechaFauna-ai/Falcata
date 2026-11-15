@@ -253,28 +253,29 @@ class BinMapper {
 
  private:
   /*! \brief Number of bins */
-  int num_bin_;
-  MissingType missing_type_;
+  int num_bin_ = 1;
+  MissingType missing_type_ = MissingType::None;
   /*! \brief Store upper bound for each bin */
   std::vector<double> bin_upper_bound_;
   /*! \brief True if this feature is trivial */
-  bool is_trivial_;
+  bool is_trivial_ = true;
   /*! \brief Sparse rate of this bins( num_bin0/num_data ) */
-  double sparse_rate_;
+  double sparse_rate_ = 1.0;
   /*! \brief Type of this bin */
-  BinType bin_type_;
+  BinType bin_type_ = BinType::NumericalBin;
   /*! \brief Mapper from categorical to bin */
   std::unordered_map<int, unsigned int> categorical_2_bin_;
   /*! \brief Mapper from bin to categorical */
   std::vector<int> bin_2_categorical_;
   /*! \brief minimal feature value */
-  double min_val_;
+  double min_val_ = 0.0;
   /*! \brief maximum feature value */
-  double max_val_;
+  double max_val_ = 0.0;
   /*! \brief bin value of feature value 0 */
-  uint32_t default_bin_;
-
-  uint32_t most_freq_bin_;
+  uint32_t default_bin_ = 0;
+  /*! \brief Most frequent bin. Serialized for every feature, a trivial one included (the
+   *         distributed bin finding gathers them all), so it must always hold a valid bin */
+  uint32_t most_freq_bin_ = 0;
 };
 
 /*! \brief Iterator for one bin column */

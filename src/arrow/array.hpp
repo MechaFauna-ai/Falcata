@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,6 +33,52 @@ inline struct ArrowSchemaView MakeSchemaView(const struct ArrowSchema* schema) {
                                std::string(ArrowErrorMessage(&error)));
   }
   return view;
+}
+
+/**
+ * @brief Check that the pointers nanoarrow dereferences while it validates an array are set.
+ * nanoarrow takes the struct members' pointers on trust, so a NULL ``buffers`` or ``children``
+ * array (or child) must be rejected before it looks at them.
+ */
+inline void CheckArrowArrayPointers(const struct ArrowArray* array) {
+  if (array->release == nullptr) {
+    throw nanoarrow::Exception("Invalid Arrow array: the array was already released");
+  }
+  if (array->n_buffers > 0 && array->buffers == nullptr) {
+    throw nanoarrow::Exception("Invalid Arrow array: n_buffers is " + std::to_string(array->n_buffers) +
+                               " but buffers is NULL");
+  }
+  if (array->n_children > 0 && array->children == nullptr) {
+    throw nanoarrow::Exception("Invalid Arrow array: n_children is " + std::to_string(array->n_children) +
+                               " but children is NULL");
+  }
+  for (int64_t i = 0; i < array->n_children; ++i) {
+    if (array->children[i] == nullptr) {
+      throw nanoarrow::Exception("Invalid Arrow array: child " + std::to_string(i) + " is NULL");
+    }
+    CheckArrowArrayPointers(array->children[i]);
+  }
+  if (array->dictionary != nullptr) {
+    CheckArrowArrayPointers(array->dictionary);
+  }
+}
+
+/**
+ * @brief Validate an Arrow array against its schema before any of its values are read.
+ * The values are read straight from the buffers, so a negative length or offset, a missing or
+ * NULL data buffer, a buffer count or child count that does not match the type, or a struct
+ * child shorter than its parent would otherwise be read out of bounds. This runs nanoarrow's
+ * default validation, which costs O(1) per buffer for the fixed-width types read here.
+ */
+inline void ValidateArrowArray(const struct ArrowSchema* schema, const struct ArrowArray* array) {
+  CheckArrowArrayPointers(array);
+  nanoarrow::UniqueArrayView array_view;
+  struct ArrowError error;
+  error.message[0] = '\0';
+  if (ArrowArrayViewInitFromSchema(array_view.get(), schema, &error) != NANOARROW_OK ||
+      ArrowArrayViewSetArray(array_view.get(), array, &error) != NANOARROW_OK) {
+    throw nanoarrow::Exception("Invalid Arrow array: " + std::string(ArrowErrorMessage(&error)));
+  }
 }
 
 /* --------------------------------------------------------------------------------------------- */
@@ -79,6 +126,7 @@ class ArrowChunkedArray {
                                    std::string(stream_->get_last_error(stream_.get())));
       }
       if (chunk->release == nullptr) break;
+      ValidateArrowArray(schema_.get(), chunk.get());
       chunks_.emplace_back(std::move(chunk));
     }
   }
@@ -94,14 +142,28 @@ class ArrowChunkedArray {
    */
   explicit ArrowChunkedArray(int64_t n_chunks, struct ArrowArray* chunks,
                              struct ArrowSchema* schema) {
+    if (schema == nullptr) {
+      throw nanoarrow::Exception("Arrow schema is NULL");
+    }
     // Take ownership of schema
     schema_ = nanoarrow::UniqueSchema(schema);
     type_ = MakeSchemaView(schema_.get()).type;
+
+    if (n_chunks < 0) {
+      throw nanoarrow::Exception("The number of Arrow chunks must be non-negative, got " +
+                                 std::to_string(n_chunks));
+    }
+    if (n_chunks > 0 && chunks == nullptr) {
+      throw nanoarrow::Exception("Arrow chunks is NULL but n_chunks is " + std::to_string(n_chunks));
+    }
 
     // Take ownership of chunks
     chunks_.reserve(n_chunks);
     for (int64_t i = 0; i < n_chunks; ++i) {
       chunks_.emplace_back(&chunks[i]);
+    }
+    for (const auto& chunk : chunks_) {
+      ValidateArrowArray(schema_.get(), chunk.get());
     }
   }
 
@@ -162,10 +224,14 @@ class ArrowChunkedArray {
     enum ArrowType type_;
     const struct ArrowSchema* schema_;
     std::vector<const struct ArrowArray*> chunks_;
+    // Shallow, non-owning copies of struct children re-based onto their parent's slice (see
+    // field()); chunks_ may point into them, so the view keeps them alive.
+    std::vector<std::shared_ptr<const struct ArrowArray>> slices_;
 
     View(enum ArrowType type, const struct ArrowSchema* schema,
-         std::vector<const struct ArrowArray*> chunks)
-        : type_(type), schema_(schema), chunks_(std::move(chunks)) {}
+         std::vector<const struct ArrowArray*> chunks,
+         std::vector<std::shared_ptr<const struct ArrowArray>> slices = {})
+        : type_(type), schema_(schema), chunks_(std::move(chunks)), slices_(std::move(slices)) {}
 
    public:
     explicit View(std::vector<View> views) {
@@ -180,6 +246,7 @@ class ArrowChunkedArray {
                      ArrowTypeString(it->type_), ArrowTypeString(type_));
         }
         chunks_.insert(chunks_.end(), it->chunks_.begin(), it->chunks_.end());
+        slices_.insert(slices_.end(), it->slices_.begin(), it->slices_.end());
       }
     }
 
@@ -201,17 +268,36 @@ class ArrowChunkedArray {
       }
 
       std::vector<const struct ArrowArray*> chunk_ptrs;
+      std::vector<std::shared_ptr<const struct ArrowArray>> slices;
       chunk_ptrs.reserve(chunks_.size());
       for (const auto& chunk : chunks_) {
         if (field_idx >= chunk->n_children) {
           Log::Fatal("Arrow chunk has %s children, fewer than its schema's %s",
                      std::to_string(chunk->n_children).c_str(), std::to_string(schema_->n_children).c_str());
         }
-        chunk_ptrs.push_back(chunk->children[field_idx]);
+        const struct ArrowArray* child = chunk->children[field_idx];
+        // Element i of a struct is element (parent offset + i) of each child: a sliced struct
+        // keeps its offset and length on the parent and leaves the children whole.
+        if (chunk->offset < 0 || chunk->length < 0 || child->length < chunk->offset + chunk->length) {
+          Log::Fatal("Arrow struct child %s has length %s, shorter than its parent's offset %s plus length %s",
+                     std::to_string(field_idx).c_str(), std::to_string(child->length).c_str(),
+                     std::to_string(chunk->offset).c_str(), std::to_string(chunk->length).c_str());
+        }
+        if (chunk->offset == 0 && child->length == chunk->length) {
+          chunk_ptrs.push_back(child);
+          continue;
+        }
+        auto slice = std::make_shared<struct ArrowArray>(*child);
+        slice->offset = child->offset + chunk->offset;
+        slice->length = chunk->length;
+        slice->release = nullptr;  // non-owning: the parent chunk still owns the buffers
+        slice->private_data = nullptr;
+        chunk_ptrs.push_back(slice.get());
+        slices.push_back(std::move(slice));
       }
 
       auto type = MakeSchemaView(schema_->children[field_idx]).type;
-      return View(type, schema_->children[field_idx], std::move(chunk_ptrs));
+      return View(type, schema_->children[field_idx], std::move(chunk_ptrs), std::move(slices));
     }
 
     /**
@@ -230,27 +316,27 @@ class ArrowChunkedArray {
       // Switch on the schema type and construct the appropriate visitor
       switch (type_) {
         case NANOARROW_TYPE_INT8:
-          return f(Visitor<int8_t, OutputT>(chunks_));
+          return f(Visitor<int8_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_INT16:
-          return f(Visitor<int16_t, OutputT>(chunks_));
+          return f(Visitor<int16_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_INT32:
-          return f(Visitor<int32_t, OutputT>(chunks_));
+          return f(Visitor<int32_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_INT64:
-          return f(Visitor<int64_t, OutputT>(chunks_));
+          return f(Visitor<int64_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_UINT8:
-          return f(Visitor<uint8_t, OutputT>(chunks_));
+          return f(Visitor<uint8_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_UINT16:
-          return f(Visitor<uint16_t, OutputT>(chunks_));
+          return f(Visitor<uint16_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_UINT32:
-          return f(Visitor<uint32_t, OutputT>(chunks_));
+          return f(Visitor<uint32_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_UINT64:
-          return f(Visitor<uint64_t, OutputT>(chunks_));
+          return f(Visitor<uint64_t, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_FLOAT:
-          return f(Visitor<float, OutputT>(chunks_));
+          return f(Visitor<float, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_DOUBLE:
-          return f(Visitor<double, OutputT>(chunks_));
+          return f(Visitor<double, OutputT>(chunks_, slices_));
         case NANOARROW_TYPE_BOOL:
-          return f(Visitor<bool, OutputT>(chunks_));
+          return f(Visitor<bool, OutputT>(chunks_, slices_));
         default:
           Log::Fatal("Unsupported Arrow type: %s", ArrowTypeString(type_));
       }
@@ -268,8 +354,12 @@ class ArrowChunkedArray {
 
     std::vector<const struct ArrowArray*> chunks_;
     std::vector<int64_t> chunk_offsets_;
+    // keeps the view's re-based struct children alive for a visitor that outlives its view
+    std::vector<std::shared_ptr<const struct ArrowArray>> slices_;
 
-    explicit Visitor(std::vector<const struct ArrowArray*> chunks) : chunks_(chunks) {
+    Visitor(std::vector<const struct ArrowArray*> chunks,
+            std::vector<std::shared_ptr<const struct ArrowArray>> slices)
+        : chunks_(chunks), slices_(std::move(slices)) {
       // Derive chunk offsets
       chunk_offsets_.reserve(chunks.size() + 1);
       chunk_offsets_.push_back(0);

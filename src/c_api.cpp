@@ -1090,6 +1090,7 @@ class Booster {
   }
 
   void SaveModelToFile(int start_iteration, int num_iteration, int feature_importance_type, const char* filename) const {
+    SHARED_LOCK(mutex_)
     boosting_->SaveModelToFile(start_iteration, num_iteration, feature_importance_type, filename);
   }
 
@@ -1100,6 +1101,7 @@ class Booster {
 
   std::string SaveModelToString(int start_iteration, int num_iteration,
                                 int feature_importance_type) const {
+    SHARED_LOCK(mutex_)
     return boosting_->SaveModelToString(start_iteration,
                                         num_iteration, feature_importance_type);
   }
@@ -1108,6 +1110,7 @@ class Booster {
                                 int feature_importance_type, bool with_stats,
                                 bool with_diagnostics, bool f32_leaves,
                                 int compress_level) const {
+    SHARED_LOCK(mutex_)
     return boosting_->SaveModelToBinary(start_iteration, num_iteration,
                                         feature_importance_type, with_stats,
                                         with_diagnostics, f32_leaves,
@@ -1120,12 +1123,26 @@ class Booster {
 
   std::string DumpModel(int start_iteration, int num_iteration,
                         int feature_importance_type) const {
+    SHARED_LOCK(mutex_)
     return boosting_->DumpModel(start_iteration, num_iteration,
                                 feature_importance_type);
   }
 
   std::vector<double> FeatureImportance(int num_iteration, int importance_type) const {
+    SHARED_LOCK(mutex_)
     return boosting_->FeatureImportance(num_iteration, importance_type);
+  }
+
+  // Read under the shared lock: another thread training this Booster appends to the model vector meanwhile.
+  int GetCurrentIteration() const {
+    SHARED_LOCK(mutex_)
+    return boosting_->GetCurrentIteration();
+  }
+
+  int64_t CalcNumPredict(int num_row, int predict_type, int start_iteration, int num_iteration) const {
+    SHARED_LOCK(mutex_)
+    return static_cast<int64_t>(num_row) * boosting_->NumPredictOneRow(start_iteration, num_iteration,
+      predict_type == C_API_PREDICT_LEAF_INDEX, predict_type == C_API_PREDICT_CONTRIB);
   }
 
   double UpperBoundValue() const {
@@ -2976,6 +2993,13 @@ void DatasetCreateFromArrowChunkedArray(ArrowChunkedArray& chunked_array,
                                              num_rows,
                                              num_rows));
   } else {
+    // every Arrow field is pushed as the reference's column of the same index: a field past the
+    // reference's columns would index its feature maps out of bounds
+    const int reference_num_features = reinterpret_cast<const Dataset*>(reference)->num_total_features();
+    if (chunked_array.get_num_fields() != reference_num_features) {
+      Log::Fatal("The number of columns in the Arrow data (%s) is not the same as in the reference Dataset (%d)",
+                 std::to_string(chunked_array.get_num_fields()).c_str(), reference_num_features);
+    }
     ret.reset(new Dataset(num_rows));
     ret->CreateValid(reinterpret_cast<const Dataset*>(reference));
     if (ret->has_raw()) {
@@ -3443,7 +3467,7 @@ int FLC_BoosterRollbackOneIter(BoosterHandle handle) {
 int FLC_BoosterGetCurrentIteration(BoosterHandle handle, int* out_iteration) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
-  *out_iteration = ref_booster->GetBoosting()->GetCurrentIteration();
+  *out_iteration = ref_booster->GetCurrentIteration();
   API_END();
 }
 
@@ -3599,8 +3623,7 @@ int FLC_BoosterCalcNumPredict(BoosterHandle handle,
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   Falcata::CheckPredictType(predict_type);
-  *out_len = static_cast<int64_t>(num_row) * ref_booster->GetBoosting()->NumPredictOneRow(start_iteration,
-    num_iteration, predict_type == C_API_PREDICT_LEAF_INDEX, predict_type == C_API_PREDICT_CONTRIB);
+  *out_len = ref_booster->CalcNumPredict(num_row, predict_type, start_iteration, num_iteration);
   API_END();
 }
 

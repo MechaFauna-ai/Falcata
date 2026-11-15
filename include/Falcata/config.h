@@ -34,6 +34,7 @@ namespace Falcata {
 
 /*! \brief Types of tasks */
 enum TaskType {
+  // KRefitTree (capital K) is the upstream LightGBM spelling, kept as is
   kTrain, kPredict, kConvertModel, KRefitTree, kSaveBinary
 };
 const int kDefaultNumLeaves = 31;

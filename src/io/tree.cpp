@@ -1044,6 +1044,8 @@ void Tree::UnwindPath(PathElement *unique_path, int unique_depth, int path_index
       next_one_portion = tmp - unique_path[i].pweight*zero_fraction*(unique_depth - i)
         / static_cast<double>(unique_depth + 1);
     } else {
+      // zero_fraction is 0 for a zero-cover child; the resulting NaN matches the
+      // reference TreeSHAP (LightGBM), so it is not guarded here or in UnwoundPathSum
       unique_path[i].pweight = (unique_path[i].pweight*(unique_depth + 1))
         / static_cast<double>(zero_fraction*(unique_depth - i));
     }
