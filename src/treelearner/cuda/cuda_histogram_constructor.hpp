@@ -879,6 +879,7 @@ class CUDAHistogramConstructor {
   void MarkCountScratchDirty() { count_scratch_dirty_ = true; }
 
  private:
+  void InitDeterministicTileScratch(data_size_t num_data);
   void InitDeterministicDenseScratch();
 
   void InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets);
