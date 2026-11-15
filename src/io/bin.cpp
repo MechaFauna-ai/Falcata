@@ -137,6 +137,29 @@ bool NeedFilter(const std::vector<int>& cnt_in_bin, int total_cnt, int filter_cn
   return true;
 }
 
+/*!
+ * \brief upper bound of the bin that ends at value a when the next bin starts at b (a < b): just above their
+ *        midpoint. When the midpoint overflows -- b is +inf, or a + b overflows either way -- that bound put a and b
+ *        in one bin (with +inf, the final +inf bin was left empty), so a model could never split +inf, or the
+ *        largest finite values of either sign, off from the value next to them. Then the midpoint is taken finite:
+ *        a / 2 + b / 2 for finite values, the largest double for b == +inf (whose upper bound would round up to
+ *        +inf again). a == -inf already gets -DBL_MAX, which separates it. Every other pair keeps the exact
+ *        historical bound.
+ */
+static double BinUpperBoundBetween(double a, double b) {
+  double mid = (a + b) / 2.0;
+  if (std::isinf(mid)) {
+    if (std::isinf(b) && b > 0.0) {
+      return std::numeric_limits<double>::max();
+    }
+    if (!std::isinf(a)) {
+      mid = a / 2.0 + b / 2.0;
+    }
+  }
+  const double bound = Common::GetDoubleUpperBound(mid);
+  return std::isinf(bound) && bound > 0.0 ? std::numeric_limits<double>::max() : bound;
+}
+
 std::vector<double> GreedyFindBin(const double* distinct_values, const int* counts,
                                   int num_distinct_values, int max_bin,
                                   size_t total_cnt, int min_data_in_bin) {
@@ -148,7 +171,7 @@ std::vector<double> GreedyFindBin(const double* distinct_values, const int* coun
     for (int i = 0; i < num_distinct_values - 1; ++i) {
       cur_cnt_inbin += counts[i];
       if (cur_cnt_inbin >= min_data_in_bin) {
-        auto val = Common::GetDoubleUpperBound((distinct_values[i] + distinct_values[i + 1]) / 2.0);
+        auto val = BinUpperBoundBetween(distinct_values[i], distinct_values[i + 1]);
         if (bin_upper_bound.empty() || !Common::CheckDoubleEqualOrdered(bin_upper_bound.back(), val)) {
           bin_upper_bound.push_back(val);
           cur_cnt_inbin = 0;
@@ -214,7 +237,7 @@ std::vector<double> GreedyFindBin(const double* distinct_values, const int* coun
     // update bin upper bound
     bin_upper_bound.clear();
     for (int i = 0; i < bin_cnt - 1; ++i) {
-      auto val = Common::GetDoubleUpperBound((upper_bounds[i] + lower_bounds[i + 1]) / 2.0);
+      auto val = BinUpperBoundBetween(upper_bounds[i], lower_bounds[i + 1]);
       if (bin_upper_bound.empty() || !Common::CheckDoubleEqualOrdered(bin_upper_bound.back(), val)) {
         bin_upper_bound.push_back(val);
       }
