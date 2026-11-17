@@ -41,9 +41,19 @@
 #pragma intrinsic(_BitScanReverse)
 #endif
 
+// The build defines MM_MALLOC when <mm_malloc.h> works, but code compiled against these headers without the
+// build's definitions has to find it too: with the fallback macros below, an <mm_malloc.h> that a system
+// header pulls in later (GCC 15's <random> does whenever SSE3 is enabled) has its _mm_malloc expanded into a
+// second, static definition of malloc that does not compile ("declared 'extern' and later 'static'").
+#if defined(__has_include)
+#if __has_include(<mm_malloc.h>)
+#define FALCATA_HAS_MM_MALLOC_H
+#endif
+#endif
+
 #if defined(_MSC_VER)
 #include <malloc.h>
-#elif MM_MALLOC
+#elif MM_MALLOC || defined(FALCATA_HAS_MM_MALLOC_H)
 #include <mm_malloc.h>
 // https://gcc.gnu.org/onlinedocs/cpp/Common-Predefined-Macros.html
 // https://www.oreilly.com/library/view/mac-os-x/0596003560/ch05s01s02.html
