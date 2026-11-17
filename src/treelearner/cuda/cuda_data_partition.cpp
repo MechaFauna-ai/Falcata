@@ -409,7 +409,8 @@ void CUDADataPartition::BuildDeviceLevelFeatureSource(
       s.column_data = cuda_column_data_->packed_column_data(column_index);
       s.packed_row_stride = cuda_column_data_->packed_column_stride(column_index);
       s.packed_shift = cuda_column_data_->packed_column_shift(column_index);
-      // 4 for dense (nibble read); a sparse column's real width (own buffer)
+      // dense: 4 (row-matrix nibble), kStrided8ColumnBitType (8-bit row byte) or
+      // kNibbleColumnBitType (column-major nibbles); sparse: its real width (own buffer)
       s.bit_type = cuda_column_data_->packed_column_bit_type(column_index);
     } else {
       s.column_data = cuda_column_data_->GetColumnData(column_index);

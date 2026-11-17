@@ -891,8 +891,9 @@ __global__ void AddPredictionToScoreKernel(
         // gather kernel only copies these nibbles/bytes, so the bin logic
         // below is untouched.
         // Widths here are 4 (row-matrix nibble at a fixed shift, stride apart),
-        // kNibbleColumnBitType (a column of the column-major nibble copy, two
-        // rows per byte) or a sparse column's own 8/16/32.
+        // kStrided8ColumnBitType (a byte of the 8-bit row matrix, stride
+        // apart), kNibbleColumnBitType (a column of the column-major nibble
+        // copy, two rows per byte) or a sparse column's own 8/16/32.
         const uint8_t* base = cuda_packed_column_ptr[column];
         const uint8_t packed_bit_type = cuda_packed_column_bit_type[column];
         if (packed_bit_type == 4) {
