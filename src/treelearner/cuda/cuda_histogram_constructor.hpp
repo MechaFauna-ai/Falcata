@@ -10,7 +10,6 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_utils.hu>
-#include <Falcata/cuda/cuda_device_sm.hpp>
 #include <Falcata/falcata_plan.h>
 #include <Falcata/feature_group.h>
 #include <Falcata/tree.h>
@@ -25,6 +24,7 @@
 #include <tuple>
 #include <vector>
 
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include <Falcata/cuda/cuda_device_tree_reason.hpp>
 #include <Falcata/cuda/cuda_row_data.hpp>
 #include <Falcata/cuda/pack_codecs.hpp>

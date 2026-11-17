@@ -9,10 +9,10 @@
 #ifdef USE_CUDA
 
 #include "cuda_histogram_constructor.hpp"
-#include <Falcata/cuda/cuda_device_sm.hpp>
 #include "cuda_device_levels.hpp"
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>

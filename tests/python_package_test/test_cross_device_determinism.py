@@ -50,15 +50,53 @@ print("MODEL_MD5", hashlib.md5(model.encode()).hexdigest(), flush=True)
 CASES = {
     # the shape of a production fit that diverged across cards (later traced to its inputs): weighted rows, 30%
     # missing, bagging and column sampling, many leaves, fixed-point quantized gradients
-    "fixedpoint_weighted": dict(rows=60_000, feats=120, missing=True, weighted=True, rounds=40, params={
-        "quant_mode": "fixedpoint", "cuda_precision": "fp32", "num_leaves": 255, "max_bin": 51,
-        "feature_fraction": 0.2, "bagging_fraction": 0.5, "bagging_freq": 1, "lambda_l2": 10.0}),
-    "stochastic_large": dict(rows=400_000, feats=60, missing=True, weighted=False, rounds=20, params={
-        "quant_mode": "stochastic", "num_leaves": 127, "max_bin": 63, "bagging_fraction": 0.7, "bagging_freq": 1}),
-    "unquantized_fp32": dict(rows=400_000, feats=60, missing=False, weighted=True, rounds=20, params={
-        "quant_mode": "none", "cuda_precision": "fp32", "num_leaves": 127, "max_bin": 63}),
-    "wide_255_bins": dict(rows=60_000, feats=800, missing=False, weighted=False, rounds=15, params={
-        "quant_mode": "fixedpoint", "num_leaves": 63, "max_bin": 255, "feature_fraction": 0.8}),
+    "fixedpoint_weighted": {
+        "rows": 60_000,
+        "feats": 120,
+        "missing": True,
+        "weighted": True,
+        "rounds": 40,
+        "params": {
+            "quant_mode": "fixedpoint",
+            "cuda_precision": "fp32",
+            "num_leaves": 255,
+            "max_bin": 51,
+            "feature_fraction": 0.2,
+            "bagging_fraction": 0.5,
+            "bagging_freq": 1,
+            "lambda_l2": 10.0,
+        },
+    },
+    "stochastic_large": {
+        "rows": 400_000,
+        "feats": 60,
+        "missing": True,
+        "weighted": False,
+        "rounds": 20,
+        "params": {
+            "quant_mode": "stochastic",
+            "num_leaves": 127,
+            "max_bin": 63,
+            "bagging_fraction": 0.7,
+            "bagging_freq": 1,
+        },
+    },
+    "unquantized_fp32": {
+        "rows": 400_000,
+        "feats": 60,
+        "missing": False,
+        "weighted": True,
+        "rounds": 20,
+        "params": {"quant_mode": "none", "cuda_precision": "fp32", "num_leaves": 127, "max_bin": 63},
+    },
+    "wide_255_bins": {
+        "rows": 60_000,
+        "feats": 800,
+        "missing": False,
+        "weighted": False,
+        "rounds": 15,
+        "params": {"quant_mode": "fixedpoint", "num_leaves": 63, "max_bin": 255, "feature_fraction": 0.8},
+    },
 }
 
 # the real count, two cards of the architecture that ships (5090, PRO 6000), and the extremes of the schedule:
@@ -92,4 +130,6 @@ def test_smcount_token_reaches_the_launch_shape_cuda():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True)
     log = out.stdout + out.stderr
     assert "unknown token" not in log
-    assert re.search(r"FALCATA_DEBUG smcount: launch shapes see 188 multiprocessors \(device \d+ has \d+\)", log), log[-2000:]
+    assert re.search(r"FALCATA_DEBUG smcount: launch shapes see 188 multiprocessors \(device \d+ has \d+\)", log), log[
+        -2000:
+    ]

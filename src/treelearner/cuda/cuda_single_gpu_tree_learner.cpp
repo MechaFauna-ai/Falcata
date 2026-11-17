@@ -8,7 +8,6 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_utils.hu>
-#include <Falcata/cuda/cuda_device_sm.hpp>
 #include <Falcata/falcata_plan.h>
 #include <Falcata/feature_group.h>
 #include <Falcata/network.h>
@@ -31,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include <Falcata/cuda/cuda_tree.hpp>
 
 #include "cuda_single_gpu_tree_learner.hpp"

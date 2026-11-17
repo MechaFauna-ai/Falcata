@@ -8,10 +8,10 @@
 #ifdef USE_CUDA
 
 #include "cuda_best_split_finder.hpp"
-#include <Falcata/cuda/cuda_device_sm.hpp>
 #include "cuda_device_levels.hpp"
 #include "cuda_device_levels.cuh"
 
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
