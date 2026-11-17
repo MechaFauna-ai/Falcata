@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
@@ -1364,11 +1365,13 @@ inline bool FalcataVerifyEnabled() {
  *  - ``vramfree=N`` treat at most N MiB of device memory as free when
  *    colmajor_fill decides whether its copy fits (tests the decline path
  *    without filling the GPU); does not change any result
- *  - ``smcount=N``  report N as the device's multiprocessor count to every
- *    launch-shape decision of the CUDA tree learner (emulates another card
- *    model of the same architecture on this one; for cross-device tests)
- *  - ``smsites=M``  bit mask of the sites ``smcount`` applies to (default all;
- *    bisects which launch-shape decision changes a result)
+ *  - ``smcount=N``  report N (an integer, clamped to [1, 65536]) as the device's
+ *    multiprocessor count to every launch-shape decision of the CUDA tree
+ *    learner (emulates another card model of the same architecture on this
+ *    one; for cross-device tests)
+ *  - ``smsites=M``  bit mask of the sites ``smcount`` applies to (FalcataSMSite in
+ *    Falcata/cuda/cuda_device_sm.hpp; default all; bisects which launch-shape
+ *    decision changes a result). The first override at each site is logged.
  *  - ``bynode``     per-split stderr line ``BYNODE`` with the split leaf, its
  *    inner feature and the per-node feature mask that leaf was searched with
  *    (feature_fraction_bynode < 1 or interaction constraints; per-split loop
@@ -1433,9 +1436,33 @@ inline const FalcataDebugOptions& FalcataDebug() {
       } else if (token.rfind("vramfree=", 0) == 0) {
         o.vramfree_mib = std::min<int64_t>(std::max<int64_t>(0, std::atoll(token.c_str() + 9)), int64_t{1} << 40);
       } else if (token.rfind("smcount=", 0) == 0) {
-        o.smcount = std::max(1, std::atoi(token.c_str() + 8));
+        // an integer, clamped to [1, 65536] (with a warning); anything else is refused loudly and leaves the hook off
+        const char* v = token.c_str() + 8;
+        char* end = nullptr;
+        errno = 0;
+        const long n = std::strtol(v, &end, 10);  // NOLINT(runtime/int)
+        if (end == v || *end != '\0' || errno == ERANGE) {
+          Log::Warning("FALCATA_DEBUG: smcount=\"%s\" is not an integer; the token is ignored", v);
+        } else {
+          o.smcount = static_cast<int>(std::min<long>(std::max<long>(1, n), 65536));  // NOLINT(runtime/int)
+          if (o.smcount != n) {
+            Log::Warning("FALCATA_DEBUG: smcount=%ld clamped to %d", n, o.smcount);
+          }
+        }
       } else if (token.rfind("smsites=", 0) == 0) {
-        o.smsites = static_cast<unsigned>(std::strtoul(token.c_str() + 8, nullptr, 0));
+        // a bit mask of FalcataSMSite (decimal, 0x hex or 0 octal); garbage is refused loudly, 0 is warned about
+        const char* v = token.c_str() + 8;
+        char* end = nullptr;
+        errno = 0;
+        const unsigned long m = std::strtoul(v, &end, 0);  // NOLINT(runtime/int)
+        if (end == v || *end != '\0' || errno == ERANGE || *v == '-') {
+          Log::Warning("FALCATA_DEBUG: smsites=\"%s\" is not a bit mask; the token is ignored", v);
+        } else {
+          o.smsites = static_cast<unsigned>(m);
+          if (o.smsites == 0u) {
+            Log::Warning("FALCATA_DEBUG: smsites=0 applies smcount to no site");
+          }
+        }
       } else if (!token.empty()) {
         Log::Warning("FALCATA_DEBUG: unknown token \"%s\" ignored", token.c_str());
       }

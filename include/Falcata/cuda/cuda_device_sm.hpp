@@ -8,6 +8,7 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_rocm_interop.h>
+#include <Falcata/cuda/cuda_utils.hu>
 #include <Falcata/falcata_plan.h>
 
 #include <cuda_runtime.h>
@@ -21,30 +22,63 @@ enum FalcataSMSite : unsigned {
   kSMSiteSaturationFloor = 1u << 0,    // batched quantized construct's saturation floor (tree learner Init)
   kSMSiteFusedRootFill = 1u << 1,      // fused root fill: tiles per block from the resident block count
   kSMSiteLevelTargetBlocks = 1u << 2,  // device-level construct target blocks
-  kSMSiteCountTiles = 1u << 3,         // count-histogram tiling
+  kSMSiteCountTiles = 1u << 3,         // count-histogram tiling (forest_count_hist)
   kSMSiteFindSplitCap = 1u << 4,       // split finder: 4 warps vs 1 warp per wide task
   kSMSitePairJointShape = 1u << 5,     // pair-joint code5 word construct: device slots
+  kSMSiteLiveGridBudget = 1u << 6,     // device_tree_live_grid: blocks per SM times the SM count
 };
 
+/*! \brief The name a site's FALCATA_DEBUG=smcount log line carries. */
+inline const char* FalcataSMSiteName(const unsigned site) {
+  switch (site) {
+    case kSMSiteSaturationFloor: return "saturation_floor";
+    case kSMSiteFusedRootFill: return "fused_root_fill";
+    case kSMSiteLevelTargetBlocks: return "level_target_blocks";
+    case kSMSiteCountTiles: return "count_tiles";
+    case kSMSiteFindSplitCap: return "find_split_cap";
+    case kSMSitePairJointShape: return "pair_joint_shape";
+    case kSMSiteLiveGridBudget: return "live_grid_budget";
+    default: return "unknown";
+  }
+}
+
+/*! \brief FALCATA_DEBUG=smcount=N applied to `site` (whose real count is `real`): N when the token is set and its
+ * smsites mask includes the site, else `real`. The first override at each site is logged (Info), which is how a
+ * test proves that a training run reached the site. */
+inline int FalcataApplySMOverride(const int device, const unsigned site, const int real) {
+  const FalcataDebugOptions& dbg = FalcataDebug();
+  if (dbg.smcount <= 0 || (dbg.smsites & site) == 0) {
+    return real;
+  }
+  static std::atomic<unsigned> logged{0u};
+  if ((logged.fetch_or(site) & site) == 0u) {
+    Log::Info("FALCATA_DEBUG smcount: site %s sees %d multiprocessors (device %d has %d)", FalcataSMSiteName(site),
+              dbg.smcount, device, real);
+  }
+  return dbg.smcount;
+}
+
 /*!
- * \brief The multiprocessor count of `device` as `site` sees it: the real one, or FALCATA_DEBUG=smcount=N when
- * that token is set and its smsites mask includes `site` (emulates another card of the same architecture).
+ * \brief The multiprocessor count of `device` as `site` sees it (FalcataApplySMOverride). A failed query is fatal,
+ * as cudaDeviceGetAttribute under CUDASUCCESS_OR_FATAL was at every site that uses this.
  */
 inline int FalcataDeviceSMCount(const int device, const unsigned site) {
-  const FalcataDebugOptions& dbg = FalcataDebug();
+  int sms = 0;
+  CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device));
+  return FalcataApplySMOverride(device, site, sms);
+}
+
+/*!
+ * \brief The same for the sites that handle a failed query themselves (unchanged from before this helper): false
+ * when the query fails or reports no multiprocessor, and *out is untouched.
+ */
+inline bool FalcataTryDeviceSMCount(const int device, const unsigned site, int* out) {
   int sms = 0;
   if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess || sms <= 0) {
-    sms = 1;
+    return false;
   }
-  if (dbg.smcount > 0 && (dbg.smsites & site) != 0) {
-    static std::atomic<bool> logged{false};
-    if (!logged.exchange(true)) {
-      Log::Info("FALCATA_DEBUG smcount: launch shapes see %d multiprocessors (device %d has %d)", dbg.smcount, device,
-                sms);
-    }
-    return dbg.smcount;
-  }
-  return sms;
+  *out = FalcataApplySMOverride(device, site, sms);
+  return true;
 }
 
 }  // namespace Falcata
