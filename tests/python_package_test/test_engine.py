@@ -2491,7 +2491,7 @@ def test_init_with_subset(tmp_path, rng):
     subset_data_3 = lgb_train_from_file.subset(subset_index_1)
     subset_data_4 = lgb_train_from_file.subset(subset_index_2)
     init_gbm_2 = lgb.train(params=params, train_set=subset_data_3, num_boost_round=10, keep_training_booster=True)
-    with np.testing.assert_raises_regex(lgb.basic.FalcataError, "Unknown format of training data"):
+    with np.testing.assert_raises_regex(lgb.basic.FalcataError, "is a binary Dataset file"):
         lgb.train(params=params, train_set=subset_data_4, num_boost_round=10, init_model=init_gbm_2)
     assert lgb_train_from_file.get_data() == lgb_train_data
     assert subset_data_3.get_data() == lgb_train_data
