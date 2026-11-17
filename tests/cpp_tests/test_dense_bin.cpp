@@ -79,3 +79,25 @@ TEST(DenseBin4Bit, CloneBeforeFinishLoadKeepsOddRows) {
   EXPECT_EQ(RawValues(*clone, 6), std::vector<uint32_t>({10, 11, 12, 13, 14, 3}));
   EXPECT_EQ(RawValues(*bin, 6), std::vector<uint32_t>({10, 11, 12, 13, 14, 15}));
 }
+
+// MaxStoredBin scans every stored value of a loaded binary dataset (FeatureGroup::CheckLoadedBins): it must equal the
+// element-wise maximum for every width, with the maximum in either nibble of a 4-bit byte, an odd row count, and
+// sizes past the vectorized loop's blocks.
+TEST(DenseBin, MaxStoredBinIsTheLargestStoredValue) {
+  for (const int num_bin : {16, 255, 60000, 70000}) {
+    for (const data_size_t n : {1, 2, 3, 31, 64, 1001}) {
+      for (data_size_t at = 0; at < n; at += (n > 64 ? 97 : 1)) {
+        std::unique_ptr<Bin> bin(Bin::CreateDenseBin(n, num_bin));
+        const uint32_t top = static_cast<uint32_t>(num_bin - 1);
+        for (data_size_t i = 0; i < n; ++i) {
+          bin->Push(0, i, i == at ? top : static_cast<uint32_t>(i % 3));
+        }
+        bin->FinishLoad();
+        EXPECT_EQ(bin->MaxStoredBin(), top) << "num_bin " << num_bin << " n " << n << " at " << at;
+      }
+    }
+  }
+  std::unique_ptr<Bin> zeros(Bin::CreateDenseBin(7, 16));
+  zeros->FinishLoad();
+  EXPECT_EQ(zeros->MaxStoredBin(), 0u);
+}
