@@ -17,7 +17,6 @@ import inspect
 import io
 import json
 import os
-import tempfile
 import warnings
 from collections import OrderedDict
 from copy import deepcopy
@@ -3919,72 +3918,6 @@ class Dataset:
         return self
 
 
-_FIL_IMPORT_FAILED = False
-
-
-def _falcata_env(name: str, default: str) -> str:
-    """Read a FALCATA_* environment variable."""
-    return environ.get(f"FALCATA_{name}", default)
-
-
-#: largest host input (in matrix cells) handed to FIL in one call: 2**29 float32
-#: cells is a 2 GB slab, far below the 2**32-cell offset FIL can address
-_FIL_HOST_SLAB_ELEMENTS = 2**29
-
-
-def _fil_run_device(model: Any, data: Any) -> Optional[Any]:
-    """Score a device-resident matrix with a FIL model; the result stays on the device."""
-    import cupy  # noqa: PLC0415
-
-    data = cupy.asarray(data)
-    if data.dtype not in (np.float32, np.float64):
-        data = data.astype(np.float32)
-    try:
-        return model.predict_proba(data) if model.is_classifier else model.predict(data)
-    except Exception as exc:
-        raise FalcataError(f"FIL prediction failed ({type(exc).__name__}: {exc})") from exc
-
-
-def _fil_run_host_slabs(model: Any, data: np.ndarray) -> Optional[np.ndarray]:
-    """Score a host matrix with a FIL model, slab by slab, into a host array.
-
-    FIL addresses a host input with 32-bit cell offsets: on a matrix of more
-    than 2**32 cells every row past cell 2**32 is scored from the wrong data
-    and comes back wrong without any error (1.29M x 3555 rows: the first bad
-    row was 2**32 // 3555). Slabs of at most _FIL_HOST_SLAB_ELEMENTS cells
-    also keep the float32 copy of a non-float input and FIL's device staging
-    to one slab instead of the whole matrix, which for an 18 GB input turned a
-    multi-minute predict into seconds.
-    """
-    n_rows = data.shape[0]
-    if n_rows == 0:
-        return None
-    slab_rows = max(1, min(n_rows, _FIL_HOST_SLAB_ELEMENTS // max(1, data.shape[1])))
-    out = []
-    for start in range(0, n_rows, slab_rows):
-        slab = data[start : start + slab_rows]
-        if slab.dtype not in (np.float32, np.float64):
-            slab = slab.astype(np.float32)
-        try:
-            preds = model.predict_proba(slab) if model.is_classifier else model.predict(slab)
-        except Exception as exc:
-            raise FalcataError(f"FIL host prediction failed ({type(exc).__name__}: {exc})") from exc
-        if not isinstance(preds, np.ndarray):
-            import cupy  # noqa: PLC0415
-
-            preds = cupy.asnumpy(preds)
-        out.append(preds)
-    try:
-        import cupy  # noqa: PLC0415
-
-        # FIL staged each slab in the CuPy pool; hand the free blocks back to
-        # the driver so they do not starve non-pool CUDA allocations (training)
-        cupy.get_default_memory_pool().free_all_blocks()
-    except Exception:
-        pass
-    return out[0] if len(out) == 1 else np.concatenate(out, axis=0)
-
-
 _CUDA_PREDICTOR_USABLE: Optional[bool] = None
 
 
@@ -4068,25 +4001,6 @@ def _cuda_pointer_device(ptr: int) -> int:
     import cupy  # noqa: PLC0415
 
     return int(cupy.cuda.runtime.pointerGetAttributes(ptr).device)
-
-
-def _load_fil_modules() -> Optional[Tuple[Any, Any]]:
-    """Lazily import the GPU forest-inference stack.
-
-    Returns ``(treelite.frontend, nvforest)`` when cuML's Forest Inference
-    Library is available, or ``None`` (remembering the failure so the import
-    is not retried) when the optional dependencies are not installed.
-    """
-    global _FIL_IMPORT_FAILED
-    if _FIL_IMPORT_FAILED:
-        return None
-    try:
-        import nvforest  # noqa: PLC0415 (provided by the cuml-cu1x wheels)
-        import treelite.frontend  # noqa: PLC0415
-    except ImportError:
-        _FIL_IMPORT_FAILED = True
-        return None
-    return treelite.frontend, nvforest
 
 
 _FALCATA_CustomObjectiveFunction = Callable[
@@ -4301,7 +4215,6 @@ class Booster:
         this["_Booster__inner_predict_buffer"] = []
         this["_Booster__is_predicted_cur_iter"] = []
         this["_Booster__num_dataset"] = 0
-        this.pop("_fil_models", None)
         if handle is not None:
             # FALB by default: same model, ~10x less to write and read. Opt out
             # with set_pickle_format("text") or FALCATA_PICKLE_FORMAT=text when
@@ -4417,7 +4330,6 @@ class Booster:
         self._handle = new_handle
         self._drop_datasets()
         self._free_buffer()
-        self._invalidate_fil_cache()
         if old_handle:
             _safe_call(_LIB.FLC_BoosterFree(old_handle))
 
@@ -4802,7 +4714,6 @@ class Booster:
             setting ``feature_fraction_bynode < 1.0``), it is possible that another call
             to ``update()`` would produce a non-empty tree.
         """
-        self._invalidate_fil_cache()
         # need reset training data
         if train_set is None and self.train_set_version != self.train_set.version:
             train_set = self.train_set
@@ -4886,7 +4797,6 @@ class Booster:
         assert hess.flags.c_contiguous
         if len(grad) != len(hess):
             raise ValueError(f"Lengths of gradient ({len(grad)}) and Hessian ({len(hess)}) don't match")
-        self._invalidate_fil_cache()
         num_train_data = self.train_set.num_data()
         if len(grad) != num_train_data * self.__num_class:
             raise ValueError(
@@ -4915,7 +4825,6 @@ class Booster:
             Booster with rolled back one iteration.
         """
         _safe_call(_LIB.FLC_BoosterRollbackOneIter(self._handle))
-        self._invalidate_fil_cache()
         self.__is_predicted_cur_iter = [False for _ in range(self.__num_dataset)]
         return self
 
@@ -5376,7 +5285,6 @@ class Booster:
                 ctypes.c_int(end_iteration),
             )
         )
-        self._invalidate_fil_cache()
         return self
 
     def model_from_string(self, model_str: str) -> "Booster":
@@ -5555,114 +5463,6 @@ class Booster:
         )
         return ret
 
-    def _invalidate_fil_cache(self) -> None:
-        """Drop cached FIL models after the underlying model changed."""
-        self.__dict__.pop("_fil_models", None)
-
-    def _fil_model(self, start_iteration: int, num_iteration: int, raw_score: bool) -> Optional[Any]:
-        """Get (or build and cache) a FIL model matching the requested iteration slice.
-
-        Returns ``None`` when the model cannot be served by FIL; the failure is
-        cached until the model changes so conversion is not retried per call.
-        """
-        modules = _load_fil_modules()
-        if modules is None:
-            return None
-        precision = _falcata_env("FIL_PRECISION", "single")
-        if precision not in ("single", "double", "native"):
-            precision = "single"
-        cache: Dict[Tuple[int, int, bool, str], Any] = self.__dict__.setdefault("_fil_models", {})
-        key = (start_iteration, num_iteration, raw_score, precision)
-        if key not in cache:
-            cache[key] = self._build_fil_model(
-                treelite_frontend=modules[0],
-                nvforest=modules[1],
-                start_iteration=start_iteration,
-                num_iteration=num_iteration,
-                raw_score=raw_score,
-                precision=precision,
-            )
-        return cache[key]
-
-    def _build_fil_model(
-        self,
-        *,
-        treelite_frontend: Any,
-        nvforest: Any,
-        start_iteration: int,
-        num_iteration: int,
-        raw_score: bool,
-        precision: str,
-    ) -> Optional[Any]:
-        """Convert this model to a GPU FIL model via an in-memory Treelite handoff."""
-        try:
-            # Treelite's LightGBM IR has scalar leaves only. Detect Falcata's
-            # extension before invoking the loader so vector models take the
-            # documented native-predictor fallback without an exception-driven
-            # conversion attempt.
-            if self._leaf_value_dim() > 1:
-                return None
-            # hand the model text over via a temp file: load_lightgbm_model()
-            # is treelite's public loader with no dependency on a `lightgbm`
-            # python package (from_lightgbm() isinstance-checks against one)
-            model_str = self.model_to_string(num_iteration=num_iteration, start_iteration=start_iteration)
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp_file:
-                tmp_file.write(model_str)
-                tmp_path = tmp_file.name
-            try:
-                tl_model = treelite_frontend.load_lightgbm_model(tmp_path)
-            finally:
-                os.remove(tmp_path)
-            header = tl_model.get_header_accessor()
-            postprocessor = str(header.get_field("postprocessor"))
-            # only routes with verified parity against the CPU predictor:
-            # regression (identity), binary (sigmoid), multiclass (softmax)
-            if postprocessor not in ("identity", "sigmoid", "softmax"):
-                return None
-            if raw_score and postprocessor != "identity":
-                header.set_field("postprocessor", "identity")
-            # default fp32: fp64 doubles device memory (the input matrix is
-            # converted on-device) and is ~5x slower for wide host inputs.
-            # fp32 parity vs the CPU predictor: ~1e-6 relative error in bulk,
-            # but ~0.01% of rows can route to a different leaf where a feature
-            # value falls between a split threshold and its fp32 rounding
-            # (FALCATA_FIL_PRECISION=double restores exact routing, ~1e-13)
-            return nvforest.load_from_treelite_model(
-                tl_model,
-                device="gpu",
-                precision=None if precision == "native" else precision,
-            )
-        except Exception as exc:
-            raise FalcataError(f"FIL conversion failed ({type(exc).__name__}: {exc})") from exc
-
-    def _fil_predict(
-        self,
-        data: Any,
-        start_iteration: int,
-        num_iteration: int,
-        raw_score: bool,
-    ) -> Optional[Any]:
-        """Predict with cuML's Forest Inference Library on the GPU (``use_fil=True``; deprecated).
-
-        Accepts 2-D numpy arrays and device arrays (e.g. CuPy); the result matches the input's residency
-        (numpy in -> numpy out). A request FIL cannot serve is an error.
-        """
-        is_host = isinstance(data, np.ndarray)
-        if (not is_host and not hasattr(data, "__cuda_array_interface__")) or getattr(data, "ndim", 0) != 2:
-            raise FalcataError("use_fil=True takes a 2-D numpy or device array")
-        model = self._fil_model(max(start_iteration, 0), num_iteration, raw_score)
-        if model is None:
-            raise FalcataError(
-                "FIL cannot serve this model (cuML/nvforest not installed, a vector-leaf model, or an output "
-                "transform other than identity, sigmoid and softmax)"
-            )
-        preds = _fil_run_device(model, data) if not is_host else _fil_run_host_slabs(model, data)
-        if preds is None:
-            return np.empty((0,), dtype=np.float64)
-        if preds.ndim == 2 and preds.shape[1] == 1:
-            preds = preds.reshape(-1)
-        return preds.astype(np.float64, copy=False)
-
     def _trained_on_cuda(self) -> bool:
         params = getattr(self, "params", None) or {}
         devices = {str(params[alias]).lower() for alias in _ConfigAliases.get("device_type") if alias in params}
@@ -5805,7 +5605,6 @@ class Booster:
         validate_features: bool = False,
         device: Optional[str] = None,
         deterministic: bool = False,
-        use_fil: bool = False,
         **kwargs: Any,
     ) -> _FALCATA_PredictReturnType:
         """Make a prediction.
@@ -5876,10 +5675,6 @@ class Booster:
               bit-identical to ``device="cpu"``, at a lower speed on small batches.
 
             Vector-leaf models always add in tree order.
-        use_fil : bool, optional (default=False)
-            Deprecated, to be removed: predict with cuML's Forest Inference Library instead (requires
-            cuML / nvforest; fp32 routing can send rows near a threshold to another leaf). A request FIL
-            cannot serve is an error.
         **kwargs
             Other parameters for the prediction.
 
@@ -5894,14 +5689,10 @@ class Booster:
                 num_iteration = self.best_iteration
             else:
                 num_iteration = -1
-        if use_fil:
-            if pred_leaf or pred_contrib or kwargs:
-                raise FalcataError("use_fil=True serves normal and raw-score predictions without extra parameters only")
-            return self._fil_predict(
-                data=data,
-                start_iteration=start_iteration,
-                num_iteration=num_iteration,
-                raw_score=raw_score,
+        if "use_fil" in kwargs:
+            raise TypeError(
+                "predict() no longer takes use_fil: the Forest Inference Library path was removed; Falcata predicts "
+                "on the GPU with its own CUDA predictor (see the device argument)"
             )
         if self._predict_device(data, device, kwargs) == "cuda":
             predict_type = _C_API_PREDICT_NORMAL
@@ -6171,7 +5962,6 @@ class Booster:
                 ctypes.c_double(value),
             )
         )
-        self._invalidate_fil_cache()
         return self
 
     def num_feature(self) -> int:
