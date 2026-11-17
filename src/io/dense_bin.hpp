@@ -639,12 +639,22 @@ class DenseBin : public Bin {
   }
 
   uint32_t MaxStoredBin() const override {
-    uint32_t max_bin = 0;
-    for (const auto v : data_) {
-      const uint32_t value = IS_4BIT ? std::max<uint32_t>(v & 0xf, (v >> 4) & 0xf) : static_cast<uint32_t>(v);
-      max_bin = std::max(max_bin, value);
+    // Every loaded binary dataset scans all of its stored bins once (FeatureGroup::CheckLoadedBins), i.e. the whole
+    // file. The maximum is kept in VAL_T (the low and the high nibble apart for 4-bit rows), so the vectorized loop
+    // takes 16 one-byte bins per 16-byte vector; widening each byte to uint32_t first took 4. Same result.
+    const VAL_T* data = data_.data();
+    const size_t n = data_.size();
+    VAL_T low = 0;
+    VAL_T high = 0;
+    for (size_t i = 0; i < n; ++i) {
+      if (IS_4BIT) {
+        low = std::max<VAL_T>(low, static_cast<VAL_T>(data[i] & 0xf));
+        high = std::max<VAL_T>(high, static_cast<VAL_T>(data[i] >> 4));
+      } else {
+        low = std::max<VAL_T>(low, data[i]);
+      }
     }
-    return max_bin;
+    return std::max<uint32_t>(low, IS_4BIT ? (static_cast<uint32_t>(high) & 0xf) : 0u);
   }
 
   size_t SerializedSize(const void*, size_t available, data_size_t num_all_data) const override {
