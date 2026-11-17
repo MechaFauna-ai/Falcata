@@ -339,7 +339,25 @@ static const char* AtofPreciseText(const char* p, double* out) {
   return end;
 }
 
+/*!
+ * \brief fails if filename starts with token, the mark of a binary Dataset file (save_binary). Such a file is only ever
+ *        loaded by DatasetLoader. Read as text, e.g. to predict the init score of a Dataset built from one, its stored
+ *        values went through the format sniffer (or a custom parser), and the error depended on those bytes: "Unknown
+ *        format", a LibSVM index error, or a wrong feature count after a successful "parse".
+ */
+static void RefuseBinaryDatasetFile(const char* filename, const char* token) {
+  auto reader = VirtualFileReader::Make(filename);
+  const std::string expected(token);
+  std::vector<char> head(expected.size());
+  if (reader->Init() && reader->Read(head.data(), head.size()) == head.size() &&
+      std::string(head.data(), head.size()) == expected) {
+    Log::Fatal("%s is a binary Dataset file, which can only be loaded as a Dataset, not read as text data "
+               "(for example to predict on it)", filename);
+  }
+}
+
 Parser* Parser::CreateParser(const char* filename, bool header, int num_features, int label_idx, bool precise_float_parser) {
+  RefuseBinaryDatasetFile(filename, Dataset::binary_file_token);
   const int n_read_line = 32;
   auto lines = ReadKLineFromFile(filename, header, n_read_line);
   int num_col = 0;
@@ -376,6 +394,7 @@ Parser* Parser::CreateParser(const char* filename, bool header, int num_features
 Parser* Parser::CreateParser(const char* filename, bool header, int num_features, int label_idx, bool precise_float_parser, std::string parser_config_str) {
   // customized parser add-on.
   if (!parser_config_str.empty()) {
+    RefuseBinaryDatasetFile(filename, Dataset::binary_file_token);
     std::unique_ptr<Parser> ret;
     std::string class_name = Common::GetFromParserConfig(parser_config_str, "className");
     Log::Info("Custom parser class name: %s", class_name.c_str());

@@ -2491,11 +2491,25 @@ def test_init_with_subset(tmp_path, rng):
     subset_data_3 = lgb_train_from_file.subset(subset_index_1)
     subset_data_4 = lgb_train_from_file.subset(subset_index_2)
     init_gbm_2 = lgb.train(params=params, train_set=subset_data_3, num_boost_round=10, keep_training_booster=True)
-    with np.testing.assert_raises_regex(lgb.basic.FalcataError, "Unknown format of training data"):
+    with np.testing.assert_raises_regex(lgb.basic.FalcataError, "is a binary Dataset file"):
         lgb.train(params=params, train_set=subset_data_4, num_boost_round=10, init_model=init_gbm_2)
     assert lgb_train_from_file.get_data() == lgb_train_data
     assert subset_data_3.get_data() == lgb_train_data
     assert subset_data_4.get_data() == lgb_train_data
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_predict_on_binary_dataset_file_is_refused(tmp_path, seed):
+    # the error used to depend on the stored values (the text sniffer read them): test_init_with_subset failed
+    # for about 3% of its unseeded draws with a LibSVM index error or a feature-count mismatch
+    rng = np.random.default_rng(seed)
+    X = rng.uniform(size=(50, 2))
+    y = np.array([1] * 25 + [0] * 25)
+    path = tmp_path / "train.bin"
+    lgb.Dataset(X, y).save_binary(path)
+    bst = lgb.train({"objective": "binary", "verbose": -1}, lgb.Dataset(X, y), num_boost_round=2)
+    with pytest.raises(lgb.basic.FalcataError, match="is a binary Dataset file"):
+        bst.predict(str(path))
 
 
 def test_training_on_constructed_subset_without_params(rng):
