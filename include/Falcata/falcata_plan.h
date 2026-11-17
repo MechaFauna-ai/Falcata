@@ -1364,6 +1364,11 @@ inline bool FalcataVerifyEnabled() {
  *  - ``vramfree=N`` treat at most N MiB of device memory as free when
  *    colmajor_fill decides whether its copy fits (tests the decline path
  *    without filling the GPU); does not change any result
+ *  - ``smcount=N``  report N as the device's multiprocessor count to every
+ *    launch-shape decision of the CUDA tree learner (emulates another card
+ *    model of the same architecture on this one; for cross-device tests)
+ *  - ``smsites=M``  bit mask of the sites ``smcount`` applies to (default all;
+ *    bisects which launch-shape decision changes a result)
  *  - ``bynode``     per-split stderr line ``BYNODE`` with the split leaf, its
  *    inner feature and the per-node feature mask that leaf was searched with
  *    (feature_fraction_bynode < 1 or interaction constraints; per-split loop
@@ -1397,6 +1402,8 @@ struct FalcataDebugOptions {
   bool r3fault = false;
   bool r3rebuild = false;
   int64_t vramfree_mib = -1;  // -1 = the real free memory
+  int smcount = -1;  // -1 = the device's real multiprocessor count
+  unsigned smsites = ~0u;  // the sites smcount applies to (FalcataSMSite)
 };
 
 inline const FalcataDebugOptions& FalcataDebug() {
@@ -1425,6 +1432,10 @@ inline const FalcataDebugOptions& FalcataDebug() {
         o.r3rebuild = true;
       } else if (token.rfind("vramfree=", 0) == 0) {
         o.vramfree_mib = std::min<int64_t>(std::max<int64_t>(0, std::atoll(token.c_str() + 9)), int64_t{1} << 40);
+      } else if (token.rfind("smcount=", 0) == 0) {
+        o.smcount = std::max(1, std::atoi(token.c_str() + 8));
+      } else if (token.rfind("smsites=", 0) == 0) {
+        o.smsites = static_cast<unsigned>(std::strtoul(token.c_str() + 8, nullptr, 0));
       } else if (!token.empty()) {
         Log::Warning("FALCATA_DEBUG: unknown token \"%s\" ignored", token.c_str());
       }

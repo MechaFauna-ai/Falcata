@@ -9,6 +9,7 @@
 
 
 #include "cuda_histogram_constructor.hpp"
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include "cuda_device_levels.hpp"
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
@@ -3586,8 +3587,7 @@ inline PairJointCode5WordShape PairJointCode5WordShapeFor(const int row_words, c
       best_blocks = blocks;
     }
   }
-  int num_sms = 0;
-  CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+  const int num_sms = FalcataDeviceSMCount(device, kSMSitePairJointShape);
   const PairJointCode5WordShape shape{best_rows, best_rows > 0 ? best_blocks * std::max(1, num_sms) : 0};
   entries.push_back({device, code_bits, flat, row_words, smem_bytes, num_grad_quant_bins, tallest, epilogue_flat, shape});
   return shape;

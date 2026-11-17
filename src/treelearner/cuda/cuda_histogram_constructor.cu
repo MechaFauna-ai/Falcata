@@ -9,6 +9,7 @@
 #ifdef USE_CUDA
 
 #include "cuda_histogram_constructor.hpp"
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include "cuda_device_levels.hpp"
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
@@ -478,7 +479,7 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
     if (cached.device != device || cached.kernel != kernel || cached.shared_bytes != shared_bytes) {
       int num_sms = 0;
       int blocks_per_sm = 0;
-      CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+      num_sms = FalcataDeviceSMCount(device, kSMSiteFusedRootFill);
       CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &blocks_per_sm, kernel, kFusedRootThreads, shared_bytes));
       cached.device = device;
@@ -2283,7 +2284,7 @@ int CUDAHistogramConstructor::DeviceLevelConstructTargetBlocks() {
     int device = 0;
     int num_sms = 0;
     CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
-    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+    num_sms = FalcataDeviceSMCount(device, kSMSiteLevelTargetBlocks);
     return std::max(1, num_sms) * 4;
   }();
   return target;

@@ -10,6 +10,7 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include <Falcata/falcata_plan.h>
 #include <Falcata/feature_group.h>
 #include <Falcata/tree.h>
@@ -1141,12 +1142,7 @@ class CUDAHistogramConstructor {
   /*! \brief the device's SM count, cached in count_num_sms_ (the count construct's Init sets the same value) */
   int NumSMs() const {
     if (count_num_sms_ == 0) {
-      int sms = 0;
-      if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, gpu_device_id_ < 0 ? 0 : gpu_device_id_) !=
-          cudaSuccess || sms <= 0) {
-        sms = 1;
-      }
-      count_num_sms_ = sms;
+      count_num_sms_ = FalcataDeviceSMCount(gpu_device_id_ < 0 ? 0 : gpu_device_id_, kSMSiteCountTiles);
     }
     return count_num_sms_;
   }

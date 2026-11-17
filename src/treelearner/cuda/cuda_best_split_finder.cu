@@ -8,6 +8,7 @@
 #ifdef USE_CUDA
 
 #include "cuda_best_split_finder.hpp"
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include "cuda_device_levels.hpp"
 #include "cuda_device_levels.cuh"
 
@@ -3112,7 +3113,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       int num_sms = 0;
       int blocks_per_sm = 0;
       CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
-      CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+      num_sms = FalcataDeviceSMCount(device, kSMSiteFindSplitCap);
       CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &blocks_per_sm, FindBestSplitsDiscretizedForLevelWarpKernel<true>, 128, 0));
       warp_find_split_block_cap_ = std::max(1, num_sms) * std::max(1, blocks_per_sm);
