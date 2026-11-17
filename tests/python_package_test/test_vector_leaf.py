@@ -334,27 +334,6 @@ def test_vector_leaf_falb_roundtrip_and_dimension_validation():
         lgb.Booster(model_str=vector.model_to_string()).model_from_binary(bytes(mixed_dim))
 
 
-def test_vector_leaf_skips_treelite_fil_conversion():
-    _, vector, _ = _vector_booster()
-
-    class UnexpectedTreeliteCall:
-        @staticmethod
-        def load_lightgbm_model(_):
-            raise AssertionError("Treelite must not receive a vector-leaf model")
-
-    assert (
-        vector._build_fil_model(  # pylint: disable=protected-access
-            treelite_frontend=UnexpectedTreeliteCall,
-            nvforest=object(),
-            start_iteration=0,
-            num_iteration=-1,
-            raw_score=False,
-            precision="single",
-        )
-        is None
-    )
-
-
 @pytest.mark.parametrize("tree_mode", ["vector", "multi_output", "vector-leaves"])
 def test_tree_mode_rejects_unknown_values(tree_mode):
     X, y = _training_data()

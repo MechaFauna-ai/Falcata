@@ -192,8 +192,8 @@ class _TreeConverter:
         # XGBoost: go left when x < cond. LightGBM: go left when x <= t.
         # The next FLOAT32 down makes the two identical for float32 data --
         # nothing representable lies between -- and, unlike the next double
-        # down, it is itself a float32. That matters because the model is also
-        # evaluated in single precision (FIL on the GPU, via treelite): a
+        # down, it is itself a float32. That matters wherever the model is
+        # evaluated in single precision (e.g. treelite-based GPU predictors): a
         # double-space step rounds back to cond there, so every row sitting
         # exactly on a split -- and splits are chosen AT data values, so there
         # are many -- took the other branch. It cost 3.6% of rows on an

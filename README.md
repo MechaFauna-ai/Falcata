@@ -146,8 +146,6 @@ outs = falcata.predict_many([m1, m2, m2], [X1, X2, X2], num_iteration=[None, 100
   served. `pred_early_stop` is not implemented on the GPU: with `device=None`
   and a numpy array it uses the CPU predictor; on a device array or with
   `device="cuda"` it is an error.
-- `use_fil=True` (deprecated, to be removed) still routes through cuML's
-  Forest Inference Library when it is installed.
 - Training-time validation metrics (and early stopping) do not go through
   `predict()`: they use the booster's internal evaluation on the attached
   validation set, which is already GPU-resident under `device_type=cuda`.
