@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <random>
 #include <vector>
 
 namespace Falcata {
@@ -19,6 +20,14 @@ std::vector<std::vector<int>> FindGroups(const std::vector<std::unique_ptr<BinMa
                                          const int* num_per_col, int num_sample_col, data_size_t total_sample_cnt,
                                          data_size_t num_data, bool is_use_gpu, bool is_sparse,
                                          std::vector<int8_t>* multi_val_group);
+// The same search on the sets as FastFeatureBundling holds them: bitmaps, and arrays for the columns with fewer than
+// min_bitmap_count rows.
+std::vector<std::vector<int>> FindGroupsOnRowSetBitmaps(const std::vector<std::unique_ptr<BinMapper>>& bin_mappers,
+                                                        const std::vector<int>& find_order, int** sample_indices,
+                                                        const int* num_per_col, int num_sample_col,
+                                                        data_size_t total_sample_cnt, data_size_t num_data,
+                                                        bool is_use_gpu, bool is_sparse,
+                                                        std::vector<int8_t>* multi_val_group, size_t min_bitmap_count);
 }  // namespace Falcata
 
 using Falcata::BinMapper;
@@ -103,4 +112,73 @@ TEST(FindGroups, DeviceBundlesStayWithin256Bins) {
     max_group_size = std::max(max_group_size, group.size());
   }
   EXPECT_GT(max_group_size, 1u);  // the features do bundle
+}
+
+// FastFeatureBundling holds a column's row set as a bitmap, or as an array when it has fewer rows than the bitmap has
+// words; the group search counts and marks either kind. Bitmaps only, arrays only, the mixed rule and the array
+// interface must find the same groups, on columns from a few rows to most rows (some bundle, some conflict, some
+// end in multi-value groups), for every device / sparsity setting.
+TEST(FindGroups, BitmapAndArrayRowSetsGiveTheSameGroups) {
+  const data_size_t total = 6000;  // 94 bitmap words
+  const size_t words = (static_cast<size_t>(total) + 63) / 64;
+  std::mt19937 gen(7);
+  std::vector<std::unique_ptr<BinMapper>> mappers;
+  std::vector<std::vector<int>> indices;
+  const int counts[] = {3, 20, 60, 93, 94, 95, 150, 400, 1200, 3000, 5500};
+  for (int f = 0; f < 120; ++f) {
+    int n = counts[f % 11];
+    std::vector<int> rows(total);
+    for (int r = 0; r < total; ++r) {
+      rows[r] = r;
+    }
+    if (f % 5 == 0) {
+      // disjoint-ish blocks: these bundle
+      std::rotate(rows.begin(), rows.begin() + (f * 97) % total, rows.end());
+    } else if (f % 5 == 1) {
+      // rows in the last 100 only (the partial last bitmap word and the one before): their conflicts decide
+      n = std::min(n, 12);
+      std::shuffle(rows.end() - 100, rows.end(), gen);
+      std::rotate(rows.begin(), rows.end() - 100, rows.end());
+    } else {
+      std::shuffle(rows.begin(), rows.end(), gen);
+    }
+    rows.resize(n);
+    std::sort(rows.begin(), rows.end());
+    std::vector<double> values;
+    for (int i = 0; i < n; ++i) {
+      values.push_back(1.0 + (i + f) % 7);
+    }
+    mappers.push_back(MakeBinMapper(values, total));
+    indices.push_back(rows);
+  }
+  const int num_col = static_cast<int>(mappers.size());
+  std::vector<int*> index_ptrs;
+  std::vector<int> num_per_col;
+  std::vector<int> order;
+  for (int f = 0; f < num_col; ++f) {
+    index_ptrs.push_back(indices[f].data());
+    num_per_col.push_back(static_cast<int>(indices[f].size()));
+    order.push_back(f);
+  }
+  std::shuffle(order.begin(), order.end(), gen);
+  bool bundled = false;
+  for (int setting = 0; setting < 4; ++setting) {
+    const bool is_use_gpu = setting & 1;
+    const bool is_sparse = setting & 2;
+    std::vector<int8_t> mv_ref;
+    const auto ref = Falcata::FindGroups(mappers, order, index_ptrs.data(), num_per_col.data(), num_col, total, total,
+                                         is_use_gpu, is_sparse, &mv_ref);
+    for (size_t min_bitmap_count : {static_cast<size_t>(0), words, static_cast<size_t>(total) + 1}) {
+      std::vector<int8_t> mv;
+      const auto groups = Falcata::FindGroupsOnRowSetBitmaps(mappers, order, index_ptrs.data(), num_per_col.data(),
+                                                             num_col, total, total, is_use_gpu, is_sparse, &mv,
+                                                             min_bitmap_count);
+      EXPECT_EQ(groups, ref) << "setting " << setting << ", min_bitmap_count " << min_bitmap_count;
+      EXPECT_EQ(mv, mv_ref) << "setting " << setting << ", min_bitmap_count " << min_bitmap_count;
+    }
+    for (const auto& group : ref) {
+      bundled = bundled || group.size() > 1;
+    }
+  }
+  EXPECT_TRUE(bundled);  // the search does merge columns, so the conflict counts matter
 }

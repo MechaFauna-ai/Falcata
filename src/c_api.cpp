@@ -2519,21 +2519,22 @@ class SampleBlockSource : public Falcata::SampleColumnSource {
 // Copies the given chunk-local rows of a host chunk into the column-major
 // sample block at sample positions [pos, pos + rows.size()).
 template <typename E>
-void GatherHostRowsColMajor(const E* src, int32_t nrow, int32_t ncol,
+void GatherHostRowsColMajor(const unsigned char* src, int32_t nrow, int32_t ncol,
                             bool is_row_major, const std::vector<int32_t>& rows,
                             size_t pos, size_t sample_cnt, E* dst) {
+  // the caller's buffer need not be aligned to E: read it bytewise (memcpy)
   const int64_t num_rows = static_cast<int64_t>(rows.size());
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
   for (int32_t c = 0; c < ncol; ++c) {
     E* out = dst + static_cast<size_t>(c) * sample_cnt + pos;
     if (is_row_major) {
       for (int64_t i = 0; i < num_rows; ++i) {
-        out[i] = src[static_cast<size_t>(rows[i]) * ncol + c];
+        std::memcpy(out + i, src + (static_cast<size_t>(rows[i]) * ncol + c) * sizeof(E), sizeof(E));
       }
     } else {
-      const E* in = src + static_cast<size_t>(c) * nrow;
+      const unsigned char* in = src + static_cast<size_t>(c) * nrow * sizeof(E);
       for (int64_t i = 0; i < num_rows; ++i) {
-        out[i] = in[rows[i]];
+        std::memcpy(out + i, in + static_cast<size_t>(rows[i]) * sizeof(E), sizeof(E));
       }
     }
   }
@@ -2723,19 +2724,19 @@ class DeviceDatasetBuilder {
     const size_t cnt = sample_indices_.size();
     switch (elem_size_) {
       case 1:
-        GatherHostRowsColMajor(static_cast<const uint8_t*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
+        GatherHostRowsColMajor<uint8_t>(static_cast<const unsigned char*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
                                reinterpret_cast<uint8_t*>(sample_block_.data()));
         break;
       case 2:
-        GatherHostRowsColMajor(static_cast<const uint16_t*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
+        GatherHostRowsColMajor<uint16_t>(static_cast<const unsigned char*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
                                reinterpret_cast<uint16_t*>(sample_block_.data()));
         break;
       case 4:
-        GatherHostRowsColMajor(static_cast<const uint32_t*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
+        GatherHostRowsColMajor<uint32_t>(static_cast<const unsigned char*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
                                reinterpret_cast<uint32_t*>(sample_block_.data()));
         break;
       default:
-        GatherHostRowsColMajor(static_cast<const uint64_t*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
+        GatherHostRowsColMajor<uint64_t>(static_cast<const unsigned char*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
                                reinterpret_cast<uint64_t*>(sample_block_.data()));
         break;
     }
