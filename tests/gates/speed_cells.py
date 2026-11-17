@@ -4,14 +4,14 @@ gates/*   the bench tier's real datasets and parameters (bench_tier.py), the Num
           training rows so that one run stays at a few seconds (the gate runs every cell 10-24 times)
 h60/*     the production h60 sparse shape from the frozen binary dataset (saved_dataset.frozen_h60; needs the pinned
           manifest, as bench_tier.py)
-v6like/*  tree fits shaped like a downstream user's walk-forward run (numerCrypto run v6, 2026-11): multiclass with
+v6like/*  tree fits shaped like a downstream user's walk-forward run (v6, 2026-11): multiclass with
           3-16 classes, fixed-point quantized gradients with fp32 sums, strong L2, 63-6,000 float32 columns with 7%
           missing values, feature fractions down to 0.03 (the wide-sample compact skip of #613), bagging. The columns
           are factor-structured synthetic data generated once per machine (numpy, seed 0) into $FALCATA_SPEED_DATA
           (default ~/.cache/falcata-gates/speed-data) and memory-mapped by every run, so both arms read the same bits.
 
 predict/* prediction alone (no training): a model text with the shape of a downstream user's fits (trees, leaves,
-          classes and columns of numerCrypto run v6, 2026-11, and of the native predictor's benchmark matrix,
+          classes and columns of a downstream walk-forward run (v6, 2026-11) and of the native predictor's benchmark matrix,
           benchmarks/predict_gpu.py) generated once per machine into $FALCATA_SPEED_DATA, scored on float32 rows
           (NaN 10%) on the device (CuPy) and from numpy; the timed stage is predict_s (median of the steady calls
           after one warm-up call, which packs the model). Needs CuPy for the device cells.
