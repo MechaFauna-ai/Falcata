@@ -4179,23 +4179,27 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
         for (size_t p = 1; p < part_offsets.size(); ++p) {
           slot_stride = std::max(slot_stride, (part_offsets[p] - part_offsets[p - 1]) << 1);
         }
-        // Double slot rows: float32 gradients summed in double are exact and
-        // order-free, matching the CPU reference bit for bit.
+        // Double slot rows: float32 gradients summed in double are exact, hence
+        // order-free, only while a bin's partial sums fit double's 53-bit
+        // significand. Gradients spanning many decades over hundreds of rows
+        // per bin round, so a different row tiling (det_sparse_tile_cap_, set
+        // when the tile partials exceed kDetSparseTileBudget) can change a
+        // bin's last bits. A given tiling is run-to-run deterministic.
         const size_t smem_per_row = static_cast<size_t>(slot_stride) * sizeof(double);
         constexpr bool kDetSparseConstructEnabled = true;
-        if (kDetSparseConstructEnabled && det_tile_alloc_ > 0 && smem_per_row > 0 && smem_per_row <= kDetFloatSharedBudget) {
+        if (kDetSparseConstructEnabled && det_sparse_tile_cap_ > 0 && smem_per_row > 0 && smem_per_row <= kDetFloatSharedBudget) {
           const int det_dy = std::max(1, std::min<int>(block_dim.y, static_cast<int>(kDetFloatSharedBudget / smem_per_row)));
           // One writer per row group leaves the x lanes idle, so buy back
           // parallelism with a finer row tiling than the atomic kernel's.
           int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
           det_grid_y = std::max(det_grid_y, min_grid_dim_y_);
-          det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
+          det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_sparse_tile_cap_);
           dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
           dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
           // Pipeline-private scratch region (pipelined pair-constructs run on
           // different pipeline streams; a shared region would race).
           hist_t* det_tiles = cuda_det_tile_partials_.RawData() +
-            static_cast<size_t>(active_pipeline_) * det_tile_alloc_ * (2 * num_total_bin_);
+            static_cast<size_t>(active_pipeline_) * det_sparse_tile_cap_ * (2 * num_total_bin_);
           CUDAConstructHistogramSparseDeterministicKernel<BIN_TYPE, PTR_TYPE>
             <<<det_grid, det_block, static_cast<size_t>(det_dy) * smem_per_row, current_stream()>>>(
               cuda_smaller_leaf_splits,
@@ -4216,7 +4220,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             det_tiles,
             num_items_total,
             std::max(det_grid_y, 1));
-        } else if (kDetSparseConstructEnabled && det_tile_alloc_ > 0 && smem_per_row > 0) {
+        } else if (kDetSparseConstructEnabled && det_sparse_tile_cap_ > 0 && smem_per_row > 0) {
           // Wide-partition fallback: one slot row exceeds the shared budget,
           // so the rows live in the dense det construct's global slab instead
           // (slot positions GLOBAL per partition; see
@@ -4235,7 +4239,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
           int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
           det_grid_y = std::max(det_grid_y, min_grid_dim_y_);
-          det_grid_y = std::min(std::min(det_grid_y, det_dense_tile_cap_), det_tile_alloc_);
+          det_grid_y = std::min(std::min(det_grid_y, det_dense_tile_cap_), det_sparse_tile_cap_);
           dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
           dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
           // Pipeline-private scratch regions (pipelined pair-constructs run
@@ -4244,7 +4248,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           hist_t* det_slots = cuda_det_dense_slots_.RawData() +
             static_cast<size_t>(active_pipeline_) * det_dense_tile_cap_ * det_dense_dy_ * det_dense_slot_stride_;
           hist_t* det_tiles = cuda_det_tile_partials_.RawData() +
-            static_cast<size_t>(active_pipeline_) * det_tile_alloc_ * (2 * num_total_bin_);
+            static_cast<size_t>(active_pipeline_) * det_sparse_tile_cap_ * (2 * num_total_bin_);
           CUDAConstructHistogramSparseGMDeterministicKernel<BIN_TYPE, PTR_TYPE>
             <<<det_grid, det_block, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
@@ -4388,7 +4392,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
       }
     } else {
       if (cuda_row_data_->is_sparse()) {
-        if (det_tile_alloc_ > 0 && det_dense_dy_ > 0 && num_total_bin_ > 0) {
+        if (det_sparse_tile_cap_ > 0 && det_dense_dy_ > 0 && num_total_bin_ > 0) {
           // Deterministic float construct: a large-bin partition put this
           // dataset on the GlobalMemory arm, so a shared slot row can never
           // fit and the global slab serves directly (slot positions GLOBAL
@@ -4400,7 +4404,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
           int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
           det_grid_y = std::max(det_grid_y, min_grid_dim_y_);
-          det_grid_y = std::min(std::min(det_grid_y, det_dense_tile_cap_), det_tile_alloc_);
+          det_grid_y = std::min(std::min(det_grid_y, det_dense_tile_cap_), det_sparse_tile_cap_);
           dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
           dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
           // Pipeline-private scratch regions (pipelined pair-constructs run
@@ -4409,7 +4413,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           hist_t* det_slots = cuda_det_dense_slots_.RawData() +
             static_cast<size_t>(active_pipeline_) * det_dense_tile_cap_ * det_dense_dy_ * det_dense_slot_stride_;
           hist_t* det_tiles = cuda_det_tile_partials_.RawData() +
-            static_cast<size_t>(active_pipeline_) * det_tile_alloc_ * (2 * num_total_bin_);
+            static_cast<size_t>(active_pipeline_) * det_sparse_tile_cap_ * (2 * num_total_bin_);
           CUDAConstructHistogramSparseGMDeterministicKernel<BIN_TYPE, PTR_TYPE>
             <<<det_grid, det_block, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
