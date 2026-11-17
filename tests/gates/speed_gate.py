@@ -322,24 +322,44 @@ def _child_predict(cell, rec, dm, flc):
 # ----------------------------------------------------------------------------------------------- the paired run
 
 
+# Desktop clients that hold a small CUDA context on a workstation's card (the browser's GPU process, a compositor
+# overlay); they do not compete for the card's compute the way a training job does. Extend with
+# FALCATA_SPEED_DESKTOP_PROCS (comma list of executable basenames).
+DESKTOP_PROCS = ("chrome", "chromium", "firefox", "Xwayland", "Xorg", "voxtype-osd-gtk4", "gnome-shell", "kwin_wayland")
+
+
 def _foreign_gpu_processes():
+    """Compute processes on the card other than desktop clients: [(pid, name, MiB)], or None when nvidia-smi fails."""
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+            ["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader,nounits"],
             check=False,
             capture_output=True,
             text=True,
             timeout=30,
-        ).stdout.split()
+        ).stdout.splitlines()
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return [int(x) for x in out if x.strip().isdigit()]
+    allow = set(DESKTOP_PROCS) | {x for x in os.environ.get("FALCATA_SPEED_DESKTOP_PROCS", "").split(",") if x}
+    found = []
+    for line in out:
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) < 3 or not parts[0].isdigit():
+            continue
+        name = Path(parts[1].split()[0]).name if parts[1] else ""
+        if name in allow:
+            continue
+        found.append((int(parts[0]), name, parts[2]))
+    return found
 
 
 def _contended():
+    """Inside a strict gpuq job its contention log is the authority (as perf_gate.py); outside one, any compute
+    process on the card other than a desktop client means the card is shared."""
     log = os.environ.get("GPUQ_CONTENTION_LOG")
-    if log and Path(log).is_file() and Path(log).read_text().strip():
-        return f"gpuq contention log {log}: {Path(log).read_text().strip()[:200]}"
+    if log:
+        text = Path(log).read_text().strip() if Path(log).is_file() else ""
+        return f"gpuq contention log {log}: {text[:200]}" if text else None
     foreign = _foreign_gpu_processes()
     if foreign:
         return f"foreign GPU processes {foreign}"

@@ -183,3 +183,25 @@ def test_predict_cells_wait_for_the_predictor_benchmark():
     have = (GATE.parents[2] / "benchmarks" / "predict_gpu.py").exists()
     for c in pred:
         assert (c.missing() is None) or (not have and "#618" in c.missing()) or "CuPy" in c.missing()
+
+
+def test_desktop_clients_do_not_count_as_contention(monkeypatch):
+    out = (
+        "2616, /usr/lib/voxtype/voxtype-osd-gtk4, 16\n"
+        "3012068, /opt/google/chrome/chrome --type=gpu-process --flag=a,b, 533\n"
+        "50588, .venv/bin/python, 6228\n"
+    )
+    monkeypatch.setattr(sg.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": out})())
+    monkeypatch.delenv("GPUQ_CONTENTION_LOG", raising=False)
+    assert sg._foreign_gpu_processes() == [(50588, "python", "6228")]
+    assert "50588" in sg._contended()
+
+
+def test_strict_gpuq_job_uses_only_its_contention_log(monkeypatch, tmp_path):
+    log = tmp_path / "contention.log"
+    log.write_text("")
+    monkeypatch.setenv("GPUQ_CONTENTION_LOG", str(log))
+    monkeypatch.setattr(sg, "_foreign_gpu_processes", lambda: [(1, "python", "100")])
+    assert sg._contended() is None
+    log.write_text("1794950000 desktop woke\n")
+    assert "desktop woke" in sg._contended()
