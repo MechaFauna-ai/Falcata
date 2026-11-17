@@ -38,6 +38,61 @@ class DatasetLoader;
 #ifdef USE_CUDA
 class CUDADenseBinnerCtx;
 #endif  // USE_CUDA
+
+/*!
+* \brief Column-wise access to the bin-construction sample, for builders that
+*        keep the sample in a compact form (e.g. the raw sampled cells) and
+*        expand one column at a time instead of all columns at once.
+*
+*        GetColumn yields exactly what the dense samplers append for that
+*        column: the sampled values that are not (near) zero, NaN included, as
+*        double, in sample order, together with their sample row ids.
+*/
+class SampleColumnSource {
+ public:
+  virtual ~SampleColumnSource() = default;
+  /*! \brief number of columns */
+  virtual int num_col() const = 0;
+  /*! \brief Fills the sample of column `col`; must be thread-safe. */
+  virtual void GetColumn(int col, std::vector<double>* values,
+                         std::vector<int>* indices) const = 0;
+  /*! \brief Fills only the sample row ids of column `col`; thread-safe. */
+  virtual void GetColumnIndices(int col, std::vector<int>* indices) const {
+    std::vector<double> values;
+    GetColumn(col, &values, indices);
+  }
+};
+
+/*!
+* \brief What exclusive feature bundling reads from the bin-construction sample:
+*        per column the sample row ids of its non-zero sampled values and, for
+*        each of them, whether the value falls into the column's most frequent
+*        bin. Implementations: raw per-column arrays (the classic path) and a
+*        compact view that materialises one column at a time.
+*/
+class EFBSampleView {
+ public:
+  virtual ~EFBSampleView() = default;
+  /*! \brief number of sampled columns */
+  virtual int num_sample_col() const = 0;
+  /*! \brief number of sampled non-zero values per column */
+  virtual const int* num_per_col() const = 0;
+  /*!
+  * \brief Sample row ids of column `fidx` (num_per_col()[fidx] of them). The
+  *        result may point into *buf; it stays valid while *buf is unchanged.
+  *        Thread-safe for distinct buffers.
+  */
+  virtual const int* Indices(int fidx, std::vector<int>* buf) const = 0;
+  /*!
+  * \brief Bit j set iff entry j of column `fidx` bins to the most frequent bin
+  *        of `mapper`. Called only when the default bin is not the most
+  *        frequent one. The result may point into *buf. Thread-safe for
+  *        distinct buffers.
+  */
+  virtual const uint64_t* MostFreqMask(int fidx, const BinMapper& mapper,
+                                       std::vector<uint64_t>* buf) const = 0;
+};
+
 /*!
 * \brief This class is used to store some meta(non-feature) data for training data,
 *        e.g. labels, weights, initial scores, query level information.
@@ -507,6 +562,18 @@ class Dataset {
     double** sample_values,
     const int* num_per_col,
     int num_sample_col,
+    size_t total_sample_cnt,
+    const Config& io_config);
+
+  /*!
+  * \brief Construct from bin mappers and a view of the bin-construction sample
+  *        (the classic overload above wraps its arrays in such a view).
+  */
+  void Construct(
+    std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
+    int num_total_features,
+    const std::vector<std::vector<double>>& forced_bins,
+    const EFBSampleView& sample,
     size_t total_sample_cnt,
     const Config& io_config);
 

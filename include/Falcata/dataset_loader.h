@@ -39,6 +39,18 @@ class DatasetLoader {
                                                    data_size_t num_local_data,
                                                    int64_t num_dist_data);
 
+  /*!
+  * \brief Same dataset as ConstructFromSampleData on the expanded sample, from
+  *        a source that expands one column at a time: bin mappers are found
+  *        column by column (threads x one column expanded at once) and feature
+  *        bundling re-reads row ids from the source, so the sample is never
+  *        expanded for all columns together.
+  */
+  FALCATA_EXPORT Dataset* ConstructFromSampleSource(const SampleColumnSource& source,
+                                                     size_t total_sample_size,
+                                                     data_size_t num_local_data,
+                                                     int64_t num_dist_data);
+
   /*! \brief Disable copy */
   DatasetLoader& operator=(const DatasetLoader&) = delete;
   /*! \brief Disable copy */
@@ -61,6 +73,13 @@ class DatasetLoader {
   std::vector<std::string> SampleTextDataFromMemory(const std::vector<std::string>& data);
 
   std::vector<std::string> SampleTextDataFromFile(const char* filename, const Metadata& metadata, int rank, int num_machines, int* num_global_data, std::vector<data_size_t>* used_data_indices);
+
+  /*! \brief Bin mapper of local column i from its expanded sample (FindBin
+  *          compacts and sorts `values` in place) */
+  void FindBinLocal(int i, double* values, int num_values, size_t total_sample_size,
+                    data_size_t filter_cnt,
+                    const std::vector<std::vector<double>>& forced_bin_bounds,
+                    std::unique_ptr<BinMapper>* out) const;
 
   void ConstructBinMappersFromTextData(int rank, int num_machines, const std::vector<std::string>& sample_data, const Parser* parser, Dataset* dataset);
 

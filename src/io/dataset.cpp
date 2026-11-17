@@ -97,10 +97,16 @@ void MarkUsed(std::vector<bool>* mark, const int* indices,
   }
 }
 
+inline bool MaskBit(const uint64_t* mask, int j) {
+  return ((mask[j >> 6] >> (j & 63)) & 1ULL) != 0;
+}
+
+// most_freq_mask: bit j set iff sample entry j bins to the most frequent bin
+// (EFBSampleView::MostFreqMask); only read when default bin != most freq bin
 std::vector<int> FixSampleIndices(const BinMapper* bin_mapper,
                                   int num_total_samples, int num_indices,
                                   const int* sample_indices,
-                                  const double* sample_values) {
+                                  const uint64_t* most_freq_mask) {
   std::vector<int> ret;
   if (bin_mapper->GetDefaultBin() == bin_mapper->GetMostFreqBin()) {
     return ret;
@@ -110,8 +116,7 @@ std::vector<int> FixSampleIndices(const BinMapper* bin_mapper,
     if (j < num_indices && sample_indices[j] < i) {
       ++j;
     } else if (j < num_indices && sample_indices[j] == i) {
-      if (bin_mapper->ValueToBin(sample_values[j]) !=
-          bin_mapper->GetMostFreqBin()) {
+      if (!MaskBit(most_freq_mask, j)) {
         ret.push_back(i);
       }
       ++i;
@@ -121,6 +126,42 @@ std::vector<int> FixSampleIndices(const BinMapper* bin_mapper,
   }
   return ret;
 }
+
+// The classic view: per-column arrays of sampled values and row ids, as the
+// samplers produce them (values after BinMapper::FindBin, which compacts and
+// sorts them in place: the pairing of values[j] with indices[j] that bundling
+// sees is the historical one and is kept exactly).
+class ArraysEFBSampleView : public EFBSampleView {
+ public:
+  ArraysEFBSampleView(int** sample_indices, double** sample_values,
+                      const int* num_per_col, int num_sample_col)
+      : sample_indices_(sample_indices), sample_values_(sample_values),
+        num_per_col_(num_per_col), num_sample_col_(num_sample_col) {}
+  int num_sample_col() const override { return num_sample_col_; }
+  const int* num_per_col() const override { return num_per_col_; }
+  const int* Indices(int fidx, std::vector<int>*) const override {
+    return sample_indices_[fidx];
+  }
+  const uint64_t* MostFreqMask(int fidx, const BinMapper& mapper,
+                               std::vector<uint64_t>* buf) const override {
+    const int n = num_per_col_[fidx];
+    buf->assign((static_cast<size_t>(n) + 63) / 64, 0);
+    const uint32_t most_freq_bin = mapper.GetMostFreqBin();
+    const double* values = sample_values_[fidx];
+    for (int j = 0; j < n; ++j) {
+      if (mapper.ValueToBin(values[j]) == most_freq_bin) {
+        (*buf)[j >> 6] |= (1ULL << (j & 63));
+      }
+    }
+    return buf->data();
+  }
+
+ private:
+  int** sample_indices_;
+  double** sample_values_;
+  const int* num_per_col_;
+  int num_sample_col_;
+};
 
 std::vector<std::vector<int>> FindGroups(
     const std::vector<std::unique_ptr<BinMapper>>& bin_mappers,
@@ -292,9 +333,10 @@ inline int PopCount64(uint64_t v) {
 // require every singleton's dense rate >= 0.4 so the round is a no-op.
 bool EFBPrecheckProvesNoBundling(
     const std::vector<std::unique_ptr<BinMapper>>& bin_mappers,
-    int** sample_indices, double** sample_values, const int* num_per_col,
-    int num_sample_col, data_size_t total_sample_cnt,
+    const EFBSampleView& sample, data_size_t total_sample_cnt,
     const std::vector<int>& used_features, bool is_sparse) {
+  const int num_sample_col = sample.num_sample_col();
+  const int* num_per_col = sample.num_per_col();
   const int num_features = static_cast<int>(used_features.size());
   if (num_features <= 1) {
     return true;
@@ -314,13 +356,20 @@ bool EFBPrecheckProvesNoBundling(
   std::vector<data_size_t> cnt(num_features, 0);
   const data_size_t max_conflict =
       static_cast<data_size_t>(total_sample_cnt / 10000);
-  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  OMP_INIT_EX();
+  #pragma omp parallel num_threads(OMP_NUM_THREADS())
+  {
+  // per-thread buffers: a compact view materialises one column at a time
+  std::vector<int> index_buf;
+  std::vector<uint64_t> mask_buf;
+  #pragma omp for schedule(static)
   for (int i = 0; i < num_features; ++i) {
+    OMP_LOOP_EX_BEGIN();
     const int fidx = used_features[i];
     uint64_t* bm = bitmaps.data() + static_cast<size_t>(i) * words_per_feature;
     const BinMapper* mapper = bin_mappers[fidx].get();
     const int n = num_per_col[fidx];
-    const int* indices = sample_indices[fidx];
+    const int* indices = sample.Indices(fidx, &index_buf);
     if (mapper->GetDefaultBin() == mapper->GetMostFreqBin()) {
       // FixSampleIndices is a no-op: the original indices are used
       for (int j = 0; j < n; ++j) {
@@ -334,11 +383,10 @@ bool EFBPrecheckProvesNoBundling(
       if ((total_sample_cnt & 63) != 0) {
         bm[words_per_feature - 1] = (1ULL << (total_sample_cnt & 63)) - 1;
       }
-      const uint32_t most_freq_bin = mapper->GetMostFreqBin();
-      const double* values = sample_values[fidx];
+      const uint64_t* most_freq = sample.MostFreqMask(fidx, *mapper, &mask_buf);
       data_size_t c = total_sample_cnt;
       for (int j = 0; j < n; ++j) {
-        if (mapper->ValueToBin(values[j]) == most_freq_bin) {
+        if (MaskBit(most_freq, j)) {
           bm[indices[j] >> 6] &= ~(1ULL << (indices[j] & 63));
           --c;
         }
@@ -355,7 +403,10 @@ bool EFBPrecheckProvesNoBundling(
         cnt[i] = c;
       }
     }
+    OMP_LOOP_EX_END();
   }
+  }
+  OMP_THROW_EX();
   if (is_sparse) {
     // second round of FindGroups must be a no-op: it regroups (and merges)
     // groups whose dense rate is below the 0.4 threshold
@@ -415,18 +466,18 @@ std::vector<std::vector<int>> SingleFeatureGroupsShuffled(
 
 std::vector<std::vector<int>> FastFeatureBundling(
     const std::vector<std::unique_ptr<BinMapper>>& bin_mappers,
-    int** sample_indices, double** sample_values, const int* num_per_col,
-    int num_sample_col, data_size_t total_sample_cnt,
+    const EFBSampleView& sample, data_size_t total_sample_cnt,
     const std::vector<int>& used_features, data_size_t num_data,
     bool is_use_gpu, bool is_sparse, std::vector<int8_t>* multi_val_group) {
   Common::FunctionTimer fun_timer("Dataset::FastFeatureBundling", global_timer);
+  const int num_sample_col = sample.num_sample_col();
+  const int* num_per_col = sample.num_per_col();
   const bool precheck_enabled = FalcataPlan::Get().efb_precheck;
   const bool precheck_verify = FalcataVerifyEnabled();
   const bool precheck_fired =
       precheck_enabled &&
-      EFBPrecheckProvesNoBundling(bin_mappers, sample_indices, sample_values,
-                                  num_per_col, num_sample_col,
-                                  total_sample_cnt, used_features, is_sparse);
+      EFBPrecheckProvesNoBundling(bin_mappers, sample, total_sample_cnt,
+                                  used_features, is_sparse);
   if (precheck_fired && !precheck_verify) {
     Log::Debug("EFB precheck: no bundling possible, skipping group search "
                "(disable with FALCATA_EFB_PRECHECK=0)");
@@ -461,28 +512,45 @@ std::vector<std::vector<int>> FastFeatureBundling(
     feature_order_by_cnt.push_back(used_features[sidx]);
   }
 
-  std::vector<std::vector<int>> tmp_indices;
+  // the row-id sets the group search works on: the fixed set where the default
+  // bin is not the most frequent one, else the sampled non-zero rows. Features
+  // are independent here, so they are prepared in parallel; a compact view
+  // keeps only these index sets (never the sampled values) for all features.
+  const int num_used = static_cast<int>(used_features.size());
+  std::vector<std::vector<int>> tmp_indices(num_used);
+  std::vector<int*> group_indices(num_sample_col, nullptr);
   std::vector<int> tmp_num_per_col(num_sample_col, 0);
-  // the fixed index lists below live in tmp_indices, which dies with this
-  // function: point a local copy of the pointer array at them, never the
-  // caller's array (it would be left dangling)
-  std::vector<int*> local_sample_indices(sample_indices, sample_indices + num_sample_col);
-  sample_indices = local_sample_indices.data();
-  for (auto fidx : used_features) {
-    if (fidx >= num_sample_col) {
-      continue;
+  OMP_INIT_EX();
+  #pragma omp parallel num_threads(OMP_NUM_THREADS())
+  {
+  std::vector<uint64_t> mask_buf;
+  #pragma omp for schedule(dynamic)
+  for (int k = 0; k < num_used; ++k) {
+    OMP_LOOP_EX_BEGIN();
+    const int fidx = used_features[k];
+    if (fidx < num_sample_col) {
+      const BinMapper* mapper = bin_mappers[fidx].get();
+      const int* indices = sample.Indices(fidx, &tmp_indices[k]);
+      std::vector<int> ret;
+      if (mapper->GetDefaultBin() != mapper->GetMostFreqBin()) {
+        ret = FixSampleIndices(
+            mapper, static_cast<int>(total_sample_cnt), num_per_col[fidx],
+            indices, sample.MostFreqMask(fidx, *mapper, &mask_buf));
+      }
+      if (!ret.empty()) {
+        tmp_indices[k].swap(ret);
+        tmp_num_per_col[fidx] = static_cast<int>(tmp_indices[k].size());
+        group_indices[fidx] = tmp_indices[k].data();
+      } else {
+        tmp_num_per_col[fidx] = num_per_col[fidx];
+        group_indices[fidx] = const_cast<int*>(indices);
+      }
     }
-    auto ret = FixSampleIndices(
-        bin_mappers[fidx].get(), static_cast<int>(total_sample_cnt),
-        num_per_col[fidx], sample_indices[fidx], sample_values[fidx]);
-    if (!ret.empty()) {
-      tmp_indices.push_back(ret);
-      tmp_num_per_col[fidx] = static_cast<int>(ret.size());
-      sample_indices[fidx] = tmp_indices.back().data();
-    } else {
-      tmp_num_per_col[fidx] = num_per_col[fidx];
-    }
+    OMP_LOOP_EX_END();
   }
+  }
+  OMP_THROW_EX();
+  int** sample_indices = group_indices.data();
   std::vector<int8_t> group_is_multi_val, group_is_multi_val2;
   auto features_in_group =
       FindGroups(bin_mappers, used_features, sample_indices,
@@ -546,6 +614,18 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
                         int num_sample_col,
                         size_t total_sample_cnt,
                         const Config& io_config) {
+  const ArraysEFBSampleView sample(sample_non_zero_indices, sample_values,
+                                   num_per_col, num_sample_col);
+  Construct(bin_mappers, num_total_features, forced_bins, sample,
+            total_sample_cnt, io_config);
+}
+
+void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
+                        int num_total_features,
+                        const std::vector<std::vector<double>>& forced_bins,
+                        const EFBSampleView& sample,
+                        size_t total_sample_cnt,
+                        const Config& io_config) {
   num_total_features_ = num_total_features;
   CHECK_EQ(num_total_features_, static_cast<int>(bin_mappers->size()));
   // get num_features
@@ -588,8 +668,7 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
   if (io_config.enable_bundle && !used_features.empty()) {
     bool lgbm_is_gpu_used = io_config.device_type == std::string("gpu") || io_config.device_type == std::string("cuda");
     features_in_group = FastFeatureBundling(
-        *bin_mappers, sample_non_zero_indices, sample_values, num_per_col,
-        num_sample_col, static_cast<data_size_t>(total_sample_cnt),
+        *bin_mappers, sample, static_cast<data_size_t>(total_sample_cnt),
         used_features, num_data_, lgbm_is_gpu_used,
         is_sparse, &group_is_multi_val);
   }

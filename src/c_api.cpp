@@ -2381,6 +2381,178 @@ Dataset::DenseBinnerDType DenseBinnerDTypeFromCApi(int data_type) {
   }
 }
 
+// One column of the bin-construction sample, expanded exactly as the dense
+// samplers (SampleDenseSmallInt / SampleDenseFloat followed by
+// ApplyMissingSentinelToSample) expand it: the kept values in sample order as
+// double, NaN kept, (near) zeros skipped, a declared sentinel turned into NaN.
+template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
+inline bool SampleCellKept(T value) {
+  if (IS_FLOAT) {
+    const double v = static_cast<double>(value);
+    return std::fabs(v) > kZeroThreshold || std::isnan(v);
+  } else if (IS_FLOAT16) {
+    return (static_cast<uint16_t>(value) & 0x7FFF) != 0;  // not +-0
+  } else {
+    return value != 0;
+  }
+}
+
+template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
+inline double SampleCellValue(T value) {
+  if (IS_FLOAT16) {
+    return static_cast<double>(HalfBitsToFloat(static_cast<uint16_t>(value)));
+  }
+  return static_cast<double>(value);
+}
+
+template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
+void ExpandSampleColumn(const T* col, int n, double sentinel,
+                        std::vector<double>* values, std::vector<int>* indices) {
+  values->clear();
+  indices->clear();
+  for (int i = 0; i < n; ++i) {
+    if (SampleCellKept<T, IS_FLOAT16, IS_FLOAT>(col[i])) {
+      values->push_back(SampleCellValue<T, IS_FLOAT16, IS_FLOAT>(col[i]));
+      indices->push_back(i);
+    }
+  }
+  if (!std::isnan(sentinel)) {
+    for (auto& value : *values) {
+      if (value == sentinel) {
+        value = std::numeric_limits<double>::quiet_NaN();
+      }
+    }
+  }
+}
+
+template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
+void SampleColumnIndices(const T* col, int n, std::vector<int>* indices) {
+  indices->clear();
+  for (int i = 0; i < n; ++i) {
+    if (SampleCellKept<T, IS_FLOAT16, IS_FLOAT>(col[i])) {
+      indices->push_back(i);
+    }
+  }
+}
+
+// The streaming builder's sample as it is gathered: the raw sampled cells,
+// column-major (sample_cnt values per column, in the input's element type).
+// Columns are expanded on demand, so the bin mappers are built with threads x
+// one expanded column on the host instead of 12 more bytes per sampled cell
+// for all columns at once.
+class SampleBlockSource : public Falcata::SampleColumnSource {
+ public:
+  SampleBlockSource(const uint8_t* block, int data_type, int64_t elem_size,
+                    int sample_cnt, int ncol, double sentinel)
+      : block_(block), data_type_(data_type), elem_size_(elem_size),
+        sample_cnt_(sample_cnt), ncol_(ncol), sentinel_(sentinel) {}
+
+  int num_col() const override { return ncol_; }
+
+  void GetColumn(int col, std::vector<double>* values,
+                 std::vector<int>* indices) const override {
+    const void* c = Column(col);
+    switch (data_type_) {
+      case C_API_DTYPE_INT8:
+        ExpandSampleColumn<int8_t, false, false>(static_cast<const int8_t*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      case C_API_DTYPE_INT16:
+        ExpandSampleColumn<int16_t, false, false>(static_cast<const int16_t*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      case C_API_DTYPE_UINT8:
+        ExpandSampleColumn<uint8_t, false, false>(static_cast<const uint8_t*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      case C_API_DTYPE_UINT16:
+        ExpandSampleColumn<uint16_t, false, false>(static_cast<const uint16_t*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      case C_API_DTYPE_FLOAT16:
+        ExpandSampleColumn<uint16_t, true, false>(static_cast<const uint16_t*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      case C_API_DTYPE_FLOAT32:
+        ExpandSampleColumn<float, false, true>(static_cast<const float*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      default:
+        ExpandSampleColumn<double, false, true>(static_cast<const double*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+    }
+  }
+
+  void GetColumnIndices(int col, std::vector<int>* indices) const override {
+    const void* c = Column(col);
+    switch (data_type_) {
+      case C_API_DTYPE_INT8:
+        SampleColumnIndices<int8_t, false, false>(static_cast<const int8_t*>(c), sample_cnt_, indices);
+        break;
+      case C_API_DTYPE_INT16:
+        SampleColumnIndices<int16_t, false, false>(static_cast<const int16_t*>(c), sample_cnt_, indices);
+        break;
+      case C_API_DTYPE_UINT8:
+        SampleColumnIndices<uint8_t, false, false>(static_cast<const uint8_t*>(c), sample_cnt_, indices);
+        break;
+      case C_API_DTYPE_UINT16:
+        SampleColumnIndices<uint16_t, false, false>(static_cast<const uint16_t*>(c), sample_cnt_, indices);
+        break;
+      case C_API_DTYPE_FLOAT16:
+        SampleColumnIndices<uint16_t, true, false>(static_cast<const uint16_t*>(c), sample_cnt_, indices);
+        break;
+      case C_API_DTYPE_FLOAT32:
+        SampleColumnIndices<float, false, true>(static_cast<const float*>(c), sample_cnt_, indices);
+        break;
+      default:
+        SampleColumnIndices<double, false, true>(static_cast<const double*>(c), sample_cnt_, indices);
+        break;
+    }
+  }
+
+ private:
+  const void* Column(int col) const {
+    return block_ + static_cast<size_t>(col) * sample_cnt_ * elem_size_;
+  }
+  const uint8_t* block_;
+  const int data_type_;
+  const int64_t elem_size_;
+  const int sample_cnt_;
+  const int ncol_;
+  const double sentinel_;
+};
+
+// Copies the given chunk-local rows of a host chunk into the column-major
+// sample block at sample positions [pos, pos + rows.size()).
+template <typename E>
+void GatherHostRowsColMajor(const E* src, int32_t nrow, int32_t ncol,
+                            bool is_row_major, const std::vector<int32_t>& rows,
+                            size_t pos, size_t sample_cnt, E* dst) {
+  const int64_t num_rows = static_cast<int64_t>(rows.size());
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  for (int32_t c = 0; c < ncol; ++c) {
+    E* out = dst + static_cast<size_t>(c) * sample_cnt + pos;
+    if (is_row_major) {
+      for (int64_t i = 0; i < num_rows; ++i) {
+        out[i] = src[static_cast<size_t>(rows[i]) * ncol + c];
+      }
+    } else {
+      const E* in = src + static_cast<size_t>(c) * nrow;
+      for (int64_t i = 0; i < num_rows; ++i) {
+        out[i] = in[rows[i]];
+      }
+    }
+  }
+}
+
+// Scatters a row-major block of `num_rows` gathered rows into the
+// column-major sample block at sample positions [pos, pos + num_rows).
+template <typename E>
+void ScatterRowsColMajor(const E* rows_block, int64_t num_rows, int32_t ncol,
+                         size_t pos, size_t sample_cnt, E* dst) {
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  for (int32_t c = 0; c < ncol; ++c) {
+    E* out = dst + static_cast<size_t>(c) * sample_cnt + pos;
+    for (int64_t i = 0; i < num_rows; ++i) {
+      out[i] = rows_block[static_cast<size_t>(i) * ncol + c];
+    }
+  }
+}
+
 // State of one chunked (streaming) dataset build behind the
 // FLC_DatasetDeviceBuilder* C API: rows arrive as dense matrix chunks (device
 // or host resident), the bin-boundary sample is accumulated across every
@@ -2445,17 +2617,26 @@ class DeviceDatasetBuilder {
       ++sample_pos_;
     }
     if (!local_rows.empty()) {
-      uint8_t* dst = sample_block_.data() +
-                     block_pos * static_cast<size_t>(ncol_) * elem_size_;
       if (is_device) {
         // the producer of the chunk may still have work in flight
         CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
-        CUDAGatherSampleRowsToHost(data, elem_size_, is_row_major, nrow,
-                                   ncol_, local_rows.data(),
-                                   static_cast<int>(local_rows.size()), dst);
+        // gather row-major in bounded row batches (at most about 64 MB of
+        // staging), then scatter into the column-major block
+        const size_t row_bytes = static_cast<size_t>(ncol_) * elem_size_;
+        const size_t batch_rows = std::max<size_t>(
+            1, (static_cast<size_t>(64) << 20) / row_bytes);
+        std::vector<uint8_t> staging;
+        for (size_t start = 0; start < local_rows.size(); start += batch_rows) {
+          const size_t cnt = std::min(batch_rows, local_rows.size() - start);
+          staging.resize(cnt * row_bytes);
+          CUDAGatherSampleRowsToHost(data, elem_size_, is_row_major, nrow,
+                                     ncol_, local_rows.data() + start,
+                                     static_cast<int>(cnt), staging.data());
+          ScatterRows(staging.data(), static_cast<int64_t>(cnt),
+                      block_pos + start);
+        }
       } else {
-        GatherHostRows(static_cast<const uint8_t*>(data), nrow, is_row_major,
-                       local_rows, dst);
+        GatherHostRows(data, nrow, is_row_major, local_rows, block_pos);
       }
     }
     sample_cursor_ += nrow;
@@ -2508,44 +2689,19 @@ class DeviceDatasetBuilder {
                    "pass every chunk to FLC_DatasetDeviceBuilderSampleChunk "
                    "before the first push", sample_cursor_, total_nrow_);
       }
-      // run the standard samplers over the gathered block with identity
-      // indices: this yields exactly the sample the host FromMats path
-      // draws from the equal concatenated matrix
+      // the sample is expanded one column at a time from the raw sampled
+      // cells (SampleBlockSource): the same values, row ids and order per
+      // column as the standard samplers yield over the gathered block (and
+      // the host FromMats path over the equal concatenated matrix), so the
+      // same bin mappers and bundles; host peak is the block plus threads x
+      // one expanded column instead of the block expanded for all columns
       const int sample_cnt = static_cast<int>(sample_indices_.size());
-      std::vector<std::vector<double>> sample_values(ncol_);
-      std::vector<std::vector<int>> sample_idx(ncol_);
-      const void* block = sample_block_.data();
-      int32_t block_nrow = sample_cnt;
-      int block_row_major = 1;
-      std::vector<int32_t> identity(sample_cnt);
-      for (int i = 0; i < sample_cnt; ++i) {
-        identity[i] = i;
-      }
-      if (data_type_ == C_API_DTYPE_INT8) {
-        SampleDenseSmallInt<int8_t>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
-      } else if (data_type_ == C_API_DTYPE_INT16) {
-        SampleDenseSmallInt<int16_t>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
-      } else if (data_type_ == C_API_DTYPE_UINT8) {
-        SampleDenseSmallInt<uint8_t>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
-      } else if (data_type_ == C_API_DTYPE_UINT16) {
-        SampleDenseSmallInt<uint16_t>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
-      } else if (data_type_ == C_API_DTYPE_FLOAT16) {
-        SampleDenseSmallInt<uint16_t, true>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
-      } else if (data_type_ == C_API_DTYPE_FLOAT32) {
-        SampleDenseFloat<float>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
-      } else {
-        SampleDenseFloat<double>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
-      }
-      ApplyMissingSentinelToSample(missing_sentinel_, &sample_values);
+      const SampleBlockSource source(sample_block_.data(), data_type_,
+                                     elem_size_, sample_cnt, ncol_,
+                                     missing_sentinel_);
       DatasetLoader loader(config_, nullptr, 1, nullptr);
-      dataset_.reset(loader.ConstructFromSampleData(
-          Vector2Ptr<double>(&sample_values).data(),
-          Vector2Ptr<int>(&sample_idx).data(),
-          ncol_,
-          VectorSize<double>(sample_values).data(),
-          sample_cnt,
-          total_nrow_,
-          total_nrow_));
+      dataset_.reset(loader.ConstructFromSampleSource(
+          source, static_cast<size_t>(sample_cnt), total_nrow_, total_nrow_));
       std::vector<uint8_t>().swap(sample_block_);
     } else {
       CheckReferenceColumns(reference_, ncol_, "The matrix");
@@ -2560,26 +2716,50 @@ class DeviceDatasetBuilder {
         /*host_input_possible=*/true, missing_sentinel_));
   }
 
-  // host analogue of CUDAGatherSampleRowsToHost: bitwise copies of the given
-  // chunk-local rows into a row-major block
-  void GatherHostRows(const uint8_t* src, int32_t nrow, bool is_row_major,
-                      const std::vector<int32_t>& rows, uint8_t* dst) const {
-    const size_t row_bytes = static_cast<size_t>(ncol_) * elem_size_;
-    if (is_row_major) {
-      for (size_t i = 0; i < rows.size(); ++i) {
-        std::memcpy(dst + i * row_bytes,
-                    src + static_cast<size_t>(rows[i]) * row_bytes,
-                    row_bytes);
-      }
-    } else {
-      for (size_t i = 0; i < rows.size(); ++i) {
-        for (int32_t c = 0; c < ncol_; ++c) {
-          std::memcpy(dst + (i * ncol_ + c) * elem_size_,
-                      src + (static_cast<size_t>(c) * nrow + rows[i]) *
-                                elem_size_,
-                      static_cast<size_t>(elem_size_));
-        }
-      }
+  // bitwise copies of the given chunk-local rows of a host chunk into the
+  // column-major sample block, starting at sample position `pos`
+  void GatherHostRows(const void* src, int32_t nrow, bool is_row_major,
+                      const std::vector<int32_t>& rows, size_t pos) {
+    const size_t cnt = sample_indices_.size();
+    switch (elem_size_) {
+      case 1:
+        GatherHostRowsColMajor(static_cast<const uint8_t*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
+                               reinterpret_cast<uint8_t*>(sample_block_.data()));
+        break;
+      case 2:
+        GatherHostRowsColMajor(static_cast<const uint16_t*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
+                               reinterpret_cast<uint16_t*>(sample_block_.data()));
+        break;
+      case 4:
+        GatherHostRowsColMajor(static_cast<const uint32_t*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
+                               reinterpret_cast<uint32_t*>(sample_block_.data()));
+        break;
+      default:
+        GatherHostRowsColMajor(static_cast<const uint64_t*>(src), nrow, ncol_, is_row_major, rows, pos, cnt,
+                               reinterpret_cast<uint64_t*>(sample_block_.data()));
+        break;
+    }
+  }
+
+  // a row-major block of gathered rows into the column-major sample block
+  void ScatterRows(const uint8_t* rows_block, int64_t num_rows, size_t pos) {
+    const size_t cnt = sample_indices_.size();
+    switch (elem_size_) {
+      case 1:
+        ScatterRowsColMajor(rows_block, num_rows, ncol_, pos, cnt, sample_block_.data());
+        break;
+      case 2:
+        ScatterRowsColMajor(reinterpret_cast<const uint16_t*>(rows_block), num_rows, ncol_, pos, cnt,
+                            reinterpret_cast<uint16_t*>(sample_block_.data()));
+        break;
+      case 4:
+        ScatterRowsColMajor(reinterpret_cast<const uint32_t*>(rows_block), num_rows, ncol_, pos, cnt,
+                            reinterpret_cast<uint32_t*>(sample_block_.data()));
+        break;
+      default:
+        ScatterRowsColMajor(reinterpret_cast<const uint64_t*>(rows_block), num_rows, ncol_, pos, cnt,
+                            reinterpret_cast<uint64_t*>(sample_block_.data()));
+        break;
     }
   }
 
@@ -2629,7 +2809,7 @@ class DeviceDatasetBuilder {
   double missing_sentinel_ = std::numeric_limits<double>::quiet_NaN();
   int64_t elem_size_ = 0;
   std::vector<int32_t> sample_indices_;
-  std::vector<uint8_t> sample_block_;  // row-major gathered sample rows
+  std::vector<uint8_t> sample_block_;  // column-major gathered sample cells
   size_t sample_pos_ = 0;              // next unplaced sample index
   int32_t sample_cursor_ = 0;          // rows covered by SampleChunk calls
   int32_t push_cursor_ = 0;            // rows covered by PushChunk calls
