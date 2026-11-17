@@ -13,7 +13,6 @@ namespace Falcata {
 namespace {
 
 constexpr int kRowBlockSize = 256;
-constexpr int kTileBlockSize = 256;
 constexpr int kMissingZero = 1;   // MissingType::Zero
 constexpr int kMissingNaN = 2;    // MissingType::NaN
 
@@ -178,71 +177,132 @@ __global__ void PredictRowKernel(const DeviceForestView<TThr> forest, const Devi
   out[r * stride + k] = acc;
 }
 
-// ------------------------------------------------------------------ kTile: rows in shared memory, threads over trees
+// ------------------------------------------------------------------ kTileWs: warp-specialized tiles
+// Warp 0 keeps each row's running sums (lane r sums row r, tree by tree, so the order is the CPU's) while the other
+// warps walk the next tile of trees: the tile's leaf values are double-buffered, one __syncthreads per tile. Rows sit in
+// shared memory with an odd stride (lanes reading one feature of different rows hit different banks).
 
-template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool STAGE>
-__global__ void PredictTileKernel(const DeviceForestView<TThr> forest, const DeviceRows<TIn> rows, int tree_begin,
-                                  int num_iteration, int num_tree_per_iteration, int tile_rows, int tile_trees,
-                                  double* out) {
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool STAGE, int ILP>
+__global__ void PredictTileWsKernel(const DeviceForestView<TThr> forest, const DeviceRows<TIn> rows, int tree_begin,
+                                    int num_iteration, int num_tree_per_iteration, int tile_rows, int tile_trees,
+                                    double* out) {
   extern __shared__ __align__(16) unsigned char smem[];
-  // leaf values of the tile: [tile_rows][tile_trees + 1] (the pad spreads rows over banks)
-  double* vals = reinterpret_cast<double*>(smem);
+  const int K = num_tree_per_iteration;
   const int vals_stride = tile_trees + 1;
-  TIn* xs = reinterpret_cast<TIn*>(vals + static_cast<size_t>(tile_rows) * vals_stride);
-  const int64_t row0 = static_cast<int64_t>(blockIdx.x) * tile_rows;
-  const int k = blockIdx.y;
-  const int stride = num_tree_per_iteration;
+  double* vals = reinterpret_cast<double*>(smem);                          // [2][tile_rows][tile_trees + 1]
+  double* accs = vals + 2 * static_cast<size_t>(tile_rows) * vals_stride;  // [tile_rows][K]
+  TIn* xs = reinterpret_cast<TIn*>(accs + static_cast<size_t>(tile_rows) * K);
   const int num_col = rows.num_col;
+  const int x_stride = num_col | 1;
+  const int64_t row0 = static_cast<int64_t>(blockIdx.x) * tile_rows;
   if (STAGE) {
-    // one coalesced pass over the block's rows
     const int64_t total = static_cast<int64_t>(tile_rows) * num_col;
     const bool column_major = rows.row_stride == 1 && rows.col_stride != 1;
     for (int64_t i = threadIdx.x; i < total; i += blockDim.x) {
-      // consecutive threads read consecutive addresses: along a row, or down a column of a column-major input
       const int64_t rr = column_major ? i % tile_rows : i / num_col;
       const int f = static_cast<int>(column_major ? i / tile_rows : i - rr * num_col);
       const int64_t r = row0 + rr;
-      xs[rr * num_col + f] = r < rows.num_row
+      xs[rr * x_stride + f] = r < rows.num_row
           ? SnapZero(rows.data[r * rows.row_stride + static_cast<int64_t>(f) * rows.col_stride]) : TIn(0);
     }
-    __syncthreads();
   }
-  // lanes: row-major within a warp (consecutive threads take consecutive rows of the same tree)
-  const int lr = threadIdx.x % tile_rows;
-  const int lg = threadIdx.x / tile_rows;
-  const int groups = blockDim.x / tile_rows;
-  const int64_t r = row0 + lr;
-  const bool valid = r < rows.num_row && lg < groups;
-  const TIn* row_base = STAGE ? xs + static_cast<int64_t>(lr) * num_col
-                              : rows.data + (valid ? r : 0) * rows.row_stride;
-  double acc = 0.0;
-  for (int it0 = 0; it0 < num_iteration; it0 += tile_trees) {
-    const int count = min(tile_trees, num_iteration - it0);
-    if (valid) {
-      for (int c = lg; c < count; c += groups) {
-        const int tree = tree_begin + (it0 + c) * stride + k;
-        double v;
-        if (STAGE) {
-          const SharedRow<TIn> row{row_base, num_col};
-          v = LeafValue<TIn, TThr, HAS_LINEAR>(forest, row, tree, FindLeaf<TIn, TThr, HAS_CAT>(forest, row, tree));
-        } else {
-          const GlobalRow<TIn> row{row_base, num_col, rows.col_stride};
-          v = LeafValue<TIn, TThr, HAS_LINEAR>(forest, row, tree, FindLeaf<TIn, TThr, HAS_CAT>(forest, row, tree));
+  for (int i = threadIdx.x; i < tile_rows * K; i += blockDim.x) {
+    accs[i] = 0.0;
+  }
+  __syncthreads();
+  const int warp = threadIdx.x / 32;
+  const int lane = threadIdx.x % 32;
+  const int num_tree = num_iteration * K;
+  const int steps = (num_tree + tile_trees - 1) / tile_trees;
+  const int workers = blockDim.x - 32;
+  const int64_t valid_rows = min(static_cast<int64_t>(tile_rows), rows.num_row - row0);
+  for (int step = 0; step <= steps; ++step) {
+    if (warp == 0) {
+      if (step > 0) {
+        const int t0 = (step - 1) * tile_trees;
+        const int count = min(tile_trees, num_tree - t0);
+        const double* buf = vals + ((step - 1) & 1) * static_cast<size_t>(tile_rows) * vals_stride;
+        for (int r = lane; r < valid_rows; r += 32) {
+          const double* v = buf + r * vals_stride;
+          double* acc = accs + r * K;
+          if (K == 1) {
+            double a = acc[0];
+            for (int c = 0; c < count; ++c) {
+              a = __dadd_rn(a, v[c]);
+            }
+            acc[0] = a;
+          } else {
+            int k = t0 % K;
+            for (int c = 0; c < count; ++c) {
+              acc[k] = __dadd_rn(acc[k], v[c]);
+              k = k + 1 == K ? 0 : k + 1;
+            }
+          }
         }
-        vals[lr * vals_stride + c] = v;
       }
-    }
-    __syncthreads();
-    if (valid && lg == 0) {
-      const double* v = vals + lr * vals_stride;
-      for (int c = 0; c < count; ++c) {
-        acc = __dadd_rn(acc, v[c]);
+    } else if (step < steps) {
+      const int t0 = step * tile_trees;
+      const int count = min(tile_trees, num_tree - t0);
+      double* buf = vals + (step & 1) * static_cast<size_t>(tile_rows) * vals_stride;
+      const int pairs = static_cast<int>(valid_rows) * count;
+      // pair p: row p % valid_rows of tree p / valid_rows (a warp's lanes share trees: node reads broadcast)
+      for (int p0 = threadIdx.x - 32; p0 < pairs; p0 += workers * ILP) {
+        int node[ILP], rr[ILP], cc[ILP];
+        #pragma unroll
+        for (int u = 0; u < ILP; ++u) {
+          const int p = p0 + u * workers;
+          if (p < pairs) {
+            rr[u] = p % static_cast<int>(valid_rows);
+            cc[u] = p / static_cast<int>(valid_rows);
+            node[u] = forest.tree_root[tree_begin + t0 + cc[u]];
+          } else {
+            rr[u] = -1;
+            cc[u] = 0;
+            node[u] = -1;
+          }
+        }
+        bool active = true;
+        while (active) {
+          active = false;
+          #pragma unroll
+          for (int u = 0; u < ILP; ++u) {
+            if (node[u] >= 0) {
+              if (STAGE) {
+                const SharedRow<TIn> row{xs + static_cast<int64_t>(rr[u]) * x_stride, num_col};
+                node[u] = Step<TIn, TThr, HAS_CAT>(forest, row, node[u]);
+              } else {
+                const GlobalRow<TIn> row{rows.data + (row0 + rr[u]) * rows.row_stride, num_col, rows.col_stride};
+                node[u] = Step<TIn, TThr, HAS_CAT>(forest, row, node[u]);
+              }
+              active |= node[u] >= 0;
+            }
+          }
+        }
+        #pragma unroll
+        for (int u = 0; u < ILP; ++u) {
+          if (rr[u] >= 0) {
+            const int tree = tree_begin + t0 + cc[u];
+            double v;
+            if (STAGE) {
+              const SharedRow<TIn> row{xs + static_cast<int64_t>(rr[u]) * x_stride, num_col};
+              v = LeafValue<TIn, TThr, HAS_LINEAR>(forest, row, tree, ~node[u]);
+            } else {
+              const GlobalRow<TIn> row{rows.data + (row0 + rr[u]) * rows.row_stride, num_col, rows.col_stride};
+              v = LeafValue<TIn, TThr, HAS_LINEAR>(forest, row, tree, ~node[u]);
+            }
+            buf[rr[u] * vals_stride + cc[u]] = v;
+          }
+        }
       }
     }
     __syncthreads();
   }
-  if (valid && lg == 0) {
-    out[r * stride + k] = acc;
+  if (warp == 0) {
+    for (int r = lane; r < valid_rows; r += 32) {
+      for (int k = 0; k < K; ++k) {
+        out[(row0 + r) * K + k] = accs[r * K + k];
+      }
+    }
   }
 }
 
@@ -473,33 +533,43 @@ void LaunchRow(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows
 #undef FLC_ROW_KERNEL
 }
 
-template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR>
-void LaunchTile(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin, int num_iteration,
-                int num_tree_per_iteration, const PredictPlan& plan, double* out, cudaStream_t stream) {
-  const dim3 grid(Blocks(rows.num_row, plan.tile_rows), num_tree_per_iteration);
-  const size_t shared = TileSharedBytes(plan, rows.num_col, sizeof(TIn));
-  if (plan.stage_rows) {
-    auto kernel = PredictTileKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, true>;
-    CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                              static_cast<int>(shared)));
-    kernel<<<grid, kTileBlockSize, shared, stream>>>(forest, rows, tree_begin, num_iteration, num_tree_per_iteration,
-                                                     plan.tile_rows, plan.tile_trees, out);
-  } else {
-    auto kernel = PredictTileKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, false>;
-    CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                              static_cast<int>(shared)));
-    kernel<<<grid, kTileBlockSize, shared, stream>>>(forest, rows, tree_begin, num_iteration, num_tree_per_iteration,
-                                                     plan.tile_rows, plan.tile_trees, out);
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool STAGE>
+void LaunchTileWsIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
+                     int num_iteration, int num_tree_per_iteration, const PredictPlan& plan, double* out,
+                     cudaStream_t stream) {
+  const dim3 grid(Blocks(rows.num_row, plan.tile_rows));
+  const size_t shared = TileWsSharedBytes(plan, rows.num_col, sizeof(TIn), num_tree_per_iteration);
+#define FLC_TWS_KERNEL(U)                                                                                      \
+  {                                                                                                            \
+    auto kernel = PredictTileWsKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, STAGE, U>;                               \
+    CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,             \
+                                              static_cast<int>(shared)));                                      \
+    kernel<<<grid, plan.block_threads, shared, stream>>>(forest, rows, tree_begin, num_iteration,             \
+                                                         num_tree_per_iteration, plan.tile_rows,               \
+                                                         plan.tile_trees, out);                                \
   }
+  if (plan.ilp >= 4) {
+    FLC_TWS_KERNEL(4)
+  } else if (plan.ilp >= 2) {
+    FLC_TWS_KERNEL(2)
+  } else {
+    FLC_TWS_KERNEL(1)
+  }
+#undef FLC_TWS_KERNEL
 }
 
 template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR>
 void LaunchScalar(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
                   int num_iteration, int num_tree_per_iteration, const PredictPlan& plan, double* out,
                   cudaStream_t stream) {
-  if (plan.kernel == PredictPlan::kTile) {
-    LaunchTile<TIn, TThr, HAS_CAT, HAS_LINEAR>(forest, rows, tree_begin, num_iteration, num_tree_per_iteration, plan,
-                                               out, stream);
+  if (plan.kernel == PredictPlan::kTileWs) {
+    if (plan.stage_rows) {
+      LaunchTileWsIlp<TIn, TThr, HAS_CAT, HAS_LINEAR, true>(forest, rows, tree_begin, num_iteration,
+                                                            num_tree_per_iteration, plan, out, stream);
+    } else {
+      LaunchTileWsIlp<TIn, TThr, HAS_CAT, HAS_LINEAR, false>(forest, rows, tree_begin, num_iteration,
+                                                             num_tree_per_iteration, plan, out, stream);
+    }
   } else {
     LaunchRow<TIn, TThr, HAS_CAT, HAS_LINEAR>(forest, rows, tree_begin, num_iteration, num_tree_per_iteration,
                                               plan.ilp, out, stream);
@@ -508,10 +578,11 @@ void LaunchScalar(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& r
 
 }  // namespace
 
-size_t TileSharedBytes(const PredictPlan& plan, int num_col, size_t input_elem) {
-  size_t bytes = static_cast<size_t>(plan.tile_rows) * (plan.tile_trees + 1) * sizeof(double);
+size_t TileWsSharedBytes(const PredictPlan& plan, int num_col, size_t input_elem, int num_tree_per_iteration) {
+  size_t bytes = static_cast<size_t>(plan.tile_rows) * (2 * (plan.tile_trees + 1) + num_tree_per_iteration) *
+                 sizeof(double);
   if (plan.stage_rows) {
-    bytes += static_cast<size_t>(plan.tile_rows) * num_col * input_elem;
+    bytes += static_cast<size_t>(plan.tile_rows) * (num_col | 1) * input_elem;
   }
   return bytes;
 }
