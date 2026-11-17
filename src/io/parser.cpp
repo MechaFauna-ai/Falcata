@@ -340,6 +340,19 @@ static const char* AtofPreciseText(const char* p, double* out) {
 }
 
 Parser* Parser::CreateParser(const char* filename, bool header, int num_features, int label_idx, bool precise_float_parser) {
+  // A binary Dataset file (save_binary) is only ever loaded by DatasetLoader. Read as text, e.g. to predict the init
+  // score of a Dataset built from one, its stored values went through the format sniffer, and the error depended on
+  // those bytes: "Unknown format", a LibSVM index error, or a wrong feature count after a successful "parse".
+  {
+    auto reader = VirtualFileReader::Make(filename);
+    const std::string token(Dataset::binary_file_token);
+    std::vector<char> head(token.size());
+    if (reader->Init() && reader->Read(head.data(), head.size()) == head.size() &&
+        std::string(head.data(), head.size()) == token) {
+      Log::Fatal("Unknown format of training data: %s is a binary Dataset file, which can only be loaded as a Dataset, "
+                 "not read as text", filename);
+    }
+  }
   const int n_read_line = 32;
   auto lines = ReadKLineFromFile(filename, header, n_read_line);
   int num_col = 0;

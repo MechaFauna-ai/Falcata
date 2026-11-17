@@ -2498,6 +2498,20 @@ def test_init_with_subset(tmp_path, rng):
     assert subset_data_4.get_data() == lgb_train_data
 
 
+@pytest.mark.parametrize("seed", range(20))
+def test_predict_on_binary_dataset_file_is_refused(tmp_path, seed):
+    # the error used to depend on the stored values (the text sniffer read them): test_init_with_subset failed
+    # for about 3% of its unseeded draws with a LibSVM index error or a feature-count mismatch
+    rng = np.random.default_rng(seed)
+    X = rng.uniform(size=(50, 2))
+    y = np.array([1] * 25 + [0] * 25)
+    path = tmp_path / "train.bin"
+    lgb.Dataset(X, y).save_binary(path)
+    bst = lgb.train({"objective": "binary", "verbose": -1}, lgb.Dataset(X, y), num_boost_round=2)
+    with pytest.raises(lgb.basic.FalcataError, match="is a binary Dataset file"):
+        bst.predict(str(path))
+
+
 def test_training_on_constructed_subset_without_params(rng):
     X = rng.uniform(size=(100, 10))
     y = rng.uniform(size=(100,))

@@ -493,6 +493,7 @@ class ParserReflector {
 class Dataset {
  public:
   friend DatasetLoader;
+  friend Parser;  // reads binary_file_token to refuse a binary Dataset file as text
 
   FALCATA_EXPORT Dataset();
 
