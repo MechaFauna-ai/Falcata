@@ -702,6 +702,18 @@ numerai-deep corrected for its slow baseline run) it says so.
   samples the bundle on ~99% of trees, which silently un-ships the read
   (measured −27% trees/s on the numerai h60 shape). Guarded by the throughput
   ratio in `tests/gates/sparse_column_view.py`.
+- **`split_packed_read8`** — the 8-bit counterpart: with 8-bit row data
+  (`max_bin` above 16) under feature sampling, the batched apply and the
+  out-of-bag traversal read each split column as one byte per row straight
+  from the compact (or full) row matrix (descriptor `kStrided8ColumnBitType`)
+  instead of a per-tree column-major gather of every sampled column followed
+  by a device synchronisation. **`compact_dense_wide_skip`** — 8-bit rows
+  skip the per-tree compact view when a tree samples more than 40% of the
+  columns: the fill then costs more than the narrower construct saves. Both
+  bit-identical. Multiclass, 178k–735k rows, 46–1,525 sampled columns
+  (17 Nov 2026 on `370df221`, RTX 5090, ms per tree): 16.7 → 4.7 at 1,525
+  sampled of 2,568 columns, 10.9 → 4.8 at 875 of 2,000, 2.73 → 1.44 at 172
+  of 222, 1.00 → 0.57 at 60 of 63, 0.42 → 0.38 at 46 of 122.
 - **`batch_reghist`** — for ≤8-bin datasets, accumulate a thread's rows in
   registers and flush once instead of two shared-memory atomics per row.
 - **`batch_wide`** — wide-shape batched search for many-column datasets

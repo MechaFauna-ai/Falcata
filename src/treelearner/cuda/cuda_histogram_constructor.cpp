@@ -575,6 +575,15 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
     // No win: either no features or all features used. Fall back to full path.
     return false;
   }
+  // cuda_plan key compact_dense_wide_skip: on 8-bit rows the per-tree fill (a gather of every sampled byte) costs
+  // more than its narrower construct reads save once a tree samples more than ~40 % of the columns (RTX 5090,
+  // 340k-680k rows x 300 continuous columns, max_bin 63: break-even 0.3-0.4, at 0.7 the view costs 1.3-1.7x the
+  // GPU time of the full-matrix path). The 4-bit fill is cheap (and fused with the root histogram), so only 8-bit
+  // rows skip it. Bit-identical: the construct reads the same bins either way.
+  if (!cuda_row_data_->is_4bit_packed() && FalcataPlan::Get().compact_dense_wide_skip &&
+      static_cast<int64_t>(total_compact) * 5 > static_cast<int64_t>(src_part_col_offsets.back()) * 2) {
+    return false;
+  }
 
   // 4-bit mode: when the row matrix is packed, the compact matrix is packed the
   // same way (per-partition packed row width = ceil(used_columns / 2) bytes,

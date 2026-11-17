@@ -34,6 +34,15 @@ namespace Falcata {
  */
 constexpr uint8_t kNibbleColumnBitType = 5;
 
+/*!
+ * \brief Width code of a per-tree packed-view column read as one BYTE of an 8-bit row-major matrix: column c's
+ * bin for row r is packed_column_data(c)[r * packed_column_stride(c)]. The 8-bit counterpart of the
+ * descriptor `bit_type = 4` (a nibble of the packed matrix): it lets the batched apply and the out-of-bag
+ * traversal read the split column straight from the histogram constructor's compact (or full) 8-bit row
+ * matrix instead of a per-tree column-major gather of every sampled column (cuda_plan key split_packed_read8).
+ */
+constexpr uint8_t kStrided8ColumnBitType = 6;
+
 // CUDAColumnData skips its per-column device copies (the tree learner uses a
 // compact view per tree) once the dense columns would exceed this many bytes.
 // Dataset::Construct page-locks the host bins only at or below it.
@@ -226,7 +235,8 @@ class CUDAColumnData {
                                   const std::vector<int>& slot_row_stride,
                                   const std::vector<uint8_t>& slot_shift,
                                   const uint8_t* colmajor_buf = nullptr,
-                                  size_t colmajor_pad = 0);
+                                  size_t colmajor_pad = 0,
+                                  bool source_is_8bit = false);
 
   bool packed_column_view_active() const { return packed_column_view_active_; }
 
@@ -343,10 +353,11 @@ class CUDAColumnData {
   std::vector<const uint8_t*> packed_column_ptr_;
   std::vector<int> packed_column_stride_;
   std::vector<uint8_t> packed_column_shift_;
-  // 4 for a dense column read as row-matrix nibbles; kNibbleColumnBitType for
-  // a dense column read from the column-major nibble store of the bin matrix
-  // (colmajor_split); the column's real bit type (8/16/32) for a sparse column
-  // served from its own buffer.
+  // 4 for a dense column read as row-matrix nibbles; kStrided8ColumnBitType
+  // for a dense column read as one byte of an 8-bit row matrix
+  // (split_packed_read8); kNibbleColumnBitType for a dense column read from the
+  // column-major nibble store of the bin matrix (colmajor_split); the column's
+  // real bit type (8/16/32) for a sparse column served from its own buffer.
   std::vector<uint8_t> packed_column_bit_type_;
   // Device mirrors of the four vectors above (see EnsurePackedViewOnDevice);
   // valid while packed_view_device_generation_ == column_view_generation_.

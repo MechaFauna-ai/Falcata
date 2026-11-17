@@ -131,6 +131,9 @@ def test_sampled_trees_match_cpu_cuda(feature_fraction):
         pytest.param({}, id="plain"),
         pytest.param({"cuda_plan": "auto,hybrid:off"}, id="classic-loop"),
         pytest.param({"cuda_plan": "auto,split_packed_read:off"}, id="no-packed-read"),
+        # 8-bit rows: the split read strides the row matrix bytes (split_packed_read8), sparse columns their own buffer
+        pytest.param({"cuda_plan": "auto,rowdata_4bit:off"}, id="8bit-rows"),
+        pytest.param({"cuda_plan": "auto,rowdata_4bit:off,split_packed_read8:off"}, id="8bit-rows-no-packed-read8"),
         pytest.param({"cuda_plan": "auto,colmajor_fill:off"}, id="no-colmajor-fill"),
         pytest.param({"cuda_plan": "auto,compact_prefill:off"}, id="no-prefill"),
         pytest.param({"use_quantized_grad": True, "quant_mode": "fixedpoint"}, id="quantized"),

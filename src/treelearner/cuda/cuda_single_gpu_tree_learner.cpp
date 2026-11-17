@@ -859,7 +859,8 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   tree_start_uploads_.Upload<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_h.data(), num_compact_cols);
 
   compact_packed_view_active_ = false;
-  if (gather_src_is_4bit && PackedSplitReadUsable()) {
+  const bool packed_read8 = !gather_src_is_4bit && FalcataPlan::Get().split_packed_read8;
+  if ((gather_src_is_4bit || packed_read8) && PackedSplitReadUsable()) {
     // categorical batched-apply descriptors need the plain per-column view
     // (SplitLevelBatched CHECK-enforces it); numerical-only datasets keep the packed read
     // packed split read: skip the column-major gather entirely; the batched
@@ -874,15 +875,24 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     std::vector<size_t> col_base_byte_h(num_compact_cols);
     std::vector<uint8_t> col_shift_h(num_compact_cols);
     for (int s = 0; s < num_compact_cols; ++s) {
-      col_base_byte_h[s] = slot_p_byte_h[s] + static_cast<size_t>(slot_col_in_p_h[s] >> 1);
-      col_shift_h[s] = static_cast<uint8_t>((slot_col_in_p_h[s] & 1) << 2);
+      if (packed_read8) {
+        // one byte per value: the slot's byte of row 0 is its partition base plus its column in the partition
+        // (0 for a compact source, whose slot bytes already include it), rows slot_p_stride bytes apart
+        col_base_byte_h[s] = slot_p_byte_h[s] + static_cast<size_t>(slot_col_in_p_h[s]);
+        col_shift_h[s] = 0;
+      } else {
+        col_base_byte_h[s] = slot_p_byte_h[s] + static_cast<size_t>(slot_col_in_p_h[s] >> 1);
+        col_shift_h[s] = static_cast<uint8_t>((slot_col_in_p_h[s] & 1) << 2);
+      }
     }
-    const bool colmajor_split =
+    // the column-major store holds nibbles: only a 4-bit source can be served from it
+    const bool colmajor_split = !packed_read8 &&
       FalcataPlan::Get().colmajor_split && cuda_histogram_constructor_->colmajor_bin() != nullptr;
     col_data->SetCompactPackedColumnView(orig_column_to_compact_slot_, gather_src,
                                          col_base_byte_h, slot_p_stride_h, col_shift_h,
                                          colmajor_split ? cuda_histogram_constructor_->colmajor_bin() : nullptr,
-                                         colmajor_split ? cuda_histogram_constructor_->colmajor_pad() : 0);
+                                         colmajor_split ? cuda_histogram_constructor_->colmajor_pad() : 0,
+                                         packed_read8);
     compact_packed_view_active_ = true;
     compact_gather_src_ = gather_src;
     compact_gather_src_is_4bit_ = gather_src_is_4bit;
