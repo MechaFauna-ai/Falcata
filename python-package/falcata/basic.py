@@ -3942,8 +3942,7 @@ def _fil_run_device(model: Any, data: Any) -> Optional[Any]:
     try:
         return model.predict_proba(data) if model.is_classifier else model.predict(data)
     except Exception as exc:
-        _log_warning(f"FIL prediction failed ({type(exc).__name__}: {exc}); using CPU predictor.")
-        return None
+        raise FalcataError(f"FIL prediction failed ({type(exc).__name__}: {exc})") from exc
 
 
 def _fil_run_host_slabs(model: Any, data: np.ndarray) -> Optional[np.ndarray]:
@@ -3969,8 +3968,7 @@ def _fil_run_host_slabs(model: Any, data: np.ndarray) -> Optional[np.ndarray]:
         try:
             preds = model.predict_proba(slab) if model.is_classifier else model.predict(slab)
         except Exception as exc:
-            _log_warning(f"FIL host prediction failed ({type(exc).__name__}: {exc}); using CPU predictor.")
-            return None
+            raise FalcataError(f"FIL host prediction failed ({type(exc).__name__}: {exc})") from exc
         if not isinstance(preds, np.ndarray):
             import cupy  # noqa: PLC0415
 
@@ -3985,6 +3983,88 @@ def _fil_run_host_slabs(model: Any, data: np.ndarray) -> Optional[np.ndarray]:
     except Exception:
         pass
     return out[0] if len(out) == 1 else np.concatenate(out, axis=0)
+
+
+_CUDA_PREDICTOR_USABLE: Optional[bool] = None
+
+
+def _cuda_predictor_usable() -> bool:
+    """Whether the native CUDA predictor can run here: a CUDA build, the NVIDIA driver and a device (checked once)."""
+    global _CUDA_PREDICTOR_USABLE
+    if _CUDA_PREDICTOR_USABLE is None:
+        out = ctypes.c_int(0)
+        _safe_call(_LIB.FLC_HasCUDAPredictor(ctypes.byref(out)))
+        _CUDA_PREDICTOR_USABLE = bool(out.value)
+    return _CUDA_PREDICTOR_USABLE
+
+
+def _cuda_array_parts(data: Any) -> Tuple[Any, int, int, int, int, int, int]:
+    """Read a 2-D ``__cuda_array_interface__`` array: (array, pointer, dtype code, rows, cols, row stride, col stride).
+
+    The array is converted to float32 first when it is neither float32 nor float64 (CuPy and PyTorch only; the CPU
+    predictor converts such inputs to float32 too). Strides are in elements.
+    """
+    cai = data.__cuda_array_interface__
+    if len(cai["shape"]) != 2:
+        raise ValueError(f"A device array for prediction must be 2-dimensional, got shape {tuple(cai['shape'])}")
+    typestr = cai["typestr"]
+    if typestr[1:] not in ("f4", "f8"):
+        if hasattr(data, "astype") and type(data).__module__.startswith("cupy"):
+            data = data.astype("float32")
+        elif type(data).__module__.startswith("torch"):
+            data = data.float()
+        else:
+            raise TypeError(
+                f"A device array for prediction must be float32 or float64 (got {typestr}); convert it first"
+            )
+        cai = data.__cuda_array_interface__
+        typestr = cai["typestr"]
+    itemsize = 4 if typestr[1:] == "f4" else 8
+    nrow, ncol = (int(x) for x in cai["shape"])
+    strides = cai.get("strides")
+    if strides is None:
+        row_stride, col_stride = ncol, 1
+    else:
+        if strides[0] % itemsize or strides[1] % itemsize:
+            raise ValueError(f"Device array strides {tuple(strides)} are not multiples of the item size {itemsize}")
+        row_stride, col_stride = strides[0] // itemsize, strides[1] // itemsize
+    dtype_code = _C_API_DTYPE_FLOAT32 if itemsize == 4 else _C_API_DTYPE_FLOAT64
+    return data, int(cai["data"][0]), dtype_code, nrow, ncol, row_stride, col_stride
+
+
+def _cuda_array_stream(data: Any) -> int:
+    """Return the stream a device array was written on: the interface's own, else the producer library's current one."""
+    stream = data.__cuda_array_interface__.get("stream")
+    if stream is not None:
+        return int(stream)
+    module = type(data).__module__
+    if module.startswith("torch"):
+        import torch  # noqa: PLC0415
+
+        return int(torch.cuda.current_stream(data.device).cuda_stream)
+    if module.startswith("cupy"):
+        import cupy  # noqa: PLC0415
+
+        return int(cupy.cuda.get_current_stream().ptr)
+    return 0  # the legacy default stream, which waits for every blocking stream
+
+
+def _empty_like_device(data: Any, shape: Tuple[int, ...], dtype: Any) -> Any:
+    """Allocate an uninitialized device array of the input's library (CuPy for other producers) on its device."""
+    if type(data).__module__.startswith("torch"):
+        import torch  # noqa: PLC0415
+
+        return torch.empty(shape, dtype=torch.float64 if dtype == np.float64 else torch.int32, device=data.device)
+    import cupy  # noqa: PLC0415
+
+    with cupy.cuda.Device(_cuda_pointer_device(int(data.__cuda_array_interface__["data"][0]))):
+        return cupy.empty(shape, dtype=dtype)
+
+
+def _cuda_pointer_device(ptr: int) -> int:
+    import cupy  # noqa: PLC0415
+
+    return int(cupy.cuda.runtime.pointerGetAttributes(ptr).device)
 
 
 def _load_fil_modules() -> Optional[Tuple[Any, Any]]:
@@ -4024,6 +4104,11 @@ _FALCATA_CustomEvalFunction = Union[
 
 class Booster:
     """Booster in Falcata."""
+
+    #: What the last prediction on the CUDA predictor held on the device and how it split a host input:
+    #: ``model_device_bytes`` (the packed model, cached until the model changes), ``buffer_device_bytes`` (the
+    #: call's input and output buffers), ``num_chunks`` and ``chunk_rows``. None before the first one.
+    cuda_predict_stats: Optional[Dict[str, int]] = None
 
     def __init__(
         self,
@@ -5545,8 +5630,7 @@ class Booster:
                 precision=None if precision == "native" else precision,
             )
         except Exception as exc:
-            _log_warning(f"FIL conversion failed ({type(exc).__name__}: {exc}); using CPU predictor.")
-            return None
+            raise FalcataError(f"FIL conversion failed ({type(exc).__name__}: {exc})") from exc
 
     def _fil_predict(
         self,
@@ -5555,36 +5639,160 @@ class Booster:
         num_iteration: int,
         raw_score: bool,
     ) -> Optional[Any]:
-        """Predict with cuML's Forest Inference Library on the GPU.
+        """Predict with cuML's Forest Inference Library on the GPU (``use_fil=True``; deprecated).
 
-        Returns ``None`` whenever the request cannot be served by FIL, in which
-        case the caller falls back to the regular (CPU) predictor. Accepts 2-D
-        numpy arrays and device arrays (e.g. CuPy); the result matches the
-        input's residency (numpy in -> numpy out).
+        Accepts 2-D numpy arrays and device arrays (e.g. CuPy); the result matches the input's residency
+        (numpy in -> numpy out). A request FIL cannot serve is an error.
         """
         is_host = isinstance(data, np.ndarray)
-        params = getattr(self, "params", None) or {}
-        devices = {str(params[alias]).lower() for alias in _ConfigAliases.get("device_type") if alias in params}
-        # FIL engages only on an EXPLICIT cuda/gpu device. Auto-resolved
-        # training deliberately does not count: the auto choice is not
-        # persisted to model files (see SaveModelToString), so a live booster
-        # and its save/load round-trip take the same predict path either way.
-        if (
-            _falcata_env("FIL", "1") == "0"
-            or (not is_host and not hasattr(data, "__cuda_array_interface__"))
-            or getattr(data, "ndim", 0) != 2
-            or not devices & {"cuda", "gpu"}
-        ):
-            return None
+        if (not is_host and not hasattr(data, "__cuda_array_interface__")) or getattr(data, "ndim", 0) != 2:
+            raise FalcataError("use_fil=True takes a 2-D numpy or device array")
         model = self._fil_model(max(start_iteration, 0), num_iteration, raw_score)
         if model is None:
-            return None
+            raise FalcataError(
+                "FIL cannot serve this model (cuML/nvforest not installed, a vector-leaf model, or an output "
+                "transform other than identity, sigmoid and softmax)"
+            )
         preds = _fil_run_device(model, data) if not is_host else _fil_run_host_slabs(model, data)
         if preds is None:
-            return None
+            return np.empty((0,), dtype=np.float64)
         if preds.ndim == 2 and preds.shape[1] == 1:
             preds = preds.reshape(-1)
         return preds.astype(np.float64, copy=False)
+
+    def _trained_on_cuda(self) -> bool:
+        params = getattr(self, "params", None) or {}
+        devices = {str(params[alias]).lower() for alias in _ConfigAliases.get("device_type") if alias in params}
+        return bool(devices & {"cuda", "gpu"})
+
+    def _predict_device(self, data: Any, device: Optional[str], pred_contrib: bool, kwargs: Dict[str, Any]) -> str:
+        """Pick the predictor ("cuda" or "cpu") from the documented rules of ``predict(device=...)``.
+
+        The choice never depends on a failure: once the CUDA predictor is chosen, its errors are raised.
+        """
+        if device is not None and device not in ("cpu", "cuda", "gpu"):
+            raise ValueError(f"device must be None, 'cpu' or 'cuda', got {device!r}")
+        on_device = hasattr(data, "__cuda_array_interface__")
+        if device == "cpu":
+            if on_device:
+                raise ValueError("device='cpu' cannot read a device array: copy it to the host first")
+            return "cpu"
+        if on_device or device in ("cuda", "gpu"):
+            return "cuda"
+        # device=None, a host input: the GPU serves a dense 2-D numpy request of a CUDA-configured model when this
+        # machine can run it; the result is the same either way (see predict)
+        early_stop = any(alias in kwargs and kwargs[alias] for alias in ("pred_early_stop",))
+        if (
+            isinstance(data, np.ndarray)
+            and data.ndim == 2
+            and not pred_contrib
+            and not early_stop
+            and self._trained_on_cuda()
+            and _cuda_predictor_usable()
+        ):
+            return "cuda"
+        return "cpu"
+
+    def _cuda_predict(
+        self,
+        data: Any,
+        start_iteration: int,
+        num_iteration: int,
+        predict_type: int,
+        kwargs: Dict[str, Any],
+    ) -> Any:
+        """Predict a dense 2-D numpy or device array with the native CUDA predictor; the result is where the input is."""
+        if predict_type == _C_API_PREDICT_CONTRIB:
+            raise FalcataError(
+                "Feature contributions (pred_contrib) are not implemented by the CUDA predictor; "
+                "predict them from a host array with device='cpu'"
+            )
+        on_device = hasattr(data, "__cuda_array_interface__")
+        stream = 0
+        if on_device:
+            data, ptr, dtype_code, nrow, ncol, row_stride, col_stride = _cuda_array_parts(data)
+            stream = _cuda_array_stream(data)
+        else:
+            if not isinstance(data, np.ndarray):
+                raise TypeError(
+                    "The CUDA predictor takes a 2-D numpy array or a device array "
+                    f"(__cuda_array_interface__), got {type(data).__name__}"
+                )
+            if data.ndim != 2:
+                raise ValueError("Input numpy.ndarray or list must be 2 dimensional")
+            if data.dtype not in (np.float32, np.float64):
+                data = data.astype(np.float32)  # as the CPU predictor reads every other dtype (exactly)
+            if not (data.flags["C_CONTIGUOUS"] or data.flags["F_CONTIGUOUS"]):
+                data = np.ascontiguousarray(data)
+            nrow, ncol = data.shape
+            if data.flags["C_CONTIGUOUS"]:
+                row_stride, col_stride = ncol, 1
+            else:
+                row_stride, col_stride = 1, nrow
+            ptr = data.ctypes.data
+            dtype_code = _C_API_DTYPE_FLOAT32 if data.dtype == np.float32 else _C_API_DTYPE_FLOAT64
+        num_class = self.num_model_per_iteration()
+        if predict_type == _C_API_PREDICT_LEAF_INDEX:
+            # resolve the range here and pass it explicitly: the C++ side never predicts more iterations than an
+            # explicit num_iteration, so the buffer stays large enough if another thread trains meanwhile
+            total = self.current_iteration()
+            remaining = total - min(max(start_iteration, 0), total)
+            num_iteration = min(num_iteration, remaining) if num_iteration > 0 else remaining
+            width = num_class * num_iteration
+            if num_iteration == 0:
+                out_shape: Tuple[int, ...] = (nrow, 0)
+                if on_device:
+                    return _empty_like_device(data, out_shape, np.int32)
+                return np.empty(out_shape, dtype=np.int32)
+            out_dtype: Any = np.int32
+        else:
+            out_dtype = np.float64
+            per_row = ctypes.c_int64(0)
+            _safe_call(
+                _LIB.FLC_BoosterCalcNumPredict(
+                    self._handle,
+                    ctypes.c_int(1),
+                    ctypes.c_int(predict_type),
+                    ctypes.c_int(start_iteration),
+                    ctypes.c_int(num_iteration),
+                    ctypes.byref(per_row),
+                )
+            )
+            width = per_row.value
+        out_shape = (nrow, width) if (width != 1 or predict_type == _C_API_PREDICT_LEAF_INDEX) else (nrow,)
+        out: Any = _empty_like_device(data, out_shape, out_dtype) if on_device else np.empty(out_shape, dtype=out_dtype)
+        out_ptr = int(out.__cuda_array_interface__["data"][0]) if on_device else out.ctypes.data
+        out_len = ctypes.c_int64(0)
+        stats = (ctypes.c_int64 * 4)()
+        _safe_call(
+            _LIB.FLC_BoosterPredictForMatCUDA(
+                self._handle,
+                ctypes.c_void_p(ptr),
+                ctypes.c_int(dtype_code),
+                ctypes.c_int64(nrow),
+                ctypes.c_int32(ncol),
+                ctypes.c_int64(row_stride),
+                ctypes.c_int64(col_stride),
+                ctypes.c_int(1 if on_device else 0),
+                ctypes.c_void_p(stream),
+                ctypes.c_int(predict_type),
+                ctypes.c_int(start_iteration),
+                ctypes.c_int(num_iteration),
+                _c_str(_param_dict_to_str(kwargs)),
+                ctypes.byref(out_len),
+                ctypes.c_void_p(out_ptr),
+                stats,
+            )
+        )
+        if out_len.value != nrow * width:
+            raise FalcataError(f"CUDA predictor wrote {out_len.value} values, expected {nrow * width}")
+        self.cuda_predict_stats = {
+            "model_device_bytes": int(stats[0]),
+            "buffer_device_bytes": int(stats[1]),
+            "num_chunks": int(stats[2]),
+            "chunk_rows": int(stats[3]),
+        }
+        return out
 
     def predict(
         self,
@@ -5596,7 +5804,8 @@ class Booster:
         pred_contrib: bool = False,
         data_has_header: bool = False,
         validate_features: bool = False,
-        use_fil: bool = True,
+        device: Optional[str] = None,
+        use_fil: bool = False,
         **kwargs: Any,
     ) -> _FALCATA_PredictReturnType:
         """Make a prediction.
@@ -5635,21 +5844,29 @@ class Booster:
         validate_features : bool, optional (default=False)
             If True, ensure that the features used to predict match the ones used to train.
             Used only if data is pandas DataFrame.
-        use_fil : bool, optional (default=True)
-            Whether to route the prediction through cuML's Forest Inference Library (GPU)
-            when it is installed, the model was trained with ``device_type="cuda"`` and
-            ``data`` is a 2-D numpy or CuPy array. Falls back silently to the regular
-            predictor whenever FIL cannot serve the request. Set the environment variable
-            ``FALCATA_FIL=0`` to disable globally. The result matches the input's
-            residency: numpy in -> numpy out, CuPy in -> CuPy out.
-            FIL runs in fp32 by default: expect ~1e-6 relative error vs the regular
-            predictor in bulk, and a small fraction of rows (~0.01% observed) may route
-            to a different leaf where a feature value falls inside a split threshold's
-            fp32 rounding gap. Set ``FALCATA_FIL_PRECISION=double`` for exact routing
-            (~1e-13 parity) at the cost of doubled device memory and slower wide-input
-            transfers. For host (numpy) inputs the whole matrix is copied to the GPU, so
-            very wide inputs with small models can be slower than the CPU predictor;
-            device-resident (CuPy) inputs avoid the copy entirely.
+        device : str or None, optional (default=None)
+            Which predictor evaluates the trees: ``"cuda"`` (Falcata's native GPU predictor), ``"cpu"``, or
+            ``None`` to choose by these rules:
+
+            - a device array (CuPy, PyTorch, or any ``__cuda_array_interface__`` producer) is predicted on
+              its GPU, and the result is a device array of the same library (CuPy for other producers);
+            - a 2-D numpy array is predicted on the GPU when the model was configured with
+              ``device_type="cuda"``, the request is a normal, raw-score or leaf-index prediction without
+              ``pred_early_stop``, and this build and machine can run the CUDA predictor; the result is a
+              numpy array;
+            - everything else (other inputs, ``pred_contrib``) uses the CPU predictor.
+
+            The choice changes the speed, not the result: raw scores and leaf indices of the CUDA predictor
+            are bit-identical to the CPU predictor's, and normal predictions are converted from them by the
+            same code. A failure of the CUDA predictor is raised, never retried on the CPU. Feature
+            contributions (``pred_contrib``) are not implemented on the GPU: with ``device="cuda"`` or a
+            device array they are an error. ``Booster.cuda_predict_stats`` reports the device memory of the
+            last CUDA prediction (the cached model and the call's own buffers) and how a host input was
+            split into row chunks.
+        use_fil : bool, optional (default=False)
+            Deprecated, to be removed: predict with cuML's Forest Inference Library instead (requires
+            cuML / nvforest; fp32 routing can send rows near a threshold to another leaf). A request FIL
+            cannot serve is an error.
         **kwargs
             Other parameters for the prediction.
 
@@ -5664,15 +5881,30 @@ class Booster:
                 num_iteration = self.best_iteration
             else:
                 num_iteration = -1
-        if use_fil and not pred_leaf and not pred_contrib and not kwargs:
-            fil_preds = self._fil_predict(
+        if use_fil:
+            if pred_leaf or pred_contrib or kwargs:
+                raise FalcataError("use_fil=True serves normal and raw-score predictions without extra parameters only")
+            return self._fil_predict(
                 data=data,
                 start_iteration=start_iteration,
                 num_iteration=num_iteration,
                 raw_score=raw_score,
             )
-            if fil_preds is not None:
-                return fil_preds
+        if self._predict_device(data, device, pred_contrib, kwargs) == "cuda":
+            predict_type = _C_API_PREDICT_NORMAL
+            if raw_score:
+                predict_type = _C_API_PREDICT_RAW_SCORE
+            if pred_leaf:
+                predict_type = _C_API_PREDICT_LEAF_INDEX
+            if pred_contrib:
+                predict_type = _C_API_PREDICT_CONTRIB
+            return self._cuda_predict(
+                data=data,
+                start_iteration=start_iteration,
+                num_iteration=num_iteration,
+                predict_type=predict_type,
+                kwargs=kwargs,
+            )
         predictor = _InnerPredictor.from_booster(
             booster=self,
             pred_parameter=deepcopy(kwargs),

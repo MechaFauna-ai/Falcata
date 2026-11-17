@@ -261,69 +261,24 @@ PREDICT_CHUNK_ROWS = 200_000
 
 
 def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
-    """``bst.predict`` over row slabs; returns ``(preds, backend)``.
+    """``bst.predict`` over contiguous float32 row slabs; returns ``(preds, backend)``.
 
-    Each slab is a contiguous float32 copy, staged on the device with CuPy
-    when CuPy is importable (FIL then reads it in place: 4.7 s for a 30k-tree
-    numerai model against 24 s for host slabs) and kept on the host otherwise.
-    A whole-matrix predict on the numerai test split hands FIL an 18 GB
-    matrix, takes minutes, and past 2**32 cells returned wrong rows; 2.8 GB
-    slabs avoid all three, and the FIL model is built once and cached on the
-    booster, so the per-call cost is only the slab transfer.
-
-    ``backend`` is "fil" when cuML's Forest Inference Library served the
-    predictions and "cpu" otherwise. Falcata falls back to the CPU predictor
-    when FIL is off, missing, or unusable. Check its cached model before
-    staging; the first slab still probes the FIL entry point to confirm the
-    backend, and a failed probe reuses the original host slab for CPU scoring.
+    The slabs keep each float32 copy of a wide test split small (200k rows x 3555 features is 2.8 GB). Falcata's
+    ``predict`` picks the predictor itself: a CUDA-configured model is scored by its CUDA predictor (which copies a
+    host slab to the device in its own row chunks), anything else by the CPU predictor. ``backend`` is "cuda" when
+    the CUDA predictor served the slabs (``Booster.cuda_predict_stats`` is set by every CUDA prediction) and "cpu"
+    otherwise, so overhead comparisons are not misread.
     """
-    try:
-        import cupy as cp  # noqa: PLC0415
-
-        to_device = cp.asarray
-        to_host = cp.asnumpy
-    except Exception:
-        cp = None
-        to_device = to_host = None
     n = x_te.shape[0]
-
-    def host_slab(start):
-        return np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
-
-    def slab(start):
-        host = host_slab(start)
-        return to_device(host) if cp is not None else host
-
-    def as_numpy(preds):
-        return to_host(preds) if cp is not None and not isinstance(preds, np.ndarray) else preds
-
-    fil_predict = getattr(bst, "_fil_predict", None)
-    best_iteration = getattr(bst, "best_iteration", -1)
-    num_iteration = best_iteration if best_iteration > 0 else -1
-    if cp is not None:
-        params = getattr(bst, "params", None) or {}
-        device = str(params.get("device_type", params.get("device", ""))).lower()
-        fil_model = getattr(bst, "_fil_model", None)
-        if fil_predict is None or os.environ.get("FALCATA_FIL", "1") == "0" or device not in ("cuda", "gpu"):
-            cp = None
-        elif fil_model is not None and fil_model(0, num_iteration, False) is None:
-            cp = None
-    first_host = host_slab(0)
-    first = to_device(first_host) if cp is not None else first_host
     backend = "cpu"
     out = []
-    if fil_predict is not None:
-        probe = fil_predict(data=first, start_iteration=0, num_iteration=num_iteration, raw_score=False)
-        if probe is not None:
-            backend = "fil"
-            out.append(as_numpy(probe))
-    if not out:
-        # the CPU predictor reads host memory; a device slab would be a round trip
-        out.append(bst.predict(first_host))
-        cp = None
-    del first_host, first
-    for start in range(chunk_rows, n, chunk_rows):
-        out.append(as_numpy(bst.predict(slab(start))))
+    for start in range(0, max(n, 1), chunk_rows):
+        slab = np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
+        if hasattr(bst, "cuda_predict_stats"):
+            bst.cuda_predict_stats = None
+        out.append(bst.predict(slab))
+        if getattr(bst, "cuda_predict_stats", None) is not None:
+            backend = "cuda"
     return (out[0] if len(out) == 1 else np.concatenate(out), backend)
 
 
@@ -334,7 +289,7 @@ def binary_curve_auc_raw(bst, x_te, y_te, library):
     t0 = time.perf_counter()
     kwargs = {"raw_score": True}
     if library.startswith("falcata"):
-        kwargs["use_fil"] = False
+        kwargs["device"] = "cpu"
     raw = np.concatenate(
         [
             bst.predict(np.ascontiguousarray(x_te[start : start + PREDICT_CHUNK_ROWS]), **kwargs)
@@ -466,10 +421,9 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
         stop_reason = "fewer_iterations_than_requested"
 
     t0 = time.perf_counter()
-    # falcata predicts through cuML's Forest Inference Library when cuML is
-    # installed in the venv and FALCATA_FIL is not 0; otherwise on the CPU,
-    # which on the 30k-tree numerai cells costs 10 minutes per predict. The
-    # record says which one ran so overhead comparisons are not misread.
+    # falcata predicts a CUDA-configured model with its CUDA predictor; on the
+    # CPU the 30k-tree numerai cells cost 10 minutes per predict. The record
+    # says which one ran so overhead comparisons are not misread.
     preds, predict_backend = predict_in_chunks(bst, x_te)
     predict_s = time.perf_counter() - t0
     result = {

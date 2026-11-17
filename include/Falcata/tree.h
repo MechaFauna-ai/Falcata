@@ -27,6 +27,11 @@ namespace FALB {
 struct TreeIO;
 }  // namespace FALB
 
+// The CUDA predictor packs the tree arrays into its device layout; a friend
+// for the same reason as FALB::TreeIO: read-only access to the raw arrays
+// without widening the public interface.
+struct TreeDevicePacker;
+
 #define kCategoricalMask (1)
 #define kDefaultLeftMask (2)
 
@@ -429,6 +434,7 @@ class Tree {
   }
 
   friend struct FALB::TreeIO;
+  friend struct TreeDevicePacker;
 
  protected:
   std::string NumericalDecisionIfElse(int node) const;

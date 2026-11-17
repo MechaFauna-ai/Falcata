@@ -1516,6 +1516,63 @@ FALCATA_C_EXPORT int FLC_BoosterPredictForCSC(BoosterHandle handle,
                                                 double* out_result);
 
 /*!
+ * \brief Make prediction for a dense matrix with the native CUDA predictor.
+ * \note
+ * Requires a CUDA build of Falcata. The result equals ``FLC_BoosterPredictForMat``'s on the same rows (raw scores
+ * and leaf indices bit for bit; normal predictions are converted from them by the same host code).
+ * Host inputs (``data_on_device`` 0) are copied to the device in row chunks; device inputs are read in place.
+ * You should pre-allocate ``out_result``, in the same memory as ``data`` (host or device):
+ *   - for normal and raw score, ``num_class * nrow`` doubles, row-major;
+ *   - for leaf index, ``num_class * nrow * num_iteration`` ``int32_t`` values, row-major.
+ * Feature contributions are not implemented on the device: ``C_API_PREDICT_CONTRIB`` is an error.
+ * \param handle Handle of booster
+ * \param data Pointer to the data, in host or device memory
+ * \param data_type Type of ``data`` pointer, ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``
+ * \param nrow Number of rows (64-bit: no limit beyond device memory per chunk)
+ * \param ncol Number of columns
+ * \param row_stride Distance in elements between consecutive rows (a host input must be C- or F-contiguous)
+ * \param col_stride Distance in elements between consecutive columns
+ * \param data_on_device 1 when ``data`` and ``out_result`` are device pointers, 0 for host memory
+ * \param stream ``cudaStream_t`` the device input was produced on (the prediction runs on it); nullptr for the
+ *        legacy default stream. Ignored for host inputs
+ * \param predict_type What should be predicted
+ *   - ``C_API_PREDICT_NORMAL``: normal prediction, with transform (if needed);
+ *   - ``C_API_PREDICT_RAW_SCORE``: raw score;
+ *   - ``C_API_PREDICT_LEAF_INDEX``: leaf index
+ * \param start_iteration Start index of the iteration to predict
+ * \param num_iteration Number of iteration for prediction, <= 0 means no limit
+ * \param parameter Other parameters for prediction (``predict_disable_shape_check``, ``gpu_device_id``)
+ * \param[out] out_len Length of output result
+ * \param[out] out_result Pointer to array with predictions
+ * \param[out] out_stats Four values: device bytes of the cached packed model, device bytes of this call's buffers,
+ *        number of row chunks, rows per chunk (may be nullptr)
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
+                                                    const void* data,
+                                                    int data_type,
+                                                    int64_t nrow,
+                                                    int32_t ncol,
+                                                    int64_t row_stride,
+                                                    int64_t col_stride,
+                                                    int data_on_device,
+                                                    void* stream,
+                                                    int predict_type,
+                                                    int start_iteration,
+                                                    int num_iteration,
+                                                    const char* parameter,
+                                                    int64_t* out_len,
+                                                    void* out_result,
+                                                    int64_t* out_stats);
+
+/*!
+ * \brief Whether the native CUDA predictor can run here.
+ * \param[out] out 1 for a CUDA build on a machine with the NVIDIA driver and at least one CUDA device, else 0
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_HasCUDAPredictor(int* out);
+
+/*!
  * \brief Make prediction for a new dataset.
  * \note
  * You should pre-allocate memory for ``out_result``:
