@@ -1518,13 +1518,14 @@ FALCATA_C_EXPORT int FLC_BoosterPredictForCSC(BoosterHandle handle,
 /*!
  * \brief Make prediction for a dense matrix with the native CUDA predictor.
  * \note
- * Requires a CUDA build of Falcata. The result equals ``FLC_BoosterPredictForMat``'s on the same rows (raw scores
- * and leaf indices bit for bit; normal predictions are converted from them by the same host code).
+ * Requires a CUDA build of Falcata. The result equals ``FLC_BoosterPredictForMat``'s on the same rows bit for bit
+ * (raw scores, leaf indices and feature contributions; normal predictions are converted from the raw scores by the
+ * same host code).
  * Host inputs (``data_on_device`` 0) are copied to the device in row chunks; device inputs are read in place.
  * You should pre-allocate ``out_result``, in the same memory as ``data`` (host or device):
  *   - for normal and raw score, ``num_class * nrow`` doubles, row-major;
- *   - for leaf index, ``num_class * nrow * num_iteration`` ``int32_t`` values, row-major.
- * Feature contributions are not implemented on the device: ``C_API_PREDICT_CONTRIB`` is an error.
+ *   - for leaf index, ``num_class * nrow * num_iteration`` ``int32_t`` values, row-major;
+ *   - for feature contributions, ``num_class * nrow * (num_feature + 1)`` doubles, row-major.
  * \param handle Handle of booster
  * \param data Pointer to the data, in host or device memory
  * \param data_type Type of ``data`` pointer, ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``
@@ -1538,7 +1539,8 @@ FALCATA_C_EXPORT int FLC_BoosterPredictForCSC(BoosterHandle handle,
  * \param predict_type What should be predicted
  *   - ``C_API_PREDICT_NORMAL``: normal prediction, with transform (if needed);
  *   - ``C_API_PREDICT_RAW_SCORE``: raw score;
- *   - ``C_API_PREDICT_LEAF_INDEX``: leaf index
+ *   - ``C_API_PREDICT_LEAF_INDEX``: leaf index;
+ *   - ``C_API_PREDICT_CONTRIB``: feature contributions (SHAP values)
  * \param start_iteration Start index of the iteration to predict
  * \param num_iteration Number of iteration for prediction, <= 0 means no limit
  * \param parameter Other parameters for prediction (``predict_disable_shape_check``, ``gpu_device_id``)

@@ -1241,10 +1241,6 @@ class Booster {
                    int64_t* out_len, CUDAPredictStats* stats) const {
     SHARED_LOCK(mutex_);
     CheckPredictType(request.predict_type);
-    if (request.predict_type == C_API_PREDICT_CONTRIB) {
-      Log::Fatal("Feature contributions (pred_contrib) are not implemented by the CUDA predictor; "
-                 "predict them from a host array with device='cpu'");
-    }
     if (config.pred_early_stop) {
       Log::Fatal("pred_early_stop is not implemented by the CUDA predictor; predict with device='cpu' to use it");
     }
@@ -1256,9 +1252,12 @@ class Booster {
     if (request.device_id < 0) {
       request.device_id = config.gpu_device_id;
     }
-    const Boosting::PredictRange range = boosting_->ResolvePredictRange(start_iteration, num_iteration, false);
     const bool is_leaf = request.predict_type == C_API_PREDICT_LEAF_INDEX;
-    const int64_t per_row = boosting_->NumPredictOneRow(start_iteration, num_iteration, is_leaf, false);
+    const bool is_contrib = request.predict_type == C_API_PREDICT_CONTRIB;
+    // with contributions this also checks the model (vector leaves, a FALB model without counts) and sets every
+    // tree's depth, as for the CPU predictor
+    const Boosting::PredictRange range = boosting_->ResolvePredictRange(start_iteration, num_iteration, is_contrib);
+    const int64_t per_row = boosting_->NumPredictOneRow(start_iteration, num_iteration, is_leaf, is_contrib);
     cuda_predictor_.Predict(boosting_.get(), range, request, stats);
     *out_len = per_row * request.num_row;
   }

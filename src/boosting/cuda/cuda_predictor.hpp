@@ -66,6 +66,9 @@ struct DeviceForestView {
   const double* linear_const = nullptr;       // [total_leaves]
   const double* linear_coeff = nullptr;
   const int32_t* linear_feature = nullptr;
+  const int32_t* node_count = nullptr;        // [total_nodes]: data count of each internal node (TreeSHAP)
+  const int32_t* leaf_count = nullptr;        // [total_leaves]: data count of each leaf (TreeSHAP)
+  const double* tree_expected = nullptr;      // [num_trees]: Tree::ExpectedValue (TreeSHAP)
   int leaf_dim = 1;
   int max_depth = 0;                          // edges on the longest root-to-leaf path
   bool has_categorical = false;
@@ -115,6 +118,17 @@ void LaunchPredictRawKernel(const DeviceForestView<TThr>& forest, const DeviceRo
 template <typename TIn, typename TThr>
 void LaunchPredictLeafKernel(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
                              int num_tree, int32_t* out, cudaStream_t stream);
+
+/*!
+ * \brief Feature contributions (TreeSHAP, Tree::PredictContrib) of rows [0, rows.num_row): out is row-major
+ *        [num_row][num_tree_per_iteration][num_feature + 1]; scratch holds the path buffers of the threads in flight
+ *        (ContribScratchElements per row and output)
+ */
+template <typename TIn, typename TThr>
+void LaunchPredictContribKernel(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
+                                int num_iteration, int num_tree_per_iteration, int num_feature, double* out,
+                                void* scratch, cudaStream_t stream);
+size_t ContribScratchBytes(int max_depth);
 
 /*! \brief shared memory a kTile launch needs, and the most the device grants a block */
 size_t TileSharedBytes(const PredictPlan& plan, int num_col, size_t input_elem);
