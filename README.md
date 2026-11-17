@@ -100,7 +100,7 @@ GPU inference
 
 `Booster.predict()` has its own CUDA predictor: the trees are packed once for
 the device (and kept until the model changes), and dense rows are scored on
-the GPU with no extra dependency. Its raw scores and leaf indices are
+the GPU with no extra dependency. Its raw scores, leaf indices and feature contributions are
 **bit-identical** to the CPU predictor's: each output adds the leaf values in
 tree order in double precision, float32 inputs are routed with thresholds
 rounded down to float (exact for every float), and NaN, zero-as-missing and
@@ -122,11 +122,12 @@ preds = model.predict(X_test, device="cpu")   # force the CPU predictor
 - Host inputs go to the device in row chunks (any number of rows, 64-bit
   offsets); `Booster.cuda_predict_stats` reports the device memory of the last
   CUDA prediction (the cached model and the call's buffers) and its chunking.
-- Normal and raw-score predictions, leaf indices (`pred_leaf`), iteration
+- Normal and raw-score predictions, leaf indices (`pred_leaf`), feature
+  contributions (`pred_contrib`, TreeSHAP, bit-identical too), iteration
   slices, multiclass, vector leaves, linear trees and categorical splits are
-  served. Feature contributions (`pred_contrib`) and `pred_early_stop` are not
-  implemented on the GPU: with `device=None` and a numpy array they use the
-  CPU predictor; on a device array or with `device="cuda"` they are an error.
+  served. `pred_early_stop` is not implemented on the GPU: with `device=None`
+  and a numpy array it uses the CPU predictor; on a device array or with
+  `device="cuda"` it is an error.
 - `use_fil=True` (deprecated, to be removed) still routes through cuML's
   Forest Inference Library when it is installed.
 - Training-time validation metrics (and early stopping) do not go through

@@ -5665,7 +5665,7 @@ class Booster:
         devices = {str(params[alias]).lower() for alias in _ConfigAliases.get("device_type") if alias in params}
         return bool(devices & {"cuda", "gpu"})
 
-    def _predict_device(self, data: Any, device: Optional[str], pred_contrib: bool, kwargs: Dict[str, Any]) -> str:
+    def _predict_device(self, data: Any, device: Optional[str], kwargs: Dict[str, Any]) -> str:
         """Pick the predictor ("cuda" or "cpu") from the documented rules of ``predict(device=...)``.
 
         The choice never depends on a failure: once the CUDA predictor is chosen, its errors are raised.
@@ -5685,7 +5685,6 @@ class Booster:
         if (
             isinstance(data, np.ndarray)
             and data.ndim == 2
-            and not pred_contrib
             and not early_stop
             and self._trained_on_cuda()
             and _cuda_predictor_usable()
@@ -5702,11 +5701,6 @@ class Booster:
         kwargs: Dict[str, Any],
     ) -> Any:
         """Predict a dense 2-D numpy or device array with the native CUDA predictor; the result is where the input is."""
-        if predict_type == _C_API_PREDICT_CONTRIB:
-            raise FalcataError(
-                "Feature contributions (pred_contrib) are not implemented by the CUDA predictor; "
-                "predict them from a host array with device='cpu'"
-            )
         on_device = hasattr(data, "__cuda_array_interface__")
         stream = 0
         if on_device:
@@ -5851,18 +5845,17 @@ class Booster:
             - a device array (CuPy, PyTorch, or any ``__cuda_array_interface__`` producer) is predicted on
               its GPU, and the result is a device array of the same library (CuPy for other producers);
             - a 2-D numpy array is predicted on the GPU when the model was configured with
-              ``device_type="cuda"``, the request is a normal, raw-score or leaf-index prediction without
-              ``pred_early_stop``, and this build and machine can run the CUDA predictor; the result is a
-              numpy array;
-            - everything else (other inputs, ``pred_contrib``) uses the CPU predictor.
+              ``device_type="cuda"``, the request does not use ``pred_early_stop``, and this build and
+              machine can run the CUDA predictor; the result is a numpy array;
+            - everything else (other inputs, ``pred_early_stop``) uses the CPU predictor.
 
-            The choice changes the speed, not the result: raw scores and leaf indices of the CUDA predictor
-            are bit-identical to the CPU predictor's, and normal predictions are converted from them by the
-            same code. A failure of the CUDA predictor is raised, never retried on the CPU. Feature
-            contributions (``pred_contrib``) are not implemented on the GPU: with ``device="cuda"`` or a
-            device array they are an error. ``Booster.cuda_predict_stats`` reports the device memory of the
-            last CUDA prediction (the cached model and the call's own buffers) and how a host input was
-            split into row chunks.
+            The choice changes the speed, not the result: raw scores, leaf indices and feature
+            contributions of the CUDA predictor are bit-identical to the CPU predictor's, and normal
+            predictions are converted from the raw scores by the same code. A failure of the CUDA predictor
+            is raised, never retried on the CPU. ``pred_early_stop`` is not implemented on the GPU: with
+            ``device="cuda"`` or a device array it is an error. ``Booster.cuda_predict_stats`` reports the
+            device memory of the last CUDA prediction (the cached model and the call's own buffers) and how
+            a host input was split into row chunks.
         use_fil : bool, optional (default=False)
             Deprecated, to be removed: predict with cuML's Forest Inference Library instead (requires
             cuML / nvforest; fp32 routing can send rows near a threshold to another leaf). A request FIL
@@ -5890,7 +5883,7 @@ class Booster:
                 num_iteration=num_iteration,
                 raw_score=raw_score,
             )
-        if self._predict_device(data, device, pred_contrib, kwargs) == "cuda":
+        if self._predict_device(data, device, kwargs) == "cuda":
             predict_type = _C_API_PREDICT_NORMAL
             if raw_score:
                 predict_type = _C_API_PREDICT_RAW_SCORE

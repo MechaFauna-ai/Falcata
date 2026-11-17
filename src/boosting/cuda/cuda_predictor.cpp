@@ -43,6 +43,9 @@ struct TreeDevicePacker {
   static double LeafConst(const Tree& t, int leaf) { return t.leaf_const_[leaf]; }
   static const std::vector<double>& LeafCoeff(const Tree& t, int leaf) { return t.leaf_coeff_[leaf]; }
   static const std::vector<int>& LeafFeatures(const Tree& t, int leaf) { return t.leaf_features_[leaf]; }
+  static int NodeCount(const Tree& t, int node) { return t.internal_count_[node]; }
+  static int LeafCount(const Tree& t, int leaf) { return t.leaf_count_[leaf]; }
+  static double ExpectedValue(const Tree& t) { return t.ExpectedValue(); }
 };
 
 namespace {
@@ -132,7 +135,8 @@ class CUDAPackedForest {
 
   int64_t Bytes() const {
     return VectorBytes(nodes_float_) + VectorBytes(nodes_double_) + VectorBytes(tree_root_) +
-           VectorBytes(tree_leaf_begin_) + VectorBytes(leaf_values_) + VectorBytes(cat_words_) +
+           VectorBytes(tree_leaf_begin_) + VectorBytes(leaf_values_) + VectorBytes(node_count_) +
+           VectorBytes(leaf_count_) + VectorBytes(tree_expected_) + VectorBytes(cat_words_) +
            VectorBytes(cat_range_) + VectorBytes(tree_is_linear_) + VectorBytes(linear_begin_) +
            VectorBytes(linear_const_) + VectorBytes(linear_coeff_) + VectorBytes(linear_feature_);
   }
@@ -148,6 +152,8 @@ class CUDAPackedForest {
     std::vector<int32_t> tree_root, tree_leaf_begin;
     int64_t num_leaves_total = 0;
     std::vector<double> leaf_values;
+    std::vector<int32_t> node_count, leaf_count;
+    std::vector<double> tree_expected;
     std::vector<uint32_t> cat_words;
     std::vector<int64_t> cat_range;
     std::vector<uint8_t> tree_is_linear;
@@ -210,6 +216,7 @@ class CUDAPackedForest {
             }
           }
           nodes.push_back(n);
+          node_count.push_back(P::NodeCount(t, i));
         }
         // depth of the deepest leaf: a walk is never longer, which sizes nothing but is reported to the planner
         std::vector<std::pair<int, int>> stack(1, std::make_pair(0, 1));
@@ -226,6 +233,7 @@ class CUDAPackedForest {
         for (int k = 0; k < leaf_dim_; ++k) {
           leaf_values.push_back(P::LeafValue(t, leaf, k));
         }
+        leaf_count.push_back(P::LeafCount(t, leaf));
         if (linear) {
           const auto& coeff = P::LeafCoeff(t, leaf);
           const auto& feats = P::LeafFeatures(t, leaf);
@@ -238,6 +246,8 @@ class CUDAPackedForest {
         linear_begin.push_back(static_cast<int64_t>(linear_coeff.size()));
       }
       tree_is_linear.push_back(linear ? 1 : 0);
+      // TreeSHAP's base value; vector-leaf trees have none (their contributions are refused before any kernel)
+      tree_expected.push_back(leaf_dim_ == 1 ? P::ExpectedValue(t) : 0.0);
       has_linear_ = has_linear_ || linear;
     }
     has_categorical_ = !cat_range.empty();
@@ -256,6 +266,9 @@ class CUDAPackedForest {
       tree_leaf_begin_.InitFromHostVector(tree_leaf_begin);
     }
     if (!leaf_values.empty()) leaf_values_.InitFromHostVector(leaf_values);
+    if (!node_count.empty()) node_count_.InitFromHostVector(node_count);
+    if (!leaf_count.empty()) leaf_count_.InitFromHostVector(leaf_count);
+    if (!tree_expected.empty()) tree_expected_.InitFromHostVector(tree_expected);
     if (has_categorical_) {
       if (!cat_words.empty()) cat_words_.InitFromHostVector(cat_words);
       cat_range_.InitFromHostVector(cat_range);
@@ -279,6 +292,9 @@ class CUDAPackedForest {
     v.tree_leaf_begin = tree_leaf_begin_.RawData();
     v.max_depth = max_depth_;
     v.leaf_values = leaf_values_.RawData();
+    v.node_count = node_count_.RawData();
+    v.leaf_count = leaf_count_.RawData();
+    v.tree_expected = tree_expected_.RawData();
     v.cat_words = cat_words_.RawData();
     v.cat_range = cat_range_.RawData();
     v.tree_is_linear = tree_is_linear_.RawData();
@@ -303,6 +319,9 @@ class CUDAPackedForest {
   CUDAVector<int32_t> tree_root_;
   CUDAVector<int32_t> tree_leaf_begin_;
   CUDAVector<double> leaf_values_;
+  CUDAVector<int32_t> node_count_;
+  CUDAVector<int32_t> leaf_count_;
+  CUDAVector<double> tree_expected_;
   CUDAVector<uint32_t> cat_words_;
   CUDAVector<int64_t> cat_range_;
   CUDAVector<uint8_t> tree_is_linear_;
@@ -372,13 +391,31 @@ PredictPlan ChoosePlan(int64_t num_row, int num_col, int num_tree_per_iteration,
   return plan;
 }
 
+/*! \brief what a launch needs beyond the rows: the contribution kernel's path buffers and the model's width */
+struct RunContext {
+  int num_feature = 0;
+  void* contrib_scratch = nullptr;
+  int64_t contrib_rows = 0;   // rows the scratch holds path buffers for
+};
+
 template <typename T>
 void RunRows(const CUDAPackedForest& forest, const Boosting::TreeRangeView& view, int tree_begin,
-             int num_iteration, int predict_type, const DeviceRows<T>& rows, void* out, cudaStream_t stream) {
+             int num_iteration, int predict_type, const DeviceRows<T>& rows, void* out, cudaStream_t stream,
+             const RunContext& ctx) {
   const DeviceForestView<T> fv = forest.View<T>();
   if (predict_type == C_API_PREDICT_LEAF_INDEX) {
     LaunchPredictLeafKernel<T, T>(fv, rows, tree_begin, num_iteration * view.num_tree_per_iteration,
                                   reinterpret_cast<int32_t*>(out), stream);
+  } else if (predict_type == C_API_PREDICT_CONTRIB) {
+    const int64_t width = static_cast<int64_t>(view.num_tree_per_iteration) * (ctx.num_feature + 1);
+    for (int64_t r0 = 0; r0 < rows.num_row; r0 += ctx.contrib_rows) {
+      DeviceRows<T> part = rows;
+      part.data = rows.data + r0 * rows.row_stride;
+      part.num_row = std::min<int64_t>(ctx.contrib_rows, rows.num_row - r0);
+      LaunchPredictContribKernel<T, T>(fv, part, tree_begin, num_iteration, view.num_tree_per_iteration,
+                                       ctx.num_feature, reinterpret_cast<double*>(out) + r0 * width,
+                                       ctx.contrib_scratch, stream);
+    }
   } else {
     const PredictPlan plan = ChoosePlan(rows.num_row, rows.num_col, view.num_tree_per_iteration, sizeof(T));
     LaunchPredictRawKernel<T, T>(fv, rows, tree_begin, num_iteration, view.num_tree_per_iteration, view.num_output,
@@ -401,9 +438,9 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   if (req.data_type != C_API_DTYPE_FLOAT32 && req.data_type != C_API_DTYPE_FLOAT64) {
     Log::Fatal("CUDA predictor: the input must be float32 or float64");
   }
-  if (req.predict_type != C_API_PREDICT_NORMAL && req.predict_type != C_API_PREDICT_RAW_SCORE &&
-      req.predict_type != C_API_PREDICT_LEAF_INDEX) {
-    Log::Fatal("CUDA predictor: feature contributions (pred_contrib) are not implemented on the GPU");
+  const bool contrib = req.predict_type == C_API_PREDICT_CONTRIB;
+  if (contrib && boosting->IsLinear()) {
+    Log::Fatal("Predicting SHAP feature contributions is not implemented for linear trees.");
   }
   const bool is_double = req.data_type == C_API_DTYPE_FLOAT64;
   const size_t elem = is_double ? sizeof(double) : sizeof(float);
@@ -422,10 +459,10 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   const int tree_begin = range.start_iteration * view.num_tree_per_iteration;
   const int num_output = req.predict_type == C_API_PREDICT_LEAF_INDEX
                              ? range.num_iteration * view.num_tree_per_iteration
-                             : view.num_output;
+                             : contrib ? view.num_tree_per_iteration * (view.num_feature + 1) : view.num_output;
   const size_t out_elem = req.predict_type == C_API_PREDICT_LEAF_INDEX ? sizeof(int32_t) : sizeof(double);
   const int expected = boosting->NumPredictOneRow(range.start_iteration, range.num_iteration,
-                                                  req.predict_type == C_API_PREDICT_LEAF_INDEX, false);
+                                                  req.predict_type == C_API_PREDICT_LEAF_INDEX, contrib);
   if (expected != num_output) {
     Log::Fatal("CUDA predictor: %d values per row, the model's prediction has %d", num_output, expected);
   }
@@ -440,17 +477,31 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   if (req.num_row == 0) {
     return;
   }
+  RunContext ctx;
+  ctx.num_feature = view.num_feature;
+  CUDAVector<char> contrib_scratch;
+  if (contrib) {
+    // path buffers for the (row, output) threads of one launch, at most a quarter of the free memory (and 1 GiB)
+    size_t free_bytes = 0, total_bytes = 0;
+    CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &total_bytes));
+    const size_t per_row = ContribScratchBytes(forest->max_depth()) * view.num_tree_per_iteration;
+    const size_t budget = std::min<size_t>(std::max<size_t>(free_bytes / 4, size_t(64) << 20), size_t(1) << 30);
+    ctx.contrib_rows = std::max<int64_t>(1, std::min<int64_t>(req.num_row, static_cast<int64_t>(budget / per_row)));
+    contrib_scratch.Resize(static_cast<size_t>(ctx.contrib_rows) * per_row);
+    ctx.contrib_scratch = contrib_scratch.RawData();
+    stats->scratch_bytes += VectorBytes(contrib_scratch);
+  }
 
   if (req.on_device) {
     cudaStream_t stream = req.stream;
     if (is_double) {
       DeviceRows<double> rows{reinterpret_cast<const double*>(req.data), req.num_row, req.num_col, req.row_stride,
                               req.col_stride};
-      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, req.out, stream);
+      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, req.out, stream, ctx);
     } else {
       DeviceRows<float> rows{reinterpret_cast<const float*>(req.data), req.num_row, req.num_col, req.row_stride,
                              req.col_stride};
-      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, req.out, stream);
+      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, req.out, stream, ctx);
     }
     if (convert) {
       // the transform is the host's ConvertRawToPrediction, so the normal prediction equals the CPU predictor's
@@ -485,7 +536,7 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   const int64_t num_chunks = (req.num_row + chunk_rows - 1) / chunk_rows;
   CUDAVector<char> in_buf(static_cast<size_t>(chunk_rows) * req.num_col * elem + 1);
   CUDAVector<char> out_buf(static_cast<size_t>(chunk_rows) * num_output * out_elem + 1);
-  stats->scratch_bytes = VectorBytes(in_buf) + VectorBytes(out_buf);
+  stats->scratch_bytes += VectorBytes(in_buf) + VectorBytes(out_buf);
   stats->num_chunks = num_chunks;
   stats->chunk_rows = chunk_rows;
   OwnedStream owned_stream;
@@ -511,10 +562,10 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
     const int64_t cs = row_major ? 1 : nr;
     if (is_double) {
       DeviceRows<double> rows{reinterpret_cast<const double*>(in_buf.RawData()), nr, req.num_col, rs, cs};
-      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf.RawData(), stream);
+      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf.RawData(), stream, ctx);
     } else {
       DeviceRows<float> rows{reinterpret_cast<const float*>(in_buf.RawData()), nr, req.num_col, rs, cs};
-      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf.RawData(), stream);
+      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf.RawData(), stream, ctx);
     }
     CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(dst + r0 * num_output * out_elem, out_buf.RawData(),
                                          static_cast<size_t>(nr) * num_output * out_elem, cudaMemcpyDeviceToHost,

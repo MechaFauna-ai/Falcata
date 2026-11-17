@@ -180,6 +180,9 @@ def test_bit_identical_to_cpu(zoo, name):
         _assert_same(booster, data, raw_score=True)
         _assert_same(booster, data)
         _assert_same(booster, data, pred_leaf=True)
+        if not name.startswith("linear_tree"):
+            _assert_same(booster, data[:300], pred_contrib=True)
+            _assert_same(booster, data[:300], pred_contrib=True, start_iteration=5, num_iteration=11)
         for start, num in ((0, 1), (3, 7), (10, -1), (24, 5), (30, 2)):
             _assert_same(booster, data, raw_score=True, start_iteration=start, num_iteration=num)
             _assert_same(booster, data, pred_leaf=True, start_iteration=start, num_iteration=num)
@@ -206,12 +209,19 @@ def test_non_contiguous_and_empty_inputs(zoo):
 
 
 @requires_cuda
-def test_contrib_is_an_error_on_the_device(zoo):
+def test_early_stop_is_an_error_on_the_device(zoo):
     booster, X = zoo["regression"]
-    with pytest.raises(lgb.basic.FalcataError, match="pred_contrib"):
-        booster.predict(X, device="cuda", pred_contrib=True)
     with pytest.raises(lgb.basic.FalcataError, match="pred_early_stop"):
         booster.predict(X, device="cuda", pred_early_stop=True)
+
+
+@requires_cuda
+def test_contributions_refused_as_on_the_cpu(zoo):
+    """Linear trees have no TreeSHAP on either predictor; vector leaves neither (test_vector_leaf_models)."""
+    booster, X = zoo["linear_tree"]
+    for device in ("cpu", "cuda"):
+        with pytest.raises(lgb.basic.FalcataError, match="linear trees"):
+            booster.predict(X[:10], device=device, pred_contrib=True)
 
 
 @requires_cuda
@@ -228,7 +238,7 @@ def test_auto_routing_follows_the_rules(zoo):
         assert stats["model_device_bytes"] > 0
         assert stats["num_chunks"] >= 1
         booster.cuda_predict_stats = None
-        booster.predict(X, pred_contrib=True)  # contributions stay on the CPU predictor
+        booster.predict(X, pred_early_stop=True)  # early stopping stays on the CPU predictor
         assert booster.cuda_predict_stats is None
     finally:
         booster.params["device_type"] = "cpu"
@@ -269,6 +279,7 @@ def test_cuda_trained_models():
         _assert_same(booster, X, raw_score=True)
         _assert_same(booster, X)
         _assert_same(booster, X, pred_leaf=True)
+        _assert_same(booster, X[:500], pred_contrib=True)
 
 
 @requires_cuda
@@ -281,6 +292,9 @@ def test_vector_leaf_models():
     _assert_same(booster, X, raw_score=True)
     _assert_same(booster, X)
     _assert_same(booster, X, pred_leaf=True)
+    for device in ("cpu", "cuda"):
+        with pytest.raises(lgb.basic.FalcataError, match="vector-leaf"):
+            booster.predict(X[:10], device=device, pred_contrib=True)
 
 
 @requires_cuda
@@ -311,6 +325,7 @@ def test_fuzz_shapes():
             data = test.astype(dtype)
             _assert_same(booster, data, raw_score=True)
             _assert_same(booster, data, pred_leaf=True)
+            _assert_same(booster, data[:200], pred_contrib=True)
 
 
 @requires_cuda
@@ -321,7 +336,7 @@ def test_device_arrays_stay_on_the_device(zoo):
         for dtype in (np.float32, np.float64):
             host = X.astype(dtype)
             dev = cupy.asarray(host)
-            for kwargs in ({}, {"raw_score": True}, {"pred_leaf": True}):
+            for kwargs in ({}, {"raw_score": True}, {"pred_leaf": True}, {"pred_contrib": True}):
                 out = booster.predict(dev, **kwargs)
                 assert isinstance(out, cupy.ndarray)
                 np.testing.assert_array_equal(cupy.asnumpy(out), booster.predict(host, device="cpu", **kwargs))
@@ -366,8 +381,11 @@ for name, (booster, X) in _zoo().items():
     for dtype in (np.float32, np.float64):
         for order in ("C", "F"):
             data = np.asarray(X, dtype=dtype, order=order)
-            for kwargs in ({{"raw_score": True}}, {{}}, {{"pred_leaf": True}}, {{"raw_score": True, "start_iteration": 4,
-                                                                               "num_iteration": 9}}):
+            requests = [{{"raw_score": True}}, {{}}, {{"pred_leaf": True}},
+                        {{"raw_score": True, "start_iteration": 4, "num_iteration": 9}}]
+            if not name.startswith("linear_tree"):
+                requests.append({{"pred_contrib": True}})
+            for kwargs in requests:
                 cpu = booster.predict(data, device="cpu", **kwargs)
                 gpu = booster.predict(data, device="cuda", **kwargs)
                 if not np.array_equal(cpu, gpu, equal_nan=True):
