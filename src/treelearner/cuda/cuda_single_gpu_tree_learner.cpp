@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include <Falcata/cuda/cuda_tree.hpp>
 
 #include "cuda_single_gpu_tree_learner.hpp"
@@ -153,8 +154,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     // threshold keeps its compile-time 1024. Both are schedule-only: any value trains the same model. Set again at
     // every tree (Train), as the tuner did: a Dataset constructed after this Init re-resolves the plan.
     int sm_count = 0;
-    if (cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, gpu_device_id_ < 0 ? 0 : gpu_device_id_) ==
-          cudaSuccess && sm_count > 0) {
+    if (FalcataTryDeviceSMCount(gpu_device_id_ < 0 ? 0 : gpu_device_id_, kSMSiteSaturationFloor, &sm_count)) {
       construct_saturation_floor_ = std::max(10, std::min(5120, static_cast<int>(160.0 * sm_count / 170.0 + 0.5)));
       FalcataPlan::Mutable().batch_construct_saturation_floor = construct_saturation_floor_;
     }

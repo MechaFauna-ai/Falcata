@@ -11,6 +11,7 @@
 #include "cuda_device_levels.hpp"
 #include "cuda_device_levels.cuh"
 
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
@@ -3109,10 +3110,9 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
     // block capacity) runs each wide task on the four warps of one block (see the kernel's layout)
     if (warp_find_split_block_cap_ < 0 && num_wide > 0) {
       int device = 0;
-      int num_sms = 0;
       int blocks_per_sm = 0;
       CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
-      CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+      const int num_sms = FalcataDeviceSMCount(device, kSMSiteFindSplitCap);
       CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &blocks_per_sm, FindBestSplitsDiscretizedForLevelWarpKernel<true>, 128, 0));
       warp_find_split_block_cap_ = std::max(1, num_sms) * std::max(1, blocks_per_sm);

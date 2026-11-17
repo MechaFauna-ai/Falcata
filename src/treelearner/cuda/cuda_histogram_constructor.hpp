@@ -24,6 +24,7 @@
 #include <tuple>
 #include <vector>
 
+#include <Falcata/cuda/cuda_device_sm.hpp>
 #include <Falcata/cuda/cuda_device_tree_reason.hpp>
 #include <Falcata/cuda/cuda_row_data.hpp>
 #include <Falcata/cuda/pack_codecs.hpp>
@@ -1136,16 +1137,22 @@ class CUDAHistogramConstructor {
   }
   /*! \brief device_tree_live_grid blocks per SM times the SM count (0 = off) */
   int64_t LiveGridBudget() const {
-    return static_cast<int64_t>(FalcataPlan::Get().device_tree_live_grid) * NumSMs();
+    const int64_t per_sm = FalcataPlan::Get().device_tree_live_grid;
+    if (per_sm == 0) {
+      return 0;
+    }
+    if (live_grid_num_sms_ == 0) {
+      int sms = 1;  // a failed query counts one SM, as NumSMs does
+      FalcataTryDeviceSMCount(gpu_device_id_ < 0 ? 0 : gpu_device_id_, kSMSiteLiveGridBudget, &sms);
+      live_grid_num_sms_ = sms;
+    }
+    return per_sm * live_grid_num_sms_;
   }
   /*! \brief the device's SM count, cached in count_num_sms_ (the count construct's Init sets the same value) */
   int NumSMs() const {
     if (count_num_sms_ == 0) {
-      int sms = 0;
-      if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, gpu_device_id_ < 0 ? 0 : gpu_device_id_) !=
-          cudaSuccess || sms <= 0) {
-        sms = 1;
-      }
+      int sms = 1;  // a failed query counts one SM (unchanged)
+      FalcataTryDeviceSMCount(gpu_device_id_ < 0 ? 0 : gpu_device_id_, kSMSiteCountTiles, &sms);
       count_num_sms_ = sms;
     }
     return count_num_sms_;
@@ -1293,6 +1300,8 @@ class CUDAHistogramConstructor {
   bool count_scratch_dirty_ = true;
   /*! \brief the device's SM count (NumSMs; 0 until first use) */
   mutable int count_num_sms_ = 0;
+  /*! \brief the device's SM count as LiveGridBudget sees it (0 until first use) */
+  mutable int live_grid_num_sms_ = 0;
   /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip), indexed by inner_feature_index
    *  (the fix/subtract kernels' need-fix features). */
   CUDAVector<int8_t> cuda_is_feature_used_bytree_;
