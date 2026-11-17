@@ -607,6 +607,56 @@
    "metric": 37.152832,
    "metric_name": "rmse"
   },
+  "sampled8/r8-fixedpoint-bagged": {
+   "md5": "5eb950e2aabf089dc36c1629860efc9a",
+   "metric": 4.068074,
+   "metric_name": "rmse"
+  },
+  "sampled8/r8-nocompact": {
+   "md5": "c142d56b929b8256044a71daf224e820",
+   "metric": 4.073394,
+   "metric_name": "rmse"
+  },
+  "sampled8/r8-quant": {
+   "md5": "126dfe4cf197f787aa4bb2bc682baa48",
+   "metric": 3.989801,
+   "metric_name": "rmse"
+  },
+  "sampled8/r8-quant-bagged": {
+   "md5": "c142d56b929b8256044a71daf224e820",
+   "metric": 4.073394,
+   "metric_name": "rmse"
+  },
+  "sampled8/r8-quant-leafwise": {
+   "md5": "9e73ca32b430a33c85c1371af016951e",
+   "metric": 4.015855,
+   "metric_name": "rmse"
+  },
+  "sampled8wide/r8-fixedpoint-bagged": {
+   "md5": "d5e7cc661a734e86833c17fb9434338e",
+   "metric": 4.477174,
+   "metric_name": "rmse"
+  },
+  "sampled8wide/r8-nocompact": {
+   "md5": "2449c626d37dbb13dbd7e3246b076f7f",
+   "metric": 4.460577,
+   "metric_name": "rmse"
+  },
+  "sampled8wide/r8-quant": {
+   "md5": "b98e6a545b2a02eb9cf774ad874bf062",
+   "metric": 4.548506,
+   "metric_name": "rmse"
+  },
+  "sampled8wide/r8-quant-bagged": {
+   "md5": "2449c626d37dbb13dbd7e3246b076f7f",
+   "metric": 4.460577,
+   "metric_name": "rmse"
+  },
+  "sampled8wide/r8-quant-leafwise": {
+   "md5": "9ec9428d6cbcd44a93ee72b132112616",
+   "metric": 4.409781,
+   "metric_name": "rmse"
+  },
   "sampledwide-mixbins/quant-ff15": {
    "md5": "1666db7ece178048f5226b7fb9e8b7fc",
    "metric": 6.51153,

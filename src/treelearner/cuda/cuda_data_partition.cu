@@ -1272,6 +1272,10 @@ __device__ __forceinline__ uint32_t HybridLoadBin(
     const uint8_t packed = static_cast<const uint8_t*>(d.column_data)[
       static_cast<size_t>(global_data_index) * static_cast<size_t>(d.packed_row_stride)];
     return static_cast<uint32_t>(packed >> d.packed_shift) & 0xfu;
+  } else if (d.bit_type == kStrided8ColumnBitType) {
+    // 8-bit row-major source (split_packed_read8): this column's byte of row 0, rows packed_row_stride apart
+    return static_cast<uint32_t>(static_cast<const uint8_t*>(d.column_data)[
+      static_cast<size_t>(global_data_index) * static_cast<size_t>(d.packed_row_stride)]);
   } else if (d.bit_type == kNibbleColumnBitType) {
     // flat nibble-packed column: two rows per byte, alternating nibble
     const uint8_t packed = static_cast<const uint8_t*>(d.column_data)[global_data_index >> 1];

@@ -198,6 +198,13 @@ struct FalcataPlan {
   // selective growth, the fused apply and the categorical level record are always on; the keys are accepted with a
   // warning and ignored, see FromConfig)
   bool split_packed_read = true;    // key: split_packed_read
+  // 8-bit counterpart of split_packed_read: the batched apply and the out-of-bag traversal read the split column
+  // straight from the 8-bit row matrix (compact or full) instead of a per-tree column-major gather of every
+  // sampled column; bit-identical (the same bytes are read)
+  bool split_packed_read8 = true;   // key: split_packed_read8
+  // 8-bit rows: no per-tree compact view when a tree samples more than 40 % of the columns (the fill costs more
+  // than the construct saves there); bit-identical
+  bool compact_dense_wide_skip = true;  // key: compact_dense_wide_skip
   bool one_sync = true;             // key: one_sync -- SPECULATIVE single-sync level pipeline
   bool batch_reghist = true;        // key: batch_reghist -- register-tiled construct
   bool gh_interleave = true;        // key: gh_interleave -- packed grad/hess layout
@@ -1046,6 +1053,8 @@ struct FalcataPlan {
     if (key == "construct_tile_bin") return &construct_tile_bin;
     if (key == "efb_precheck") return &efb_precheck;
     if (key == "split_packed_read") return &split_packed_read;
+    if (key == "split_packed_read8") return &split_packed_read8;
+    if (key == "compact_dense_wide_skip") return &compact_dense_wide_skip;
     if (key == "one_sync") return &one_sync;
     if (key == "batch_reghist") return &batch_reghist;
     if (key == "gh_interleave") return &gh_interleave;

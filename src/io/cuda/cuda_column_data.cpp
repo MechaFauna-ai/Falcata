@@ -380,7 +380,8 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
                                                 const std::vector<int>& slot_row_stride,
                                                 const std::vector<uint8_t>& slot_shift,
                                                 const uint8_t* colmajor_buf,
-                                                const size_t colmajor_pad) {
+                                                const size_t colmajor_pad,
+                                                const bool source_is_8bit) {
   packed_column_ptr_.assign(num_columns_, nullptr);
   packed_column_stride_.assign(num_columns_, 0);
   packed_column_shift_.assign(num_columns_, 0);
@@ -402,6 +403,12 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
         // packed traversal therefore only ever see 4/8/16/32 here.
         packed_column_ptr_[c] = OriginalColumnPointer(c);
         packed_column_bit_type_[c] = column_bit_type_[c];
+      } else if (source_is_8bit) {
+        // 8-bit row-major source (cuda_plan key split_packed_read8): one byte per row, rows a stride apart
+        packed_column_ptr_[c] = packed_buf + slot_base_byte[slot];
+        packed_column_stride_[c] = slot_row_stride[slot];
+        packed_column_shift_[c] = 0;
+        packed_column_bit_type_[c] = kStrided8ColumnBitType;
       } else if (colmajor_buf != nullptr) {
         // column-major nibble store of the bin matrix (cuda_plan key
         // colmajor_split): column c is the flat two-rows-per-byte run at

@@ -899,6 +899,9 @@ __global__ void AddPredictionToScoreKernel(
           const size_t byte_index = static_cast<size_t>(data_index) *
             static_cast<size_t>(cuda_packed_column_stride[column]);
           bin = static_cast<uint32_t>((base[byte_index] >> cuda_packed_column_shift[column]) & 0xf);
+        } else if (packed_bit_type == kStrided8ColumnBitType) {
+          bin = static_cast<uint32_t>(base[static_cast<size_t>(data_index) *
+                                           static_cast<size_t>(cuda_packed_column_stride[column])]);
         } else if (packed_bit_type == kNibbleColumnBitType) {
           bin = static_cast<uint32_t>((base[data_index >> 1] >> ((data_index & 1) << 2)) & 0xf);
         } else if (packed_bit_type == 8) {
@@ -1025,6 +1028,9 @@ __global__ void AddPredictionToScoreNodeTableKernel(
       if (packed_bit_type == 4) {
         const size_t byte_index = static_cast<size_t>(data_index) * static_cast<size_t>(cuda_packed_column_stride[column]);
         bin = static_cast<uint32_t>((base[byte_index] >> cuda_packed_column_shift[column]) & 0xf);
+      } else if (packed_bit_type == kStrided8ColumnBitType) {
+        bin = static_cast<uint32_t>(base[static_cast<size_t>(data_index) *
+                                         static_cast<size_t>(cuda_packed_column_stride[column])]);
       } else if (packed_bit_type == kNibbleColumnBitType) {
         bin = static_cast<uint32_t>((base[data_index >> 1] >> ((data_index & 1) << 2)) & 0xf);
       } else if (packed_bit_type == 8) {

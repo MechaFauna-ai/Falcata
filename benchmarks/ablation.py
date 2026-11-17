@@ -54,6 +54,8 @@ ALL_KEYS = {
     "batch_reghist": True,
     "gh_interleave": True,
     "split_packed_read": True,
+    "split_packed_read8": True,
+    "compact_dense_wide_skip": True,
     "small_leaf_construct": True,
     "compact_prefill": False,
     "colmajor_fill": True,

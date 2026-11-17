@@ -1429,6 +1429,34 @@ def build_cells():
     ]:
         cell(f"route/{cid}", profile, params, rounds=rounds, **extra)
 
+    # split_packed_read8: 8-bit row data under feature sampling (continuous columns with NaN, max_bin 63 -- the
+    # shape no 4-bit profile covers) reads each split column straight from the row matrix instead of a per-tree
+    # column-major gather. Flipping it off must train the same model: depth-limited and leaf-wise (selective)
+    # growth, bagged (the out-of-bag traversal reads the same view), fixed point, and with the compact view off
+    # (the split read then strides the full row matrix).
+    leafwise = {"num_leaves": 63, "max_depth": -1, "min_data_in_leaf": 20}
+    bag7 = {"bagging_fraction": 0.7, "bagging_freq": 1}
+    for profile in ["sampled8", "sampled8wide"]:
+        for name, params in [
+            ("quant", {}),
+            ("quant-leafwise", leafwise),
+            ("quant-bagged", {**leafwise, **bag7}),
+            ("fixedpoint-bagged", {**leafwise, **bag7, "quant_mode": "fixedpoint", "lambda_l2": 10.0}),
+            ("nocompact", {**leafwise, **bag7, "cuda_plan": "auto,compact_quant:off"}),
+        ]:
+            base = f"{profile}/r8-{name}"
+            cell(base, profile, params)
+            plan = params.get("cuda_plan", "auto") + ",split_packed_read8:off"
+            cell(f"{profile}/flip-split_packed_read8-{name}", profile, {**params, "cuda_plan": plan}, equal_to=base)
+            if name == "quant-bagged":
+                for key in ("compact_dense_wide_skip", "compact_quant"):
+                    cell(
+                        f"{profile}/flip-{key}-{name}",
+                        profile,
+                        {**params, "cuda_plan": f"auto,{key}:off"},
+                        equal_to=base,
+                    )
+
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}
@@ -1475,6 +1503,13 @@ def build_profile(name):
         X = rng.integers(0, 6, size=(n, m)).astype(np.float64)
         y = X @ rng.standard_normal(m) + rng.standard_normal(n)
         base.update({"max_bin": 15, "feature_fraction": 0.2})
+    elif name in ("sampled8", "sampled8wide"):
+        # continuous columns, 20 % NaN, max_bin 63: 8-bit row data (no 4-bit packing) under feature sampling
+        m = 300
+        X = rng.standard_normal((n, m))
+        y = X[:, :30] @ rng.standard_normal(30) + rng.standard_normal(n)
+        X[rng.random((n, m)) < 0.2] = np.nan
+        base.update({"max_bin": 63, "feature_fraction": 0.3 if name == "sampled8" else 0.7})
     elif name == "sampledwide":
         # ~120 sampled byte slots over several feature partitions: the multi-partition tiled compact fill
         m = 1200
