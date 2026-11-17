@@ -14,7 +14,7 @@ level-parallel GPU kernels rather than one split at a time.
 
 - Hybrid level-batched growth with leaf-wise-identical trees.
 - Quantized training (``quant_mode``), an execution planner (``cuda_plan``),
-  and GPU inference via NVIDIA FIL.
+  and native GPU inference.
 - Every optimization gated bit-identical against the reference path by
   regression gates run locally on a GPU (exceptions documented under
   ``cuda_plan``).

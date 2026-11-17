@@ -73,9 +73,7 @@ void GBDT::PredictRawByMapInRange(const std::unordered_map<int, double>& feature
   }
 }
 
-void GBDT::PredictInRange(const double* features, double* output, const PredictionEarlyStopInstance* early_stop,
-                          const PredictRange& range) const {
-  PredictRawInRange(features, output, early_stop, range);
+void GBDT::ConvertRawToPrediction(double* output, const PredictRange& range) const {
   if (average_output_ && range.num_iteration > 0) {
     for (int k = 0; k < NumOutputPerIteration(); ++k) {
       output[k] /= range.num_iteration;
@@ -86,17 +84,32 @@ void GBDT::PredictInRange(const double* features, double* output, const Predicti
   }
 }
 
+Boosting::TreeRangeView GBDT::TreesInRange(const PredictRange& range) const {
+  TreeRangeView view;
+  view.num_tree_per_iteration = num_tree_per_iteration_;
+  view.num_output = NumOutputPerIteration();
+  view.vector_leaf = vector_leaf_mode_;
+  view.num_feature = max_feature_idx_ + 1;
+  const size_t begin = static_cast<size_t>(range.start_iteration) * num_tree_per_iteration_;
+  const size_t end = begin + static_cast<size_t>(range.num_iteration) * num_tree_per_iteration_;
+  CHECK_LE(end, models_.size());
+  view.trees.reserve(end - begin);
+  for (size_t i = begin; i < end; ++i) {
+    view.trees.push_back(models_[i].get());
+  }
+  return view;
+}
+
+void GBDT::PredictInRange(const double* features, double* output, const PredictionEarlyStopInstance* early_stop,
+                          const PredictRange& range) const {
+  PredictRawInRange(features, output, early_stop, range);
+  ConvertRawToPrediction(output, range);
+}
+
 void GBDT::PredictByMapInRange(const std::unordered_map<int, double>& features, double* output,
                                const PredictionEarlyStopInstance* early_stop, const PredictRange& range) const {
   PredictRawByMapInRange(features, output, early_stop, range);
-  if (average_output_ && range.num_iteration > 0) {
-    for (int k = 0; k < NumOutputPerIteration(); ++k) {
-      output[k] /= range.num_iteration;
-    }
-  }
-  if (objective_function_ != nullptr) {
-    objective_function_->ConvertOutput(output, output);
-  }
+  ConvertRawToPrediction(output, range);
 }
 
 void GBDT::PredictLeafIndexInRange(const double* features, double* output, const PredictRange& range) const {

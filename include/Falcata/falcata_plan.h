@@ -1389,6 +1389,11 @@ inline bool FalcataVerifyEnabled() {
  *    pop before the comparison, so a MISMATCH line must appear
  *  - ``r3rebuild``  test hook for the parallel shadow: rebuilds its kept order
  *    from the records on every level
+ *  - ``predict_kernel=row|ilp|tile`` the CUDA predictor uses this kernel for raw scores instead of the one its
+ *    plan picks, and ``predict_ilp=N`` (1, 2, 4 or 8 trees in flight per thread) and ``predict_tile_rows=N``
+ *    (rows per block) set that kernel's shape: for benchmarks; every kernel is exact, so none changes any result
+ *  - ``predict_chunk_rows=N`` the CUDA predictor copies a host input to the device N rows at a time (tests the
+ *    chunked path on small inputs); does not change any result
  * debug and dump also keep trees off the device-driven flows (the device
  * controller does not replicate these hooks). The 1.1 tokens syncpairs,
  * aggressive and maxsplits=N, and the FALCATA_SINGLE_STREAM switch, were removed
@@ -1407,6 +1412,10 @@ struct FalcataDebugOptions {
   int64_t vramfree_mib = -1;  // -1 = the real free memory
   int smcount = -1;  // -1 = the device's real multiprocessor count
   unsigned smsites = ~0u;  // the sites smcount applies to (FalcataSMSite)
+  std::string predict_kernel;       // "" = the CUDA predictor's own plan
+  int predict_ilp = 0;              // 0 = the plan's
+  int predict_tile_rows = 0;        // 0 = the plan's
+  int64_t predict_chunk_rows = 0;   // 0 = sized from free device memory
 };
 
 inline const FalcataDebugOptions& FalcataDebug() {
@@ -1463,6 +1472,14 @@ inline const FalcataDebugOptions& FalcataDebug() {
             Log::Warning("FALCATA_DEBUG: smsites=0 applies smcount to no site");
           }
         }
+      } else if (token.rfind("predict_kernel=", 0) == 0) {
+        o.predict_kernel = token.substr(15);
+      } else if (token.rfind("predict_ilp=", 0) == 0) {
+        o.predict_ilp = std::atoi(token.c_str() + 12);
+      } else if (token.rfind("predict_tile_rows=", 0) == 0) {
+        o.predict_tile_rows = std::atoi(token.c_str() + 18);
+      } else if (token.rfind("predict_chunk_rows=", 0) == 0) {
+        o.predict_chunk_rows = std::max<int64_t>(0, std::atoll(token.c_str() + 19));
       } else if (!token.empty()) {
         Log::Warning("FALCATA_DEBUG: unknown token \"%s\" ignored", token.c_str());
       }
