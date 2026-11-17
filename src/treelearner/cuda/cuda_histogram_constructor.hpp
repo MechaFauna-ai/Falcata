@@ -86,6 +86,13 @@ inline constexpr int kDetRowsPerThread = 32;
 // slot budget and the per-block row-group cap it buys (dy adapts down when
 // the widest partition's item count is large).
 inline constexpr size_t kDetDenseSlotBudget = 96 * 1024 * 1024;
+// Deterministic float-mode SPARSE construct: byte budget of the row-tile
+// partials of ONE histogram pipeline (each tile row is 2 * num_total_bin_
+// doubles, 16 bytes per bin). Below it the tile count is the classic
+// min(kDetTileCap, ceil(num_data / kDetRowsPerThread)); above it the tile
+// count yields (fewer tiles, more rows per thread), like the dense slab's.
+// FALCATA_TEST_DET_TILE_BUDGET_MB overrides it (developer/testing knob).
+inline constexpr size_t kDetSparseTileBudget = 96 * 1024 * 1024;
 inline constexpr int kDetDenseDyCap = 32;
 // Deterministic dense BATCHED construct (hybrid level batch): maximum pairs a
 // level may hold and still take the det path (each pair needs at least one
@@ -1242,11 +1249,20 @@ class CUDAHistogramConstructor {
   /*! \brief CUDA histograms buffer for each block */
   CUDAVector<float> cuda_hist_buffer_;
   /*! \brief Per-row-tile partial histograms for the deterministic float-mode
-   *  sparse construct, [tile][2 * num_total_bin_]. det_tile_alloc_ is the
-   *  allocated tile count; launches clamp their grid to it. Unused by
-   *  quantized training (integer atomics are order-invariant). */
+   *  sparse construct, [pipeline][tile][2 * num_total_bin_]. det_sparse_tile_cap_
+   *  is the allocated tile count per pipeline; launches clamp their grid to it.
+   *  Unused by quantized training (integer atomics are order-invariant). */
   CUDAVector<hist_t> cuda_det_tile_partials_;
+  /*! \brief Logical row-tile cap of the deterministic constructs,
+   *  min(kDetTileCap, ceil(num_data / kDetRowsPerThread)); the dense det
+   *  launches clamp to it as well. */
   int det_tile_alloc_ = 0;
+  /*! \brief Tiles per pipeline actually allocated in cuda_det_tile_partials_
+   *  (InitDeterministicTileScratch): det_tile_alloc_ under the byte budget
+   *  kDetSparseTileBudget, fewer above it, 0 when no deterministic sparse
+   *  construct can launch (quantized training or dense row data). Every sparse
+   *  det launch clamps to and strides by THIS. */
+  int det_sparse_tile_cap_ = 0;
   /*! \brief Dense deterministic construct: slot rows [tile * dy + row_group]
    *  [slot_stride] in double. Engaged (det_dense_dy_ > 0) only for
    *  non-quantized training whose widest partition exceeds the shared-memory

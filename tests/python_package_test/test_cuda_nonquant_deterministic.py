@@ -246,3 +246,37 @@ def test_nonquant_deterministic_key_does_not_touch_quantized_cuda(objective, qua
     on = _model_md5({**params, "cuda_plan": "auto"}, X, y, 12)
     off = _model_md5({**params, "cuda_plan": "auto,nonquant_deterministic:off"}, X, y, 12)
     assert on == off
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("rows", "cols", "extra"),
+    [
+        (30000, 60, {"num_leaves": 63, "max_depth": 6}),
+        (30000, 60, {"num_leaves": 63, "max_depth": -1}),
+        (20000, 400, {"num_leaves": 31, "max_depth": 5, "max_bin": 255, "bagging_fraction": 0.7, "bagging_freq": 1}),
+    ],
+)
+@pytest.mark.parametrize("budget_mb", ["0", "0.5"])
+def test_nonquant_sparse_tile_budget_keeps_the_model_cuda(rows, cols, extra, budget_mb, monkeypatch, capfd):
+    """The deterministic sparse construct's tile partials are held within a byte budget per pipeline (issue #534);
+    above it the construct runs fewer row tiles of more rows. Its double sums of float32 gradients are exact, so the
+    tiling must not change the model: a budget of one tile (0) and a few tiles (0.5 MB) train the default's model."""
+    X, y = _data("regression", rows, cols, seed=29, sparse=True)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "quant_mode": "none",
+        "learning_rate": 0.1,
+        "min_data_in_leaf": 5,
+        "verbose": 1,
+        "seed": 7,
+        **extra,
+    }
+    default = _model_md5(params, X, y, 12)
+    capfd.readouterr()
+    monkeypatch.setenv("FALCATA_TEST_DET_TILE_BUDGET_MB", budget_mb)
+    capped = _model_md5(params, X, y, 12)
+    log = capfd.readouterr()
+    assert "Deterministic sparse histogram construct:" in log.out + log.err, "the budget did not cap the tiles"
+    assert capped == default

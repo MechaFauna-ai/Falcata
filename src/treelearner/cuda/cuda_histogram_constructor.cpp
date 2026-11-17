@@ -1433,21 +1433,40 @@ void CUDAHistogramConstructor::InvalidateCompactPrefill() {
   }
 }
 
-// Per-row-tile partials of the deterministic float-mode SPARSE construct (CUDAConstructHistogramSparse*Deterministic
+// Per-row-tile partials of the deterministic float-mode SPARSE construct (CUDAConstructHistogramSparse[GM]Deterministic
 // Kernel): [pipeline][tile][2 * num_total_bin_]. det_tile_alloc_ is kept for every dataset, because the dense
 // deterministic construct clamps its tile grid with it, but the buffer is only allocated when a sparse
 // deterministic construct can run: non-quantized training on sparse row data. Otherwise it would be dead memory of
 // kNumHistPipelines * kDetTileCap * 2 * sizeof(hist_t) = 8 KB per histogram bin (issue #534).
+// Where it is allocated, it is held within kDetSparseTileBudget per pipeline: under the budget the tile count is
+// det_tile_alloc_ as before (identical launches); above it fewer tiles of more rows (det_sparse_tile_cap_), which
+// every sparse deterministic launch clamps its grid to and strides its region by. Without the budget a wide sparse
+// dataset took 8 KB per histogram bin here (14 GiB at 1.7 million bins).
 void CUDAHistogramConstructor::InitDeterministicTileScratch(const data_size_t num_data) {
   det_tile_alloc_ = std::min(kDetTileCap, (num_data + kDetRowsPerThread - 1) / kDetRowsPerThread);
-  if (!use_quantized_grad_ && cuda_row_data_->is_sparse()) {
+  if (!use_quantized_grad_ && cuda_row_data_->is_sparse() && det_tile_alloc_ > 0 && num_total_bin_ > 0) {
+    size_t budget = kDetSparseTileBudget;
+    const char* env = std::getenv("FALCATA_TEST_DET_TILE_BUDGET_MB");
+    if (env != nullptr && env[0] != '\0') {
+      budget = static_cast<size_t>(std::max(0.0, std::atof(env)) * 1024.0 * 1024.0);
+    }
+    const size_t per_tile = static_cast<size_t>(2) * static_cast<size_t>(num_total_bin_) * sizeof(hist_t);
+    det_sparse_tile_cap_ = static_cast<int>(
+      std::max<size_t>(1, std::min<size_t>(static_cast<size_t>(det_tile_alloc_), budget / per_tile)));
+    if (det_sparse_tile_cap_ < det_tile_alloc_) {
+      Log::Info("Deterministic sparse histogram construct: %d row tiles instead of %d (tile partials of %d bins "
+                "capped at %.0f MB per pipeline)", det_sparse_tile_cap_, det_tile_alloc_, num_total_bin_,
+                budget / 1048576.0);
+    }
     // One region per histogram pipeline: pipelined pair-constructs run on
     // different pipeline streams, so a shared region would let one construct's
     // tiles overwrite another's before its merge reads them. Launches clamp
-    // their tile grid to det_tile_alloc_, so the buffer can never be written
-    // past its end.
-    cuda_det_tile_partials_.Resize(static_cast<size_t>(kNumHistPipelines) * det_tile_alloc_ * 2 * num_total_bin_);
+    // their tile grid to det_sparse_tile_cap_, so the buffer can never be
+    // written past its end.
+    cuda_det_tile_partials_.ResizeDiscard(static_cast<size_t>(kNumHistPipelines) * det_sparse_tile_cap_ * 2 *
+                                          num_total_bin_);
   } else {
+    det_sparse_tile_cap_ = 0;
     cuda_det_tile_partials_.Clear();
   }
 }
