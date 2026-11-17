@@ -75,6 +75,17 @@ std::vector<std::vector<int>> OneFeaturePerGroup(const std::vector<int>& used_fe
   return features_in_group;
 }
 
+// Sampled rows on which two features of one single-value group may both be off
+// their most frequent bin. Such a row keeps the bin of only one of them (the
+// last pushed), so every other feature of the group is read at its most
+// frequent bin there and the row goes to the wrong side of that feature's
+// splits: training counts it in one leaf, prediction routes it to another.
+// LightGBM tolerated total_sample_cnt / 10000 such rows per group; bundles are
+// exact here: a feature joins a single-value group only if it conflicts with
+// none of the group's sampled rows (on the CPU, the second round turns a group
+// with any conflict into a multi-value group, which keeps every feature's bin).
+constexpr data_size_t kEFBMaxConflictCnt = 0;
+
 inline bool MaskBit(const uint64_t* mask, int j) {
   return ((mask[j >> 6] >> (j & 63)) & 1ULL) != 0;
 }
@@ -106,9 +117,8 @@ std::vector<int> FixSampleIndices(const BinMapper* bin_mapper,
 }
 
 // The classic view: per-column arrays of sampled values and row ids, as the
-// samplers produce them (values after BinMapper::FindBin, which compacts and
-// sorts them in place: the pairing of values[j] with indices[j] that bundling
-// sees is the historical one and is kept exactly).
+// samplers produce them; values[j] is the value of row indices[j]
+// (BinMapper::FindBin leaves the arrays as they are).
 class ArraysEFBSampleView : public EFBSampleView {
  public:
   ArraysEFBSampleView(int** sample_indices, double** sample_values,
@@ -289,8 +299,7 @@ std::vector<std::vector<int>> FindGroups(
   const size_t mark_words = (static_cast<size_t>(total_sample_cnt) + 63) / 64;
   const int max_search_group = 100;
   const int max_bin_per_group = 256;
-  const data_size_t single_val_max_conflict_cnt =
-      static_cast<data_size_t>(total_sample_cnt / 10000);
+  const data_size_t single_val_max_conflict_cnt = kEFBMaxConflictCnt;
   multi_val_group->clear();
 
   Random rand(num_data);
@@ -596,8 +605,7 @@ bool EFBNoBundlingPossible(const std::vector<uint64_t>& bitmaps,
                            data_size_t total_sample_cnt, bool is_sparse) {
   const int num_features = static_cast<int>(cnt.size());
   const size_t words_per_feature = (static_cast<size_t>(total_sample_cnt) + 63) / 64;
-  const data_size_t max_conflict =
-      static_cast<data_size_t>(total_sample_cnt / 10000);
+  const data_size_t max_conflict = kEFBMaxConflictCnt;
   if (is_sparse) {
     // second round of FindGroups must be a no-op: it regroups (and merges)
     // groups whose dense rate is below the 0.4 threshold
@@ -895,6 +903,25 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
         *bin_mappers, sample, static_cast<data_size_t>(total_sample_cnt),
         used_features, num_data_, lgbm_is_gpu_used,
         is_sparse, &group_is_multi_val);
+    if (static_cast<size_t>(num_data_) > total_sample_cnt) {
+      // the group search proves exclusivity on the sampled rows only
+      int bundled = 0;
+      for (size_t g = 0; g < features_in_group.size(); ++g) {
+        if (!group_is_multi_val[g] && features_in_group[g].size() > 1) {
+          bundled += static_cast<int>(features_in_group[g].size());
+        }
+      }
+      if (bundled > 0) {
+        Log::Warning(
+            "Feature bundling put %d features into shared bins after checking "
+            "%zu of %d rows for conflicts. A row outside the sample where two "
+            "of them are both off their most frequent bin keeps only one of "
+            "the two bins and is routed wrongly by the other's splits. Set "
+            "bin_construct_sample_cnt >= the number of rows for exact "
+            "bundles, or enable_bundle=false.",
+            bundled, total_sample_cnt, num_data_);
+      }
+    }
   }
 
   num_features_ = 0;

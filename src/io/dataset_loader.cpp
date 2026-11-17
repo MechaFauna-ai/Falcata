@@ -814,8 +814,7 @@ namespace {
 
 // EFB view of a SampleColumnSource: row ids are re-derived from the source one
 // column at a time; the most-frequent-bin flags of each entry were recorded
-// while the column's bin mapper was found (they depend on the values as
-// FindBin left them, which are not kept).
+// while the column's bin mapper was found (the values are not kept).
 class SourceEFBSampleView : public EFBSampleView {
  public:
   SourceEFBSampleView(const SampleColumnSource& source,
@@ -886,8 +885,9 @@ Dataset* DatasetLoader::ConstructFromSampleSource(const SampleColumnSource& sour
 
   // One column at a time per thread: expand it from the source, find its bin
   // mapper, record what feature bundling needs later (its count and, where the
-  // default bin is not the most frequent one, which entries of the values as
-  // FindBin left them fall into the most frequent bin), drop the expansion.
+  // default bin is not the most frequent one, which entries fall into the most
+  // frequent bin: entry j is the value of the row GetColumnIndices lists j-th),
+  // drop the expansion.
   // Host peak: the source + threads x one expanded column, instead of every
   // column expanded at once.
   std::vector<int> num_per_col(num_col, 0);

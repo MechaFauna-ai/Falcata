@@ -8,6 +8,7 @@
 #include <Falcata/meta.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <random>
@@ -181,4 +182,68 @@ TEST(FindGroups, BitmapAndArrayRowSetsGiveTheSameGroups) {
     }
   }
   EXPECT_TRUE(bundled);  // the search does merge columns, so the conflict counts matter
+}
+
+// Two columns off their most frequent bin on one common sampled row must not share a single-value group: that row
+// would keep the bin of only one of them, and the other's splits would route it wrongly. LightGBM tolerated
+// total_sample_cnt / 10000 such rows per group (here 2); bundles are now exact. On the CPU second round (is_sparse)
+// the pair may still share a group, but only a multi-value one, which keeps both bins.
+TEST(FindGroups, ColumnsThatShareARowDoNotShareASingleValueGroup) {
+  const data_size_t total = 20000;
+  std::vector<std::unique_ptr<BinMapper>> mappers;
+  std::vector<std::vector<int>> indices;
+  // column 0: rows [0, 400); column 1: rows [399, 799) (row 399 in common); column 2: rows [1000, 1400) (exclusive)
+  for (int first : {0, 399, 1000}) {
+    std::vector<double> values(400, 1.0);
+    std::vector<int> rows;
+    for (int r = 0; r < 400; ++r) {
+      rows.push_back(first + r);
+    }
+    mappers.push_back(MakeBinMapper(values, total));
+    indices.push_back(rows);
+  }
+  std::vector<int*> index_ptrs;
+  std::vector<int> num_per_col, order;
+  for (int f = 0; f < 3; ++f) {
+    index_ptrs.push_back(indices[f].data());
+    num_per_col.push_back(static_cast<int>(indices[f].size()));
+    order.push_back(f);
+  }
+  for (int setting = 0; setting < 4; ++setting) {
+    const bool is_use_gpu = setting & 1;
+    const bool is_sparse = setting & 2;
+    std::vector<int8_t> multi_val;
+    const auto groups = Falcata::FindGroups(mappers, order, index_ptrs.data(), num_per_col.data(), 3, total, total,
+                                            is_use_gpu, is_sparse, &multi_val);
+    ASSERT_EQ(groups.size(), multi_val.size());
+    bool bundled = false;
+    for (size_t g = 0; g < groups.size(); ++g) {
+      const bool has0 = std::count(groups[g].begin(), groups[g].end(), 0) > 0;
+      const bool has1 = std::count(groups[g].begin(), groups[g].end(), 1) > 0;
+      EXPECT_FALSE(has0 && has1 && !multi_val[g]) << "setting " << setting;
+      bundled = bundled || groups[g].size() > 1;
+    }
+    EXPECT_TRUE(bundled) << "setting " << setting;  // the exclusive column still bundles
+  }
+}
+
+// FindBin sorts a copy: bundling pairs the sampled values with their row ids afterwards (the most-frequent-bin masks
+// of FixSampleIndices), which an in-place sort scrambles.
+TEST(FindBin, LeavesTheSampledValuesInPlace) {
+  std::vector<double> values;
+  for (int i = 0; i < 3000; ++i) {
+    values.push_back(i % 7 == 0 ? std::nan("") : 0.5 + (i * 7919) % 13);
+  }
+  const std::vector<double> before = values;
+  BinMapper mapper;
+  mapper.FindBin(values.data(), static_cast<int>(values.size()), values.size() + 500, 255, 1, 1, false,
+                 Falcata::BinType::NumericalBin, true, false, {});
+  ASSERT_EQ(values.size(), before.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (std::isnan(before[i])) {
+      EXPECT_TRUE(std::isnan(values[i])) << i;
+    } else {
+      EXPECT_EQ(values[i], before[i]) << i;
+    }
+  }
 }

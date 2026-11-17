@@ -27,6 +27,15 @@ with NaN, a binding min_data floor -- and asserts, per parameterized case:
 Cases cover quant_mode=fixedpoint and quant_mode=none (the vulnerable sync
 kernels are shared), both on CUDA. Runtime is a few minutes.
 
+A third case appends 0/1 and three-valued columns that exclusive feature
+bundling merges into shared groups (one-hot blocks, mostly-one columns,
+columns that collide on a few rows, columns whose most frequent value is not
+zero). The 5-valued columns above are never sparse enough to bundle, so the
+first two cases cannot see a row that bundling puts in the wrong bin; that is
+how rows of bundled 0/1 columns crossing their splits (2,501 row-visits in
+300 iterations of one production fit) went unnoticed. The case asserts that
+the dataset really bundles, so it cannot stop covering EFB silently.
+
 Usage:
   python tests/gates/leaf_integrity.py
   python tests/gates/leaf_integrity.py --trees 2000   # quicker smoke
@@ -54,6 +63,56 @@ def synthetic_data(rows, feats, seed=0, nan_frac=0.15):
     signal = np.where(np.isnan(x[:, 0]), 0.0, x[:, 0]) - np.where(np.isnan(x[:, 1]), 0.0, x[:, 1])
     y = (0.05 * signal + rng.normal(size=rows)).astype(np.float32)
     return x, y
+
+
+def bundled_columns(rows, seed=0):
+    """0/1 and three-valued columns for exclusive feature bundling: one-hot
+    blocks (exclusive, must bundle), mostly-one columns (most frequent bin is
+    not the zero bin), pairs of rare columns that share a few rows (fewer than
+    the rows / 10000 LightGBM let a bundle keep), and 0 / 0.5 / 1 columns with
+    a partner that is 1 on some of their early ones (bundled wrongly when the
+    search pairs a value with another row's id)."""
+    rng = np.random.default_rng(seed + 1000)
+    cols = []
+    for _ in range(3):  # one-hot blocks of 10 levels
+        level = rng.integers(0, 10, size=rows)
+        cols.extend((level == k).astype(np.float32) for k in range(10))
+    for p in (0.002, 0.01):  # mostly ones
+        cols.append((rng.random(rows) >= p).astype(np.float32))
+    shared = max(1, rows // 40000)
+    for _ in range(6):  # rare pairs that share `shared` rows
+        a = rng.choice(rows, rows // 50, replace=False)
+        rest = np.setdiff1d(np.arange(rows), a)
+        b = np.concatenate([rng.choice(rest, rows // 50 - shared, replace=False), a[:shared]])
+        for idx in (a, b):
+            c = np.zeros(rows, np.float32)
+            c[idx] = 1
+            cols.append(c)
+    for _ in range(3):  # most frequent value 0.5, a partner on early ones
+        v = rng.choice([0.0, 0.5, 1.0], size=rows, p=[0.05, 0.9, 0.05]).astype(np.float32)
+        ones = np.where(v == 1.0)[0]
+        early = ones[ones < rows // 2]
+        partner = np.zeros(rows, np.float32)
+        partner[early[: len(early) // 4]] = 1
+        cols.extend([v, partner])
+    return np.stack(cols, axis=1)
+
+
+def num_groups(dataset):
+    import os
+    import tempfile
+
+    fd, path = tempfile.mkstemp(suffix=".txt")
+    os.close(fd)
+    try:
+        dataset._dump_text(path)
+        with open(path) as f:
+            for line in f:
+                if line.startswith("num_groups:"):
+                    return int(line.split(":")[1])
+    finally:
+        os.remove(path)
+    raise RuntimeError("no num_groups line in the dataset dump")
 
 
 def parse_model(text):
@@ -148,14 +207,26 @@ def case_params(quant_mode, floor):
     }
 
 
-def run_case(lgb, name, quant_mode, rows, feats, trees, seed):
+def run_case(lgb, name, quant_mode, rows, feats, trees, seed, bundled=False):
     x, y = synthetic_data(rows, feats, seed=seed)
+    if bundled:
+        b = bundled_columns(rows, seed=seed)
+        x = np.ascontiguousarray(np.hstack([x[:, : feats // 4], b]))
+        y = (y + 0.3 * (b[:, :30].argmax(1) % 3) + 0.5 * (b[:, 30:] @ np.linspace(1.0, 2.0, b.shape[1] - 30))).astype(
+            np.float32
+        )
     floor = max(1, rows // 56)  # production min_data-to-rows ratio
     params = case_params(quant_mode, floor)
-    booster = lgb.train(params, lgb.Dataset(x, label=y, params=params), num_boost_round=trees)
+    dataset = lgb.Dataset(x, label=y, params=params, free_raw_data=False)
+    booster = lgb.train(params, dataset, num_boost_round=trees)
     text = booster.model_to_string()
     floor_read, counts, weights = parse_model(text)
     ok = check_recorded_counts(name, floor_read, counts, weights)
+    if bundled:
+        groups = num_groups(dataset)
+        bundles = groups < x.shape[1]
+        print(f"{'PASS' if bundles else 'FAIL'} {name} bundling: {x.shape[1]} features in {groups} groups")
+        ok = ok and bundles
     rt_ok, b_text = check_round_trip(name, booster, text, x[:50_000])
     reach_ok = check_reachability(name, b_text, x, counts)
     del booster
@@ -175,6 +246,7 @@ def main():
     results = [
         run_case(lgb, "fixedpoint", "fixedpoint", args.rows, args.features, args.trees, args.seed),
         run_case(lgb, "quant-none", "none", args.rows, args.features, args.trees, args.seed + 1),
+        run_case(lgb, "bundled", "fixedpoint", args.rows, args.features, args.trees, args.seed + 2, bundled=True),
     ]
     return 0 if all(results) else 1
 

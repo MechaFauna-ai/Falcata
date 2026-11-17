@@ -194,7 +194,7 @@ class BinMapper {
 
   /*!
   * \brief Construct feature value to bin mapper according feature values
-  * \param values (Sampled) values of this feature, Note: not include zero.
+  * \param values (Sampled) values of this feature, Note: not include zero. Left unchanged.
   * \param num_values number of values.
   * \param total_sample_cnt number of total sample count, equal with values.size() + num_zeros
   * \param max_bin The maximal number of bin
@@ -206,7 +206,7 @@ class BinMapper {
   * \param zero_as_missing True to use zero as missing value
   * \param forced_upper_bounds Vector of split points that must be used (if this has size less than max_bin, remaining splits are found by the algorithm)
   */
-  void FindBin(double* values, int num_values, size_t total_sample_cnt, int max_bin, int min_data_in_bin, int min_split_data, bool pre_filter, BinType bin_type,
+  void FindBin(const double* values, int num_values, size_t total_sample_cnt, int max_bin, int min_data_in_bin, int min_split_data, bool pre_filter, BinType bin_type,
                bool use_missing, bool zero_as_missing, const std::vector<double>& forced_upper_bounds);
 
   /*!

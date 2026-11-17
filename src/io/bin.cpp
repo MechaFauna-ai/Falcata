@@ -402,7 +402,7 @@ std::vector<double> FindBinWithZeroAsOneBin(const double* distinct_values, const
   }
 }
 
-void BinMapper::FindBin(double* values, int num_sample_values, size_t total_sample_cnt,
+void BinMapper::FindBin(const double* sample_values, int num_sample_values, size_t total_sample_cnt,
                         int max_bin, int min_data_in_bin, int min_split_data, bool pre_filter, BinType bin_type,
                         bool use_missing, bool zero_as_missing,
                         const std::vector<double>& forced_upper_bounds) {
@@ -419,9 +419,17 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
   }
   int na_cnt = 0;
   int non_na_cnt = 0;
+  // The caller's values stay as they are: feature bundling later pairs
+  // values[j] with the sample row id of entry j (the most-frequent-bin masks),
+  // so compacting and sorting them in place, as FindBin once did, handed it
+  // the bins of other rows (rows of bundled columns then landed in the wrong
+  // bin wherever the zero bin is not the most frequent one).
+  std::vector<double> sorted_values;
+  sorted_values.reserve(static_cast<size_t>(std::max(num_sample_values, 0)));
   for (int i = 0; i < num_sample_values; ++i) {
-    if (!std::isnan(values[i])) {
-      values[non_na_cnt++] = values[i];
+    if (!std::isnan(sample_values[i])) {
+      sorted_values.push_back(sample_values[i]);
+      ++non_na_cnt;
     }
   }
   if (!use_missing) {
@@ -437,6 +445,7 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
     }
   }
   num_sample_values = non_na_cnt;
+  double* values = sorted_values.data();
 
   bin_type_ = bin_type;
   default_bin_ = 0;
