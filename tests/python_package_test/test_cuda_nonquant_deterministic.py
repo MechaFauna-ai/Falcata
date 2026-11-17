@@ -260,8 +260,10 @@ def test_nonquant_deterministic_key_does_not_touch_quantized_cuda(objective, qua
 @pytest.mark.parametrize("budget_mb", ["0", "0.5"])
 def test_nonquant_sparse_tile_budget_keeps_the_model_cuda(rows, cols, extra, budget_mb, monkeypatch, capfd):
     """The deterministic sparse construct's tile partials are held within a byte budget per pipeline (issue #534);
-    above it the construct runs fewer row tiles of more rows. Its double sums of float32 gradients are exact, so the
-    tiling must not change the model: a budget of one tile (0) and a few tiles (0.5 MB) train the default's model."""
+    above it the construct runs fewer row tiles of more rows. Double sums of float32 gradients are exact only while a
+    bin's partial sums fit 53 bits, so in general another tiling may change a bin's last bits. On this data (regression
+    gradients of a few decades) they stay exact: a budget of one tile (0) and a few tiles (0.5 MB) train the default's
+    model."""
     X, y = _data("regression", rows, cols, seed=29, sparse=True)
     params = {
         "device_type": "cuda",

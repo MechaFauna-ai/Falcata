@@ -4179,8 +4179,12 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
         for (size_t p = 1; p < part_offsets.size(); ++p) {
           slot_stride = std::max(slot_stride, (part_offsets[p] - part_offsets[p - 1]) << 1);
         }
-        // Double slot rows: float32 gradients summed in double are exact and
-        // order-free, matching the CPU reference bit for bit.
+        // Double slot rows: float32 gradients summed in double are exact, hence
+        // order-free, only while a bin's partial sums fit double's 53-bit
+        // significand. Gradients spanning many decades over hundreds of rows
+        // per bin round, so a different row tiling (det_sparse_tile_cap_, set
+        // when the tile partials exceed kDetSparseTileBudget) can change a
+        // bin's last bits. A given tiling is run-to-run deterministic.
         const size_t smem_per_row = static_cast<size_t>(slot_stride) * sizeof(double);
         constexpr bool kDetSparseConstructEnabled = true;
         if (kDetSparseConstructEnabled && det_sparse_tile_cap_ > 0 && smem_per_row > 0 && smem_per_row <= kDetFloatSharedBudget) {
