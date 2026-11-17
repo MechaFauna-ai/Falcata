@@ -326,7 +326,8 @@ if(USE_CUDA)
     # flag is valid for both host compilers.
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=${OpenMP_CXX_FLAGS}")
     if(NOT MSVC)
-        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-fPIC -Xcompiler=-Wall")
+        # -ffp-contract=off: host code in .cu files follows the CPU build (see CMAKE_CXX_FLAGS below)
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-fPIC -Xcompiler=-Wall -Xcompiler=-ffp-contract=off")
     endif()
     # Warnings-as-errors gate our own sources on GCC/Clang. It is skipped under
     # MSVC -- matching the CPU build, which never adds /WX -- both for the host
@@ -574,6 +575,11 @@ if(UNIX OR MINGW OR CYGWIN)
     CMAKE_CXX_FLAGS
     "${CMAKE_CXX_FLAGS} -pthread -Wextra -Wall -Wno-ignored-attributes -Wno-unknown-pragmas -Wno-return-type"
   )
+  # No fused multiply-add unless the source asks for one. GCC and Clang otherwise contract a * b + c into an
+  # FMA whenever the target has it, so the same data trained to different models (and parsed to different
+  # doubles) depending on whether the compiler's default ISA includes FMA: ubuntu-latest's GCC 15 does and
+  # its GCC 13 did not. MSVC does not contract by default.
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffp-contract=off")
   if(MINGW)
     # ignore this warning: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=95353
     set(
