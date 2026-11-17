@@ -782,6 +782,158 @@ static void CheckFeatureIndexParams(const std::unordered_set<int>& categorical_f
   }
 }
 
+void DatasetLoader::FindBinLocal(int i, double* values, int num_values,
+                                 size_t total_sample_size,
+                                 data_size_t filter_cnt,
+                                 const std::vector<std::vector<double>>& forced_bin_bounds,
+                                 std::unique_ptr<BinMapper>* out) const {
+  if (ignore_features_.count(i) > 0) {
+    out->reset(nullptr);
+    return;
+  }
+  BinType bin_type = BinType::NumericalBin;
+  if (categorical_features_.count(i)) {
+    bin_type = BinType::CategoricalBin;
+    CheckNotMonotoneCategorical(i);
+  }
+  out->reset(new BinMapper());
+  if (config_.max_bin_by_feature.empty()) {
+    (*out)->FindBin(values, num_values, total_sample_size,
+                    config_.max_bin, config_.min_data_in_bin, filter_cnt, config_.feature_pre_filter,
+                    bin_type, config_.use_missing, config_.zero_as_missing,
+                    forced_bin_bounds[i]);
+  } else {
+    (*out)->FindBin(values, num_values, total_sample_size,
+                    config_.max_bin_by_feature[i], config_.min_data_in_bin,
+                    filter_cnt, config_.feature_pre_filter, bin_type, config_.use_missing,
+                    config_.zero_as_missing, forced_bin_bounds[i]);
+  }
+}
+
+namespace {
+
+// EFB view of a SampleColumnSource: row ids are re-derived from the source one
+// column at a time; the most-frequent-bin flags of each entry were recorded
+// while the column's bin mapper was found (they depend on the values as
+// FindBin left them, which are not kept).
+class SourceEFBSampleView : public EFBSampleView {
+ public:
+  SourceEFBSampleView(const SampleColumnSource& source,
+                      const std::vector<int>& num_per_col,
+                      const std::vector<std::vector<uint64_t>>& most_freq_masks)
+      : source_(source), num_per_col_(num_per_col),
+        most_freq_masks_(most_freq_masks) {}
+  int num_sample_col() const override { return source_.num_col(); }
+  const int* num_per_col() const override { return num_per_col_.data(); }
+  const int* Indices(int fidx, std::vector<int>* buf) const override {
+    source_.GetColumnIndices(fidx, buf);
+    CHECK_EQ(static_cast<int>(buf->size()), num_per_col_[fidx]);
+    return buf->data();
+  }
+  const uint64_t* MostFreqMask(int fidx, const BinMapper&,
+                               std::vector<uint64_t>*) const override {
+    CHECK_EQ(most_freq_masks_[fidx].size(),
+             (static_cast<size_t>(num_per_col_[fidx]) + 63) / 64);
+    return most_freq_masks_[fidx].data();
+  }
+
+ private:
+  const SampleColumnSource& source_;
+  const std::vector<int>& num_per_col_;
+  const std::vector<std::vector<uint64_t>>& most_freq_masks_;
+};
+
+}  // namespace
+
+Dataset* DatasetLoader::ConstructFromSampleSource(const SampleColumnSource& source,
+                                                  size_t total_sample_size,
+                                                  data_size_t num_local_data,
+                                                  int64_t num_dist_data) {
+  const int num_col = source.num_col();
+  if (Network::num_machines() > 1) {
+    // distributed bin finding exchanges whole columns between machines; keep
+    // the classic path there (all columns expanded at once)
+    std::vector<std::vector<double>> sample_values(num_col);
+    std::vector<std::vector<int>> sample_idx(num_col);
+    #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(dynamic)
+    for (int i = 0; i < num_col; ++i) {
+      source.GetColumn(i, &sample_values[i], &sample_idx[i]);
+    }
+    return ConstructFromSampleData(Common::Vector2Ptr<double>(&sample_values).data(),
+                                   Common::Vector2Ptr<int>(&sample_idx).data(),
+                                   num_col,
+                                   Common::VectorSize<double>(sample_values).data(),
+                                   total_sample_size, num_local_data, num_dist_data);
+  }
+  CheckSampleSize(total_sample_size, static_cast<size_t>(num_dist_data));
+  const int num_total_features = num_col;
+  std::vector<std::unique_ptr<BinMapper>> bin_mappers(num_total_features);
+  if (feature_names_.empty()) {
+    for (int i = 0; i < num_col; ++i) {
+      std::stringstream str_buf;
+      str_buf << "Column_" << i;
+      feature_names_.push_back(str_buf.str());
+    }
+  }
+  if (!config_.max_bin_by_feature.empty()) {
+    CheckMaxBinByFeature(config_.max_bin_by_feature, num_col);
+  }
+  std::string forced_bins_path = config_.forcedbins_filename;
+  std::vector<std::vector<double>> forced_bin_bounds = DatasetLoader::GetForcedBins(forced_bins_path, num_col, categorical_features_);
+  CheckFeatureIndexParams(categorical_features_, ignore_features_, num_total_features);
+  const data_size_t filter_cnt = static_cast<data_size_t>(
+    static_cast<double>(config_.min_data_in_leaf * total_sample_size) / num_dist_data);
+
+  // One column at a time per thread: expand it from the source, find its bin
+  // mapper, record what feature bundling needs later (its count and, where the
+  // default bin is not the most frequent one, which entries of the values as
+  // FindBin left them fall into the most frequent bin), drop the expansion.
+  // Host peak: the source + threads x one expanded column, instead of every
+  // column expanded at once.
+  std::vector<int> num_per_col(num_col, 0);
+  std::vector<std::vector<uint64_t>> most_freq_masks(num_col);
+  const bool need_masks = config_.enable_bundle;
+  OMP_INIT_EX();
+  #pragma omp parallel num_threads(OMP_NUM_THREADS())
+  {
+  std::vector<double> values;
+  std::vector<int> indices;
+  #pragma omp for schedule(guided)
+  for (int i = 0; i < num_col; ++i) {
+    OMP_LOOP_EX_BEGIN();
+    source.GetColumn(i, &values, &indices);
+    const int n = static_cast<int>(values.size());
+    num_per_col[i] = n;
+    FindBinLocal(i, values.data(), n, total_sample_size, filter_cnt,
+                 forced_bin_bounds, &bin_mappers[i]);
+    const BinMapper* mapper = bin_mappers[i].get();
+    if (need_masks && mapper != nullptr && !mapper->is_trivial() &&
+        mapper->GetDefaultBin() != mapper->GetMostFreqBin()) {
+      auto& mask = most_freq_masks[i];
+      mask.assign((static_cast<size_t>(n) + 63) / 64, 0);
+      const uint32_t most_freq_bin = mapper->GetMostFreqBin();
+      for (int j = 0; j < n; ++j) {
+        if (mapper->ValueToBin(values[j]) == most_freq_bin) {
+          mask[j >> 6] |= (1ULL << (j & 63));
+        }
+      }
+    }
+    OMP_LOOP_EX_END();
+  }
+  }
+  OMP_THROW_EX();
+  CheckCategoricalFeatureNumBin(bin_mappers, config_.max_bin, config_.max_bin_by_feature);
+  auto dataset = std::unique_ptr<Dataset>(new Dataset(num_local_data));
+  const SourceEFBSampleView sample(source, num_per_col, most_freq_masks);
+  dataset->Construct(&bin_mappers, num_total_features, forced_bin_bounds, sample,
+                     total_sample_size, config_);
+  if (dataset->has_raw()) {
+    dataset->ResizeRaw(num_local_data);
+  }
+  dataset->set_feature_names(feature_names_);
+  return dataset.release();
+}
+
 Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
                                                 int** sample_indices,
                                                 int num_col,
@@ -821,27 +973,8 @@ Dataset* DatasetLoader::ConstructFromSampleData(double** sample_values,
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(guided)
     for (int i = 0; i < num_col; ++i) {
       OMP_LOOP_EX_BEGIN();
-      if (ignore_features_.count(i) > 0) {
-        bin_mappers[i] = nullptr;
-        continue;
-      }
-      BinType bin_type = BinType::NumericalBin;
-      if (categorical_features_.count(i)) {
-        bin_type = BinType::CategoricalBin;
-        CheckNotMonotoneCategorical(i);
-      }
-      bin_mappers[i].reset(new BinMapper());
-      if (config_.max_bin_by_feature.empty()) {
-        bin_mappers[i]->FindBin(sample_values[i], num_per_col[i], total_sample_size,
-                                config_.max_bin, config_.min_data_in_bin, filter_cnt, config_.feature_pre_filter,
-                                bin_type, config_.use_missing, config_.zero_as_missing,
-                                forced_bin_bounds[i]);
-      } else {
-        bin_mappers[i]->FindBin(sample_values[i], num_per_col[i], total_sample_size,
-                                config_.max_bin_by_feature[i], config_.min_data_in_bin,
-                                filter_cnt, config_.feature_pre_filter, bin_type, config_.use_missing,
-                                config_.zero_as_missing, forced_bin_bounds[i]);
-      }
+      FindBinLocal(i, sample_values[i], num_per_col[i], total_sample_size,
+                   filter_cnt, forced_bin_bounds, &bin_mappers[i]);
       OMP_LOOP_EX_END();
     }
     OMP_THROW_EX();
