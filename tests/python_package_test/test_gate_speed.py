@@ -158,3 +158,28 @@ def test_needs_more_only_when_the_interval_straddles_the_threshold():
     assert sg.needs_more({"ratio": 1.03, "lo": 0.99, "hi": 1.07}, 3.0)
     assert not sg.needs_more({"ratio": 1.10, "lo": 1.06, "hi": 1.14}, 3.0)
     assert not sg.needs_more({"ratio": 0.99, "lo": 0.97, "hi": 1.01}, 3.0)
+
+
+def test_cell_one_arm_cannot_run_is_not_comparable(tmp_path):
+    cells = ["x", "p"]
+    runs = _runs(["x"], {})
+    runs += [
+        {"cell": "p", "arm": "base", "pair": 0, "ok": False, "skip": "this build has no native CUDA predictor"},
+        {"cell": "p", "arm": "head", "pair": 0, "ok": True, "predict_s": 0.1},
+    ]
+    rc, md, _ = _compare(tmp_path, runs, cells)
+    assert rc == 0, md
+    assert "not comparable" in md
+    assert "no native CUDA predictor" in md
+
+
+def test_predict_cells_wait_for_the_predictor_benchmark():
+    cspec = importlib.util.spec_from_file_location("speed_cells", GATE.parent / "speed_cells.py")
+    speed_cells = importlib.util.module_from_spec(cspec)
+    cspec.loader.exec_module(speed_cells)
+    cells = speed_cells.cells()
+    pred = [c for k, c in cells.items() if k.startswith("predict/")]
+    assert len(pred) == 12
+    have = (GATE.parents[2] / "benchmarks" / "predict_gpu.py").exists()
+    for c in pred:
+        assert (c.missing() is None) or (not have and "#618" in c.missing()) or "CuPy" in c.missing()

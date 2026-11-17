@@ -10,6 +10,12 @@ v6like/*  tree fits shaped like a downstream user's walk-forward run (numerCrypt
           are factor-structured synthetic data generated once per machine (numpy, seed 0) into $FALCATA_SPEED_DATA
           (default ~/.cache/falcata-gates/speed-data) and memory-mapped by every run, so both arms read the same bits.
 
+predict/* prediction alone (no training): a model text with the shape of a downstream user's fits (trees, leaves,
+          classes and columns of numerCrypto run v6, 2026-11, and of the native predictor's benchmark matrix,
+          benchmarks/predict_gpu.py) generated once per machine into $FALCATA_SPEED_DATA, scored on float32 rows
+          (NaN 10%) on the device (CuPy) and from numpy; the timed stage is predict_s (median of the steady calls
+          after one warm-up call, which packs the model). Needs CuPy for the device cells.
+
 A cell whose data is missing is reported by `missing()` and listed as not run in the gate's summary; it is never
 replaced by another cell.
 """
@@ -24,6 +30,48 @@ CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "bench-cache"))
 DATA = Path(os.environ.get("FALCATA_SPEED_DATA", Path.home() / ".cache" / "falcata-gates" / "speed-data"))
 GEN_VERSION = 1
 BASE = {"device_type": "cuda", "seed": 42, "verbose": -1, "metric": "None", "num_threads": min(32, os.cpu_count() or 1)}
+
+
+class PredictCell:
+    """A prediction-only cell: load() -> {"model": model text, "X": float32 rows}; `device` puts X on the card first."""
+
+    kind = "predict"
+
+    def __init__(self, load, device=True, reps=5, needs=()):
+        self.load, self.device, self.reps, self.needs = load, device, reps, needs
+        self.params, self.rounds = {}, 0
+
+    def missing(self):
+        if not (Path(__file__).resolve().parents[2] / "benchmarks" / "predict_gpu.py").exists():
+            return "benchmarks/predict_gpu.py is not in this checkout (it lands with the native predictor, #618)"
+        if self.device:
+            try:
+                import cupy  # noqa: F401, PLC0415
+            except ImportError:
+                return "CuPy is not installed"
+        return None
+
+
+def predict_case(tag, trees, leaves, cols, classes, rows, profile="leafwise"):
+    """Model text and rows of one predict/* cell, generated once (benchmarks/predict_gpu.py's generator, seed 0)."""
+
+    def load():
+        import sys  # noqa: PLC0415
+
+        root = Path(__file__).resolve().parents[2]
+        sys.path.insert(0, str(root / "benchmarks"))
+        import predict_gpu  # noqa: PLC0415
+
+        d = DATA / f"predict-v{GEN_VERSION}"
+        d.mkdir(parents=True, exist_ok=True)
+        mf, xf = d / f"{tag}.txt", d / f"{tag}.X.npy"
+        if not mf.exists():
+            mf.write_text(predict_gpu.synthetic_model(trees, leaves, cols, profile, classes, 0.0, "nan", 0))
+        if not xf.exists():
+            np.save(xf, predict_gpu.make_rows(rows, cols, 0.1))
+        return {"model": mf.read_text(), "X": np.load(xf, mmap_mode="r")}
+
+    return load
 
 
 class Cell:
@@ -220,4 +268,18 @@ def cells():
         out[f"v6like/{tag}"] = Cell(
             p, it, (lambda t=tag, r=rows, c=cols, kk=k: synthetic(t, r, c, kk)), construct=_construct_v6
         )
+    # (tag, trees per class, leaves, columns, classes, rows): run v6's shapes (many tiny multiclass trees, mid-size
+    # regression forests, wide rows) at a production batch (400 rows) and a research batch (100k-1M rows)
+    for tag, trees, leaves, cols, k, rows in [
+        ("t1000-l63-c500-1m", 1000, 63, 500, 1, 1_000_000),
+        ("t1000-l63-c500-1k", 1000, 63, 500, 1, 1_000),
+        ("t20000-l21-c250-100k", 20000, 21, 250, 1, 100_000),
+        ("t20000-l21-c250-400", 20000, 21, 250, 1, 400),
+        ("t5000-l7-c500-k13-100k", 5000, 7, 500, 13, 100_000),
+        ("t5000-l31-c5000-100k", 5000, 31, 5000, 1, 100_000),
+    ]:
+        for where in ("dev", "host"):
+            out[f"predict/{tag}-{where}"] = PredictCell(
+                predict_case(tag, trees, leaves, cols, k, rows), device=where == "dev"
+            )
     return out

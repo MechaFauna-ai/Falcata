@@ -206,6 +206,8 @@ def child(cell_id, rounds=None):
     rec["falcata"] = flc.__version__
     rec["lib"] = str(Path(flc.__file__).resolve().parent / "lib" / "lib_falcata.so")
     try:
+        if getattr(cell, "kind", "") == "predict":
+            return _child_predict(cell, rec, dm, flc)
         t0 = time.perf_counter()
         data = cell.load()
         rec["load_s"] = time.perf_counter() - t0
@@ -237,6 +239,76 @@ def child(cell_id, rounds=None):
             t0 = time.perf_counter()
             bst.predict(Xt)
             rec["predict_s"] = time.perf_counter() - t0
+        rec["ok"] = True
+    except Exception as e:  # noqa: BLE001 - the record carries the failure; the parent decides
+        rec["ok"] = False
+        rec["error"] = f"{type(e).__name__}: {e}"
+    rec["host_gb_peak"] = _vmhwm_gb()
+    rec["dev_gb_peak"] = dm.close()
+    print("SPEED " + json.dumps(rec), flush=True)
+    return 0 if rec["ok"] else 1
+
+
+def _has_cuda_predictor(flc):
+    """True when this build's Booster predicts device arrays natively (the C entry point of #618)."""
+    import ctypes
+
+    lib = flc.basic._LIB
+    if not hasattr(lib, "FLC_HasCUDAPredictor"):
+        return False
+    out = ctypes.c_int(0)
+    return lib.FLC_HasCUDAPredictor(ctypes.byref(out)) == 0 and bool(out.value)
+
+
+def _finish(rec, dm):
+    rec["host_gb_peak"] = _vmhwm_gb()
+    rec["dev_gb_peak"] = dm.close()
+    print("SPEED " + json.dumps(rec), flush=True)
+    return 0 if rec["ok"] or rec.get("skip") else 1
+
+
+def _child_predict(cell, rec, dm, flc):
+    """predict/* cells: model load, one warm-up call (packs the model for the device), then the median of the steady
+    calls as predict_s; raw scores (the transform is host code, not the predictor)."""
+    import numpy as np
+
+    try:
+        t0 = time.perf_counter()
+        data = cell.load()
+        rec["load_s"] = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        bst = flc.Booster(model_str=data["model"])
+        rec["create_s"] = time.perf_counter() - t0
+        X = np.ascontiguousarray(data["X"], dtype=np.float32)
+        sync = lambda: None  # noqa: E731
+        if cell.device and not _has_cuda_predictor(flc):
+            # device input needs the native CUDA predictor (#618) in BOTH arms; compare() reports the cell as not
+            # comparable instead of failing the gate
+            rec["ok"] = False
+            rec["skip"] = "this build has no native CUDA predictor (#618)"
+            return _finish(rec, dm)
+        if cell.device:
+            import cupy  # noqa: PLC0415
+
+            X = cupy.asarray(X)
+            sync = cupy.cuda.get_current_stream().synchronize
+        t0 = time.perf_counter()
+        bst.predict(X, raw_score=True)
+        sync()
+        rec["predict_first_s"] = time.perf_counter() - t0
+        times = []
+        for _ in range(cell.reps):
+            t0 = time.perf_counter()
+            bst.predict(X, raw_score=True)
+            sync()
+            times.append(time.perf_counter() - t0)
+        rec["predict_s"] = float(np.median(times))
+        out = bst.predict(X, raw_score=True)
+        out = out.get() if hasattr(out, "get") else np.asarray(out)
+        rec["pred_md5"] = hashlib.md5(np.ascontiguousarray(out, dtype=np.float64).tobytes()).hexdigest()
+        rec["rows_per_s"] = int(X.shape[0] / rec["predict_s"])
+        rec["num_trees"] = bst.num_trees()
+        rec["md5"] = model_md5(bst)
         rec["ok"] = True
     except Exception as e:  # noqa: BLE001 - the record carries the failure; the parent decides
         rec["ok"] = False
@@ -430,8 +502,9 @@ def compare(args):
     fail_pct = args.fail_pct if args.fail_pct is not None else res["fail_pct"]
     mem_pct = args.mem_fail_pct if args.mem_fail_pct is not None else res["mem_fail_pct"]
     alpha = args.alpha if args.alpha is not None else res["alpha"]
-    errors = [r for r in res["runs"] if not r.get("ok")]
-    stats = {c: cell_stats(res["runs"], c) for c in res["cells"]}
+    errors = [r for r in res["runs"] if not r.get("ok") and not r.get("skip")]
+    not_comparable = {r["cell"]: f"{r.get('arm')}: {r['skip']}" for r in res["runs"] if r.get("skip")}
+    stats = {c: cell_stats(res["runs"], c) for c in res["cells"] if c not in not_comparable}
     ps = {(c, st): s.get("p_slower") for c, d in stats.items() for st, s in d.items() if st in STAGES}
     pf = {(c, st): s.get("p_faster") for c, d in stats.items() for st, s in d.items() if st in STAGES}
     adj_s, adj_f = holm(ps), holm(pf)
@@ -481,6 +554,7 @@ def compare(args):
             f"{len(errors)} run(s) failed, first: {errors[0]['cell']} ({errors[0].get('arm')}): "
             f"{str(errors[0].get('error'))[:300]}"
         )
+    res["not_comparable"] = not_comparable
     verdict = "FAIL" if fails else ("INCONCLUSIVE" if inconclusive else "PASS")
     md = _markdown(res, rows, mem_rows, changed, unstable, fails, inconclusive, verdict, fail_pct, mem_pct, alpha)
     if args.markdown:
@@ -514,6 +588,12 @@ def _markdown(res, rows, mem_rows, changed, unstable, fails, inconclusive, verdi
         lines += [
             "**Inconclusive** (slower by the threshold or more, not significant at the pair limit)",
             *[f"- {f}" for f in inconclusive],
+            "",
+        ]
+    if res.get("not_comparable"):
+        lines += [
+            "**Cells not comparable (a feature only one arm has):** "
+            + ", ".join(f"{c} ({why})" for c, why in res["not_comparable"].items()),
             "",
         ]
     if res.get("skipped"):
