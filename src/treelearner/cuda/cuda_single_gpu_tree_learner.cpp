@@ -7489,6 +7489,12 @@ void CUDASingleGPUTreeLearner::NCCLReduceHistogram(const int pipeline) {
 }
 
 void CUDASingleGPUTreeLearner::InitLinearTreeCUDA(const Dataset* train_data) {
+  // as LinearTreeLearner::InitLinear (f91ce972): the linear models are fit on the raw feature values, which a Dataset
+  // keeps only when it was constructed with linear_tree=true; raw_index() below read the empty buffer (segfault)
+  if (!train_data->has_raw()) {
+    Log::Fatal("linear_tree=true needs a Dataset constructed with linear_tree=true (it keeps the raw feature "
+               "values the linear models are fit on)");
+  }
   num_numeric_features_ = train_data->num_numeric_features();
   const int num_features = train_data->num_features();
   // Reproduce Dataset::numeric_feature_map_: numeric features numbered in feature order.

@@ -25,7 +25,10 @@ _CHILD = textwrap.dedent(
     x = np.zeros((400, 1))
     x[:, 0] = rng.choice([0, 1, 2**27], size=400)
     y = (x[:, 0] == 2**27).astype(float)
-    params = {"verbose": -1, "num_threads": 2, "min_data_in_leaf": 1, "max_cat_to_onehot": 1, "num_leaves": 2}
+    # device_type=cpu: the save under test is host code; a CUDA context's address-space reservations make the
+    # RLIMIT_AS headroom below meaningless (no allocation ever fails, so the test saw no clean error)
+    params = {"device_type": "cpu", "verbose": -1, "num_threads": 2, "min_data_in_leaf": 1, "max_cat_to_onehot": 1,
+              "num_leaves": 2}
     booster = flc.train(params, flc.Dataset(x, label=y, categorical_feature=[0]), num_boost_round=1)
     # No warm-up save: its freed buffers would let later saves fit. The model
     # text is ~8 MB, built in several copies, so sweeping the headroom puts
