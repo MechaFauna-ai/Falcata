@@ -4290,6 +4290,7 @@ int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
                                   int start_iteration,
                                   int num_iteration,
                                   const char* parameter,
+                                  int deterministic,
                                   int64_t* out_len,
                                   void* out_result,
                                   int64_t* out_stats) {
@@ -4308,6 +4309,7 @@ int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
   (void)start_iteration;
   (void)num_iteration;
   (void)parameter;
+  (void)deterministic;
   (void)out_len;
   (void)out_result;
   (void)out_stats;
@@ -4332,6 +4334,7 @@ int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
   request.on_device = data_on_device != 0;
   request.stream = reinterpret_cast<cudaStream_t>(stream);
   request.predict_type = predict_type;
+  request.deterministic = deterministic != 0;
   request.out = out_result;
   Falcata::CUDAPredictStats stats;
   ref_booster->PredictCUDA(start_iteration, num_iteration, config, request, out_len, &stats);

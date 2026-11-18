@@ -5699,6 +5699,7 @@ class Booster:
         num_iteration: int,
         predict_type: int,
         kwargs: Dict[str, Any],
+        deterministic: bool = False,
     ) -> Any:
         """Predict a dense 2-D numpy or device array with the native CUDA predictor; the result is where the input is."""
         on_device = hasattr(data, "__cuda_array_interface__")
@@ -5773,6 +5774,7 @@ class Booster:
                 ctypes.c_int(start_iteration),
                 ctypes.c_int(num_iteration),
                 _c_str(_param_dict_to_str(kwargs)),
+                ctypes.c_int(1 if deterministic else 0),
                 ctypes.byref(out_len),
                 ctypes.c_void_p(out_ptr),
                 stats,
@@ -5799,6 +5801,7 @@ class Booster:
         data_has_header: bool = False,
         validate_features: bool = False,
         device: Optional[str] = None,
+        deterministic: bool = False,
         use_fil: bool = False,
         **kwargs: Any,
     ) -> _FALCATA_PredictReturnType:
@@ -5849,13 +5852,27 @@ class Booster:
               machine can run the CUDA predictor; the result is a numpy array;
             - everything else (other inputs, ``pred_early_stop``) uses the CPU predictor.
 
-            The choice changes the speed, not the result: raw scores, leaf indices and feature
-            contributions of the CUDA predictor are bit-identical to the CPU predictor's, and normal
-            predictions are converted from the raw scores by the same code. A failure of the CUDA predictor
-            is raised, never retried on the CPU. ``pred_early_stop`` is not implemented on the GPU: with
-            ``device="cuda"`` or a device array it is an error. ``Booster.cuda_predict_stats`` reports the
-            device memory of the last CUDA prediction (the cached model and the call's own buffers) and how
-            a host input was split into row chunks.
+            Both predictors send every row to the same leaves: leaf indices and feature contributions of the
+            CUDA predictor are bit-identical to the CPU predictor's. Raw scores (and the normal predictions
+            converted from them by the same code) are bit-identical with ``deterministic=True``; by default the
+            CUDA predictor adds the leaf values in another fixed order, which changes the last digits (see
+            ``deterministic``). A failure of the CUDA predictor is raised, never retried on the CPU.
+            ``pred_early_stop`` is not implemented on the GPU: with ``device="cuda"`` or a device array it is
+            an error. ``Booster.cuda_predict_stats`` reports the device memory of the last CUDA prediction (the
+            cached model and the call's own buffers) and how a host input was split into row chunks.
+        deterministic : bool, optional (default=False)
+            How the CUDA predictor adds each output's leaf values; the CPU predictor always adds them in tree
+            order and ignores this.
+
+            - ``False`` (the default, fast): in a fixed pairwise order -- groups of 8 iterations in tree order,
+              then a binary tree over the groups -- so that one row's trees are spread over the GPU. The order
+              depends only on the model and the iteration range: a row gets the same bits in any batch, call
+              and GPU. It differs from the in-order sum by rounding only (measured differences are in
+              docs/performance.md, section 8).
+            - ``True``: in tree order, as the CPU predictor does: raw scores and normal predictions are
+              bit-identical to ``device="cpu"``, at a lower speed on small batches.
+
+            Vector-leaf models always add in tree order.
         use_fil : bool, optional (default=False)
             Deprecated, to be removed: predict with cuML's Forest Inference Library instead (requires
             cuML / nvforest; fp32 routing can send rows near a threshold to another leaf). A request FIL
@@ -5897,6 +5914,7 @@ class Booster:
                 num_iteration=num_iteration,
                 predict_type=predict_type,
                 kwargs=kwargs,
+                deterministic=deterministic,
             )
         predictor = _InnerPredictor.from_booster(
             booster=self,

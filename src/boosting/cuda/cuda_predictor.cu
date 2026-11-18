@@ -306,6 +306,183 @@ __global__ void PredictTileWsKernel(const DeviceForestView<TThr> forest, const D
   }
 }
 
+// ------------------------------------------------------------------ kPairwise: the default mode
+// The canonical pairwise sum (PairwisePlan): in-order sums of groups of kPairwiseGroupIterations iterations, then the
+// complete binary tree over the group index. Blocks compute aligned subtrees of that tree, so the bits do not depend on
+// how rows, spans, waves and segments are cut.
+
+// adds element `index` (0-based, in order) to a binary-counter stack of aligned subtree sums (entry l at stack[l*stride])
+__device__ __forceinline__ void PairwisePush(double* stack, int stride, unsigned index, double x) {
+  int level = 0;
+  while ((index >> level) & 1u) {
+    x = __dadd_rn(stack[level * stride], x);
+    ++level;
+  }
+  stack[level * stride] = x;
+}
+
+// the root of the aligned tree over the `count` elements pushed (missing ones count as 0.0, which changes nothing)
+__device__ __forceinline__ double PairwiseFinish(const double* stack, int stride, unsigned count) {
+  double acc = 0.0;
+  bool have = false;
+  for (int level = 0; (count >> level) != 0u; ++level) {
+    if ((count >> level) & 1u) {
+      acc = have ? __dadd_rn(stack[level * stride], acc) : stack[level * stride];
+      have = true;
+    }
+  }
+  return acc;
+}
+
+// the in-order sum (from 0.0) of the leaf values of `count` trees tree0, tree0 + stride, ...; ILP walks in flight
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, int ILP, typename Row>
+__device__ __forceinline__ double GroupSum(const DeviceForestView<TThr>& forest, const Row& row, int tree0, int stride,
+                                           int count) {
+  double sum = 0.0;
+  for (int j0 = 0; j0 < count; j0 += ILP) {
+    int node[ILP];
+    #pragma unroll
+    for (int u = 0; u < ILP; ++u) {
+      node[u] = j0 + u < count ? forest.tree_root[tree0 + (j0 + u) * stride] : -1;
+    }
+    bool active = true;
+    while (active) {
+      active = false;
+      #pragma unroll
+      for (int u = 0; u < ILP; ++u) {
+        if (node[u] >= 0) {
+          node[u] = Step<TIn, TThr, HAS_CAT>(forest, row, node[u]);
+          active |= node[u] >= 0;
+        }
+      }
+    }
+    #pragma unroll
+    for (int u = 0; u < ILP; ++u) {
+      if (j0 + u < count) {
+        sum = __dadd_rn(sum, LeafValue<TIn, TThr, HAS_LINEAR>(forest, row, tree0 + (j0 + u) * stride, ~node[u]));
+      }
+    }
+  }
+  return sum;
+}
+
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool STAGE, int ILP>
+__global__ void PredictPairwiseKernel(const DeviceForestView<TThr> forest, const DeviceRows<TIn> rows, int tree_begin,
+                                      int num_iteration, int num_tree_per_iteration, const PairwisePlan plan,
+                                      double* out, double* partials) {
+  extern __shared__ __align__(16) unsigned char smem[];
+  const int K = num_tree_per_iteration;
+  const int tile_rows = plan.tile_rows;
+  const int k0 = blockIdx.z * plan.out_chunk;
+  const int kb = min(plan.out_chunk, K - k0);
+  const int pairs = tile_rows * kb;            // (row, output) pairs of the block; pair = r + tile_rows * kk
+  const int WG = plan.wave_groups;
+  const int seg = plan.seg;
+  const int segs = WG / seg;
+  const int part_stride = pairs | 1;
+  const int pair_cap = tile_rows * plan.out_chunk;
+  double* part = reinterpret_cast<double*>(smem);                          // [WG][part_stride]
+  double* segsum = part + static_cast<size_t>(WG) * (pair_cap | 1);         // [segs][pairs]
+  double* stack = segsum + static_cast<size_t>(segs) * pair_cap;            // [levels][pairs]
+  TIn* xs = reinterpret_cast<TIn*>(stack + static_cast<size_t>(plan.levels) * pair_cap);
+  const int num_col = rows.num_col;
+  const int x_stride = num_col | 1;
+  const int64_t row0 = static_cast<int64_t>(blockIdx.x) * tile_rows;
+  const int valid_rows = static_cast<int>(min(static_cast<int64_t>(tile_rows), rows.num_row - row0));
+  if (STAGE) {
+    const int64_t total = static_cast<int64_t>(tile_rows) * num_col;
+    const bool column_major = rows.row_stride == 1 && rows.col_stride != 1;
+    for (int64_t i = threadIdx.x; i < total; i += blockDim.x) {
+      const int64_t rr = column_major ? i % tile_rows : i / num_col;
+      const int f = static_cast<int>(column_major ? i / tile_rows : i - rr * num_col);
+      const int64_t r = row0 + rr;
+      xs[rr * x_stride + f] = r < rows.num_row
+          ? SnapZero(rows.data[r * rows.row_stride + static_cast<int64_t>(f) * rows.col_stride]) : TIn(0);
+    }
+    __syncthreads();
+  }
+  const int num_groups = (num_iteration + kPairwiseGroupIterations - 1) / kPairwiseGroupIterations;
+  const int g_span = blockIdx.y * plan.span_groups;
+  const int span_end = min(g_span + plan.span_groups, num_groups);
+  const int waves = (span_end - g_span + WG - 1) / WG;
+  const int tasks = pairs * WG;
+  const int lane = threadIdx.x % 32;
+  for (int w = 0; w < waves; ++w) {
+    const int gw0 = g_span + w * WG;
+    // 1. one task per (row, output, group); rows vary fastest, so a warp's lanes share trees
+    for (int t = threadIdx.x; t < tasks; t += blockDim.x) {
+      const int r = t % tile_rows;
+      const int rest = t / tile_rows;
+      const int kk = rest % kb;
+      const int gw = rest / kb;
+      const int g = gw0 + gw;
+      double p = 0.0;
+      if (r < valid_rows && g < num_groups) {
+        const int it0 = g * kPairwiseGroupIterations;
+        const int count = min(kPairwiseGroupIterations, num_iteration - it0);
+        const int tree0 = tree_begin + it0 * K + k0 + kk;
+        if (STAGE) {
+          const SharedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride, num_col};
+          p = GroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, ILP>(forest, row, tree0, K, count);
+        } else {
+          const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
+          p = GroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, ILP>(forest, row, tree0, K, count);
+        }
+      }
+      part[gw * part_stride + r + tile_rows * kk] = p;
+    }
+    __syncthreads();
+    // 2. aligned segments of `seg` group sums by warp shuffles; lanes hold consecutive groups of one pair
+    const int rounded = (tasks + 31) / 32 * 32;
+    for (int base = threadIdx.x - lane; base < rounded; base += blockDim.x) {
+      const int u = base + lane;
+      const int pair = u / WG;
+      const int gw = u % WG;
+      double v = u < tasks ? part[gw * part_stride + pair] : 0.0;
+      for (int off = 1; off < seg; off <<= 1) {
+        v = __dadd_rn(v, __shfl_xor_sync(0xffffffffu, v, off));
+      }
+      if (u < tasks && gw % seg == 0) {
+        segsum[(gw / seg) * pairs + pair] = v;
+      }
+    }
+    __syncthreads();
+    // 3. the wave's segment sums enter each pair's stack, in group order (the next wave rewrites segsum only after
+    //    its first barrier, which every pusher reaches after pushing)
+    for (int pair = threadIdx.x; pair < pairs; pair += blockDim.x) {
+      for (int sg = 0; sg < segs; ++sg) {
+        PairwisePush(stack + pair, pairs, static_cast<unsigned>(w * segs + sg), segsum[sg * pairs + pair]);
+      }
+    }
+  }
+  __syncthreads();
+  for (int pair = threadIdx.x; pair < pairs; pair += blockDim.x) {
+    const int r = pair % tile_rows;
+    const int k = k0 + pair / tile_rows;
+    if (r < valid_rows) {
+      const double v = PairwiseFinish(stack + pair, pairs, static_cast<unsigned>(waves * segs));
+      if (plan.num_spans == 1) {
+        out[(row0 + r) * K + k] = v;
+      } else {
+        partials[(static_cast<int64_t>(blockIdx.y) * rows.num_row + row0 + r) * K + k] = v;
+      }
+    }
+  }
+}
+
+// the spans' subtree sums of one (row, output), added by the same aligned tree
+__global__ void PairwiseCombineKernel(const double* partials, int64_t cells, int num_spans, double* out) {
+  const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= cells) {
+    return;
+  }
+  double stack[32];
+  for (int s = 0; s < num_spans; ++s) {
+    PairwisePush(stack, 1, static_cast<unsigned>(s), partials[static_cast<int64_t>(s) * cells + i]);
+  }
+  out[i] = PairwiseFinish(stack, 1, static_cast<unsigned>(num_spans));
+}
+
 // ------------------------------------------------------------------ vector leaves and leaf indices
 
 // vector leaves: each tree adds leaf_dim values; the row's outputs are summed in place, tree by tree
@@ -576,6 +753,52 @@ void LaunchScalar(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& r
   }
 }
 
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool STAGE>
+void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
+                       int num_iteration, int num_tree_per_iteration, const PairwisePlan& plan, double* out,
+                       double* partials, cudaStream_t stream) {
+  const dim3 grid(Blocks(rows.num_row, plan.tile_rows), plan.num_spans,
+                  (num_tree_per_iteration + plan.out_chunk - 1) / plan.out_chunk);
+  const size_t shared = PairwiseSharedBytes(plan, rows.num_col, sizeof(TIn));
+#define FLC_PW_KERNEL(U)                                                                                       \
+  {                                                                                                            \
+    auto kernel = PredictPairwiseKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, STAGE, U>;                             \
+    if (shared > (size_t(48) << 10)) {                                                                         \
+      CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,           \
+                                                static_cast<int>(shared)));                                    \
+    }                                                                                                          \
+    kernel<<<grid, plan.block_threads, shared, stream>>>(forest, rows, tree_begin, num_iteration,             \
+                                                         num_tree_per_iteration, plan, out, partials);         \
+  }
+  if (plan.ilp >= 8) {
+    FLC_PW_KERNEL(8)
+  } else if (plan.ilp >= 4) {
+    FLC_PW_KERNEL(4)
+  } else if (plan.ilp >= 2) {
+    FLC_PW_KERNEL(2)
+  } else {
+    FLC_PW_KERNEL(1)
+  }
+#undef FLC_PW_KERNEL
+  if (plan.num_spans > 1) {
+    const int64_t cells = rows.num_row * num_tree_per_iteration;
+    PairwiseCombineKernel<<<Blocks(cells, 128), 128, 0, stream>>>(partials, cells, plan.num_spans, out);
+  }
+}
+
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR>
+void LaunchPairwise(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
+                    int num_iteration, int num_tree_per_iteration, const PairwisePlan& plan, double* out,
+                    double* partials, cudaStream_t stream) {
+  if (plan.stage_rows) {
+    LaunchPairwiseIlp<TIn, TThr, HAS_CAT, HAS_LINEAR, true>(forest, rows, tree_begin, num_iteration,
+                                                            num_tree_per_iteration, plan, out, partials, stream);
+  } else {
+    LaunchPairwiseIlp<TIn, TThr, HAS_CAT, HAS_LINEAR, false>(forest, rows, tree_begin, num_iteration,
+                                                             num_tree_per_iteration, plan, out, partials, stream);
+  }
+}
+
 }  // namespace
 
 size_t TileWsSharedBytes(const PredictPlan& plan, int num_col, size_t input_elem, int num_tree_per_iteration) {
@@ -633,6 +856,46 @@ void LaunchPredictRawKernel(const DeviceForestView<TThr>& forest, const DeviceRo
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
+size_t PairwiseSharedBytes(const PairwisePlan& plan, int num_col, size_t input_elem) {
+  const size_t pair_cap = static_cast<size_t>(plan.tile_rows) * plan.out_chunk;
+  size_t bytes = (static_cast<size_t>(plan.wave_groups) * (pair_cap | 1) +
+                  static_cast<size_t>(plan.wave_groups / plan.seg) * pair_cap +
+                  static_cast<size_t>(plan.levels) * pair_cap) * sizeof(double);
+  if (plan.stage_rows) {
+    bytes += static_cast<size_t>(plan.tile_rows) * (num_col | 1) * input_elem;
+  }
+  return bytes;
+}
+
+template <typename TIn, typename TThr>
+void LaunchPredictPairwiseKernel(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
+                                 int num_iteration, int num_tree_per_iteration, const PairwisePlan& plan, double* out,
+                                 double* partials, cudaStream_t stream) {
+  if (rows.num_row == 0) {
+    return;
+  }
+  if (num_iteration == 0) {
+    CUDASUCCESS_OR_FATAL(cudaMemsetAsync(out, 0, sizeof(double) * rows.num_row * num_tree_per_iteration, stream));
+  } else if (forest.has_categorical) {
+    if (forest.has_linear) {
+      LaunchPairwise<TIn, TThr, true, true>(forest, rows, tree_begin, num_iteration, num_tree_per_iteration, plan, out,
+                                            partials, stream);
+    } else {
+      LaunchPairwise<TIn, TThr, true, false>(forest, rows, tree_begin, num_iteration, num_tree_per_iteration, plan,
+                                             out, partials, stream);
+    }
+  } else {
+    if (forest.has_linear) {
+      LaunchPairwise<TIn, TThr, false, true>(forest, rows, tree_begin, num_iteration, num_tree_per_iteration, plan,
+                                             out, partials, stream);
+    } else {
+      LaunchPairwise<TIn, TThr, false, false>(forest, rows, tree_begin, num_iteration, num_tree_per_iteration, plan,
+                                              out, partials, stream);
+    }
+  }
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
 template <typename TIn, typename TThr>
 void LaunchPredictLeafKernel(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
                              int num_tree, int32_t* out, cudaStream_t stream) {
@@ -685,6 +948,12 @@ template void LaunchPredictRawKernel<float, float>(const DeviceForestView<float>
                                                    int, int, bool, const PredictPlan&, double*, cudaStream_t);
 template void LaunchPredictRawKernel<double, double>(const DeviceForestView<double>&, const DeviceRows<double>&, int,
                                                      int, int, int, bool, const PredictPlan&, double*, cudaStream_t);
+template void LaunchPredictPairwiseKernel<float, float>(const DeviceForestView<float>&, const DeviceRows<float>&, int,
+                                                        int, int, const PairwisePlan&, double*, double*,
+                                                        cudaStream_t);
+template void LaunchPredictPairwiseKernel<double, double>(const DeviceForestView<double>&, const DeviceRows<double>&,
+                                                          int, int, int, const PairwisePlan&, double*, double*,
+                                                          cudaStream_t);
 template void LaunchPredictLeafKernel<float, float>(const DeviceForestView<float>&, const DeviceRows<float>&, int, int,
                                                     int32_t*, cudaStream_t);
 template void LaunchPredictLeafKernel<double, double>(const DeviceForestView<double>&, const DeviceRows<double>&, int,
