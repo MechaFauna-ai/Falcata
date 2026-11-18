@@ -24,6 +24,9 @@ CUDALambdarankNDCG::CUDALambdarankNDCG(const std::vector<std::string>& strs): CU
 CUDALambdarankNDCG::~CUDALambdarankNDCG() {}
 
 void CUDALambdarankNDCG::Init(const Metadata& metadata, data_size_t num_data) {
+  if (metadata.positions() != nullptr) {
+    Log::Fatal("Positions in learning to rank are not supported with device_type=cuda yet; use device_type=cpu");
+  }
   CUDALambdaRankObjectiveInterface<LambdarankNDCG>::Init(metadata, num_data);
   cuda_inverse_max_dcgs_.Resize(this->inverse_max_dcgs_.size());
   CopyFromHostToCUDADevice(cuda_inverse_max_dcgs_.RawData(), this->inverse_max_dcgs_.data(), this->inverse_max_dcgs_.size(), __FILE__, __LINE__);
@@ -58,6 +61,9 @@ CUDARankXENDCG::CUDARankXENDCG(const std::vector<std::string>& strs): CUDALambda
 CUDARankXENDCG::~CUDARankXENDCG() {}
 
 void CUDARankXENDCG::Init(const Metadata& metadata, data_size_t num_data) {
+  if (metadata.positions() != nullptr) {
+    Log::Fatal("Positions in learning to rank are not supported with device_type=cuda yet; use device_type=cpu");
+  }
   CUDALambdaRankObjectiveInterface<RankXENDCG>::Init(metadata, num_data);
   // RankXENDCG::Init seeds rands_[q] with seed_ + q (Random(int) stores the seed as its unsigned state); the device
   // generators start from the same states, so every Init reseeds them

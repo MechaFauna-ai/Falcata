@@ -690,9 +690,9 @@ void Metadata::SetPosition(const data_size_t* positions, data_size_t len) {
     num_positions_ = 0;
     return;
   }
-  #ifdef USE_CUDA
-  Log::Fatal("Positions in learning to rank is not supported in CUDA version yet.");
-  #endif  // USE_CUDA
+  // Positions are a property of the data; only the CUDA ranking objectives cannot use them (they refuse at Init), so
+  // a CUDA build trains position-aware ranking on device_type=cpu like a CPU build. The build-wide refusal here made
+  // position-aware ranking unavailable in the CUDA wheel even on the CPU.
   if (num_data_ != len) {
     Log::Fatal("Positions size (%i) doesn't match data size (%i)", len, num_data_);
   }
