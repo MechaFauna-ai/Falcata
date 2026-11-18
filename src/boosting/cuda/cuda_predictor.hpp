@@ -56,6 +56,36 @@ struct PackedNode {
   int32_t right;
 };
 
+/*!
+ * \brief The compact layout the default mode walks (when the model fits it): each tree is a run of slots in depth-first
+ *        order, a node's left child in the next slot and its right child `offset` slots on; a leaf's slot holds its
+ *        value (a double), so a walk ends with the load that reaches the leaf. A slot is 8 bytes for float thresholds
+ *        (CompactSlot<float>: threshold or categorical range index, meta) and 16 for double thresholds. meta holds the
+ *        feature in its low `feature_bits` bits, the right child's offset up to bit 26, then the flags below. Models
+ *        with linear leaves, vector leaves, or a feature index or subtree that does not fit stay on PackedNode only;
+ *        the layout changes no result.
+ */
+constexpr uint32_t kSlotLeftLeaf = 1u << 26;
+constexpr uint32_t kSlotRightLeaf = 1u << 27;
+constexpr int kSlotMissingShift = 28;           // two bits, as kNodeMissingShift
+constexpr uint32_t kSlotDefaultLeft = 1u << 30;
+constexpr uint32_t kSlotCategorical = 1u << 31;
+constexpr uint32_t kSlotLowMask = (1u << 26) - 1;   // feature and offset
+
+template <typename T>
+struct CompactSlot;
+template <>
+struct __align__(8) CompactSlot<float> {
+  uint32_t lo;     // threshold bits / categorical range index, or the leaf value's low word
+  uint32_t meta;   // or the leaf value's high word
+};
+template <>
+struct __align__(16) CompactSlot<double> {
+  double value;    // threshold, categorical range index (low word), or leaf value
+  uint32_t meta;
+  uint32_t pad;
+};
+
 /*! \brief device pointers of one packed forest (every tree of the model) */
 template <typename T>
 struct DeviceForestView {
@@ -73,6 +103,9 @@ struct DeviceForestView {
   const int32_t* node_count = nullptr;        // [total_nodes]: data count of each internal node (TreeSHAP)
   const int32_t* leaf_count = nullptr;        // [total_leaves]: data count of each leaf (TreeSHAP)
   const double* tree_expected = nullptr;      // [num_trees]: Tree::ExpectedValue (TreeSHAP)
+  const CompactSlot<T>* slots = nullptr;      // the compact layout, or nullptr when the model does not fit it
+  const int32_t* slot_start = nullptr;        // [num_trees]: the tree's first slot; ~slot for a single-leaf tree
+  int feature_bits = 0;
   int leaf_dim = 1;
   int max_depth = 0;                          // edges on the longest root-to-leaf path
   bool has_categorical = false;
@@ -144,6 +177,7 @@ struct PairwisePlan {
   int levels = 1;
   int ilp = 8;
   bool stage_rows = true;
+  bool compact = true;      // walk the compact layout when the model has it
   int block_threads = 256;
 };
 

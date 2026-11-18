@@ -366,7 +366,121 @@ __device__ __forceinline__ double GroupSum(const DeviceForestView<TThr>& forest,
   return sum;
 }
 
-template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool STAGE, int ILP>
+// ---- the compact layout (CompactSlot): the walk reads one slot per level, and the slot that reaches a leaf is its value
+
+__device__ __forceinline__ float SlotThreshold(const CompactSlot<float>& s) { return __uint_as_float(s.lo); }
+__device__ __forceinline__ double SlotThreshold(const CompactSlot<double>& s) { return s.value; }
+__device__ __forceinline__ uint32_t SlotRange(const CompactSlot<float>& s) { return s.lo; }
+__device__ __forceinline__ uint32_t SlotRange(const CompactSlot<double>& s) {
+  return static_cast<uint32_t>(__double2loint(s.value));
+}
+__device__ __forceinline__ double SlotValue(const CompactSlot<float>& s) {
+  return __hiloint2double(static_cast<int>(s.meta), static_cast<int>(s.lo));
+}
+__device__ __forceinline__ double SlotValue(const CompactSlot<double>& s) { return s.value; }
+
+// Tree::NumericalDecision as a direction (x is zero-snapped)
+template <typename TIn, typename TThr>
+__device__ __forceinline__ bool GoesLeft(TIn x, TThr threshold, uint32_t meta) {
+  const int missing = static_cast<int>((meta >> kSlotMissingShift) & 3u);
+  if (isnan(x)) {
+    if (missing == kMissingNaN || missing == kMissingZero) {
+      return (meta & kSlotDefaultLeft) != 0;
+    }
+    x = TIn(0);
+  } else if (missing == kMissingZero && x == TIn(0)) {
+    return (meta & kSlotDefaultLeft) != 0;
+  }
+  return x <= threshold;
+}
+
+// Tree::CategoricalDecision as a direction
+template <typename TThr>
+__device__ __forceinline__ bool CategoryGoesLeft(uint32_t range, double v, const DeviceForestView<TThr>& forest) {
+  if (!(v >= -2147483648.0 && v <= 2147483647.0)) {
+    return false;
+  }
+  const int iv = static_cast<int>(v);
+  if (iv < 0) {
+    return false;
+  }
+  const int64_t word_begin = forest.cat_range[2 * static_cast<int64_t>(range)];
+  const int64_t word_count = forest.cat_range[2 * static_cast<int64_t>(range) + 1];
+  const int64_t word = iv / 32;
+  return word < word_count && ((forest.cat_words[word_begin + word] >> (iv % 32)) & 1u);
+}
+
+// one level: moves p to the child and loads it into s; true when that child is a leaf (s then holds its value)
+template <typename TIn, typename TThr, bool HAS_CAT, typename Row>
+__device__ __forceinline__ bool SlotStep(const DeviceForestView<TThr>& forest, const Row& row,
+                                         const CompactSlot<TThr>*& p, CompactSlot<TThr>& s) {
+  const uint32_t meta = s.meta;
+  const uint32_t low = meta & kSlotLowMask;
+  const TIn x = row(low & ((1u << forest.feature_bits) - 1u));
+  bool left;
+  if (HAS_CAT && (meta & kSlotCategorical)) {
+    left = CategoryGoesLeft(SlotRange(s), static_cast<double>(x), forest);
+  } else {
+    left = GoesLeft<TIn, TThr>(x, SlotThreshold(s), meta);
+  }
+  p += left ? 1u : (low >> forest.feature_bits);
+  s = *p;
+  return (meta & (left ? kSlotLeftLeaf : kSlotRightLeaf)) != 0;
+}
+
+// GroupSum on the compact layout
+template <typename TIn, typename TThr, bool HAS_CAT, int ILP, typename Row>
+__device__ __forceinline__ double SlotGroupSum(const DeviceForestView<TThr>& forest, const Row& row, int tree0,
+                                               int stride, int count) {
+  double sum = 0.0;
+  for (int j0 = 0; j0 < count; j0 += ILP) {
+    const CompactSlot<TThr>* p[ILP];
+    CompactSlot<TThr> s[ILP];
+    bool done[ILP];
+    #pragma unroll
+    for (int u = 0; u < ILP; ++u) {
+      if (j0 + u < count) {
+        const int32_t start = forest.slot_start[tree0 + (j0 + u) * stride];
+        p[u] = forest.slots + (start >= 0 ? start : ~start);
+        done[u] = start < 0;
+        s[u] = *p[u];
+      } else {
+        p[u] = forest.slots;
+        done[u] = true;
+        s[u] = CompactSlot<TThr>();
+      }
+    }
+    bool active = true;
+    while (active) {
+      active = false;
+      #pragma unroll
+      for (int u = 0; u < ILP; ++u) {
+        if (!done[u]) {
+          done[u] = SlotStep<TIn, TThr, HAS_CAT>(forest, row, p[u], s[u]);
+          active |= !done[u];
+        }
+      }
+    }
+    #pragma unroll
+    for (int u = 0; u < ILP; ++u) {
+      if (j0 + u < count) {
+        sum = __dadd_rn(sum, SlotValue(s[u]));
+      }
+    }
+  }
+  return sum;
+}
+
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, int ILP, typename Row>
+__device__ __forceinline__ double AnyGroupSum(const DeviceForestView<TThr>& forest, const Row& row, int tree0,
+                                              int stride, int count) {
+  if (COMPACT) {
+    return SlotGroupSum<TIn, TThr, HAS_CAT, ILP>(forest, row, tree0, stride, count);
+  }
+  return GroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, ILP>(forest, row, tree0, stride, count);
+}
+
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP>
 __global__ void PredictPairwiseKernel(const DeviceForestView<TThr> forest, const DeviceRows<TIn> rows, int tree_begin,
                                       int num_iteration, int num_tree_per_iteration, const PairwisePlan plan,
                                       double* out, double* partials) {
@@ -423,10 +537,10 @@ __global__ void PredictPairwiseKernel(const DeviceForestView<TThr> forest, const
         const int tree0 = tree_begin + it0 * K + k0 + kk;
         if (STAGE) {
           const SharedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride, num_col};
-          p = GroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, ILP>(forest, row, tree0, K, count);
+          p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
         } else {
           const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
-          p = GroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, ILP>(forest, row, tree0, K, count);
+          p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
         }
       }
       part[gw * part_stride + r + tile_rows * kk] = p;
@@ -753,7 +867,7 @@ void LaunchScalar(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& r
   }
 }
 
-template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool STAGE>
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE>
 void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
                        int num_iteration, int num_tree_per_iteration, const PairwisePlan& plan, double* out,
                        double* partials, cudaStream_t stream) {
@@ -762,7 +876,7 @@ void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TI
   const size_t shared = PairwiseSharedBytes(plan, rows.num_col, sizeof(TIn));
 #define FLC_PW_KERNEL(U)                                                                                       \
   {                                                                                                            \
-    auto kernel = PredictPairwiseKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, STAGE, U>;                             \
+    auto kernel = PredictPairwiseKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, STAGE, U>;                    \
     if (shared > (size_t(48) << 10)) {                                                                         \
       CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,           \
                                                 static_cast<int>(shared)));                                    \
@@ -774,10 +888,8 @@ void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TI
     FLC_PW_KERNEL(8)
   } else if (plan.ilp >= 4) {
     FLC_PW_KERNEL(4)
-  } else if (plan.ilp >= 2) {
-    FLC_PW_KERNEL(2)
   } else {
-    FLC_PW_KERNEL(1)
+    FLC_PW_KERNEL(2)
   }
 #undef FLC_PW_KERNEL
   if (plan.num_spans > 1) {
@@ -786,16 +898,32 @@ void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TI
   }
 }
 
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT>
+void LaunchPairwiseStage(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
+                         int num_iteration, int num_tree_per_iteration, const PairwisePlan& plan, double* out,
+                         double* partials, cudaStream_t stream) {
+  if (plan.stage_rows) {
+    LaunchPairwiseIlp<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, true>(forest, rows, tree_begin, num_iteration,
+                                                                     num_tree_per_iteration, plan, out, partials,
+                                                                     stream);
+  } else {
+    LaunchPairwiseIlp<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, false>(forest, rows, tree_begin, num_iteration,
+                                                                      num_tree_per_iteration, plan, out, partials,
+                                                                      stream);
+  }
+}
+
+// the compact layout when the model has one (never with linear leaves), else the node layout
 template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR>
 void LaunchPairwise(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
                     int num_iteration, int num_tree_per_iteration, const PairwisePlan& plan, double* out,
                     double* partials, cudaStream_t stream) {
-  if (plan.stage_rows) {
-    LaunchPairwiseIlp<TIn, TThr, HAS_CAT, HAS_LINEAR, true>(forest, rows, tree_begin, num_iteration,
-                                                            num_tree_per_iteration, plan, out, partials, stream);
+  if (!HAS_LINEAR && plan.compact && forest.slots != nullptr) {
+    LaunchPairwiseStage<TIn, TThr, HAS_CAT, false, true>(forest, rows, tree_begin, num_iteration,
+                                                         num_tree_per_iteration, plan, out, partials, stream);
   } else {
-    LaunchPairwiseIlp<TIn, TThr, HAS_CAT, HAS_LINEAR, false>(forest, rows, tree_begin, num_iteration,
-                                                             num_tree_per_iteration, plan, out, partials, stream);
+    LaunchPairwiseStage<TIn, TThr, HAS_CAT, HAS_LINEAR, false>(forest, rows, tree_begin, num_iteration,
+                                                               num_tree_per_iteration, plan, out, partials, stream);
   }
 }
 
