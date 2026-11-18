@@ -8,6 +8,9 @@ moved at the 1e-12 level from run to run (runs/device_default/LINEAR_TREE_DETERM
 shape must give the same model text, coefficients included, on every flow that grows linear trees: the selective
 one-sync flow (budget-limited), the complete device tree (depth-limited), bagging, GOSS, categorical splits, L1,
 path smoothing, stumps, non-quantized training and leaves wide enough for the multi-pass entry loop. CPU parity stays inexact (another summation order).
+Every shape here trains without quantization (quant_mode auto without use_quantized_grad is none), so the trees repeat
+only with the deterministic histograms, which the trainings ask for (cuda_plan key nonquant_deterministic, opt-in
+since 1.2).
 """
 
 import hashlib
@@ -83,6 +86,7 @@ def _train(name):
         "learning_rate": 0.1,
         "seed": 3,
         "verbose": -1,
+        "cuda_plan": "auto,nonquant_deterministic:on",
         **extra,
     }
     ds = flc.Dataset(X, label=y, categorical_feature=cat, params=params)

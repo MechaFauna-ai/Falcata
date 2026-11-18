@@ -9,8 +9,9 @@ and checks each one for:
      tree count matches the emission contract (via the same worker asserts
      as the lattice): every requested iteration, unless boosting saturated
      and stopped early -- which truncates WHOLE iterations only;
-  2. CUDA determinism (quant modes): the identical spec trained twice must be
-     bit-identical;
+  2. CUDA determinism (quant modes, and non-quantized specs that ask for the
+     opt-in cuda_plan key nonquant_deterministic:on): the identical spec
+     trained twice must be bit-identical;
   3. CPU quality reference (tolerant): the CUDA held-out metric must not fall
      behind a full-precision CPU model on the same data and model shape beyond
      tolerance, subject to the existing low-bin and bagging confirmation
@@ -381,13 +382,16 @@ def check_spec(spec):
             f"saturation stop: cuda emitted {a['trees'] // (spec['num_class'] or 1)}/{spec['rounds']} iterations"
         )
     # Determinism rerun. Quantized training is bit-deterministic everywhere
-    # (integer atomics); non-quantized training too since the cuda_plan key
-    # nonquant_deterministic (default on: the float-atomic batched levels
-    # accumulate in 64-bit fixed point, the rest were deterministic already).
-    # Every spec is md5-checked except one that turns the key off. (Linear
-    # trees, ranking objectives and multi-plane vector-leaf trees stay
-    # nondeterministic; the fuzzer draws none of them.)
-    md5_checked = spec["quant_mode"] != "none" or "nonquant_deterministic:off" not in spec.get("cuda_plan", "")
+    # (integer atomics); non-quantized training only in its opt-in mode, the
+    # cuda_plan key nonquant_deterministic:on (the float-atomic batched levels
+    # then accumulate in 64-bit fixed point, the rest were deterministic
+    # already). The fuzzer draws non-quantized specs on the default plan, the
+    # float-atomic kernels, whose models may differ run to run: they are
+    # checked for validity and CPU quality only; a spec (corpus or --spec)
+    # that names the key on is md5-checked too. (Linear trees, ranking
+    # objectives and multi-plane vector-leaf trees stay nondeterministic; the
+    # fuzzer draws none of them.)
+    md5_checked = spec["quant_mode"] != "none" or "nonquant_deterministic:on" in spec.get("cuda_plan", "")
     if md5_checked:
         b = cuda_run(spec, "CUDA determinism rerun", "both pairs; CPU reference not run")
         if "error" in b:
