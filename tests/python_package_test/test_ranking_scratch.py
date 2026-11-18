@@ -13,7 +13,7 @@ from .utils import BuildInfo
 @pytest.mark.parametrize("position_bias", [False, True])
 def test_ranking_scratch_reuse(objective, threads, position_bias):
     if position_bias and BuildInfo.has_cuda:
-        pytest.skip("Positions in learning to rank is not supported in CUDA version yet")
+        pytest.skip("the CUDA ranking objectives refuse positions (test_cuda_ranking_positions.py)")
     rng = np.random.default_rng(7)
     x = rng.normal(size=(256, 4))
     labels = rng.integers(0, 4, len(x))

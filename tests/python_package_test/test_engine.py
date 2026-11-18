@@ -1012,10 +1012,12 @@ def simulate_position_bias(file_dataset_in, file_query_in, file_dataset_out, bas
     return positions_all
 
 
-@pytest.mark.skipif(BuildInfo.has_cuda, reason="Positions in learning to rank is not supported in CUDA version yet")
 def test_ranking_with_position_information_with_file(tmp_path):
     rank_example_dir = Path(__file__).absolute().parents[2] / "examples" / "lambdarank"
     params = {
+        # the CUDA ranking objectives refuse positions (test_cuda_ranking_positions.py); on the CPU every build,
+        # a CUDA build included, trains them
+        "device_type": "cpu",
         "objective": "lambdarank",
         "verbose": -1,
         "eval_at": [3],
@@ -1063,10 +1065,12 @@ def test_ranking_with_position_information_with_file(tmp_path):
         lgb.train(params, lgb_train, valid_sets=lgb_valid, num_boost_round=50)
 
 
-@pytest.mark.skipif(BuildInfo.has_cuda, reason="Positions in learning to rank is not supported in CUDA version yet")
 def test_ranking_with_position_information_with_dataset_constructor(tmp_path):
     rank_example_dir = Path(__file__).absolute().parents[2] / "examples" / "lambdarank"
     params = {
+        # the CUDA ranking objectives refuse positions (test_cuda_ranking_positions.py); on the CPU every build,
+        # a CUDA build included, trains them
+        "device_type": "cpu",
         "objective": "lambdarank",
         "verbose": -1,
         "eval_at": [3],
