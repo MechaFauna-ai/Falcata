@@ -859,7 +859,13 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   tree_start_uploads_.Upload<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_h.data(), num_compact_cols);
 
   compact_packed_view_active_ = false;
-  const bool packed_read8 = !gather_src_is_4bit && FalcataPlan::Get().split_packed_read8;
+  // cuda_plan key split_packed_read8 (#613) serves feature-sampled trees: there the per-tree gather of every sampled
+  // column costs more than reading each split column strided from the 8-bit rows. A tree that holds every column
+  // gathers them once and then reads them contiguously on every level, which wins on deep trees over narrow rows
+  // (higgs, 28 columns, 1023 leaves / depth 10: trees 1.50x slower with the strided read on an RTX 5090), so the
+  // strided read is kept for sampled trees only. Bit-identical either way.
+  const bool tree_is_sampled = num_compact_cols < num_total_cols;
+  const bool packed_read8 = !gather_src_is_4bit && FalcataPlan::Get().split_packed_read8 && tree_is_sampled;
   if ((gather_src_is_4bit || packed_read8) && PackedSplitReadUsable()) {
     // categorical batched-apply descriptors need the plain per-column view
     // (SplitLevelBatched CHECK-enforces it); numerical-only datasets keep the packed read
