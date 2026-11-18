@@ -73,9 +73,12 @@ def test_gradient_keys_are_bit_identical_cuda(objective, extra, quantized, weigh
         "seed": 7,
         **extra,
     }
-    reference = _model_md5({**params, "cuda_plan": "auto"}, X, y, rounds=30, weight=weight)
+    # compared bit for bit: non-quantized, the deterministic histograms (cuda_plan key nonquant_deterministic, opt-in
+    # since 1.2)
+    base = "auto" if quantized else "auto,nonquant_deterministic:on"
+    reference = _model_md5({**params, "cuda_plan": base}, X, y, rounds=30, weight=weight)
     for key in KEYS:
-        assert _model_md5({**params, "cuda_plan": f"auto,{key}:off"}, X, y, rounds=30, weight=weight) == reference, key
+        assert _model_md5({**params, "cuda_plan": f"{base},{key}:off"}, X, y, rounds=30, weight=weight) == reference, key
 
 
 @_REQUIRES_CUDA
@@ -83,7 +86,8 @@ def test_gradient_keys_are_bit_identical_cuda(objective, extra, quantized, weigh
     "extra",
     [
         {"use_quantized_grad": True, "bagging_fraction": 0.6, "bagging_freq": 1},
-        {"use_quantized_grad": False, "cuda_plan": "auto,device_tree:off"},
+        # non-quantized: the deterministic histograms (opt-in since 1.2), since three trainings are compared
+        {"use_quantized_grad": False, "cuda_plan": "auto,device_tree:off,nonquant_deterministic:on"},
         {"use_quantized_grad": True, "objective": "multiclassova", "num_class": 4},
     ],
 )
