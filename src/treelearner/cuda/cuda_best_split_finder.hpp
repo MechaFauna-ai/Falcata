@@ -646,6 +646,13 @@ class CUDABestSplitFinder {
   template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
   void LaunchFindBestSplitsDiscretizedForLeafKernelInner2(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS);
 
+  // the level finder's launch for one L1 / path-smoothing combination (cuda_best_split_finder_level.cuh; the default
+  // combination is compiled in cuda_best_split_finder.cu, the others in cuda_best_split_finder_level_l1_smoothing.cu)
+  template <bool USE_L1, bool USE_SMOOTHING>
+  void LaunchFindBestSplitsDiscretizedForLevelKernelInner(dim3 grid_dim, bool compact_tasks,
+                                                          const CUDAHybridPairDescriptor* pair_descs,
+                                                          const score_t* grad_scale, const score_t* hess_scale);
+
   template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
   void LaunchFindBestSplitsDiscretizedForLeafKernelInner3(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS);
 
