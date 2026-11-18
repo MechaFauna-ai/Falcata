@@ -4057,7 +4057,10 @@ def _empty_like_device(data: Any, shape: Tuple[int, ...], dtype: Any) -> Any:
         return torch.empty(shape, dtype=torch.float64 if dtype == np.float64 else torch.int32, device=data.device)
     import cupy  # noqa: PLC0415
 
-    with cupy.cuda.Device(_cuda_pointer_device(int(data.__cuda_array_interface__["data"][0]))):
+    device = data.device if isinstance(data, cupy.ndarray) else None  # a CuPy array knows its device
+    if device is None:
+        device = cupy.cuda.Device(_cuda_pointer_device(int(data.__cuda_array_interface__["data"][0])))
+    with device:
         return cupy.empty(shape, dtype=dtype)
 
 
