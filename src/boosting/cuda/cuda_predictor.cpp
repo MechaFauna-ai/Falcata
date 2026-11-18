@@ -368,20 +368,28 @@ class CUDAPackedForest {
     std::vector<int32_t> start;
     std::vector<uint32_t> cat_words;
     std::vector<int64_t> cat_range;
-    start.reserve(view.trees.size());
+    start.assign(view.trees.size(), 0);
     struct Pending {
       int child;
       int depth;
     };
     std::vector<Pending> queue;
-    for (const Tree* tree : view.trees) {
-      const Tree& t = *tree;
+    // output by output (tree it * K + k for every iteration of output k, then output k + 1): a block of the default
+    // mode walks one output's trees, which are then contiguous; slot_start keeps the tree order
+    const size_t K = static_cast<size_t>(std::max(1, view.num_tree_per_iteration));
+    const size_t num_iter = view.trees.size() / K;
+    if (num_iter * K != view.trees.size()) {
+      return false;
+    }
+    for (size_t order = 0; order < view.trees.size(); ++order) {
+      const size_t tree_index = (order % num_iter) * K + order / num_iter;
+      const Tree& t = *view.trees[tree_index];
       const int num_leaves = P::NumLeaves(t);
       if (static_cast<int64_t>(slots.size()) + 2 * num_leaves > std::numeric_limits<int32_t>::max()) {
         return false;
       }
       if (num_leaves <= 1) {
-        start.push_back(~static_cast<int32_t>(slots.size()));
+        start[tree_index] = ~static_cast<int32_t>(slots.size());
         slots.push_back(LeafSlot<T>(P::LeafValue(t, 0, 0)));
         continue;
       }
@@ -391,7 +399,7 @@ class CUDAPackedForest {
       const auto& left = P::LeftChild(t);
       const auto& right = P::RightChild(t);
       // breadth first: the top levels of a tree share its first cache lines, and a node's two children are adjacent
-      start.push_back(static_cast<int32_t>(slots.size()));
+      start[tree_index] = static_cast<int32_t>(slots.size());
       queue.assign(1, Pending{0, 0});
       for (size_t head = 0; head < queue.size(); ++head) {
         const Pending cur = queue[head];
