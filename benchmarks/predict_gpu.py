@@ -291,10 +291,13 @@ def differences(a, b):
     }
 
 
-def fil_model(model_text, raw_score, precision, optimize_rows=None):
-    import nvforest  # noqa: PLC0415
+def treelite_model(model_text, cache=None):
+    """Load a model text into Treelite; `cache` (a path) keeps its checkpoint, so the parse is paid once."""
+    import treelite  # noqa: PLC0415
     import treelite.frontend  # noqa: PLC0415
 
+    if cache is not None and Path(cache).exists():
+        return treelite.Model.deserialize(str(cache))
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write(model_text)
         path = f.name
@@ -302,6 +305,15 @@ def fil_model(model_text, raw_score, precision, optimize_rows=None):
         tl = treelite.frontend.load_lightgbm_model(path)
     finally:
         os.remove(path)
+    if cache is not None:
+        tl.serialize(str(cache))
+    return tl
+
+
+def fil_model(model_text, raw_score, precision, optimize_rows=None, cache=None):
+    import nvforest  # noqa: PLC0415
+
+    tl = treelite_model(model_text, cache)
     if raw_score:
         tl.get_header_accessor().set_field("postprocessor", "identity")
     model = nvforest.load_from_treelite_model(tl, device="gpu", precision=precision)
@@ -310,7 +322,7 @@ def fil_model(model_text, raw_score, precision, optimize_rows=None):
     return model
 
 
-def run_case(name, model_text, n_features, rows_list, nan_frac, args, out, ranges=None):
+def run_case(name, model_text, n_features, rows_list, nan_frac, args, out, ranges=None, tl_cache=None):
     import falcata as flc  # noqa: PLC0415
 
     t0 = time.perf_counter()
@@ -383,7 +395,7 @@ def run_case(name, model_text, n_features, rows_list, nan_frac, args, out, range
                     if key not in fil_cache or optimized:
                         t0 = time.perf_counter()
                         fil_cache[key] = fil_model(
-                            model_text, True, precision, Xd[: min(n, 100000)] if optimized else None
+                            model_text, True, precision, Xd[: min(n, 100000)] if optimized else None, tl_cache
                         )
                         rec[f"{tag}_build_s"] = time.perf_counter() - t0
                     fm = fil_cache[key]
@@ -432,6 +444,8 @@ def main():
     p.add_argument("--min-time", type=float, default=0.3, help="seconds of repeated calls per timing")
     p.add_argument("--out", default="-")
     p.add_argument("--cache-dir", default="", help="keep generated model texts here and reuse them")
+    p.add_argument("--treelite-cache", default="", help="keep Treelite checkpoints of the models here (FIL's parse)")
+    p.add_argument("--treelite-only", action="store_true", help="only write the Treelite checkpoints (CPU) and stop")
     args = p.parse_args()
     args.fil_precisions = [x for x in args.fil_precisions.split(",") if x]
     if args.list:
@@ -459,7 +473,11 @@ def main():
                 cached.parent.mkdir(parents=True, exist_ok=True)
                 cached.write_text(text)
         rows = [r for r in rows_list if r * features <= args.max_cells]
-        run_case(name, text, features, rows, args.nan_frac, args, out)
+        tl_cache = Path(args.treelite_cache) / f"{name}.tl" if args.treelite_cache else None
+        if args.treelite_only:
+            treelite_model(text, tl_cache)
+            continue
+        run_case(name, text, features, rows, args.nan_frac, args, out, tl_cache=tl_cache)
     for spec in args.model_file:
         name, path = spec.split("=", 1)
         text = Path(path).read_text()
@@ -467,7 +485,19 @@ def main():
             int(next(line for line in text.splitlines() if line.startswith("max_feature_idx=")).split("=")[1]) + 1
         )
         rows = [r for r in rows_list if r * features <= args.max_cells]
-        run_case(name, text, features, rows, args.nan_frac, args, out, ranges=threshold_ranges(text, features))
+        tl_cache = Path(args.treelite_cache) / f"{name}.tl" if args.treelite_cache else None
+        ranges_cache = Path(args.treelite_cache) / f"{name}.ranges.npz" if args.treelite_cache else None
+        if ranges_cache is not None and ranges_cache.exists():
+            z = np.load(ranges_cache)
+            ranges = (z["lo"], z["hi"])
+        else:
+            ranges = threshold_ranges(text, features)
+            if ranges_cache is not None:
+                np.savez(ranges_cache, lo=ranges[0], hi=ranges[1])
+        if args.treelite_only:
+            treelite_model(text, tl_cache)
+            continue
+        run_case(name, text, features, rows, args.nan_frac, args, out, ranges=ranges, tl_cache=tl_cache)
 
 
 if __name__ == "__main__":
