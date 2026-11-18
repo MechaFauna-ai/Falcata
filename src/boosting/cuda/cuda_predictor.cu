@@ -435,7 +435,7 @@ __device__ __forceinline__ uint32_t SlotStep(const DeviceForestView<TThr>& fores
     left = GoesLeft<TIn, TThr>(x, SlotThreshold(s), meta);
   }
   *leaf = (meta & (left ? kSlotLeftLeaf : kSlotRightLeaf)) != 0;
-  return pos + (left ? 1u : (low >> forest.feature_bits));
+  return pos + (low >> forest.feature_bits) + (left ? 0u : 1u);
 }
 
 // GroupSum on the compact layout: a walk in flight is one slot index (the slot is read at each step)

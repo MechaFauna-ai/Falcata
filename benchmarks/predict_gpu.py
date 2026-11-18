@@ -8,12 +8,12 @@ reachable by the N(0, 1) inputs. ``--model-file`` adds real models (Falcata/Ligh
 
 The native predictor is timed in both summation modes: the default (pairwise) mode and ``deterministic=True`` (tree
 order, bit-identical to the CPU predictor, which every run checks). FIL runs in its default configuration (no
-``optimize()``) in float32 and float64; ``--fil-optimize`` adds its ``optimize()``d layout. Timings are medians of
-repeated calls (at least 5, until ``--min-time`` seconds) after one warm-up call; the warm-up (which packs the model
-for the device, or converts it for FIL) is reported separately as ``first_s``. Throughput is rows per second. The
-default mode's difference from the in-order sum is reported as the largest absolute difference, the largest
-difference relative to the in-order value (over |value| > 1e-300), and the largest difference over the spread
-(standard deviation) of the scores.
+``optimize()``) in float32 and float64, each the best of three timings; ``--fil-optimize`` adds its ``optimize()``d
+layout. Timings are medians of repeated calls (at least 5, until ``--min-time`` seconds) after one warm-up call; the
+warm-up (which packs the model for the device, or converts it for FIL) is reported separately as ``first_s``.
+Throughput is rows per second. The default mode's difference from the in-order sum is reported as the largest
+absolute difference, the largest difference relative to the in-order value (over |value| > 1e-300), and the largest
+difference over the spread (standard deviation) of the scores.
 
     python benchmarks/predict_gpu.py --list
     python benchmarks/predict_gpu.py --cases t1000_l63_f500 --rows 1,1000,100000 --fil --out results.jsonl
@@ -387,8 +387,13 @@ def run_case(name, model_text, n_features, rows_list, nan_frac, args, out, range
                         )
                         rec[f"{tag}_build_s"] = time.perf_counter() - t0
                     fm = fil_cache[key]
-                    _, fil_s, fp = timed(lambda fm=fm, Xd=Xd: fm.predict(Xd), sync, args.min_time)
+                    # FIL's call time varies from one timing to the next on some shapes (an order of magnitude at
+                    # small batches): its best of three timings is the reference
+                    fil_runs = [timed(lambda fm=fm, Xd=Xd: fm.predict(Xd), sync, args.min_time) for _ in range(3)]
+                    fil_s = min(t[1] for t in fil_runs)
+                    fp = fil_runs[-1][2]
                     rec[f"{tag}_dev_rows_per_s"] = n / fil_s
+                    rec[f"{tag}_dev_rows_per_s_runs"] = [n / t[1] for t in fil_runs]
                     fp = cupy.asnumpy(fp).reshape(n, -1)[:cpu_rows].reshape(ref.shape)
                     rec[f"{tag}_max_abs_diff"] = float(np.nanmax(np.abs(fp - ref)))
                     if not optimized and args.fil_host:
