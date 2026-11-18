@@ -662,8 +662,15 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     }
     const int pairs = plan.tile_rows * plan.out_chunk;
     const int group_cap = CeilPow2(std::max(num_groups, 1));
+    // 8 consecutive groups per task whenever the model has 8 groups (64 iterations): a task adds them in registers,
+    // so a wave of walks pays its barriers once per 64 trees; small batches spread a group over lanes instead. The
+    // kernels exist for 1 and 8. Then a wave holds as many units as give about 256 tasks.
+    plan.task_groups = group_lanes == 1 && group_cap >= 8 ? 8 : 1;
+    if (debug.predict_task_groups > 0) {
+      plan.task_groups = group_lanes == 1 && debug.predict_task_groups > 1 ? 8 : 1;
+    }
     plan.wave_groups = 1;
-    while (plan.wave_groups * 2 * pairs * group_lanes <= 256 && plan.wave_groups * 2 <= group_cap) {
+    while (plan.wave_groups * 2 * pairs * group_lanes <= 256 && plan.wave_groups * 2 * plan.task_groups <= group_cap) {
       plan.wave_groups *= 2;
     }
     if (debug.predict_wave_groups > 0) {
@@ -682,12 +689,6 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     if (debug.predict_spans > 0) {
       spans = debug.predict_spans;
     }
-    // 8 consecutive groups per task when the span has them (fewer waves, so fewer barriers per walk); small batches
-    // spread a group over lanes instead. The kernels exist for 1 and 8.
-    plan.task_groups = group_lanes == 1 && plan.wave_groups * 8 <= group_cap ? 8 : 1;
-    if (debug.predict_task_groups > 0) {
-      plan.task_groups = group_lanes == 1 && debug.predict_task_groups > 1 ? 8 : 1;
-    }
     const int unit = plan.wave_groups * plan.task_groups;   // groups per wave
     const int64_t per_span = (std::max(num_groups, 1) + spans - 1) / spans;
     plan.span_groups = std::max(unit, CeilPow2(per_span));
@@ -698,11 +699,11 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     plan.stage_cols = num_feature;
     return plan;
   };
-  // 8 rows per block; up to 32 when the rows alone fill the grid and 32 staged rows take at most 16 KiB (more rows
+  // 8 rows per block; up to 64 when the rows alone fill the grid and the staged rows take at most 16 KiB (more rows
   // share each tree's nodes in a block; wider rows would cost occupancy)
   int tile_rows = 8;
   const size_t row_bytes = static_cast<size_t>(std::max(num_col, num_feature) | 1) * elem;
-  while (tile_rows < 32 && 2 * tile_rows * row_bytes <= (size_t(16) << 10) &&
+  while (tile_rows < 64 && 2 * tile_rows * row_bytes <= (size_t(16) << 10) &&
          std::max<int64_t>(num_row, 1) / (2 * tile_rows) >= target) {
     tile_rows *= 2;
   }
