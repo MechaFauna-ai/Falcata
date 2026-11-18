@@ -1394,10 +1394,11 @@ inline bool FalcataVerifyEnabled() {
  *    block) and ``predict_tile_trees=N`` (trees per tile) set its shape: for benchmarks; both kernels are exact, so
  *    none changes any result
  *  - ``predict_wave_groups=N``, ``predict_spans=N``, ``predict_target_blocks=N``, ``predict_stage=0|1`` and
- *    ``predict_compact=0|1``, ``predict_threads=N`` and ``predict_group_lanes=1|2|4|8`` set the shape of the default (pairwise) mode's kernel: groups
+ *    ``predict_compact=0|1``, ``predict_threads=N``, ``predict_group_lanes=1|2|4|8``, ``predict_task_groups=1|2|4|8``
+ *    and ``predict_out_chunk=N`` set the shape of the default (pairwise) mode's kernel: groups
  *    per wave, tree spans per row tile, the grid the span count aims for, whether rows are staged in shared memory,
- *    which tree layout it walks, threads per block (a wave's tasks beyond them loop), and the lanes sharing one
- *    group's walks; ``predict_tile_rows`` and ``predict_ilp`` apply to it too. The pairwise sum is one fixed order, so none
+ *    which tree layout it walks, threads per block (a wave's tasks beyond them loop), the lanes sharing one group's
+ *    walks, the groups one task adds, and the outputs per block; ``predict_tile_rows`` and ``predict_ilp`` apply to it too. The pairwise sum is one fixed order, so none
  *    of them changes a result
  *  - ``predict_chunk_rows=N`` the CUDA predictor copies a host input to the device N rows at a time (tests the
  *    chunked path on small inputs); does not change any result
@@ -1431,6 +1432,8 @@ struct FalcataDebugOptions {
   int predict_compact = -1;         // -1 = the plan's, 0 = the node layout, 1 = the compact layout where it exists
   int predict_threads = 0;          // 0 = the plan's: threads per block of the default mode (tasks beyond loop)
   int predict_group_lanes = 0;      // 0 = the plan's: lanes sharing one group's walks (1, 2, 4 or 8)
+  int predict_task_groups = 0;      // 0 = the plan's: consecutive groups per task (1, 2, 4 or 8)
+  int predict_out_chunk = 0;        // 0 = the plan's: outputs per block
 };
 
 inline const FalcataDebugOptions& FalcataDebug() {
@@ -1503,6 +1506,10 @@ inline const FalcataDebugOptions& FalcataDebug() {
         o.predict_target_blocks = std::atoi(token.c_str() + 22);
       } else if (token.rfind("predict_stage=", 0) == 0) {
         o.predict_stage = std::atoi(token.c_str() + 14) != 0 ? 1 : 0;
+      } else if (token.rfind("predict_task_groups=", 0) == 0) {
+        o.predict_task_groups = std::atoi(token.c_str() + 20);
+      } else if (token.rfind("predict_out_chunk=", 0) == 0) {
+        o.predict_out_chunk = std::atoi(token.c_str() + 18);
       } else if (token.rfind("predict_group_lanes=", 0) == 0) {
         o.predict_group_lanes = std::atoi(token.c_str() + 20);
       } else if (token.rfind("predict_threads=", 0) == 0) {

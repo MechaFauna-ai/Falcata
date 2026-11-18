@@ -583,11 +583,13 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   const int num_groups = (num_iteration + kPairwiseGroupIterations - 1) / kPairwiseGroupIterations;
   const int g_span = span * plan.span_groups;
   const int span_end = min(g_span + plan.span_groups, num_groups);
-  const int waves = (span_end - g_span + WG - 1) / WG;
+  // a task's unit is task_groups consecutive groups (an aligned subtree it adds itself); a wave holds WG units
+  const int TG = plan.task_groups;
+  const int waves = (span_end - g_span + WG * TG - 1) / (WG * TG);
   const int tasks = pairs * WG;
   const int lane = threadIdx.x % 32;
   for (int w = 0; w < waves; ++w) {
-    const int gw0 = g_span + w * WG;
+    const int gw0 = g_span + w * WG * TG;
     // 1. one task per (row, output, group); rows vary fastest, so a warp's lanes share trees
     if (plan.group_lanes > 1) {
       // small batches: a group's trees are shared by group_lanes adjacent lanes, each walking its consecutive part;
@@ -641,21 +643,42 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
       const int rest = t / tile_rows;
       const int kk = rest % kb;
       const int gw = rest / kb;
-      const int g = gw0 + gw;
-      double p = 0.0;
-      if (r < valid_rows && g < num_groups) {
-        const int it0 = g * kPairwiseGroupIterations;
-        const int count = min(kPairwiseGroupIterations, num_iteration - it0);
-        const int tree0 = tree_begin + it0 * K + k0 + kk;
-        if (STAGE) {
-          const StagedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride};
-          p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
+      // the unit's groups, added by the aligned tree in registers: l0, l1, l2 hold the pending subtrees of 1, 2 and 4
+      // groups; after the last group (TG is a power of two) x is the unit's subtree
+      double x = 0.0, l0 = 0.0, l1 = 0.0, l2 = 0.0;
+      for (int q = 0; q < TG; ++q) {
+        const int g = gw0 + gw * TG + q;
+        double p = 0.0;
+        if (r < valid_rows && g < num_groups) {
+          const int it0 = g * kPairwiseGroupIterations;
+          const int count = min(kPairwiseGroupIterations, num_iteration - it0);
+          const int tree0 = tree_begin + it0 * K + k0 + kk;
+          if (STAGE) {
+            const StagedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride};
+            p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
+          } else {
+            const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
+            p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
+          }
+        }
+        x = p;
+        if (q & 1) {
+          x = __dadd_rn(l0, x);
+          if (q & 2) {
+            x = __dadd_rn(l1, x);
+            if (q & 4) {
+              x = __dadd_rn(l2, x);
+            } else {
+              l2 = x;
+            }
+          } else {
+            l1 = x;
+          }
         } else {
-          const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
-          p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
+          l0 = x;
         }
       }
-      part[gw * part_stride + r + tile_rows * kk] = p;
+      part[gw * part_stride + r + tile_rows * kk] = x;
     }
     }
     __syncthreads();

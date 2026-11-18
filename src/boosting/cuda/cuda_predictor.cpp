@@ -653,7 +653,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
   }
   auto build = [&](int tile_rows, bool stage) {
     PairwisePlan plan;
-    plan.out_chunk = std::min(K, 32);
+    plan.out_chunk = std::min(K, debug.predict_out_chunk > 0 ? debug.predict_out_chunk : 32);
     plan.group_lanes = group_lanes;
     plan.tile_rows = std::max(1, static_cast<int>(std::min<int64_t>(tile_rows, std::max<int64_t>(num_row, 1))));
     while (plan.tile_rows > 1 && plan.tile_rows * plan.out_chunk * group_lanes > 256) {
@@ -681,10 +681,19 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     if (debug.predict_spans > 0) {
       spans = debug.predict_spans;
     }
+    // groups per task (small batches spread a group over lanes instead)
+    plan.task_groups = 1;
+    if (group_lanes == 1 && debug.predict_task_groups > 0) {
+      plan.task_groups = 1 << FloorLog2(std::min(debug.predict_task_groups, 8));
+      while (plan.task_groups > 1 && plan.wave_groups * plan.task_groups > group_cap) {
+        plan.task_groups /= 2;
+      }
+    }
+    const int unit = plan.wave_groups * plan.task_groups;   // groups per wave
     const int64_t per_span = (std::max(num_groups, 1) + spans - 1) / spans;
-    plan.span_groups = std::max(plan.wave_groups, CeilPow2(per_span));
+    plan.span_groups = std::max(unit, CeilPow2(per_span));
     plan.num_spans = std::max(1, (num_groups + plan.span_groups - 1) / plan.span_groups);
-    plan.levels = FloorLog2(plan.span_groups / plan.seg) + 1;
+    plan.levels = FloorLog2(plan.span_groups / (plan.seg * plan.task_groups)) + 1;
     plan.ilp = debug.predict_ilp > 0 ? debug.predict_ilp : 8;
     plan.stage_rows = stage;
     plan.stage_cols = num_feature;
