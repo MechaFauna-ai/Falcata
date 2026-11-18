@@ -17,6 +17,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <map>
 #include <type_traits>
 #include <memory>
 #include <string>
@@ -371,13 +372,13 @@ class CUDAPackedForest {
       }
     }
     int feature_bits = 1;
-    while ((int64_t(1) << feature_bits) <= max_feature) {
+    while ((static_cast<int64_t>(1) << feature_bits) <= max_feature) {
       ++feature_bits;
     }
     if (feature_bits > 20) {
       return false;
     }
-    const int64_t max_offset = (int64_t(1) << (26 - feature_bits)) - 1;
+    const int64_t max_offset = (static_cast<int64_t>(1) << (26 - feature_bits)) - 1;
     std::vector<CompactSlot<T>> slots;
     std::vector<int32_t> start;
     std::vector<uint32_t> cat_words;
@@ -609,7 +610,7 @@ int CeilPow2(int64_t n) {
 
 int FloorLog2(int64_t n) {
   int l = 0;
-  while ((int64_t(2) << l) <= n) {
+  while ((static_cast<int64_t>(2) << l) <= n) {
     ++l;
   }
   return l;
@@ -635,7 +636,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
   // 8 lanes share a group's walks
   int group_lanes = 1;
   const int64_t group_tasks = std::max<int64_t>(num_row, 1) * K * std::max(num_groups, 1);
-  while (group_lanes < 8 && group_tasks * group_lanes * 2 <= int64_t(2048) * limits.sms) {
+  while (group_lanes < 8 && group_tasks * group_lanes * 2 <= static_cast<int64_t>(2048) * limits.sms) {
     group_lanes *= 2;
   }
   if (debug.predict_group_lanes > 0) {

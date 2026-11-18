@@ -6572,18 +6572,22 @@ def predict_many(
     if len(codes) != 1:
         raise TypeError("predict_many: the inputs of one call must be all float32 or all float64")
     predict_type = _C_API_PREDICT_RAW_SCORE if raw_score else _C_API_PREDICT_NORMAL
-    outs = []
+    outs: List[Any] = []
     widths = []
     resolved = []
-    for b, p, start, num in zip(boosters, parts, starts, nums):
+    for b, p, start, num in zip(boosters, parts, starts, nums, strict=True):
         if num is None:
             num = b.best_iteration if start <= 0 else -1
         resolved.append((int(start), int(num)))
         per_row = ctypes.c_int64(0)
         _safe_call(
             _LIB.FLC_BoosterCalcNumPredict(
-                b._handle, ctypes.c_int(1), ctypes.c_int(predict_type), ctypes.c_int(int(start)),
-                ctypes.c_int(int(num)), ctypes.byref(per_row)
+                b._handle,
+                ctypes.c_int(1),
+                ctypes.c_int(predict_type),
+                ctypes.c_int(int(start)),
+                ctypes.c_int(int(num)),
+                ctypes.byref(per_row),
             )
         )
         width = per_row.value
@@ -6592,10 +6596,16 @@ def predict_many(
         widths.append(width)
     c_handles = (ctypes.c_void_p * n)(*[b._handle.value for b in boosters])
     c_data = (ctypes.c_void_p * n)(*[p[1] for p in parts])
-    c_nrow = (ctypes.c_int64 * n)(*[p[3] for p in parts])
+    for p in parts:
+        if max(p[3], abs(p[5]), abs(p[6])) > _MAX_INT32:
+            raise ValueError(
+                "predict_many: rows and strides of a job must fit in 32 bits; predict a larger matrix with "
+                "Booster.predict"
+            )
+    c_nrow = (ctypes.c_int32 * n)(*[p[3] for p in parts])
     c_ncol = (ctypes.c_int32 * n)(*[p[4] for p in parts])
-    c_rs = (ctypes.c_int64 * n)(*[p[5] for p in parts])
-    c_cs = (ctypes.c_int64 * n)(*[p[6] for p in parts])
+    c_rs = (ctypes.c_int32 * n)(*[p[5] for p in parts])
+    c_cs = (ctypes.c_int32 * n)(*[p[6] for p in parts])
     c_start = (ctypes.c_int * n)(*[r[0] for r in resolved])
     c_num = (ctypes.c_int * n)(*[r[1] for r in resolved])
     ptrs = [int(o.__cuda_array_interface__["data"][0]) if on_device else o.ctypes.data for o in outs]

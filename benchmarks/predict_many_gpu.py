@@ -1,4 +1,4 @@
-"""Benchmark for many small GPU predictions: a directory of models, each predicting its own few hundred rows.
+r"""Benchmark for many small GPU predictions: a directory of models, each predicting its own few hundred rows.
 
 This is the shape of a daily scoring run: thousands of model predictions of a few hundred rows each. Models are
 loaded in chunks (``--chunk-bytes`` of model text at a time, so host memory stays bounded), and for each chunk the
@@ -97,19 +97,35 @@ def main():
         paths = paths[: args.count]
     ckpts = json.loads(Path(args.checkpoints).read_text()) if args.checkpoints else {}
     out = open(args.out, "a")
-    out.write(json.dumps({"meta": {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "models": len(paths),
-                                   "rows": args.rows, "variant": os.environ.get("FALCATA_DEBUG", "")}}) + "\n")
+    out.write(
+        json.dumps(
+            {
+                "meta": {
+                    "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "models": len(paths),
+                    "rows": args.rows,
+                    "variant": os.environ.get("FALCATA_DEBUG", ""),
+                }
+            }
+        )
+        + "\n"
+    )
     totals = {}
     for ci, chunk in enumerate(chunks_of(paths, args.chunk_bytes)):
-        rec = {"chunk": ci, "models": len(chunk), "first": chunk[0].stem, "last": chunk[-1].stem,
-               "text_bytes": sum(p.stat().st_size for p in chunk)}
+        rec = {
+            "chunk": ci,
+            "models": len(chunk),
+            "first": chunk[0].stem,
+            "last": chunk[-1].stem,
+            "text_bytes": sum(p.stat().st_size for p in chunk),
+        }
         t0 = time.perf_counter()
         texts = [p.read_text() for p in chunk]
         boosters = [flc.Booster(model_str=t) for t in texts]
         rec["load_s"] = time.perf_counter() - t0
         rec["trees"] = sum(b.num_trees() for b in boosters)
         X = []
-        for p, t, b in zip(chunk, texts, boosters):
+        for p, t, b in zip(chunk, texts, boosters, strict=True):
             cached = Path(args.inputs_dir) / f"{p.stem}.npy" if args.inputs_dir else None
             if cached is not None and cached.exists():
                 X.append(np.load(cached)[: args.rows])
@@ -118,36 +134,54 @@ def main():
         Xd = [cupy.asarray(x) for x in X]
         # warm-up: packs every model (the time a daily run pays once per model and day)
         t0 = time.perf_counter()
-        ref = [b.predict(x, raw_score=True) for b, x in zip(boosters, Xd)]
+        ref = [b.predict(x, raw_score=True) for b, x in zip(boosters, Xd, strict=True)]
         sync()
         rec["native_first_pass_s"] = time.perf_counter() - t0
-        rec["native_loop_s"] = median_time(lambda: [b.predict(x, raw_score=True) for b, x in zip(boosters, Xd)],
-                                           sync, args.reps)
+        rec["native_loop_s"] = median_time(
+            lambda bs=boosters, xs=Xd: [b.predict(x, raw_score=True) for b, x in zip(bs, xs, strict=True)],
+            sync,
+            args.reps,
+        )
         many = flc.predict_many(boosters, Xd, raw_score=True)
-        rec["native_many_matches_loop"] = all(bool(cupy.array_equal(a, b)) for a, b in zip(many, ref))
-        rec["native_many_s"] = median_time(lambda: flc.predict_many(boosters, Xd, raw_score=True), sync, args.reps)
-        rec["native_many_host_s"] = median_time(lambda: flc.predict_many(boosters, X, raw_score=True), sync,
-                                                args.reps)
+        rec["native_many_matches_loop"] = all(bool(cupy.array_equal(a, b)) for a, b in zip(many, ref, strict=True))
+        rec["native_many_s"] = median_time(
+            lambda bs=boosters, xs=Xd: flc.predict_many(bs, xs, raw_score=True), sync, args.reps
+        )
+        rec["native_many_host_s"] = median_time(
+            lambda bs=boosters, xs=X: flc.predict_many(bs, xs, raw_score=True), sync, args.reps
+        )
         if ckpts:
             jobs_b, jobs_x, jobs_h, jobs_n = [], [], [], []
-            for p, b, x, xh in zip(chunk, boosters, Xd, X):
+            for p, b, x, xh in zip(chunk, boosters, Xd, X, strict=True):
                 for k in ckpts.get(p.stem, []):
                     jobs_b.append(b)
                     jobs_x.append(x)
                     jobs_h.append(xh)
                     jobs_n.append(int(k))
             rec["checkpoint_jobs"] = len(jobs_b)
-            loop = [b.predict(x, num_iteration=k, raw_score=True) for b, x, k in zip(jobs_b, jobs_x, jobs_n)]
+            loop = [
+                b.predict(x, num_iteration=k, raw_score=True) for b, x, k in zip(jobs_b, jobs_x, jobs_n, strict=True)
+            ]
             got = flc.predict_many(jobs_b, jobs_x, num_iteration=jobs_n, raw_score=True)
-            rec["native_ckpt_many_matches_loop"] = all(bool(cupy.array_equal(a, b)) for a, b in zip(got, loop))
+            rec["native_ckpt_many_matches_loop"] = all(
+                bool(cupy.array_equal(a, b)) for a, b in zip(got, loop, strict=True)
+            )
             del loop, got
-            rec["native_ckpt_loop_s"] = median_time(
-                lambda: [b.predict(x, num_iteration=k, raw_score=True) for b, x, k in zip(jobs_b, jobs_x, jobs_n)],
-                sync, args.reps)
+
+            def ckpt_loop(bs=jobs_b, xs=jobs_x, ks=jobs_n):
+                return [b.predict(x, num_iteration=k, raw_score=True) for b, x, k in zip(bs, xs, ks, strict=True)]
+
+            rec["native_ckpt_loop_s"] = median_time(ckpt_loop, sync, args.reps)
             rec["native_ckpt_many_s"] = median_time(
-                lambda: flc.predict_many(jobs_b, jobs_x, num_iteration=jobs_n, raw_score=True), sync, args.reps)
+                lambda bs=jobs_b, xs=jobs_x, ks=jobs_n: flc.predict_many(bs, xs, num_iteration=ks, raw_score=True),
+                sync,
+                args.reps,
+            )
             rec["native_ckpt_many_host_s"] = median_time(
-                lambda: flc.predict_many(jobs_b, jobs_h, num_iteration=jobs_n, raw_score=True), sync, args.reps)
+                lambda bs=jobs_b, xs=jobs_h, ks=jobs_n: flc.predict_many(bs, xs, num_iteration=ks, raw_score=True),
+                sync,
+                args.reps,
+            )
         ref_host = [cupy.asnumpy(r).reshape(args.rows, -1) for r in ref]
         del ref, many
         if args.fil:
@@ -157,15 +191,19 @@ def main():
                     t0 = time.perf_counter()
                     models = [fil_model(t, True, precision) for t in texts]
                     rec[f"{tag}_build_s"] = time.perf_counter() - t0
-                    preds = [m.predict(x) for m, x in zip(models, Xd)]
+                    preds = [m.predict(x) for m, x in zip(models, Xd, strict=True)]
                     sync()
                     # FIL's predict() gives class labels for multi-output models: compare single-output models only
-                    diffs = [float(np.nanmax(np.abs(cupy.asnumpy(p).reshape(args.rows, -1) - r)))
-                             for p, r in zip(preds, ref_host) if r.shape[1] == 1]
+                    diffs = [
+                        float(np.nanmax(np.abs(cupy.asnumpy(p).reshape(args.rows, -1) - r)))
+                        for p, r in zip(preds, ref_host, strict=True)
+                        if r.shape[1] == 1
+                    ]
                     rec[f"{tag}_max_abs_diff"] = max(diffs) if diffs else None
                     del preds
-                    rec[f"{tag}_loop_s"] = median_time(lambda: [m.predict(x) for m, x in zip(models, Xd)], sync,
-                                                       args.reps)
+                    rec[f"{tag}_loop_s"] = median_time(
+                        lambda ms=models, xs=Xd: [m.predict(x) for m, x in zip(ms, xs, strict=True)], sync, args.reps
+                    )
                     del models
                 except Exception as exc:  # recorded: one failing FIL configuration is a result
                     rec[f"{tag}_error"] = f"{type(exc).__name__}: {exc}"

@@ -270,11 +270,14 @@ def test_default_mode_is_the_pairwise_sum(zoo, name):
             _assert_pairwise(booster, data, start_iteration=start, num_iteration=num)
         normal = booster.predict(data, device="cuda")
         np.testing.assert_allclose(normal, booster.predict(data, device="cpu"), rtol=1e-12, atol=1e-12)
-        np.testing.assert_array_equal(booster.predict(data, device="cuda", pred_leaf=True),
-                                      booster.predict(data, device="cpu", pred_leaf=True))
+        np.testing.assert_array_equal(
+            booster.predict(data, device="cuda", pred_leaf=True), booster.predict(data, device="cpu", pred_leaf=True)
+        )
         if not name.startswith("linear_tree"):
-            np.testing.assert_array_equal(booster.predict(data[:100], device="cuda", pred_contrib=True),
-                                          booster.predict(data[:100], device="cpu", pred_contrib=True))
+            np.testing.assert_array_equal(
+                booster.predict(data[:100], device="cuda", pred_contrib=True),
+                booster.predict(data[:100], device="cpu", pred_contrib=True),
+            )
 
 
 @requires_cuda
@@ -292,10 +295,8 @@ def test_default_mode_does_not_depend_on_the_batch():
         full = _assert_pairwise(booster, test)
         for lo, hi in ((0, 1), (7, 8), (0, 3), (100, 233), (1999, 2500), (5, 1205)):
             np.testing.assert_array_equal(booster.predict(test[lo:hi], device="cuda", raw_score=True), full[lo:hi])
-        np.testing.assert_array_equal(
-            booster.predict(np.asfortranarray(test), device="cuda", raw_score=True), full)
-        np.testing.assert_array_equal(
-            booster.predict(test[::7], device="cuda", raw_score=True), full[::7])
+        np.testing.assert_array_equal(booster.predict(np.asfortranarray(test), device="cuda", raw_score=True), full)
+        np.testing.assert_array_equal(booster.predict(test[::7], device="cuda", raw_score=True), full[::7])
 
 
 @requires_cuda
@@ -507,28 +508,32 @@ def test_predict_many_equals_one_by_one(zoo):
         for deterministic in (False, True):
             got = lgb.predict_many(boosters, inputs, starts, nums, raw_score=raw, deterministic=deterministic)
             assert len(got) == len(boosters)
-            for b, x, st, nm, g in zip(boosters, inputs, starts, nums, got):
-                one = b.predict(x, device="cuda", start_iteration=st, num_iteration=nm, raw_score=raw,
-                                deterministic=deterministic)
+            for b, x, st, nm, g in zip(boosters, inputs, starts, nums, got, strict=True):
+                one = b.predict(
+                    x, device="cuda", start_iteration=st, num_iteration=nm, raw_score=raw, deterministic=deterministic
+                )
                 assert g.shape == one.shape
                 np.testing.assert_array_equal(g, one)
                 if deterministic:
                     np.testing.assert_array_equal(
-                        g, b.predict(x, device="cpu", start_iteration=st, num_iteration=nm, raw_score=raw))
+                        g, b.predict(x, device="cpu", start_iteration=st, num_iteration=nm, raw_score=raw)
+                    )
     # one input for every job, Fortran order, float64
     booster, X = zoo["regression"]
     shared = np.asfortranarray(X[:333])
-    got = lgb.predict_many([booster, zoo["regression_zero_missing"][0], booster], shared, num_iteration=[5, None, -1],
-                           raw_score=True)
+    got = lgb.predict_many(
+        [booster, zoo["regression_zero_missing"][0], booster], shared, num_iteration=[5, None, -1], raw_score=True
+    )
     np.testing.assert_array_equal(got[0], booster.predict(shared, device="cuda", num_iteration=5, raw_score=True))
     np.testing.assert_array_equal(got[2], booster.predict(shared, device="cuda", raw_score=True))
     cupy = pytest.importorskip("cupy")
     dev = [cupy.asarray(x) for x in inputs]
     got = lgb.predict_many(boosters, dev, starts, nums, raw_score=True)
-    for b, x, st, nm, g in zip(boosters, inputs, starts, nums, got):
+    for b, x, st, nm, g in zip(boosters, inputs, starts, nums, got, strict=True):
         assert isinstance(g, cupy.ndarray)
         np.testing.assert_array_equal(
-            cupy.asnumpy(g), b.predict(x, device="cuda", start_iteration=st, num_iteration=nm, raw_score=True))
+            cupy.asnumpy(g), b.predict(x, device="cuda", start_iteration=st, num_iteration=nm, raw_score=True)
+        )
 
 
 @requires_cuda

@@ -1591,7 +1591,8 @@ FALCATA_C_EXPORT int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
  * \param handles Booster of each job
  * \param data Data pointer of each job: all in host memory, or all in the memory of one device
  * \param data_type ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``, for every job
- * \param nrow Rows of each job
+ * \param nrow Rows of each job (32-bit, as ``FLC_DatasetCreateFromMats``; one larger matrix goes through
+ *        ``FLC_BoosterPredictForMatCUDA``)
  * \param ncol Columns of each job
  * \param row_stride Distance in elements between consecutive rows, per job (host data must be C- or F-contiguous)
  * \param col_stride Distance in elements between consecutive columns, per job
@@ -1611,10 +1612,10 @@ FALCATA_C_EXPORT int FLC_BoostersPredictForMatCUDA(int num_jobs,
                                                      const BoosterHandle* handles,
                                                      const void* const* data,
                                                      int data_type,
-                                                     const int64_t* nrow,
+                                                     const int32_t* nrow,
                                                      const int32_t* ncol,
-                                                     const int64_t* row_stride,
-                                                     const int64_t* col_stride,
+                                                     const int32_t* row_stride,
+                                                     const int32_t* col_stride,
                                                      int data_on_device,
                                                      void* stream,
                                                      int predict_type,
