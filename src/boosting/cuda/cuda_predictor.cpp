@@ -631,17 +631,28 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
   const int num_groups = (num_iteration + kPairwiseGroupIterations - 1) / kPairwiseGroupIterations;
   const int64_t target = debug.predict_target_blocks > 0 ? debug.predict_target_blocks
                          : target_blocks > 0 ? target_blocks : 4 * limits.sms;
+  // lanes per group: when (row, output, group) tasks alone would leave the device's lanes idle (small batches), up to
+  // 8 lanes share a group's walks
+  int group_lanes = 1;
+  const int64_t group_tasks = std::max<int64_t>(num_row, 1) * K * std::max(num_groups, 1);
+  while (group_lanes < 8 && group_tasks * group_lanes * 2 <= int64_t(2048) * limits.sms) {
+    group_lanes *= 2;
+  }
+  if (debug.predict_group_lanes > 0) {
+    group_lanes = 1 << FloorLog2(std::min(debug.predict_group_lanes, 8));
+  }
   auto build = [&](int tile_rows, bool stage) {
     PairwisePlan plan;
     plan.out_chunk = std::min(K, 32);
+    plan.group_lanes = group_lanes;
     plan.tile_rows = std::max(1, static_cast<int>(std::min<int64_t>(tile_rows, std::max<int64_t>(num_row, 1))));
-    while (plan.tile_rows > 1 && plan.tile_rows * plan.out_chunk > 256) {
+    while (plan.tile_rows > 1 && plan.tile_rows * plan.out_chunk * group_lanes > 256) {
       plan.tile_rows /= 2;
     }
     const int pairs = plan.tile_rows * plan.out_chunk;
     const int group_cap = CeilPow2(std::max(num_groups, 1));
     plan.wave_groups = 1;
-    while (plan.wave_groups * 2 * pairs <= 256 && plan.wave_groups * 2 <= group_cap) {
+    while (plan.wave_groups * 2 * pairs * group_lanes <= 256 && plan.wave_groups * 2 <= group_cap) {
       plan.wave_groups *= 2;
     }
     if (debug.predict_wave_groups > 0) {
@@ -652,7 +663,8 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     }
     plan.seg = std::min(plan.wave_groups, 32);
     const int thread_cap = debug.predict_threads > 0 ? std::min(1024, (debug.predict_threads + 31) / 32 * 32) : 1024;
-    plan.block_threads = std::min(thread_cap, std::max(32, (pairs * plan.wave_groups + 31) / 32 * 32));
+    plan.block_threads = std::min(thread_cap,
+                                  std::max(32, (pairs * plan.wave_groups * group_lanes + 31) / 32 * 32));
     const int64_t row_tiles = (std::max<int64_t>(num_row, 1) + plan.tile_rows - 1) / plan.tile_rows;
     const int64_t blocks = row_tiles * ((K + plan.out_chunk - 1) / plan.out_chunk);
     int64_t spans = blocks >= target ? 1 : (target + blocks - 1) / blocks;

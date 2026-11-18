@@ -180,6 +180,7 @@ struct PairwisePlan {
   bool stage_rows = true;
   bool compact = true;      // walk the compact layout when the model has it
   int stage_cols = 0;       // a staged row covers max(input columns, stage_cols): the model's features
+  int group_lanes = 1;      // lanes that share one group's walks (2, 4 or 8 for small batches)
   int block_threads = 256;
 };
 

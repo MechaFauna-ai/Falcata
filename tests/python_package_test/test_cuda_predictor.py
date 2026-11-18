@@ -598,6 +598,11 @@ print("OK")
         "predict_chunk_rows=37,predict_spans=3",
         "predict_compact=0",
         "predict_compact=0,predict_stage=0,predict_spans=4",
+        "predict_group_lanes=1",
+        "predict_group_lanes=2,predict_compact=0",
+        "predict_group_lanes=4,predict_stage=0,predict_spans=3",
+        "predict_group_lanes=8,predict_tile_rows=3",
+        "predict_wave_groups=64,predict_threads=64",
     ],
 )
 def test_every_kernel_is_exact(debug, tmp_path):
