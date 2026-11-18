@@ -706,6 +706,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     // 8 walks in flight per thread (4 when the rows alone fill the grid gained 1.1-1.2x on synthetic 15-leaf trees but
     // lost 1.1-1.25x on the real models of the matrix at 100k rows: round 6)
     plan.ilp = debug.predict_ilp > 0 ? debug.predict_ilp : 8;
+    plan.refill = debug.predict_refill != 0;
     plan.stage_rows = stage;
     plan.stage_cols = num_feature;
     return plan;

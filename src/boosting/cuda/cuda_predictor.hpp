@@ -184,7 +184,8 @@ struct PairwisePlan {
   bool compact = true;      // walk the compact layout when the model has it
   int stage_cols = 0;       // a staged row covers max(input columns, stage_cols): the model's features
   int group_lanes = 1;      // lanes that share one group's walks (2, 4 or 8 for small batches)
-  int task_groups = 1;      // consecutive groups one task adds in registers (1, 2, 4 or 8; 1 with group_lanes > 1)
+  int task_groups = 1;      // consecutive groups one task adds in registers (1 or 8; 1 with group_lanes > 1)
+  bool refill = true;       // compact layout, 8 groups per task: a finished walk's slot starts the task's next tree
   int block_threads = 256;
 };
 

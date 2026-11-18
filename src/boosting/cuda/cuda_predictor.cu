@@ -533,6 +533,91 @@ __device__ __forceinline__ void WalkValues4(const DeviceForestView<TThr>& forest
   }
 }
 
+// the aligned pairwise sum of a unit of 8 groups (the `n` <= 64 trees tree_first, tree_first + stride, ..., groups of 8
+// consecutive ones) on the compact layout, with refill: when a walk reaches its leaf, its slot starts the unit's next
+// tree, so a thread's ILP slots stay busy until the unit is done (a warp no longer waits on the deepest of each round of
+// walks). Leaf values wait in `vals` and are added afterwards: each group in tree order from 0.0, then the aligned tree
+// over the 8 group sums, which is the pairwise sum exactly.
+template <typename TIn, typename TThr, bool HAS_CAT, int ILP, typename Row>
+__device__ __forceinline__ double UnitSumRefill(const DeviceForestView<TThr>& forest, const Row& row, int tree_first,
+                                                int stride, int n) {
+  double vals[64];
+  uint32_t pos[ILP];
+  int idx[ILP];
+  unsigned walking = 0u;
+  int next = 0;
+  #pragma unroll
+  for (int u = 0; u < ILP; ++u) {
+    pos[u] = 0;
+    idx[u] = 0;
+    while (next < n) {
+      const int i = next++;
+      const int32_t start = forest.slot_start[tree_first + i * stride];
+      if (start < 0) {
+        vals[i] = SlotValue(forest.slots[~start]);
+        continue;
+      }
+      pos[u] = static_cast<uint32_t>(start);
+      idx[u] = i;
+      walking |= 1u << u;
+      break;
+    }
+  }
+  while (walking != 0u) {
+    #pragma unroll
+    for (int u = 0; u < ILP; ++u) {
+      if (walking & (1u << u)) {
+        bool leaf;
+        pos[u] = SlotStep<TIn, TThr, HAS_CAT>(forest, row, pos[u], &leaf);
+        if (leaf) {
+          vals[idx[u]] = SlotValue(forest.slots[pos[u]]);
+          walking &= ~(1u << u);
+          while (next < n) {
+            const int i = next++;
+            const int32_t start = forest.slot_start[tree_first + i * stride];
+            if (start < 0) {
+              vals[i] = SlotValue(forest.slots[~start]);
+              continue;
+            }
+            pos[u] = static_cast<uint32_t>(start);
+            idx[u] = i;
+            walking |= 1u << u;
+            break;
+          }
+        }
+      }
+    }
+  }
+  double x = 0.0, l0 = 0.0, l1 = 0.0, l2 = 0.0;
+  #pragma unroll
+  for (int q = 0; q < 8; ++q) {
+    double p = 0.0;
+    for (int j = 0; j < kPairwiseGroupIterations; ++j) {
+      const int i = q * kPairwiseGroupIterations + j;
+      if (i < n) {
+        p = __dadd_rn(p, vals[i]);
+      }
+    }
+    x = p;
+    if (q & 1) {
+      x = __dadd_rn(l0, x);
+      if (q & 2) {
+        x = __dadd_rn(l1, x);
+        if (q & 4) {
+          x = __dadd_rn(l2, x);
+        } else {
+          l2 = x;
+        }
+      } else {
+        l1 = x;
+      }
+    } else {
+      l0 = x;
+    }
+  }
+  return x;
+}
+
 template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, int ILP, typename Row>
 __device__ __forceinline__ double AnyGroupSum(const DeviceForestView<TThr>& forest, const Row& row, int tree0,
                                               int stride, int count) {
@@ -643,6 +728,23 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
       const int rest = t / tile_rows;
       const int kk = rest % kb;
       const int gw = rest / kb;
+      if (COMPACT && TG == 8 && plan.refill) {
+        const int it_first = (gw0 + gw * TG) * kPairwiseGroupIterations;
+        const int n = r < valid_rows ? max(0, min(TG * kPairwiseGroupIterations, num_iteration - it_first)) : 0;
+        double x = 0.0;
+        if (n > 0) {
+          const int tree_first = tree_begin + it_first * K + k0 + kk;
+          if (STAGE) {
+            const StagedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride};
+            x = UnitSumRefill<TIn, TThr, HAS_CAT, ILP>(forest, row, tree_first, K, n);
+          } else {
+            const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
+            x = UnitSumRefill<TIn, TThr, HAS_CAT, ILP>(forest, row, tree_first, K, n);
+          }
+        }
+        part[gw * part_stride + r + tile_rows * kk] = x;
+        continue;
+      }
       // the unit's groups, added by the aligned tree in registers: l0, l1, l2 hold the pending subtrees of 1, 2 and 4
       // groups; after the last group (TG is a power of two) x is the unit's subtree
       double x = 0.0, l0 = 0.0, l1 = 0.0, l2 = 0.0;
