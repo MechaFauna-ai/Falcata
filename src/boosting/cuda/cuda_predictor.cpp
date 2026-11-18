@@ -690,8 +690,9 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     }
     plan.seg = std::min(plan.wave_groups, 32);
     const int thread_cap = debug.predict_threads > 0 ? std::min(1024, (debug.predict_threads + 31) / 32 * 32) : 1024;
-    plan.block_threads = std::min(thread_cap,
-                                  std::max(32, (pairs * plan.wave_groups * group_lanes + 31) / 32 * 32));
+    // threads for the tasks a wave can have: a model with fewer groups than a wave leaves no idle threads
+    const int units = std::min(plan.wave_groups, (std::max(num_groups, 1) + plan.task_groups - 1) / plan.task_groups);
+    plan.block_threads = std::min(thread_cap, std::max(32, (pairs * units * group_lanes + 31) / 32 * 32));
     const int64_t row_tiles = (std::max<int64_t>(num_row, 1) + plan.tile_rows - 1) / plan.tile_rows;
     const int64_t blocks = row_tiles * ((K + plan.out_chunk - 1) / plan.out_chunk);
     int64_t spans = blocks >= target ? 1 : (target + blocks - 1) / blocks;
