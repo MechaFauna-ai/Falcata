@@ -159,9 +159,10 @@ def main():
                     rec[f"{tag}_build_s"] = time.perf_counter() - t0
                     preds = [m.predict(x) for m, x in zip(models, Xd)]
                     sync()
-                    rec[f"{tag}_max_abs_diff"] = max(
-                        float(np.nanmax(np.abs(cupy.asnumpy(p).reshape(args.rows, -1) - r)))
-                        for p, r in zip(preds, ref_host))
+                    # FIL's predict() gives class labels for multi-output models: compare single-output models only
+                    diffs = [float(np.nanmax(np.abs(cupy.asnumpy(p).reshape(args.rows, -1) - r)))
+                             for p, r in zip(preds, ref_host) if r.shape[1] == 1]
+                    rec[f"{tag}_max_abs_diff"] = max(diffs) if diffs else None
                     del preds
                     rec[f"{tag}_loop_s"] = median_time(lambda: [m.predict(x) for m, x in zip(models, Xd)], sync,
                                                        args.reps)
@@ -174,7 +175,7 @@ def main():
                 totals[k] = totals.get(k, 0) + v
             elif k.endswith("matches_loop"):
                 totals[k] = totals.get(k, True) and v
-            elif k.endswith("max_abs_diff"):
+            elif k.endswith("max_abs_diff") and v is not None:
                 totals[k] = max(totals.get(k, 0.0), v)
         out.write(json.dumps(rec) + "\n")
         out.flush()
