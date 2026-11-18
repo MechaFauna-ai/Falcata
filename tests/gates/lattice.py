@@ -278,10 +278,11 @@ def build_cells():
     )
     cell("tinygrad/fixedpoint", "tinygrad", {"quant_mode": "fixedpoint"}, rounds=150)
 
-    # --- non-quant default plan: deterministic since cuda_plan key nonquant_deterministic (default on) --- #
-    # the levels the float atomics used to build (graph loop, compact views, levels wider than the det slab)
-    # accumulate in 64-bit fixed point; the fp32 opt-in (cuda_precision) keeps its fp32 gain math on hist_t
-    # histograms. Fingerprinted since 2026-10-16 (they were metric-only before).
+    # --- non-quant deterministic mode (cuda_plan key nonquant_deterministic, opt-in since 1.2) -------------- #
+    # the levels the float atomics build (compact views, levels wider than the det slab, the complete device tree's
+    # levels) accumulate in 64-bit fixed point; the fp32 opt-in (cuda_precision) keeps its fp32 gain math on hist_t
+    # histograms. Fingerprinted since 2026-10-16 (they were metric-only before); the key was the default from then
+    # to 1.2, and _pin_nonquant_deterministic below now asks for it on every fingerprinted or equal_to non-quant cell.
     cell(
         "dense/nonquant",
         "dense",
@@ -297,12 +298,20 @@ def build_cells():
         perf=True,
     )
     # --- nondeterministic tier: validity + metric floor only ---------------- #
-    # nonquant_deterministic:off keeps the float-atomic kernels: the only mode
-    # whose models vary run to run, exactly the path md5 cannot cover.
+    # nonquant_deterministic:off, the default since 1.2, keeps the float-atomic kernels: the mode whose models vary
+    # run to run, exactly the path md5 cannot cover. The atomic cell names the key (it equals the default plan);
+    # the fp32 cell runs the default plan, whose cuda_precision=fp32 takes the fp32 histogram layout.
     cell(
         "dense/nonquant-atomic",
         "dense",
         {"quant_mode": "none", "cuda_plan": "auto,nonquant_deterministic:off"},
+        rounds=50,
+        fingerprint=False,
+    )
+    cell(
+        "dense/fp32-atomic",
+        "dense",
+        {"quant_mode": "none", "cuda_precision": "fp32"},
         rounds=50,
         fingerprint=False,
     )
@@ -331,8 +340,8 @@ def build_cells():
     cell(
         "imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none", "cuda_plan": "auto,device_tree:off"}, rounds=50
     )
-    # the DEFAULT plan: the complete device tree's fixed-point construct + convert levels (fingerprinted since
-    # nonquant_deterministic; the graph loop's model before P3)
+    # the default plan with the deterministic key: the complete device tree's fixed-point construct + convert
+    # levels (fingerprinted since nonquant_deterministic; the graph loop's model before P3)
     cell("graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50)
     # ... equal, on this shape, to the double-slot deterministic host loop (empirical: both sums are exact here)
     cell(
@@ -1457,6 +1466,7 @@ def build_cells():
                         equal_to=base,
                     )
 
+    _pin_nonquant_deterministic(cells)
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}
@@ -1933,6 +1943,28 @@ def run_cells(cells):
             else:
                 print(f"worker exited {proc.returncode} after all cells reported:\n{proc.stderr[-800:]}")
     return results
+
+
+def _nonquant(params):
+    """Whether a cell trains non-quantized: quant_mode=none, or auto without use_quantized_grad (every profile's
+    base params set use_quantized_grad=True) and without deterministic=true (which maps auto to fixedpoint)."""
+    mode = str(params.get("quant_mode", "auto")).strip().lower()
+    if mode == "none":
+        return True
+    return mode == "auto" and not params.get("use_quantized_grad", True) and not params.get("deterministic", False)
+
+
+def _pin_nonquant_deterministic(cells):
+    """Every non-quantized cell whose point is bit identity (an md5 fingerprint or an equal_to flip) asks for the
+    deterministic histograms explicitly (cuda_plan key nonquant_deterministic, off by default since 1.2): it tests
+    the opt-in mode. A cell that names the key keeps its own value; metric-only cells run the default plan. The md5
+    covers the trees only, not the parameters block, so the pin leaves every recorded md5 as it was."""
+    for c in cells:
+        if not (c["fingerprint"] or c["equal_to"]) or not _nonquant(c["params"]):
+            continue
+        plan = c["params"].get("cuda_plan", "auto")
+        if "nonquant_deterministic" not in plan:
+            c["params"] = {**c["params"], "cuda_plan": f"{plan},nonquant_deterministic:on"}
 
 
 def check(cells, results, fingerprints, update_ids=None, write_all=False):

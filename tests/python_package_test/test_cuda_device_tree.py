@@ -145,8 +145,11 @@ def _probe(name, base_plan, graph):
     depths = []
     roots = []
     reset_budgets = []
+    # the two models are compared bit for bit: a non-quantized case asks for the deterministic histograms (opt-in
+    # since 1.2)
+    det = ",nonquant_deterministic:on" if params.get("quant_mode") == "none" else ""
     for suffix in [",device_levels:off", ",device_tree:on,device_level_graph:" + graph]:
-        p = {**params, "cuda_plan": base_plan + suffix}
+        p = {**params, "cuda_plan": base_plan + suffix + det}
         ds = flc.Dataset(X, label=y, params=p)
         budgets = []
         if name in {"reset", "reset_auto_budget"}:
@@ -530,7 +533,8 @@ def _empty_probe():
     models = []
     for plan in ["auto", "auto,device_levels:off", "auto,device_tree:off"]:
         for quant_mode in ["stochastic", "none"]:
-            p = {**params, "quant_mode": quant_mode, "cuda_plan": plan}
+            det = ",nonquant_deterministic:on" if quant_mode == "none" else ""  # compared bit for bit
+            p = {**params, "quant_mode": quant_mode, "cuda_plan": plan + det}
             booster = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=3)
             info = booster.dump_model()["tree_info"]
             assert [t["num_leaves"] for t in info] == [1], info

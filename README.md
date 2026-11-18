@@ -50,11 +50,14 @@ What makes it fast
   across GPU models and host machines: the same seed trains the bit-identical
   model on any CUDA device (verified sm_89 vs sm_120 on a pre-launch build; the
   integer-only Philox stream keeps the guarantee by construction);
-  `quant_mode=none` is full precision.
+  `quant_mode=none` is full precision, with the fastest float-atomic histograms
+  by default (its models can differ in the last bits from run to run;
+  `deterministic=true` with `quant_mode=none` makes it repeat bit for bit).
 - **An execution planner.** Shape-conditional kernel choices are resolved once
   from the data and parameters (`cuda_plan=auto`) instead of from a pile of
   environment variables — every decision bit-identical except where the
-  `cuda_plan` documentation says otherwise (`robust_scale`), and individually
+  `cuda_plan` documentation says otherwise (`robust_scale`,
+  `nonquant_deterministic`), and individually
   overridable for experiments.
 - **GPU inference via NVIDIA FIL.** `Booster.predict()` transparently runs on
   cuML's Forest Inference Library when available (see below); CuPy arrays stay
@@ -65,10 +68,10 @@ Correctness discipline
 
 Every optimization above must be *bit-identical* to the reference path, and
 that is enforced mechanically rather than trusted. A regression-gate suite runs
-locally on a GPU for every merge and nightly (hosted CI has no GPU): a 493-cell
+locally on a GPU for every merge and nightly (hosted CI has no GPU): a 494-cell
 lattice of (config × data-shape) training cells (148 md5-fingerprinted, 343
 plan-flip equality cells that prove each planner decision changes nothing,
-2 metric cells), validity assertions, metric floors, and a perf gate against a
+3 metric cells), validity assertions, metric floors, and a perf gate against a
 rolling baseline. The nightly tier adds a config × shape fuzzer with CPU-parity
 checks plus full-scale gates on real datasets.
 

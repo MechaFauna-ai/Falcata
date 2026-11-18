@@ -55,7 +55,8 @@ def spec():
         "bagging_freq": 1,
         "max_bin": 511,
         "learning_rate": 0.1,
-        "cuda_plan": "auto",
+        # the deterministic histograms: a non-quantized spec is md5-checked (trained twice) only with the key on
+        "cuda_plan": "auto,nonquant_deterministic:on",
         "rounds": 3,
         "data_seed": 910229978,
     }
@@ -281,6 +282,16 @@ def test_inactive_bagging_never_confirms_or_resamples(fuzz, monkeypatch, spec, i
 def test_initial_quality_within_tolerance_does_not_confirm(fuzz, monkeypatch, spec):
     script = WorkerScript(fuzz, monkeypatch, spec, pairs=None, initial=1.0)
     assert script.check(spec) == ([], [])
+
+
+@pytest.mark.parametrize("plan", ["auto", "auto,nonquant_deterministic:off"])
+def test_nonquant_default_plan_is_not_md5_checked(fuzz, monkeypatch, spec, plan):
+    # the default plan's float-atomic histograms may give another model on every run: one CUDA run, no rerun
+    spec["cuda_plan"] = plan
+    script = WorkerScript(fuzz, monkeypatch, spec, pairs=None, initial=1.0)
+    script.expected = [script.expected[0], script.expected[2]]
+    assert script.check(spec) == ([], [])
+    assert [device for _, device, _ in script.calls] == ["cuda", "cpu"]
 
 
 @pytest.mark.parametrize(
@@ -575,7 +586,7 @@ def test_worker_preserves_defaults_data_and_split_and_applies_only_explicit_bag_
         "learning_rate": 0.1,
         "quant_mode": mode,
         "quant_bins": spec["quant_bins"],
-        "cuda_plan": "auto",
+        "cuda_plan": spec["cuda_plan"],
         "device_type": device,
         "seed": 42,
         "verbose": -1,

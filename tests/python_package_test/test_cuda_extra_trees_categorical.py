@@ -52,6 +52,8 @@ def _train(num_categories, extra_trees):
         "max_bin": 1024,
         "seed": 7,
         "verbose": -1,
+        # non-quantized, compared bit for bit below: the deterministic histograms (opt-in since 1.2)
+        "cuda_plan": "auto,nonquant_deterministic:on",
     }
     ds = flc.Dataset(X, label=y, categorical_feature=[0], params=params)
     return flc.train(params, ds, num_boost_round=40)

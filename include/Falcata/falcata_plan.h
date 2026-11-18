@@ -73,10 +73,12 @@ struct FalcataPlan {
   // (the CUDA-graph level loops of the hybrid prefix and their keys graph_quant, graph_loop and graph_det were removed
   // in 1.2: quantized trees take the complete device tree or the device_levels prefix, non-quantized depth-limited
   // trees inside its bound the complete device tree, see device_tree)
-  // non-quantized training (quant_mode=none) deterministic by default: the batched level construct accumulates in
-  // 64-bit fixed point wherever it used float atomics (the complete device tree's levels, compact column views, levels
-  // wider than the deterministic slot slab): each row's gradient and hessian, scaled by a per-tree power of two (exact), are
-  // rounded once to integers and summed with integer atomics, which commute, then converted in place to hist_t.
+  // non-quantized training (quant_mode=none) run-to-run deterministic on request. Off by default: speed is never
+  // paid for bit identity. deterministic=true turns it on (FromConfig), and an explicit key wins over both. On, the
+  // batched level construct accumulates in 64-bit fixed point wherever it would use float atomics (the complete device
+  // tree's levels, compact column views, levels wider than the deterministic slot slab): each row's gradient and
+  // hessian, scaled by a per-tree power of two (exact), are rounded once to integers and summed with integer atomics,
+  // which commute, then converted in place to hist_t.
   // Integer sums make the histogram the same on every run. Finite inputs use S = 62 - e - ceil(log2(n)),
   // max|v| < 2^e, and scalbnf (no scale clamp, including subnormals). The quantum is 2^-S; a row is rounded
   // by at most half a quantum, which is below the row's own float32 rounding only for values within about
@@ -87,9 +89,10 @@ struct FalcataPlan {
   // forest count construct keep running where they ran; cuda_precision=fp32 keeps its fp32 gain math on hist_t
   // histograms. A device without shared memory for the fixed-point table (InitNonquantFixed) takes the
   // deterministic classic loop, including compact and over-wide layouts. Nonfinite gradients/hessians are unsupported.
-  // Off = the float-atomic kernels. Not covered: linear trees, ranking objectives' gradients, multi-plane
-  // vector-leaf trees, multi-GPU. Quantized training never reads the key.
-  bool nonquant_deterministic = true;  // key: nonquant_deterministic
+  // Off (the default) = the float-atomic kernels, whose sums depend on the order the atomics land, and under
+  // cuda_precision=fp32 the fp32 histogram layout. Not covered: linear trees, ranking objectives' gradients,
+  // multi-plane vector-leaf trees, multi-GPU. Quantized training never reads the key.
+  bool nonquant_deterministic = false;  // key: nonquant_deterministic
   // per-tree compact column view for quantized construct at any
   // 0 < feature_fraction < 1 (win scales with the excluded fraction:
   // ~3.4x at ff=0.1, ~1.1x at ff=0.6)
@@ -1200,6 +1203,10 @@ struct FalcataPlan {
   static FalcataPlan FromConfig(const Config& config, bool* overridden_out = nullptr) {
     FalcataPlan plan;  // defaults = the auto plan
     plan.quant_training = config.ResolvedQuantMode() != QuantMode::kNone;
+    // deterministic=true asks for run-to-run identity: on the non-quantized path (quant_mode=none set explicitly, or
+    // a request the quantized mode cannot serve, see Config::CheckParamConflict) that is the deterministic histogram
+    // construct. Set before the tokens, so an explicit nonquant_deterministic key still wins.
+    plan.nonquant_deterministic = config.deterministic;
     std::string spec = Common::Trim(config.cuda_plan);
     std::transform(spec.begin(), spec.end(), spec.begin(),
                    [](unsigned char c) { return std::tolower(c); });

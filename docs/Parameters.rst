@@ -290,7 +290,7 @@ Core Parameters
 
 -  ``deterministic`` :raw-html:`<a id="deterministic" title="Permalink to this parameter" href="#deterministic">&#x1F517;&#xFE0E;</a>`, default = ``false``, type = bool
 
-   -  on ``device_type=cuda``, training is run-to-run deterministic by default: quantized training sums integer histograms, and non-quantized training (``quant_mode=none``) builds its histograms with deterministic kernels (``cuda_plan`` key ``nonquant_deterministic``, on by default; ``nonquant_deterministic:off`` restores the float-atomic kernels). Exceptions, whose models can still vary from run to run: ``nonquant_deterministic:off``, ranking objectives (their gradients use float atomics), multi-target vector-leaf trees without quantization, multi-GPU training. What this parameter adds on ``cuda``: when ``quant_mode`` is not set and would resolve to ``none``, ``true`` selects near-lossless quantized training (``quant_mode=fixedpoint`` at the finest safe ``quant_bins`` for the dataset), whose models are also bit-identical across host machines and GPU models, at quality equal to full-precision training; set ``quant_mode`` explicitly to override (``quant_mode=none`` stays non-quantized and run-to-run deterministic)
+   -  on ``device_type=cuda``, quantized training (``quant_mode=fixedpoint`` or ``stochastic``) is run-to-run deterministic whatever this parameter says: it sums integer histograms, whose order does not matter. Non-quantized training (``quant_mode=none``) builds its histograms with float atomics by default, the fastest kernels, so its models can differ in the last bits from run to run; run-to-run identity there is opt-in. What ``true`` does on ``cuda``: when ``quant_mode`` is not set and would resolve to ``none``, it selects near-lossless quantized training (``quant_mode=fixedpoint`` at the finest safe ``quant_bins`` for the dataset), whose models are also bit-identical across host machines and GPU models, at quality equal to full-precision training; with ``quant_mode=none`` set explicitly, or with a request the quantized mode does not serve (forced splits, monotone or interaction constraints, single-target vector-leaf trees), training stays non-quantized and uses its deterministic histograms (the ``cuda_plan`` key ``nonquant_deterministic``, which can also be set on its own; an explicit key wins), slower on some shapes. Exceptions, whose models can still vary from run to run with ``true``: ranking objectives (their gradients use float atomics), multi-target vector-leaf trees without quantization, multi-GPU training
 
    -  on ``cpu``, setting this to ``true`` should ensure the stable results when using the same data and the same parameters (and different ``num_threads``)
 
@@ -787,7 +787,7 @@ Learning Control Parameters
 
    -  ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
 
-   -  ``none``: non-quantized gradients/hessians; on CUDA, deterministic fixed-point histogram accumulation with fp64 storage, or ordered fp64 kernels (see `performance <https://github.com/MechaFauna-ai/Falcata/blob/master/docs/performance.md>`__ for precision bounds and fallbacks)
+   -  ``none``: non-quantized gradients/hessians; on CUDA, histograms accumulated with float atomics by default (the fastest kernels; the summation order, and so the last bits of the model, can change from run to run), or, with ``deterministic=true`` or the ``cuda_plan`` key ``nonquant_deterministic:on``, deterministic fixed-point histogram accumulation with fp64 storage, or ordered fp64 kernels (see `performance <https://github.com/MechaFauna-ai/Falcata/blob/master/docs/performance.md>`__ for precision bounds and fallbacks)
 
    -  ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
 
@@ -1485,7 +1485,7 @@ GPU Parameters
 
    -  ``fp64``: double-precision accumulation (bit-stable reference)
 
-   -  ``fp32``: single-precision split-gain math; with the ``cuda_plan`` key ``nonquant_deterministic:off`` also single-precision histogram atomics (measurably faster on high-bin workloads at <=0.1pp quality cost, results non-deterministic across runs); by default the histograms stay fp64 and deterministic
+   -  ``fp32``: single-precision split-gain math and, for non-quantized training on dense data without categorical features, single-precision histogram atomics (measurably faster on high-bin workloads at <=0.1pp quality cost); when run-to-run determinism is requested (``deterministic=true`` with ``quant_mode=none``, or the ``cuda_plan`` key ``nonquant_deterministic:on``), the histograms stay fp64 and deterministic and only the gain math is single precision
 
    -  **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
 
@@ -1497,7 +1497,7 @@ GPU Parameters
 
    -  experts can pin individual decisions with comma-separated ``key:on|off`` overrides after ``auto``, e.g. ``auto,device_tree:off,row_batch:off``
 
-   -  nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires
+   -  nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires; ``nonquant_deterministic`` (non-quantized training only; off by default, on under ``deterministic=true``) chooses deterministic histograms: on, every run trains the same model; off, the float-atomic kernels' summation order can change the last bits of the model from run to run
 
    -  **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
 

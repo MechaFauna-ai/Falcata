@@ -5,7 +5,10 @@ targets.
 
 Everything here needs a CUDA build (TASK=cuda). Correctness is checked
 through invariants rather than a golden model, because non-quantized CUDA
-training is run-to-run nondeterministic (fp64 atomic histograms):
+training is run-to-run nondeterministic (fp64 atomic histograms). The scalar
+references and the vector arms are compared leaf for leaf, so every
+non-quantized training here asks for the deterministic histograms (cuda_plan
+key nonquant_deterministic, opt-in since 1.2; _with_det):
 
 * duplicated targets: y2 == y1 doubles every candidate's gain, so the greedy
   structure must match scalar training on y1, and both targets' outputs must
@@ -53,7 +56,16 @@ def _base_params():
         "learning_rate": 0.1,
         "seed": 7,
         "verbosity": -1,
+        "cuda_plan": "auto,nonquant_deterministic:on",
     }
+
+
+def _with_det(params):
+    """the deterministic non-quantized histograms (opt-in since 1.2) appended to a plan the test set itself"""
+    plan = params.get("cuda_plan", "auto")
+    if params.get("quant_mode") == "none" and "nonquant_deterministic" not in plan:
+        params["cuda_plan"] = plan + ",nonquant_deterministic:on"
+    return params
 
 
 def _train_vector(X, labels, num_boost_round=20, extra_params=None):
@@ -68,7 +80,7 @@ def _train_vector(X, labels, num_boost_round=20, extra_params=None):
     )
     if extra_params:
         params.update(extra_params)
-    return lgb.train(params, lgb.Dataset(X, label=labels), num_boost_round=num_boost_round)
+    return lgb.train(_with_det(params), lgb.Dataset(X, label=labels), num_boost_round=num_boost_round)
 
 
 def _train_scalar(X, y, num_boost_round=20, extra_params=None):
@@ -76,7 +88,7 @@ def _train_scalar(X, y, num_boost_round=20, extra_params=None):
     params.update({"objective": "regression", "boost_from_average": False})
     if extra_params:
         params.update(extra_params)
-    return lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=num_boost_round)
+    return lgb.train(_with_det(params), lgb.Dataset(X, label=y), num_boost_round=num_boost_round)
 
 
 @_REQUIRES_CUDA
