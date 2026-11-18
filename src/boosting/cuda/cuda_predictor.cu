@@ -412,10 +412,11 @@ __device__ __forceinline__ bool CategoryGoesLeft(uint32_t range, double v, const
   return word < word_count && ((forest.cat_words[word_begin + word] >> (iv % 32)) & 1u);
 }
 
-// one level: moves p to the child and loads it into s; true when that child is a leaf (s then holds its value)
+// one level from slot `pos` (an internal node): returns the child's slot; *leaf tells whether that child is a leaf
 template <typename TIn, typename TThr, bool HAS_CAT, typename Row>
-__device__ __forceinline__ bool SlotStep(const DeviceForestView<TThr>& forest, const Row& row,
-                                         const CompactSlot<TThr>*& p, CompactSlot<TThr>& s) {
+__device__ __forceinline__ uint32_t SlotStep(const DeviceForestView<TThr>& forest, const Row& row, uint32_t pos,
+                                             bool* leaf) {
+  const CompactSlot<TThr> s = forest.slots[pos];
   const uint32_t meta = s.meta;
   const uint32_t low = meta & kSlotLowMask;
   const TIn x = row(low & ((1u << forest.feature_bits) - 1u));
@@ -425,48 +426,43 @@ __device__ __forceinline__ bool SlotStep(const DeviceForestView<TThr>& forest, c
   } else {
     left = GoesLeft<TIn, TThr>(x, SlotThreshold(s), meta);
   }
-  p += left ? 1u : (low >> forest.feature_bits);
-  s = *p;
-  return (meta & (left ? kSlotLeftLeaf : kSlotRightLeaf)) != 0;
+  *leaf = (meta & (left ? kSlotLeftLeaf : kSlotRightLeaf)) != 0;
+  return pos + (left ? 1u : (low >> forest.feature_bits));
 }
 
-// GroupSum on the compact layout
+// GroupSum on the compact layout: a walk in flight is one slot index (the slot is read at each step)
 template <typename TIn, typename TThr, bool HAS_CAT, int ILP, typename Row>
 __device__ __forceinline__ double SlotGroupSum(const DeviceForestView<TThr>& forest, const Row& row, int tree0,
                                                int stride, int count) {
   double sum = 0.0;
   for (int j0 = 0; j0 < count; j0 += ILP) {
-    const CompactSlot<TThr>* p[ILP];
-    CompactSlot<TThr> s[ILP];
-    bool done[ILP];
+    uint32_t pos[ILP];
+    unsigned walking = 0;   // bit u: walk u is at an internal node
     #pragma unroll
     for (int u = 0; u < ILP; ++u) {
+      pos[u] = 0;
       if (j0 + u < count) {
         const int32_t start = forest.slot_start[tree0 + (j0 + u) * stride];
-        p[u] = forest.slots + (start >= 0 ? start : ~start);
-        done[u] = start < 0;
-        s[u] = *p[u];
-      } else {
-        p[u] = forest.slots;
-        done[u] = true;
-        s[u] = CompactSlot<TThr>();
+        pos[u] = static_cast<uint32_t>(start >= 0 ? start : ~start);
+        walking |= (start >= 0 ? 1u : 0u) << u;
       }
     }
-    bool active = true;
-    while (active) {
-      active = false;
+    while (walking != 0u) {
       #pragma unroll
       for (int u = 0; u < ILP; ++u) {
-        if (!done[u]) {
-          done[u] = SlotStep<TIn, TThr, HAS_CAT>(forest, row, p[u], s[u]);
-          active |= !done[u];
+        if (walking & (1u << u)) {
+          bool leaf;
+          pos[u] = SlotStep<TIn, TThr, HAS_CAT>(forest, row, pos[u], &leaf);
+          if (leaf) {
+            walking &= ~(1u << u);
+          }
         }
       }
     }
     #pragma unroll
     for (int u = 0; u < ILP; ++u) {
       if (j0 + u < count) {
-        sum = __dadd_rn(sum, SlotValue(s[u]));
+        sum = __dadd_rn(sum, SlotValue(forest.slots[pos[u]]));
       }
     }
   }
