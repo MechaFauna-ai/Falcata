@@ -542,8 +542,9 @@ __device__ __forceinline__ double AnyGroupSum(const DeviceForestView<TThr>& fore
   return GroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, ILP>(forest, row, tree0, stride, count);
 }
 
-// one block of the default mode: row tile `tile`, span `span`, output chunk `chunk` of one model's prediction
-template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP>
+// one block of the default mode: row tile `tile`, span `span`, output chunk `chunk` of one model's prediction;
+// TG (1 or 8, compile time so that the one-group kernel keeps its registers) is plan.task_groups
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP, int TG>
 __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows,
                                               int tree_begin, int num_iteration, int num_tree_per_iteration,
                                               const PairwisePlan& plan, double* out, double* partials,
@@ -583,15 +584,14 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   const int num_groups = (num_iteration + kPairwiseGroupIterations - 1) / kPairwiseGroupIterations;
   const int g_span = span * plan.span_groups;
   const int span_end = min(g_span + plan.span_groups, num_groups);
-  // a task's unit is task_groups consecutive groups (an aligned subtree it adds itself); a wave holds WG units
-  const int TG = plan.task_groups;
+  // a task's unit is TG consecutive groups (an aligned subtree it adds itself); a wave holds WG units
   const int waves = (span_end - g_span + WG * TG - 1) / (WG * TG);
   const int tasks = pairs * WG;
   const int lane = threadIdx.x % 32;
   for (int w = 0; w < waves; ++w) {
     const int gw0 = g_span + w * WG * TG;
     // 1. one task per (row, output, group); rows vary fastest, so a warp's lanes share trees
-    if (plan.group_lanes > 1) {
+    if (TG == 1 && plan.group_lanes > 1) {
       // small batches: a group's trees are shared by group_lanes adjacent lanes, each walking its consecutive part;
       // the in-order sum is chained through the lanes by shuffles, so it is the same sum
       const int GL = plan.group_lanes;
@@ -646,6 +646,7 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
       // the unit's groups, added by the aligned tree in registers: l0, l1, l2 hold the pending subtrees of 1, 2 and 4
       // groups; after the last group (TG is a power of two) x is the unit's subtree
       double x = 0.0, l0 = 0.0, l1 = 0.0, l2 = 0.0;
+      #pragma unroll
       for (int q = 0; q < TG; ++q) {
         const int g = gw0 + gw * TG + q;
         double p = 0.0;
@@ -720,18 +721,18 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   }
 }
 
-template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP>
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP, int TG>
 __global__ void PredictPairwiseKernel(const DeviceForestView<TThr> forest, const DeviceRows<TIn> rows, int tree_begin,
                                       int num_iteration, int num_tree_per_iteration, const PairwisePlan plan,
                                       double* out, double* partials) {
   extern __shared__ __align__(16) unsigned char smem[];
-  PairwiseBlock<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, STAGE, ILP>(
+  PairwiseBlock<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, STAGE, ILP, TG>(
       forest, rows, tree_begin, num_iteration, num_tree_per_iteration, plan, out, partials, blockIdx.x, blockIdx.y,
       blockIdx.z, smem);
 }
 
 // several models' predictions in one launch: the flattened grid is cut into each job's blocks (PairwiseJob)
-template <typename TIn, bool HAS_CAT, bool COMPACT, bool STAGE, int ILP>
+template <typename TIn, bool HAS_CAT, bool COMPACT, bool STAGE, int ILP, int TG>
 __global__ void PredictPairwiseJobsKernel(const PairwiseJob<TIn>* jobs, int num_jobs) {
   extern __shared__ __align__(16) unsigned char smem[];
   const int64_t block = blockIdx.x;
@@ -748,7 +749,7 @@ __global__ void PredictPairwiseJobsKernel(const PairwiseJob<TIn>* jobs, int num_
   const int64_t local = block - job.block_begin;
   const int64_t row_tiles = (job.rows.num_row + job.plan.tile_rows - 1) / job.plan.tile_rows;
   const int64_t rest = local / row_tiles;
-  PairwiseBlock<TIn, TIn, HAS_CAT, false, COMPACT, STAGE, ILP>(
+  PairwiseBlock<TIn, TIn, HAS_CAT, false, COMPACT, STAGE, ILP, TG>(
       job.forest, job.rows, job.tree_begin, job.num_iteration, job.num_tree_per_iteration, job.plan, job.out,
       job.partials, local % row_tiles, static_cast<int>(rest % job.plan.num_spans),
       static_cast<int>(rest / job.plan.num_spans), smem);
@@ -1073,9 +1074,9 @@ void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TI
   const dim3 grid(Blocks(rows.num_row, plan.tile_rows), plan.num_spans,
                   (num_tree_per_iteration + plan.out_chunk - 1) / plan.out_chunk);
   const size_t shared = PairwiseSharedBytes(plan, rows.num_col, sizeof(TIn));
-#define FLC_PW_KERNEL(U)                                                                                       \
+#define FLC_PW_KERNEL(U, G)                                                                                    \
   {                                                                                                            \
-    auto kernel = PredictPairwiseKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, STAGE, U>;                    \
+    auto kernel = PredictPairwiseKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, STAGE, U, G>;                 \
     if (shared > (size_t(48) << 10)) {                                                                         \
       CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,           \
                                                 static_cast<int>(shared)));                                    \
@@ -1083,12 +1084,18 @@ void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TI
     kernel<<<grid, plan.block_threads, shared, stream>>>(forest, rows, tree_begin, num_iteration,             \
                                                          num_tree_per_iteration, plan, out, partials);         \
   }
-  if (plan.ilp >= 8) {
-    FLC_PW_KERNEL(8)
-  } else if (plan.ilp >= 4) {
-    FLC_PW_KERNEL(4)
+  if (plan.task_groups > 1) {
+    if (plan.ilp >= 8) {
+      FLC_PW_KERNEL(8, 8)
+    } else {
+      FLC_PW_KERNEL(4, 8)
+    }
   } else {
-    FLC_PW_KERNEL(2)
+    if (plan.ilp >= 8) {
+      FLC_PW_KERNEL(8, 1)
+    } else {
+      FLC_PW_KERNEL(4, 1)
+    }
   }
 #undef FLC_PW_KERNEL
   if (plan.num_spans > 1) {
@@ -1282,6 +1289,7 @@ void LaunchPredictPairwiseJobs(const std::vector<PairwiseJob<T>>& jobs, const Pa
   if (jobs.empty()) {
     return;
   }
+  const int task_groups = jobs.front().plan.task_groups;   // one value per launch (LaunchJobs groups by it)
   int64_t blocks = 0, cells = 0;
   int threads = 32;
   bool combine = false;
@@ -1299,7 +1307,8 @@ void LaunchPredictPairwiseJobs(const std::vector<PairwiseJob<T>>& jobs, const Pa
   const int num_jobs = static_cast<int>(jobs.size());
 #define FLC_JOBS_KERNEL(CAT, COMPACT, STAGE)                                                                   \
   {                                                                                                            \
-    auto kernel = PredictPairwiseJobsKernel<T, CAT, COMPACT, STAGE, 8>;                                        \
+    auto kernel = task_groups > 1 ? PredictPairwiseJobsKernel<T, CAT, COMPACT, STAGE, 8, 8>                    \
+                                  : PredictPairwiseJobsKernel<T, CAT, COMPACT, STAGE, 8, 1>;                   \
     if (shared_bytes > (size_t(48) << 10)) {                                                                   \
       CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,           \
                                                 static_cast<int>(shared_bytes)));                              \

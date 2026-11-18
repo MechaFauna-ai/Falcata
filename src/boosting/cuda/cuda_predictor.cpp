@@ -653,7 +653,8 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
   }
   auto build = [&](int tile_rows, bool stage) {
     PairwisePlan plan;
-    plan.out_chunk = std::min(K, debug.predict_out_chunk > 0 ? debug.predict_out_chunk : 32);
+    // one output per block: a block walks only that output's trees (13 outputs, fit 0204 at 100k rows: 1.6x)
+    plan.out_chunk = std::min(K, debug.predict_out_chunk > 0 ? debug.predict_out_chunk : 1);
     plan.group_lanes = group_lanes;
     plan.tile_rows = std::max(1, static_cast<int>(std::min<int64_t>(tile_rows, std::max<int64_t>(num_row, 1))));
     while (plan.tile_rows > 1 && plan.tile_rows * plan.out_chunk * group_lanes > 256) {
@@ -681,13 +682,11 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     if (debug.predict_spans > 0) {
       spans = debug.predict_spans;
     }
-    // groups per task (small batches spread a group over lanes instead)
-    plan.task_groups = 1;
-    if (group_lanes == 1 && debug.predict_task_groups > 0) {
-      plan.task_groups = 1 << FloorLog2(std::min(debug.predict_task_groups, 8));
-      while (plan.task_groups > 1 && plan.wave_groups * plan.task_groups > group_cap) {
-        plan.task_groups /= 2;
-      }
+    // 8 consecutive groups per task when the span has them (fewer waves, so fewer barriers per walk); small batches
+    // spread a group over lanes instead. The kernels exist for 1 and 8.
+    plan.task_groups = group_lanes == 1 && plan.wave_groups * 8 <= group_cap ? 8 : 1;
+    if (debug.predict_task_groups > 0) {
+      plan.task_groups = group_lanes == 1 && debug.predict_task_groups > 1 ? 8 : 1;
     }
     const int unit = plan.wave_groups * plan.task_groups;   // groups per wave
     const int64_t per_span = (std::max(num_groups, 1) + spans - 1) / spans;
@@ -715,10 +714,13 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
   while (plan.tile_rows > 1 && PairwiseSharedBytes(plan, num_col, elem) > stage_budget) {
     plan = build(plan.tile_rows / 2, true);
   }
-  // staging copies every column of a row once; it pays when the block's walks read more features than that
+  // staging copies every column of a row once; it pays when the block's walks read several times more features than
+  // that (fit 0010 of the matrix, 559 trees about 20 deep on 6287 columns, ran 1.5x faster on 8 rows read through
+  // the L1 cache than on 1 staged row per block)
   const int64_t span_trees = std::min<int64_t>(static_cast<int64_t>(plan.span_groups) * kPairwiseGroupIterations,
                                                num_iteration) * plan.out_chunk;
-  const bool worth = span_trees * std::max(1, std::min(max_depth, 12)) >= std::max(num_col, num_feature);
+  const int64_t staged_cols = std::max(num_col, num_feature);
+  const bool worth = span_trees * std::max(1, std::min(max_depth, 12)) >= 4 * staged_cols;
   bool stage = worth && PairwiseSharedBytes(plan, num_col, elem) <= stage_budget;
   if (debug.predict_stage >= 0) {
     stage = debug.predict_stage == 1;
@@ -1112,10 +1114,11 @@ void LaunchJobs(const std::vector<PreparedJob>& prepared, const std::vector<CUDA
                 const DeviceRows<T>* rows_of, double* const* out_of, double* partials, cudaStream_t stream,
                 CUDAVector<char>* tables, std::vector<std::vector<char>>* host_tables) {
   // groups: layout, staging, shared-memory class; categorical splits make a group use the categorical kernel
-  std::map<std::tuple<bool, bool, int>, std::vector<size_t>> groups;
+  std::map<std::tuple<bool, bool, int, int>, std::vector<size_t>> groups;
   for (size_t i = 0; i < prepared.size(); ++i) {
     const PreparedJob& p = prepared[i];
-    groups[std::make_tuple(p.plan.compact, p.plan.stage_rows, SharedClass(p.shared))].push_back(i);
+    groups[std::make_tuple(p.plan.compact, p.plan.stage_rows, SharedClass(p.shared), p.plan.task_groups)]
+        .push_back(i);
   }
   size_t table_bytes = 0;
   for (const auto& g : groups) {
