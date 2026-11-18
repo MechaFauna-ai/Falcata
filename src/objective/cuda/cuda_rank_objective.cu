@@ -63,6 +63,11 @@ __global__ void GetGradientsKernel_LambdarankNDCG(const double* cuda_scores, con
     const data_size_t query_start = cuda_query_boundaries[query_index];
     const data_size_t query_end = cuda_query_boundaries[query_index + 1];
     const data_size_t query_item_count = query_end - query_start;
+    // an empty query (a 0 in group= or in a .query file) has no documents: the code below reads its best and its
+    // worst document (index -1); the CPU objective returns early the same way (50241dbc). Uniform across the block.
+    if (query_item_count <= 0) {
+      continue;
+    }
     const double* cuda_scores_pointer = cuda_scores + query_start;
     score_t* cuda_out_gradients_pointer = cuda_out_gradients + query_start;
     score_t* cuda_out_hessians_pointer = cuda_out_hessians + query_start;
@@ -233,6 +238,11 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Sorted(
     const data_size_t query_start = cuda_query_boundaries[query_index];
     const data_size_t query_end = cuda_query_boundaries[query_index + 1];
     const data_size_t query_item_count = query_end - query_start;
+    // an empty query (a 0 in group= or in a .query file) has no documents: the code below reads its best and its
+    // worst document (index -1); the CPU objective returns early the same way (50241dbc). Uniform across the block.
+    if (query_item_count <= 0) {
+      continue;
+    }
     const double* cuda_scores_pointer = cuda_scores + query_start;
     const int* cuda_item_indices_buffer_pointer = cuda_item_indices_buffer + query_start;
     score_t* cuda_out_gradients_pointer = cuda_out_gradients + query_start;
@@ -381,6 +391,11 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Deterministic(
     const data_size_t query_start = cuda_query_boundaries[query_index];
     const data_size_t query_end = cuda_query_boundaries[query_index + 1];
     const data_size_t query_item_count = query_end - query_start;
+    // an empty query (a 0 in group= or in a .query file) has no documents: the code below reads its best and its
+    // worst document (index -1); the CPU objective returns early the same way (50241dbc). Uniform across the block.
+    if (query_item_count <= 0) {
+      continue;
+    }
     const double* cuda_scores_pointer = cuda_scores + query_start;
     score_t* cuda_out_gradients_pointer = cuda_out_gradients + query_start;
     score_t* cuda_out_hessians_pointer = cuda_out_hessians + query_start;
@@ -611,6 +626,11 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Sorted_Deterministic(
     const data_size_t query_start = cuda_query_boundaries[query_index];
     const data_size_t query_end = cuda_query_boundaries[query_index + 1];
     const data_size_t query_item_count = query_end - query_start;
+    // an empty query (a 0 in group= or in a .query file) has no documents: the code below reads its best and its
+    // worst document (index -1); the CPU objective returns early the same way (50241dbc). Uniform across the block.
+    if (query_item_count <= 0) {
+      continue;
+    }
     const double* cuda_scores_pointer = cuda_scores + query_start;
     const int* cuda_item_indices_buffer_pointer = cuda_item_indices_buffer + query_start;
     score_t* cuda_out_gradients_pointer = cuda_out_gradients + query_start;
