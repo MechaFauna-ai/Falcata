@@ -488,6 +488,62 @@ def test_torch_tensors_stay_torch(zoo):
     np.testing.assert_array_equal(out.cpu().numpy(), _pairwise_reference(booster, X.astype(np.float32)))
 
 
+@requires_cuda
+def test_predict_many_equals_one_by_one(zoo):
+    """A batch of jobs (several models, shared and own inputs, iteration slices, linear and categorical models that
+    take other paths) gives each job exactly its own prediction, in both modes, from host and device memory."""
+    names = ["regression", "multiclass", "categorical", "linear_tree", "binary", "deep", "stumps", "rf"]
+    boosters, inputs, starts, nums = [], [], [], []
+    rng = np.random.default_rng(9)
+    for name in names:
+        booster, X = zoo[name]
+        own = np.ascontiguousarray(X[: int(rng.integers(1, 600))], dtype=np.float32)
+        for start, num in ((0, None), (3, 7), (0, 1), (2, -1)):
+            boosters.append(booster)
+            inputs.append(own)
+            starts.append(start)
+            nums.append(num)
+    for raw in (True, False):
+        for deterministic in (False, True):
+            got = lgb.predict_many(boosters, inputs, starts, nums, raw_score=raw, deterministic=deterministic)
+            assert len(got) == len(boosters)
+            for b, x, st, nm, g in zip(boosters, inputs, starts, nums, got):
+                one = b.predict(x, device="cuda", start_iteration=st, num_iteration=nm, raw_score=raw,
+                                deterministic=deterministic)
+                assert g.shape == one.shape
+                np.testing.assert_array_equal(g, one)
+                if deterministic:
+                    np.testing.assert_array_equal(
+                        g, b.predict(x, device="cpu", start_iteration=st, num_iteration=nm, raw_score=raw))
+    # one input for every job, Fortran order, float64
+    booster, X = zoo["regression"]
+    shared = np.asfortranarray(X[:333])
+    got = lgb.predict_many([booster, zoo["regression_zero_missing"][0], booster], shared, num_iteration=[5, None, -1],
+                           raw_score=True)
+    np.testing.assert_array_equal(got[0], booster.predict(shared, device="cuda", num_iteration=5, raw_score=True))
+    np.testing.assert_array_equal(got[2], booster.predict(shared, device="cuda", raw_score=True))
+    cupy = pytest.importorskip("cupy")
+    dev = [cupy.asarray(x) for x in inputs]
+    got = lgb.predict_many(boosters, dev, starts, nums, raw_score=True)
+    for b, x, st, nm, g in zip(boosters, inputs, starts, nums, got):
+        assert isinstance(g, cupy.ndarray)
+        np.testing.assert_array_equal(
+            cupy.asnumpy(g), b.predict(x, device="cuda", start_iteration=st, num_iteration=nm, raw_score=True))
+
+
+@requires_cuda
+def test_predict_many_refuses_mixed_inputs(zoo):
+    booster, X = zoo["regression"]
+    assert lgb.predict_many([], X) == []
+    with pytest.raises(TypeError, match="all float32 or all float64"):
+        lgb.predict_many([booster, booster], [X.astype(np.float32), X.astype(np.float64)])
+    with pytest.raises(ValueError, match="2 boosters, 3 inputs"):
+        lgb.predict_many([booster, booster], [X, X, X])
+    cupy = pytest.importorskip("cupy")
+    with pytest.raises(TypeError, match="all numpy arrays or all device arrays"):
+        lgb.predict_many([booster, booster], [X, cupy.asarray(X)])
+
+
 _KERNEL_SCRIPT = r"""
 import sys
 import numpy as np

@@ -167,24 +167,35 @@ class OwnedStream {
 
 }  // namespace
 
-/*! \brief every tree of a model, packed for one device and one threshold precision; immutable once built */
+/*!
+ * \brief every tree of a model, packed for one device, one threshold precision and one layout: the node layout
+ *        (PackedNode, with what leaf indices, feature contributions and linear leaves need) or the compact one
+ *        (CompactSlot, raw scores of the default mode); immutable once built. A model the compact layout cannot hold
+ *        gives an empty compact forest (fits() is false).
+ */
 class CUDAPackedForest {
  public:
-  CUDAPackedForest(const Boosting* boosting, bool double_thresholds) : double_thresholds_(double_thresholds) {
+  CUDAPackedForest(const Boosting* boosting, bool double_thresholds, bool compact)
+      : double_thresholds_(double_thresholds), compact_(compact) {
     Boosting::PredictRange all;
     all.start_iteration = 0;
     all.num_iteration = boosting->GetCurrentIteration();
     const Boosting::TreeRangeView view = boosting->TreesInRange(all);
     num_trees_ = static_cast<int>(view.trees.size());
     leaf_dim_ = view.vector_leaf ? view.num_output : 1;
-    if (double_thresholds) {
+    if (compact) {
+      fits_ = double_thresholds ? PackCompact<double>(view, &slots_double_) : PackCompact<float>(view, &slots_float_);
+    } else if (double_thresholds) {
       Pack<double>(view, &nodes_double_);
-      PackCompact<double>(view, &slots_double_);
     } else {
       Pack<float>(view, &nodes_float_);
-      PackCompact<float>(view, &slots_float_);
     }
   }
+
+  bool compact() const { return compact_; }
+  bool fits() const { return fits_; }
+  bool has_linear() const { return has_linear_; }
+  bool has_categorical() const { return has_categorical_; }
 
   template <typename T>
   DeviceForestView<T> View() const;
@@ -308,7 +319,6 @@ class CUDAPackedForest {
       has_linear_ = has_linear_ || linear;
     }
     has_categorical_ = !cat_range.empty();
-    cat_range_count_ = static_cast<int64_t>(cat_range.size() / 2);
     if (cat_range.size() / 2 > std::numeric_limits<uint32_t>::max()) {
       Log::Fatal("CUDA predictor: more than 2^32 categorical splits");
     }
@@ -342,16 +352,19 @@ class CUDAPackedForest {
     }
   }
 
-  // the compact layout (CompactSlot): depth-first slots per tree, leaf values in place. Categorical nodes get the
-  // range indices Pack gave them (the same tree and node order). A model it cannot hold keeps PackedNode only.
+  // the compact layout (CompactSlot): depth-first slots per tree, leaf values in place, categorical bitsets as in
+  // Pack; false (nothing uploaded) for a model it cannot hold
   template <typename T>
-  void PackCompact(const Boosting::TreeRangeView& view, CUDAVector<CompactSlot<T>>* device_slots) {
+  bool PackCompact(const Boosting::TreeRangeView& view, CUDAVector<CompactSlot<T>>* device_slots) {
     using P = TreeDevicePacker;
-    if (has_linear_ || leaf_dim_ != 1) {
-      return;
+    if (leaf_dim_ != 1) {
+      return false;
     }
     int max_feature = 0;
     for (const Tree* tree : view.trees) {
+      if (P::IsLinear(*tree)) {
+        return false;
+      }
       const auto& feature = P::SplitFeature(*tree);
       for (int i = 0; i + 1 < P::NumLeaves(*tree); ++i) {
         max_feature = std::max(max_feature, feature[i]);
@@ -362,23 +375,25 @@ class CUDAPackedForest {
       ++feature_bits;
     }
     if (feature_bits > 20) {
-      return;
+      return false;
     }
     const int64_t max_offset = (int64_t(1) << (26 - feature_bits)) - 1;
     std::vector<CompactSlot<T>> slots;
     std::vector<int32_t> start;
+    std::vector<uint32_t> cat_words;
+    std::vector<int64_t> cat_range;
     start.reserve(view.trees.size());
-    uint32_t next_range = 0;
     struct Pending {
       int child;
       int64_t parent;   // the slot whose right offset this child sets, or -1
+      int depth;
     };
     std::vector<Pending> stack;
     for (const Tree* tree : view.trees) {
       const Tree& t = *tree;
       const int num_leaves = P::NumLeaves(t);
       if (static_cast<int64_t>(slots.size()) + 2 * num_leaves > std::numeric_limits<int32_t>::max()) {
-        return;
+        return false;
       }
       if (num_leaves <= 1) {
         start.push_back(~static_cast<int32_t>(slots.size()));
@@ -390,14 +405,8 @@ class CUDAPackedForest {
       const auto& decision = P::DecisionType(t);
       const auto& left = P::LeftChild(t);
       const auto& right = P::RightChild(t);
-      std::vector<uint32_t> range(num_leaves - 1, 0);
-      for (int i = 0; i < num_leaves - 1; ++i) {
-        if (P::NumCat(t) > 0 && (decision[i] & kCategoricalMask)) {
-          range[i] = next_range++;
-        }
-      }
       start.push_back(static_cast<int32_t>(slots.size()));
-      stack.assign(1, Pending{0, -1});
+      stack.assign(1, Pending{0, -1, 0});
       while (!stack.empty()) {
         const Pending cur = stack.back();
         stack.pop_back();
@@ -405,12 +414,13 @@ class CUDAPackedForest {
         if (cur.parent >= 0) {
           const int64_t offset = slot - cur.parent;
           if (offset > max_offset) {
-            return;
+            return false;
           }
           slots[cur.parent].meta |= static_cast<uint32_t>(offset) << feature_bits;
         }
         if (cur.child < 0) {
           slots.push_back(LeafSlot<T>(P::LeafValue(t, ~cur.child, 0)));
+          max_depth_ = std::max(max_depth_, cur.depth);
           continue;
         }
         const int i = cur.child;
@@ -418,27 +428,41 @@ class CUDAPackedForest {
         if (left[i] < 0) meta |= kSlotLeftLeaf;
         if (right[i] < 0) meta |= kSlotRightLeaf;
         CompactSlot<T> node;
+        // Tree::GetLeaf takes the categorical branch only when the tree has categorical splits at all
         if (P::NumCat(t) > 0 && (decision[i] & kCategoricalMask)) {
+          const auto& boundaries = P::CatBoundaries(t);
+          const auto& bits = P::CatThreshold(t);
+          const int cat_idx = static_cast<int>(threshold[i]);
+          const uint32_t range = static_cast<uint32_t>(cat_range.size() / 2);
+          cat_range.push_back(static_cast<int64_t>(cat_words.size()));
+          cat_range.push_back(boundaries[cat_idx + 1] - boundaries[cat_idx]);
+          cat_words.insert(cat_words.end(), bits.begin() + boundaries[cat_idx], bits.begin() + boundaries[cat_idx + 1]);
           meta |= kSlotCategorical;
           node = InternalSlot<T>(T(0), meta);
-          SetRangeBits<T>(&node, range[i]);
+          SetRangeBits<T>(&node, range);
         } else {
           meta |= static_cast<uint32_t>((decision[i] >> 2) & 3) << kSlotMissingShift;
           if (decision[i] & kDefaultLeftMask) meta |= kSlotDefaultLeft;
           node = InternalSlot<T>(ThresholdFor<T>(threshold[i]), meta);
         }
         slots.push_back(node);
-        stack.push_back(Pending{right[i], slot});   // walked second: its offset is known once the left subtree is out
-        stack.push_back(Pending{left[i], -1});      // the next slot
+        // the right child is walked second: its offset is known once the left subtree is out
+        stack.push_back(Pending{right[i], slot, cur.depth + 1});
+        stack.push_back(Pending{left[i], -1, cur.depth + 1});   // the next slot
       }
     }
-    if (next_range != static_cast<uint32_t>(cat_range_count_)) {
-      Log::Fatal("CUDA predictor: compact layout found %u categorical splits, the node layout %lld", next_range,
-                 static_cast<long long>(cat_range_count_));  // NOLINT(runtime/int)
+    if (cat_range.size() / 2 > std::numeric_limits<uint32_t>::max()) {
+      return false;
     }
     device_slots->InitFromHostVector(slots);
     slot_start_.InitFromHostVector(start);
+    has_categorical_ = !cat_range.empty();
+    if (has_categorical_) {
+      if (!cat_words.empty()) cat_words_.InitFromHostVector(cat_words);
+      cat_range_.InitFromHostVector(cat_range);
+    }
     feature_bits_ = feature_bits;
+    return true;
   }
 
   template <typename T>
@@ -469,6 +493,8 @@ class CUDAPackedForest {
   }
 
   bool double_thresholds_;
+  bool compact_;
+  bool fits_ = true;
   int num_trees_ = 0;
   int leaf_dim_ = 1;
   int max_depth_ = 0;
@@ -480,7 +506,6 @@ class CUDAPackedForest {
   CUDAVector<CompactSlot<double>> slots_double_;
   CUDAVector<int32_t> slot_start_;
   int feature_bits_ = 0;
-  int64_t cat_range_count_ = 0;
   CUDAVector<int32_t> tree_root_;
   CUDAVector<int32_t> tree_leaf_begin_;
   CUDAVector<double> leaf_values_;
@@ -541,11 +566,11 @@ void CUDAPredictor::Invalidate() {
 
 
 std::shared_ptr<const CUDAPackedForest> CUDAPredictor::GetForest(const Boosting* boosting, int device_id,
-                                                                 bool double_thresholds) {
+                                                                 bool double_thresholds, bool compact) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto& slot = forests_[std::make_pair(device_id, double_thresholds)];
+  auto& slot = forests_[std::make_tuple(device_id, double_thresholds, compact)];
   if (slot == nullptr) {
-    slot = std::make_shared<const CUDAPackedForest>(boosting, double_thresholds);
+    slot = std::make_shared<const CUDAPackedForest>(boosting, double_thresholds, compact);
   }
   return slot;
 }
@@ -598,12 +623,13 @@ int FloorLog2(int64_t n) {
  *        predict_* tokens override (benchmarks; the pairwise sum is one fixed order, so no shape changes a result).
  */
 PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int num_tree_per_iteration,
-                                int num_iteration, size_t elem, int max_depth) {
+                                int num_iteration, size_t elem, int max_depth, int64_t target_blocks = 0) {
   const FalcataDebugOptions& debug = FalcataDebug();
   const DeviceLimits& limits = LimitsOf(device);
   const int K = num_tree_per_iteration;
   const int num_groups = (num_iteration + kPairwiseGroupIterations - 1) / kPairwiseGroupIterations;
-  const int target = debug.predict_target_blocks > 0 ? debug.predict_target_blocks : 4 * limits.sms;
+  const int64_t target = debug.predict_target_blocks > 0 ? debug.predict_target_blocks
+                         : target_blocks > 0 ? target_blocks : 4 * limits.sms;
   auto build = [&](int tile_rows, bool stage) {
     PairwisePlan plan;
     plan.out_chunk = std::min(K, 32);
@@ -637,7 +663,6 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     plan.levels = FloorLog2(plan.span_groups / plan.seg) + 1;
     plan.ilp = debug.predict_ilp > 0 ? debug.predict_ilp : 8;
     plan.stage_rows = stage;
-    plan.compact = debug.predict_compact != 0;
     return plan;
   };
   const int tile_rows = debug.predict_tile_rows > 0 ? std::min(debug.predict_tile_rows, 256) : 8;
@@ -754,9 +779,9 @@ void RunRows(const CUDAPackedForest& forest, const Boosting::TreeRangeView& view
     LaunchPredictRawKernel<T, T>(fv, rows, tree_begin, num_iteration, view.num_tree_per_iteration, view.num_output,
                                  view.vector_leaf, plan, reinterpret_cast<double*>(out), stream);
   } else {
-    const PairwisePlan plan = ChoosePairwisePlan(ctx.device, rows.num_row, rows.num_col,
-                                                 view.num_tree_per_iteration, num_iteration, sizeof(T),
-                                                 ctx.max_depth);
+    PairwisePlan plan = ChoosePairwisePlan(ctx.device, rows.num_row, rows.num_col, view.num_tree_per_iteration,
+                                           num_iteration, sizeof(T), ctx.max_depth);
+    plan.compact = forest.compact();
     double* partials = nullptr;
     if (plan.num_spans > 1) {
       partials = reinterpret_cast<double*>(ctx.scratch->Get(static_cast<size_t>(plan.num_spans) * rows.num_row *
@@ -813,7 +838,19 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   }
   const bool convert = req.predict_type == C_API_PREDICT_NORMAL && boosting->HasOutputConversion();
 
-  std::shared_ptr<const CUDAPackedForest> forest = GetForest(boosting, device_id, is_double);
+  // the default mode's raw scores walk the compact layout where the model fits it; everything else the node layout
+  const bool want_compact = !req.deterministic && !view.vector_leaf && FalcataDebug().predict_compact != 0 &&
+                            (req.predict_type == C_API_PREDICT_NORMAL || req.predict_type == C_API_PREDICT_RAW_SCORE);
+  std::shared_ptr<const CUDAPackedForest> forest;
+  if (want_compact) {
+    forest = GetForest(boosting, device_id, is_double, true);
+    if (!forest->fits()) {
+      forest = nullptr;
+    }
+  }
+  if (forest == nullptr) {
+    forest = GetForest(boosting, device_id, is_double, false);
+  }
   stats->forest_bytes = forest->Bytes();
   const int range_trees = range.num_iteration * view.num_tree_per_iteration;
   if (forest->num_trees() < tree_begin + range_trees) {
@@ -957,6 +994,315 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   }
   if (convert) {
     ConvertOnHost(boosting, range, reinterpret_cast<double*>(req.out), req.num_row, num_output);
+  }
+}
+
+namespace {
+
+/*! \brief a job of PredictMany once its forest and plan are known */
+struct PreparedJob {
+  size_t index = 0;
+  std::shared_ptr<const CUDAPackedForest> forest;
+  int tree_begin = 0;
+  int num_tree_per_iteration = 1;
+  int num_output = 1;
+  int64_t work = 0;           // rows x trees
+  int64_t base_blocks = 0;    // row tiles x output chunks of an 8-row tile
+  PairwisePlan plan;
+  size_t shared = 0;
+  bool categorical = false;
+  int64_t in_offset = -1;     // host inputs: element offset of its rows in the device input buffer
+  int64_t out_offset = 0;     // host inputs: double offset of its output in the device output buffer
+  int64_t part_offset = 0;    // double offset of its span sums in the partials buffer
+};
+
+/*! \brief the shared-memory class of a launch: jobs of one class run together (a launch reserves its largest) */
+int SharedClass(size_t bytes) {
+  int c = 0;
+  while ((size_t(4096) << c) < bytes) {
+    ++c;
+  }
+  return c;
+}
+
+template <typename T>
+void LaunchJobs(const std::vector<PreparedJob>& prepared, const std::vector<CUDAPredictJob>& jobs,
+                const DeviceRows<T>* rows_of, double* const* out_of, double* partials, cudaStream_t stream,
+                CUDAVector<char>* tables, std::vector<std::vector<char>>* host_tables) {
+  // groups: layout, staging, shared-memory class; categorical splits make a group use the categorical kernel
+  std::map<std::tuple<bool, bool, int>, std::vector<size_t>> groups;
+  for (size_t i = 0; i < prepared.size(); ++i) {
+    const PreparedJob& p = prepared[i];
+    groups[std::make_tuple(p.plan.compact, p.plan.stage_rows, SharedClass(p.shared))].push_back(i);
+  }
+  size_t table_bytes = 0;
+  for (const auto& g : groups) {
+    table_bytes += g.second.size() * sizeof(PairwiseJob<T>);
+  }
+  tables->ResizeDiscard(table_bytes + 1);
+  host_tables->clear();
+  size_t offset = 0;
+  for (const auto& g : groups) {
+    std::vector<PairwiseJob<T>> table;
+    table.reserve(g.second.size());
+    int64_t blocks = 0, cells = 0;
+    size_t shared = 0;
+    bool categorical = false;
+    for (size_t i : g.second) {
+      const PreparedJob& p = prepared[i];
+      PairwiseJob<T> job;
+      job.forest = p.forest->View<T>();
+      job.rows = rows_of[i];
+      job.tree_begin = p.tree_begin;
+      job.num_iteration = jobs[p.index].range.num_iteration;
+      job.num_tree_per_iteration = p.num_tree_per_iteration;
+      job.plan = p.plan;
+      job.out = out_of[i];
+      job.partials = p.plan.num_spans > 1 ? partials + p.part_offset : nullptr;
+      job.block_begin = blocks;
+      job.cell_begin = cells;
+      blocks += ((job.rows.num_row + p.plan.tile_rows - 1) / p.plan.tile_rows) * p.plan.num_spans *
+                ((p.num_tree_per_iteration + p.plan.out_chunk - 1) / p.plan.out_chunk);
+      cells += job.rows.num_row * p.num_tree_per_iteration;
+      shared = std::max(shared, p.shared);
+      categorical = categorical || p.categorical;
+      table.push_back(job);
+    }
+    host_tables->emplace_back(reinterpret_cast<const char*>(table.data()),
+                              reinterpret_cast<const char*>(table.data() + table.size()));
+    char* device_table = tables->RawData() + offset;
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(device_table, host_tables->back().data(), host_tables->back().size(),
+                                         cudaMemcpyHostToDevice, stream));
+    offset += host_tables->back().size();
+    LaunchPredictPairwiseJobs<T>(table, reinterpret_cast<const PairwiseJob<T>*>(device_table), categorical,
+                                 std::get<0>(g.first), std::get<1>(g.first), shared, stream);
+  }
+}
+
+}  // namespace
+
+void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const CUDAPredictRequest& common,
+                                CUDAPredictStats* stats) {
+  if (common.data_type != C_API_DTYPE_FLOAT32 && common.data_type != C_API_DTYPE_FLOAT64) {
+    Log::Fatal("CUDA predictor: the input must be float32 or float64");
+  }
+  if (common.predict_type != C_API_PREDICT_NORMAL && common.predict_type != C_API_PREDICT_RAW_SCORE) {
+    Log::Fatal("CUDA predictor: a batch of models predicts normal or raw scores only");
+  }
+  const bool is_double = common.data_type == C_API_DTYPE_FLOAT64;
+  const size_t elem = is_double ? sizeof(double) : sizeof(float);
+  int device_id = common.device_id;
+  if (common.on_device) {
+    device_id = -1;
+    for (const CUDAPredictJob& job : jobs) {
+      if (job.num_row == 0 || job.data == nullptr) {
+        continue;
+      }
+      cudaPointerAttributes attr;
+      CUDASUCCESS_OR_FATAL(cudaPointerGetAttributes(&attr, job.data));
+      if (attr.type != cudaMemoryTypeDevice && attr.type != cudaMemoryTypeManaged) {
+        Log::Fatal("CUDA predictor: an input of the batch is not in device memory");
+      }
+      if (device_id >= 0 && attr.device != device_id) {
+        Log::Fatal("CUDA predictor: the inputs of a batch must be on one device (%d and %d)", device_id, attr.device);
+      }
+      device_id = attr.device;
+    }
+  }
+  DeviceGuard guard(device_id);
+  CUDASUCCESS_OR_FATAL(cudaGetDevice(&device_id));
+  const DeviceLimits& limits = LimitsOf(device_id);
+  // which jobs batch: the default mode, scalar leaves, no linear leaves; the others go through Predict one by one
+  std::vector<PreparedJob> prepared;
+  std::vector<size_t> solo;
+  for (size_t i = 0; i < jobs.size(); ++i) {
+    const CUDAPredictJob& job = jobs[i];
+    const Boosting::TreeRangeView view = job.boosting->RangeShape(job.range);
+    const int expected = job.boosting->NumPredictOneRow(job.range.start_iteration, job.range.num_iteration, false,
+                                                        false);
+    if (expected != view.num_output) {
+      Log::Fatal("CUDA predictor: %d values per row, the model's prediction has %d", view.num_output, expected);
+    }
+    if (job.num_row == 0) {
+      continue;
+    }
+    if (common.deterministic || view.vector_leaf || job.range.num_iteration == 0) {
+      solo.push_back(i);
+      continue;
+    }
+    std::shared_ptr<const CUDAPackedForest> forest;
+    if (FalcataDebug().predict_compact != 0) {
+      forest = job.predictor->GetForest(job.boosting, device_id, is_double, true);
+      if (!forest->fits()) {
+        forest = nullptr;
+      }
+    }
+    if (forest == nullptr) {
+      forest = job.predictor->GetForest(job.boosting, device_id, is_double, false);
+    }
+    if (forest->has_linear()) {
+      solo.push_back(i);
+      continue;
+    }
+    PreparedJob p;
+    p.index = i;
+    p.forest = forest;
+    p.num_tree_per_iteration = view.num_tree_per_iteration;
+    p.num_output = view.num_output;
+    p.tree_begin = job.range.start_iteration * view.num_tree_per_iteration;
+    if (forest->num_trees() < p.tree_begin + job.range.num_iteration * view.num_tree_per_iteration) {
+      Log::Fatal("CUDA predictor: the packed model has %d trees, the prediction needs %d", forest->num_trees(),
+                 p.tree_begin + job.range.num_iteration * view.num_tree_per_iteration);
+    }
+    p.work = job.num_row * static_cast<int64_t>(job.range.num_iteration) * view.num_tree_per_iteration;
+    p.base_blocks = ((job.num_row + 7) / 8) * ((view.num_tree_per_iteration + 31) / 32);
+    p.categorical = forest->has_categorical();
+    stats->forest_bytes += forest->Bytes();
+    prepared.push_back(p);
+  }
+  // spans: every block about the same work, the whole batch at least eight blocks per multiprocessor
+  int64_t total_work = 0, total_base = 0;
+  for (const PreparedJob& p : prepared) {
+    total_work += p.work;
+    total_base += p.base_blocks;
+  }
+  const double block_work = static_cast<double>(total_work) /
+                            static_cast<double>(std::max<int64_t>(8 * limits.sms, total_base));
+  for (PreparedJob& p : prepared) {
+    const CUDAPredictJob& job = jobs[p.index];
+    const int64_t target = std::max<int64_t>(
+        p.base_blocks, static_cast<int64_t>(std::ceil(static_cast<double>(p.work) / std::max(block_work, 1.0))));
+    p.plan = ChoosePairwisePlan(device_id, job.num_row, job.num_col, p.num_tree_per_iteration,
+                                job.range.num_iteration, elem, p.forest->max_depth(), target);
+    p.plan.compact = p.forest->compact();
+    p.plan.ilp = 8;   // the batched kernel is built for 8 walks in flight
+    p.shared = PairwiseSharedBytes(p.plan, job.num_col, elem);
+  }
+  // device buffers: host inputs (one copy per distinct input), host outputs, span sums
+  OwnedStream owned;
+  cudaStream_t stream = common.on_device ? common.stream : owned.get();
+  std::map<std::tuple<const void*, int64_t, int32_t, int64_t, int64_t>, int64_t> input_offsets;
+  int64_t in_elems = 0, out_elems = 0, part_elems = 0;
+  for (PreparedJob& p : prepared) {
+    const CUDAPredictJob& job = jobs[p.index];
+    if (!common.on_device) {
+      const bool row_major = job.col_stride == 1 && job.row_stride == job.num_col;
+      const bool col_major = job.row_stride == 1 && job.col_stride == job.num_row;
+      if (!row_major && !col_major) {
+        Log::Fatal("CUDA predictor: a host input must be C- or F-contiguous");
+      }
+      auto key = std::make_tuple(job.data, job.num_row, job.num_col, job.row_stride, job.col_stride);
+      auto it = input_offsets.find(key);
+      if (it == input_offsets.end()) {
+        it = input_offsets.emplace(key, in_elems).first;
+        in_elems += job.num_row * job.num_col;
+      }
+      p.in_offset = it->second;
+      p.out_offset = out_elems;
+      out_elems += job.num_row * p.num_output;
+    }
+    if (p.plan.num_spans > 1) {
+      p.part_offset = part_elems;
+      part_elems += static_cast<int64_t>(p.plan.num_spans) * job.num_row * p.num_tree_per_iteration;
+    }
+  }
+  CUDAVector<char> in_buf, out_buf, part_buf, tables;
+  if (in_elems > 0) in_buf.Resize(static_cast<size_t>(in_elems) * elem);
+  if (out_elems > 0) out_buf.Resize(static_cast<size_t>(out_elems) * sizeof(double));
+  if (part_elems > 0) part_buf.Resize(static_cast<size_t>(part_elems) * sizeof(double));
+  stats->scratch_bytes = VectorBytes(in_buf) + VectorBytes(out_buf) + VectorBytes(part_buf);
+  stats->num_chunks = 1;
+  stats->chunk_rows = 0;
+  for (const auto& kv : input_offsets) {
+    const CUDAPredictJob* job = nullptr;
+    for (const PreparedJob& p : prepared) {
+      if (p.in_offset == kv.second) {
+        job = &jobs[p.index];
+        break;
+      }
+    }
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(in_buf.RawData() + kv.second * elem, job->data,
+                                         static_cast<size_t>(job->num_row) * job->num_col * elem,
+                                         cudaMemcpyHostToDevice, stream));
+  }
+  std::vector<double*> out_of(prepared.size());
+  for (size_t i = 0; i < prepared.size(); ++i) {
+    const PreparedJob& p = prepared[i];
+    out_of[i] = common.on_device ? reinterpret_cast<double*>(jobs[p.index].out)
+                                 : reinterpret_cast<double*>(out_buf.RawData()) + p.out_offset;
+  }
+  double* partials = reinterpret_cast<double*>(part_buf.RawData());
+  std::vector<std::vector<char>> host_tables;
+  auto rows_for = [&](auto tag, std::vector<DeviceRows<decltype(tag)>>* rows) {
+    using T = decltype(tag);
+    rows->resize(prepared.size());
+    for (size_t i = 0; i < prepared.size(); ++i) {
+      const CUDAPredictJob& job = jobs[prepared[i].index];
+      DeviceRows<T>& r = (*rows)[i];
+      r.num_row = job.num_row;
+      r.num_col = job.num_col;
+      if (common.on_device) {
+        r.data = reinterpret_cast<const T*>(job.data);
+        r.row_stride = job.row_stride;
+        r.col_stride = job.col_stride;
+      } else {
+        r.data = reinterpret_cast<const T*>(in_buf.RawData()) + prepared[i].in_offset;
+        const bool row_major = job.col_stride == 1 && job.row_stride == job.num_col;
+        r.row_stride = row_major ? job.num_col : 1;
+        r.col_stride = row_major ? 1 : job.num_row;
+      }
+    }
+  };
+  if (!prepared.empty()) {
+    if (is_double) {
+      std::vector<DeviceRows<double>> rows;
+      rows_for(0.0, &rows);
+      LaunchJobs<double>(prepared, jobs, rows.data(), out_of.data(), partials, stream, &tables, &host_tables);
+    } else {
+      std::vector<DeviceRows<float>> rows;
+      rows_for(0.0f, &rows);
+      LaunchJobs<float>(prepared, jobs, rows.data(), out_of.data(), partials, stream, &tables, &host_tables);
+    }
+  }
+  if (!common.on_device) {
+    for (size_t i = 0; i < prepared.size(); ++i) {
+      const PreparedJob& p = prepared[i];
+      const CUDAPredictJob& job = jobs[p.index];
+      CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(job.out, out_of[i], static_cast<size_t>(job.num_row) * p.num_output *
+                                           sizeof(double), cudaMemcpyDeviceToHost, stream));
+    }
+  }
+  CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
+  if (common.predict_type == C_API_PREDICT_NORMAL) {
+    for (const PreparedJob& p : prepared) {
+      const CUDAPredictJob& job = jobs[p.index];
+      if (!job.boosting->HasOutputConversion()) {
+        continue;
+      }
+      const size_t n = static_cast<size_t>(job.num_row) * p.num_output;
+      if (common.on_device) {
+        std::vector<double> host(n);
+        CUDASUCCESS_OR_FATAL(cudaMemcpy(host.data(), job.out, n * sizeof(double), cudaMemcpyDeviceToHost));
+        ConvertOnHost(job.boosting, job.range, host.data(), job.num_row, p.num_output);
+        CUDASUCCESS_OR_FATAL(cudaMemcpy(job.out, host.data(), n * sizeof(double), cudaMemcpyHostToDevice));
+      } else {
+        ConvertOnHost(job.boosting, job.range, reinterpret_cast<double*>(job.out), job.num_row, p.num_output);
+      }
+    }
+  }
+  for (size_t i : solo) {
+    const CUDAPredictJob& job = jobs[i];
+    CUDAPredictRequest r = common;
+    r.data = job.data;
+    r.num_row = job.num_row;
+    r.num_col = job.num_col;
+    r.row_stride = job.row_stride;
+    r.col_stride = job.col_stride;
+    r.out = job.out;
+    r.device_id = device_id;
+    CUDAPredictStats s;
+    job.predictor->Predict(job.boosting, job.range, r, &s);
+    stats->scratch_bytes = std::max(stats->scratch_bytes, s.scratch_bytes);
   }
 }
 
