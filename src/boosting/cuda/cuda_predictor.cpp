@@ -694,7 +694,9 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     plan.span_groups = std::max(unit, CeilPow2(per_span));
     plan.num_spans = std::max(1, (num_groups + plan.span_groups - 1) / plan.span_groups);
     plan.levels = FloorLog2(plan.span_groups / (plan.seg * plan.task_groups)) + 1;
-    plan.ilp = debug.predict_ilp > 0 ? debug.predict_ilp : 8;
+    // walks in flight per thread: 8 hide latency when the grid is small; when the rows alone fill it, 4 (the unrolled
+    // walk loop runs to the deepest walk in flight; round 4: 1.1-1.2x on 15-leaf trees at 1M rows)
+    plan.ilp = debug.predict_ilp > 0 ? debug.predict_ilp : (blocks >= target ? 4 : 8);
     plan.stage_rows = stage;
     plan.stage_cols = num_feature;
     return plan;
