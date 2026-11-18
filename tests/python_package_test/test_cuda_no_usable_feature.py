@@ -45,4 +45,4 @@ def test_cuda_trains_without_a_usable_feature(boosting, cuda_plan):
         # stump carry the class constant instead)
         cpu_params = {**params, "device_type": "cpu"}
         cpu = flc.train(cpu_params, flc.Dataset(X[:120], y[:120], params=cpu_params), num_boost_round=10)
-        np.testing.assert_allclose(booster.predict(X), cpu.predict(X), rtol=1e-12)
+        np.testing.assert_allclose(booster.predict(X, deterministic=True), cpu.predict(X), rtol=1e-12)
