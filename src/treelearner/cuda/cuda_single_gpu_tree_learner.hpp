@@ -131,6 +131,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   ColSampler* mutable_col_sampler() { return &col_sampler_; }
   /*! \brief gpu device this learner trains on */
   int gpu_device_id() const { return gpu_device_id_; }
+  // cuda_plan key split_packed_read8_cost: whether the strided 8-bit split read moves fewer bytes than the gather
+  static bool SplitPackedRead8Pays(data_size_t num_rows, int row_bytes, int k, int max_depth, int num_leaves,
+                                   size_t l2_bytes);
 
   /*! \brief Log::Fatal unless the multi-GPU flows can train this config: feature-parallel and quantized data-parallel
    *  ride the hybrid level flow only. Train checks it per tree (num_splits_done: the forced splits it applied);
@@ -705,6 +708,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // packed split read: this tree's column view is the packed compact matrix
   // (no column-major gather ran yet; see EnsureClassicColumnView)
   bool compact_packed_view_active_ = false;
+  // the device's L2 size, read once at Init: the strided 8-bit split read is cheap while the row matrix it reads fits
+  size_t l2_cache_bytes_ = 0;
   // gather inputs stashed for the lazy fallback (device pointer + 4-bit flag)
   const uint8_t* compact_gather_src_ = nullptr;
   bool compact_gather_src_is_4bit_ = false;

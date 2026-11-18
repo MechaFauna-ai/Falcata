@@ -203,6 +203,9 @@ struct FalcataPlan {
   // straight from the 8-bit row matrix (compact or full) instead of a per-tree column-major gather of every
   // sampled column; bit-identical (the same bytes are read)
   bool split_packed_read8 = true;   // key: split_packed_read8
+  // split_packed_read8 only where it moves fewer bytes than the per-tree gather (SplitPackedRead8Pays in the CUDA
+  // tree learner): off restores the strided read on every feature-sampled tree (#613/#626); bit-identical either way
+  bool split_packed_read8_cost = true;  // key: split_packed_read8_cost
   // 8-bit rows: no per-tree compact view when a tree samples more than 40 % of the columns (the fill costs more
   // than the construct saves there); bit-identical
   bool compact_dense_wide_skip = true;  // key: compact_dense_wide_skip
@@ -1055,6 +1058,7 @@ struct FalcataPlan {
     if (key == "efb_precheck") return &efb_precheck;
     if (key == "split_packed_read") return &split_packed_read;
     if (key == "split_packed_read8") return &split_packed_read8;
+    if (key == "split_packed_read8_cost") return &split_packed_read8_cost;
     if (key == "compact_dense_wide_skip") return &compact_dense_wide_skip;
     if (key == "one_sync") return &one_sync;
     if (key == "batch_reghist") return &batch_reghist;
