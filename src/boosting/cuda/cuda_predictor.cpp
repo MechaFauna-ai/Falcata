@@ -662,16 +662,17 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     }
     const int pairs = plan.tile_rows * plan.out_chunk;
     const int group_cap = CeilPow2(std::max(num_groups, 1));
-    // 8 consecutive groups per task whenever the model has 8 groups (64 iterations): a task adds them in registers,
-    // so a wave of walks pays its barriers once per 64 trees; small batches spread a group over lanes instead. The
-    // kernels exist for 1 and 8. Then a wave holds as many units as give about 256 tasks.
-    plan.task_groups = group_lanes == 1 && group_cap >= 8 ? 8 : 1;
+    // a wave holds as many groups as give about 256 tasks; then 8 consecutive groups per task when the model still has
+    // them (a task adds them in registers, so a wave pays its barriers once per 64 trees); small batches spread a
+    // group over lanes instead. The kernels exist for 1 and 8. (Choosing 8 first and shrinking the wave instead lost
+    // up to 2x on models with few groups or few rows per block: round 5.)
+    plan.wave_groups = 1;
+    while (plan.wave_groups * 2 * pairs * group_lanes <= 256 && plan.wave_groups * 2 <= group_cap) {
+      plan.wave_groups *= 2;
+    }
+    plan.task_groups = group_lanes == 1 && plan.wave_groups * 8 <= group_cap ? 8 : 1;
     if (debug.predict_task_groups > 0) {
       plan.task_groups = group_lanes == 1 && debug.predict_task_groups > 1 ? 8 : 1;
-    }
-    plan.wave_groups = 1;
-    while (plan.wave_groups * 2 * pairs * group_lanes <= 256 && plan.wave_groups * 2 * plan.task_groups <= group_cap) {
-      plan.wave_groups *= 2;
     }
     if (debug.predict_wave_groups > 0) {
       plan.wave_groups = 1 << FloorLog2(std::min(debug.predict_wave_groups, 1024));
