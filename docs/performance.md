@@ -671,6 +671,8 @@ histograms and the bandwidth figures below do not apply.
 Measured per-tree wins of the float layout at equal-or-better quality (July
 2026, before #122): epsilon-deep −36% time, year −18%, covtype −16%,
 fraud-deep −14%, higgs-deep −12%; numerai neutral (sampling-dominated).
+Against the deterministic fp64 histograms with fp32 gain math (`nonquant_deterministic:on`), measured for #636 (section
+10v): epsilon deep −15%, year deep −11%, covtype deep +7.5% (slower there).
 Quality-gated rather than bit-identical, hence a config parameter and not a
 plan key.
 
@@ -2609,6 +2611,19 @@ cost every caller pays. `quant_mode=none` builds its histograms with the float-a
 `quant_mode=none` (or a request the quantized mode does not serve, such as monotone constraints) turns the key on
 (`FalcataPlan::FromConfig`), and `cuda_plan=auto,nonquant_deterministic:on` asks for it directly; an explicit key
 wins over `deterministic`. Quantized training never reads the key.
+Measured for #636 on an RTX 5090 (same binary, default plan against `nonquant_deterministic:on`, bench.py's deep
+regime, 500 rounds, epsilon 100; repetitions interleaved; desktop in use; geometric mean of the paired train-time
+ratios default/key-on with an approximate 95% interval from the pairs' spread): epsilon deep fp32 0.846 (0.835-0.858,
+3 pairs, 6.94 s against 8.17 s), year deep fp32 0.893 (0.849-0.938, 3 pairs, 1.34 s against 1.53 s), covtype deep
+fp32 1.075 (1.031-1.122, 8 pairs: the fixed-point construct with fp64 histograms is faster than the fp32 float atomics
+on this shape, as in the October table below), higgs deep fp64 1.047 (0.967-1.133, 8 pairs) and covtype deep fp64
+1.078 (0.904-1.284, 8 pairs), the last two not separable from no difference at this noise. The default's speed
+therefore depends on the shape: a gain on high-bin fp32 shapes, a loss on covtype deep fp32, and no measured gain on
+the two fp64 shapes; a planner rule that picks the faster construct per shape is not part of #636. Holdout quality is
+unchanged within run-to-run noise: the default's runs give 3 to 8 different models per shape, whose metric ranges
+contain or lie within 0.0015 of the key-on model's (higgs AUC 0.84817-0.84875 against 0.84843, covtype fp64
+multi-logloss 0.08823-0.08926 against 0.08782 and fp32 0.08804-0.08911 against 0.08932, year RMSE 8.9730-8.9811
+against 8.9730, epsilon AUC 0.92627-0.92632 against 0.92617).
 The rest of this section describes the key as it was introduced, when it was the default.
 
 Quantized training sums integer histograms, so its models are the same on every run. Non-quantized training

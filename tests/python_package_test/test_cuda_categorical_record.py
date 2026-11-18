@@ -276,7 +276,8 @@ def test_cuda_categorical_record(shape, quant):
 
     if shape == "rf_forest_slots":
         # concurrent slots grow the same forest as sequential training
-        seq, _, _ = _train({**params, "cuda_plan": "auto,forest_batched:off"}, data_kw, rounds)
+        det = ",nonquant_deterministic:on" if quant == "none" else ""
+        seq, _, _ = _train({**params, "cuda_plan": "auto,forest_batched:off" + det}, data_kw, rounds)
         assert _md5(seq.model_to_string()) == _md5(text)
 
 

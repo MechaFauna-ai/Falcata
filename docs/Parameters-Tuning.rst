@@ -55,7 +55,10 @@ training loop was built for it (see `Features
   models can differ in the last bits from run to run; ask for run-to-run
   identity only where you need it (``deterministic=true`` with
   ``quant_mode=none``, or ``cuda_plan=auto,nonquant_deterministic:on``), which
-  keeps fp64 deterministic histograms and costs speed on some shapes.
+  keeps fp64 deterministic histograms; it is slower on high-bin ``fp32``
+  shapes and as fast or faster on some deep ones (see
+  `performance <https://github.com/MechaFauna-ai/Falcata/blob/master/docs/performance.md>`__,
+  section 10v).
 - Leave ``cuda_plan=auto`` alone: the planner already resolves the fastest
   kernel choices from your data shape; the override keys exist for
   experiments, not tuning.

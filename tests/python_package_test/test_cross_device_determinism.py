@@ -17,8 +17,11 @@ Max-Q (188 SMs), and on each card under smcount=170 and 188.
 
 The unquantized cases ask for the deterministic histograms (cuda_plan key nonquant_deterministic, opt-in since 1.2):
 the default float-atomic kernels may give another model on every run, so md5 equality across SM counts is a test of
-the opt-in mode. The random forest case reads the key too: its regression labels are continuous, so its trees take
-the non-quantized level construct, not the forest count construct.
+the opt-in mode. Measured 2026-11-18 on the default plan, three trainings each: unquantized_fp32 (the fp32 histogram
+layout) gave three models; unquantized_fp64 and random_forest_fp64 gave one each, since their trees grow on the
+selective one-sync host loop (and the forest's continuous labels keep it off the count construct), whose
+deterministic construct does not read the key. They ask for it anyway, so the test keeps its meaning if their route
+changes.
 """
 
 import os
