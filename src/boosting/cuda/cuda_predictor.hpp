@@ -179,6 +179,7 @@ struct PairwisePlan {
   int ilp = 8;
   bool stage_rows = true;
   bool compact = true;      // walk the compact layout when the model has it
+  int stage_cols = 0;       // a staged row covers max(input columns, stage_cols): the model's features
   int block_threads = 256;
 };
 

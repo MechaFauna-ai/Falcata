@@ -622,8 +622,9 @@ int FloorLog2(int64_t n) {
  *        of a block read more features than staging copies, with fewer rows per block for wide rows. FALCATA_DEBUG
  *        predict_* tokens override (benchmarks; the pairwise sum is one fixed order, so no shape changes a result).
  */
-PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int num_tree_per_iteration,
-                                int num_iteration, size_t elem, int max_depth, int64_t target_blocks = 0) {
+PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int num_feature,
+                                int num_tree_per_iteration, int num_iteration, size_t elem, int max_depth,
+                                int64_t target_blocks = 0) {
   const FalcataDebugOptions& debug = FalcataDebug();
   const DeviceLimits& limits = LimitsOf(device);
   const int K = num_tree_per_iteration;
@@ -664,6 +665,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     plan.levels = FloorLog2(plan.span_groups / plan.seg) + 1;
     plan.ilp = debug.predict_ilp > 0 ? debug.predict_ilp : 8;
     plan.stage_rows = stage;
+    plan.stage_cols = num_feature;
     return plan;
   };
   const int tile_rows = debug.predict_tile_rows > 0 ? std::min(debug.predict_tile_rows, 256) : 8;
@@ -675,7 +677,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
   // staging copies every column of a row once; it pays when the block's walks read more features than that
   const int64_t span_trees = std::min<int64_t>(static_cast<int64_t>(plan.span_groups) * kPairwiseGroupIterations,
                                                num_iteration) * plan.out_chunk;
-  const bool worth = span_trees * std::max(1, std::min(max_depth, 12)) >= num_col;
+  const bool worth = span_trees * std::max(1, std::min(max_depth, 12)) >= std::max(num_col, num_feature);
   bool stage = worth && PairwiseSharedBytes(plan, num_col, elem) <= stage_budget;
   if (debug.predict_stage >= 0) {
     stage = debug.predict_stage == 1;
@@ -780,8 +782,8 @@ void RunRows(const CUDAPackedForest& forest, const Boosting::TreeRangeView& view
     LaunchPredictRawKernel<T, T>(fv, rows, tree_begin, num_iteration, view.num_tree_per_iteration, view.num_output,
                                  view.vector_leaf, plan, reinterpret_cast<double*>(out), stream);
   } else {
-    PairwisePlan plan = ChoosePairwisePlan(ctx.device, rows.num_row, rows.num_col, view.num_tree_per_iteration,
-                                           num_iteration, sizeof(T), ctx.max_depth);
+    PairwisePlan plan = ChoosePairwisePlan(ctx.device, rows.num_row, rows.num_col, view.num_feature,
+                                           view.num_tree_per_iteration, num_iteration, sizeof(T), ctx.max_depth);
     plan.compact = forest.compact();
     double* partials = nullptr;
     if (plan.num_spans > 1) {
@@ -1007,6 +1009,7 @@ struct PreparedJob {
   int tree_begin = 0;
   int num_tree_per_iteration = 1;
   int num_output = 1;
+  int num_feature = 0;
   int64_t work = 0;           // rows x trees
   int64_t base_blocks = 0;    // row tiles x output chunks of an 8-row tile
   PairwisePlan plan;
@@ -1150,6 +1153,7 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
     p.forest = forest;
     p.num_tree_per_iteration = view.num_tree_per_iteration;
     p.num_output = view.num_output;
+    p.num_feature = view.num_feature;
     p.tree_begin = job.range.start_iteration * view.num_tree_per_iteration;
     if (forest->num_trees() < p.tree_begin + job.range.num_iteration * view.num_tree_per_iteration) {
       Log::Fatal("CUDA predictor: the packed model has %d trees, the prediction needs %d", forest->num_trees(),
@@ -1173,7 +1177,7 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
     const CUDAPredictJob& job = jobs[p.index];
     const int64_t target = std::max<int64_t>(
         p.base_blocks, static_cast<int64_t>(std::ceil(static_cast<double>(p.work) / std::max(block_work, 1.0))));
-    p.plan = ChoosePairwisePlan(device_id, job.num_row, job.num_col, p.num_tree_per_iteration,
+    p.plan = ChoosePairwisePlan(device_id, job.num_row, job.num_col, p.num_feature, p.num_tree_per_iteration,
                                 job.range.num_iteration, elem, p.forest->max_depth(), target);
     p.plan.compact = p.forest->compact();
     p.plan.ilp = 8;   // the batched kernel is built for 8 walks in flight

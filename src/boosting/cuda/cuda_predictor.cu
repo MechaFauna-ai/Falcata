@@ -43,6 +43,13 @@ struct GlobalRow {
   }
 };
 
+/*! \brief reads features of one row staged in shared memory over at least the model's features (no bounds check) */
+template <typename TIn>
+struct StagedRow {
+  const TIn* base;
+  __device__ __forceinline__ TIn operator()(uint32_t feature) const { return base[feature]; }
+};
+
 /*! \brief reads features of one row staged (already zero-snapped, zero past the input's columns) in shared memory */
 template <typename TIn>
 struct SharedRow {
@@ -499,17 +506,19 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   double* stack = segsum + static_cast<size_t>(segs) * pair_cap;            // [levels][pairs]
   TIn* xs = reinterpret_cast<TIn*>(stack + static_cast<size_t>(plan.levels) * pair_cap);
   const int num_col = rows.num_col;
-  const int x_stride = num_col | 1;
+  // staged rows cover the model's features too (zeros past the input's columns), so reads need no bounds check
+  const int stage_cols = max(num_col, plan.stage_cols);
+  const int x_stride = stage_cols | 1;
   const int64_t row0 = tile * tile_rows;
   const int valid_rows = static_cast<int>(min(static_cast<int64_t>(tile_rows), rows.num_row - row0));
   if (STAGE) {
-    const int64_t total = static_cast<int64_t>(tile_rows) * num_col;
+    const int64_t total = static_cast<int64_t>(tile_rows) * stage_cols;
     const bool column_major = rows.row_stride == 1 && rows.col_stride != 1;
     for (int64_t i = threadIdx.x; i < total; i += blockDim.x) {
-      const int64_t rr = column_major ? i % tile_rows : i / num_col;
-      const int f = static_cast<int>(column_major ? i / tile_rows : i - rr * num_col);
+      const int64_t rr = column_major ? i % tile_rows : i / stage_cols;
+      const int f = static_cast<int>(column_major ? i / tile_rows : i - rr * stage_cols);
       const int64_t r = row0 + rr;
-      xs[rr * x_stride + f] = r < rows.num_row
+      xs[rr * x_stride + f] = r < rows.num_row && f < num_col
           ? SnapZero(rows.data[r * rows.row_stride + static_cast<int64_t>(f) * rows.col_stride]) : TIn(0);
     }
     __syncthreads();
@@ -535,7 +544,7 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
         const int count = min(kPairwiseGroupIterations, num_iteration - it0);
         const int tree0 = tree_begin + it0 * K + k0 + kk;
         if (STAGE) {
-          const SharedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride, num_col};
+          const StagedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride};
           p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
         } else {
           const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
@@ -1052,7 +1061,7 @@ size_t PairwiseSharedBytes(const PairwisePlan& plan, int num_col, size_t input_e
                   static_cast<size_t>(plan.wave_groups / plan.seg) * pair_cap +
                   static_cast<size_t>(plan.levels) * pair_cap) * sizeof(double);
   if (plan.stage_rows) {
-    bytes += static_cast<size_t>(plan.tile_rows) * (num_col | 1) * input_elem;
+    bytes += static_cast<size_t>(plan.tile_rows) * (std::max(num_col, plan.stage_cols) | 1) * input_elem;
   }
   return bytes;
 }
