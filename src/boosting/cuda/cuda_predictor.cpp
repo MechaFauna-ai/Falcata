@@ -650,7 +650,8 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
       }
     }
     plan.seg = std::min(plan.wave_groups, 32);
-    plan.block_threads = std::min(1024, std::max(32, (pairs * plan.wave_groups + 31) / 32 * 32));
+    const int thread_cap = debug.predict_threads > 0 ? std::min(1024, (debug.predict_threads + 31) / 32 * 32) : 1024;
+    plan.block_threads = std::min(thread_cap, std::max(32, (pairs * plan.wave_groups + 31) / 32 * 32));
     const int64_t row_tiles = (std::max<int64_t>(num_row, 1) + plan.tile_rows - 1) / plan.tile_rows;
     const int64_t blocks = row_tiles * ((K + plan.out_chunk - 1) / plan.out_chunk);
     int64_t spans = blocks >= target ? 1 : (target + blocks - 1) / blocks;
