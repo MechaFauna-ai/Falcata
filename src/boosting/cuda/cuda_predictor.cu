@@ -590,16 +590,13 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   const int lane = threadIdx.x % 32;
   for (int w = 0; w < waves; ++w) {
     const int gw0 = g_span + w * WG * TG;
-    // units of this wave with a group of the range: only they get tasks (the others count as 0.0 below)
-    const int live_units = min(WG, (span_end - gw0 + TG - 1) / TG);
-    const int live_tasks = pairs * live_units;
     // 1. one task per (row, output, group); rows vary fastest, so a warp's lanes share trees
     if (TG == 1 && plan.group_lanes > 1) {
       // small batches: a group's trees are shared by group_lanes adjacent lanes, each walking its consecutive part;
       // the in-order sum is chained through the lanes by shuffles, so it is the same sum
       const int GL = plan.group_lanes;
       const int per_lane = kPairwiseGroupIterations / GL;
-      const int lane_tasks = live_tasks * GL;
+      const int lane_tasks = tasks * GL;
       const int rounded_lanes = (lane_tasks + 31) / 32 * 32;
       for (int base = threadIdx.x - lane; base < rounded_lanes; base += blockDim.x) {
         const int t = base + lane;
@@ -641,7 +638,7 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
         }
       }
     } else {
-    for (int t = threadIdx.x; t < live_tasks; t += blockDim.x) {
+    for (int t = threadIdx.x; t < tasks; t += blockDim.x) {
       const int r = t % tile_rows;
       const int rest = t / tile_rows;
       const int kk = rest % kb;
@@ -692,7 +689,7 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
       const int u = base + lane;
       const int pair = u / WG;
       const int gw = u % WG;
-      double v = u < tasks && gw < live_units ? part[gw * part_stride + pair] : 0.0;
+      double v = u < tasks ? part[gw * part_stride + pair] : 0.0;
       for (int off = 1; off < seg; off <<= 1) {
         v = __dadd_rn(v, __shfl_xor_sync(0xffffffffu, v, off));
       }
