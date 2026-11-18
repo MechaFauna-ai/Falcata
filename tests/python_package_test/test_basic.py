@@ -606,8 +606,6 @@ def test_dataset_construction_overwrites_user_provided_metadata_fields():
     X = np.array([[1.0, 2.0], [3.0, 4.0]])
 
     position = np.array([0.0, 1.0], dtype=np.float32)
-    if BuildInfo.has_cuda:
-        position = None
 
     dtrain = lgb.Dataset(
         X,
@@ -626,9 +624,8 @@ def test_dataset_construction_overwrites_user_provided_metadata_fields():
     assert dtrain.get_init_score() == [0.312, 0.708]
     assert dtrain.label == [1, 2]
     assert dtrain.get_label() == [1, 2]
-    if not BuildInfo.has_cuda:
-        np_assert_array_equal(dtrain.position, np.array([0.0, 1.0], dtype=np.float32), strict=True)
-        np_assert_array_equal(dtrain.get_position(), np.array([0.0, 1.0], dtype=np.float32), strict=True)
+    np_assert_array_equal(dtrain.position, np.array([0.0, 1.0], dtype=np.float32), strict=True)
+    np_assert_array_equal(dtrain.get_position(), np.array([0.0, 1.0], dtype=np.float32), strict=True)
     assert dtrain.weight == [0.5, 1.5]
     assert dtrain.get_weight() == [0.5, 1.5]
 
@@ -658,14 +655,13 @@ def test_dataset_construction_overwrites_user_provided_metadata_fields():
     np_assert_array_equal(dtrain.get_label(), expected_label, strict=True)
     np_assert_array_equal(dtrain.get_field("label"), expected_label, strict=True)
 
-    if not BuildInfo.has_cuda:
-        # NOTE: "position" is converted to int32 on the C++ side and remapped to dense
-        # internal indices in encounter order. Here the input [0, 1] is already dense
-        # starting from 0 in encounter order, so the remap is the identity.
-        expected_position = np.array([0, 1], dtype=np.int32)
-        np_assert_array_equal(dtrain.position, expected_position, strict=True)
-        np_assert_array_equal(dtrain.get_position(), expected_position, strict=True)
-        np_assert_array_equal(dtrain.get_field("position"), expected_position, strict=True)
+    # NOTE: "position" is converted to int32 on the C++ side and remapped to dense
+    # internal indices in encounter order. Here the input [0, 1] is already dense
+    # starting from 0 in encounter order, so the remap is the identity.
+    expected_position = np.array([0, 1], dtype=np.int32)
+    np_assert_array_equal(dtrain.position, expected_position, strict=True)
+    np_assert_array_equal(dtrain.get_position(), expected_position, strict=True)
+    np_assert_array_equal(dtrain.get_field("position"), expected_position, strict=True)
 
     expected_weight = np.array([0.5, 1.5], dtype=np.float32)
     np_assert_array_equal(dtrain.weight, expected_weight, strict=True)
@@ -673,10 +669,6 @@ def test_dataset_construction_overwrites_user_provided_metadata_fields():
     np_assert_array_equal(dtrain.get_field("weight"), expected_weight, strict=True)
 
 
-@pytest.mark.skipif(
-    BuildInfo.has_cuda,
-    reason="Positions in learning to rank is not supported in CUDA version yet",
-)
 def test_set_position_updates_self_position_with_remapped_int32_values():
     # Position values are remapped to dense int32 indices in the order they are first
     # encountered. With input [3, 1, 0, 2, 4, 3, 1, 0, 2, 4]:
@@ -1226,13 +1218,7 @@ def test_equal_datasets_from_one_and_several_matrices_w_different_layouts(rng, t
     [
         "group",
         "init_score",
-        pytest.param(
-            "position",
-            marks=pytest.mark.skipif(
-                BuildInfo.has_cuda,
-                reason="Positions in learning to rank is not supported in CUDA version yet",
-            ),
-        ),
+        "position",
         "weight",
     ],
 )
