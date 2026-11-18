@@ -3,6 +3,10 @@
 A subset's CUDAColumnData (CUDAColumnData::CopySubrow) did not carry the per-column sparse flags, which
 SetCompactPackedColumnView reads: cv() on CUDA (its folds are subsets) segfaulted once the packed read served 8-bit
 rows (#613, split_packed_read8); with nibble rows (max_bin <= 15) the same path was reachable before.
+
+The full Dataset is trained on once first: its device columns are built on first use, and only a parent whose columns
+are on the device makes CopySubrow build the folds from them. Without that, each fold builds its own column data
+(CUDAColumnData::Init, which sets the flags) and the test passes with or without the fix.
 """
 
 import numpy as np
@@ -29,6 +33,7 @@ def test_cv_folds_train_through_the_packed_view(max_bin, feature_fraction):
         "deterministic": True,
     }
     ds = flc.Dataset(X, y, params={"max_bin": max_bin}, free_raw_data=False)
+    flc.train(params, ds, num_boost_round=1)  # puts the parent's columns on the device, so the folds copy from them
     res = flc.cv(params, ds, num_boost_round=5, nfold=3, stratified=False, shuffle=False, return_cvbooster=True)
     for booster in res["cvbooster"].boosters:
         assert np.all(np.isfinite(booster.predict(X)))
