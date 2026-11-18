@@ -710,11 +710,11 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     plan.stage_cols = num_feature;
     return plan;
   };
-  // 8 rows per block; up to 64 when the rows alone fill the grid and the staged rows take at most 16 KiB (more rows
-  // share each tree's nodes in a block; wider rows would cost occupancy)
+  // 8 rows per block; up to 32 when the rows alone fill the grid and the staged rows take at most 16 KiB (more rows
+  // share each tree's nodes in a block; wider rows would cost occupancy; 64 lost 1.3x on 100 small trees at 1M rows)
   int tile_rows = 8;
   const size_t row_bytes = static_cast<size_t>(std::max(num_col, num_feature) | 1) * elem;
-  while (tile_rows < 64 && 2 * tile_rows * row_bytes <= (size_t(16) << 10) &&
+  while (tile_rows < 32 && 2 * tile_rows * row_bytes <= (size_t(16) << 10) &&
          std::max<int64_t>(num_row, 1) / (2 * tile_rows) >= target) {
     tile_rows *= 2;
   }
