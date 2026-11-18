@@ -540,6 +540,8 @@ print("OK")
         "predict_stage=0",
         "predict_stage=1,predict_tile_rows=2",
         "predict_chunk_rows=37,predict_spans=3",
+        "predict_compact=0",
+        "predict_compact=0,predict_stage=0,predict_spans=4",
     ],
 )
 def test_every_kernel_is_exact(debug, tmp_path):
