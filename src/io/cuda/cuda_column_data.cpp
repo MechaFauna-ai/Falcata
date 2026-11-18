@@ -233,6 +233,10 @@ void CUDAColumnData::CopySubrow(
   // one row per byte.
   column_bit_type_ = full_set->original_column_bit_type_;
   original_column_bit_type_ = full_set->original_column_bit_type_;
+  // as InitViewOf: SetCompactPackedColumnView reads one flag per column; a subset without them (cv folds, any
+  // Dataset.subset trained on CUDA) read past an empty vector there (segfault in test_cv_works_with_init_model once
+  // #613's 8-bit packed read sent every 8-bit dataset through it)
+  column_is_sparse_ = full_set->column_is_sparse_;
   feature_min_bin_ = full_set->feature_min_bin_;
   feature_max_bin_ = full_set->feature_max_bin_;
   feature_offset_ = full_set->feature_offset_;
@@ -382,6 +386,7 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
                                                 const uint8_t* colmajor_buf,
                                                 const size_t colmajor_pad,
                                                 const bool source_is_8bit) {
+  CHECK_EQ(column_is_sparse_.size(), static_cast<size_t>(num_columns_));
   packed_column_ptr_.assign(num_columns_, nullptr);
   packed_column_stride_.assign(num_columns_, 0);
   packed_column_shift_.assign(num_columns_, 0);
