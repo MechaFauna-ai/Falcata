@@ -149,21 +149,6 @@ class DeviceGuard {
   int previous_ = 0;
 };
 
-// a non-blocking stream for the chunks of one host input, destroyed however the call ends
-class OwnedStream {
- public:
-  OwnedStream() { CUDASUCCESS_OR_FATAL(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking)); }
-  ~OwnedStream() {
-    cudaStreamSynchronize(stream_);
-    cudaStreamDestroy(stream_);
-  }
-  OwnedStream(const OwnedStream&) = delete;
-  OwnedStream& operator=(const OwnedStream&) = delete;
-  cudaStream_t get() const { return stream_; }
-
- private:
-  cudaStream_t stream_ = nullptr;
-};
 
 
 }  // namespace
@@ -529,11 +514,9 @@ class CUDAPredictor::Scratch {
    *        call takes the lock). A lane's launches are ordered on its stream, so they may reuse its buffer; a buffer
    *        that has to grow is replaced only after the lane's earlier work is done.
    */
-  void* Get(size_t bytes, int lane, cudaStream_t stream) {
-    if (!lock_.owns_lock()) {
-      lock_ = std::unique_lock<std::mutex>(owner_->scratch_mutex_);
-    }
-    std::unique_ptr<CUDAVector<char>>& buf = owner_->scratch_[std::make_pair(device_, lane)];
+  void* Get(size_t bytes, int lane, cudaStream_t stream, int use = 0) {
+    Lock();
+    std::unique_ptr<CUDAVector<char>>& buf = owner_->scratch_[std::make_tuple(device_, lane, use)];
     if (buf == nullptr) {
       buf.reset(new CUDAVector<char>());
     }
@@ -544,7 +527,34 @@ class CUDAPredictor::Scratch {
     return buf->RawData();
   }
 
+  /*! \brief a non-blocking stream of this predictor for a lane of host-input chunks, kept across calls */
+  cudaStream_t Stream(int lane) {
+    Lock();
+    cudaStream_t& stream = owner_->streams_[std::make_pair(device_, lane)];
+    if (stream == nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    }
+    return stream;
+  }
+
+  ~Scratch() {
+    // the call's work on the kept streams is done before the next call may take them
+    if (lock_.owns_lock()) {
+      for (const auto& kv : owner_->streams_) {
+        if (kv.first.first == device_) {
+          cudaStreamSynchronize(kv.second);
+        }
+      }
+    }
+  }
+
  private:
+  void Lock() {
+    if (!lock_.owns_lock()) {
+      lock_ = std::unique_lock<std::mutex>(owner_->scratch_mutex_);
+    }
+  }
+
   CUDAPredictor* owner_;
   int device_;
   std::unique_lock<std::mutex> lock_;
@@ -552,7 +562,11 @@ class CUDAPredictor::Scratch {
 
 CUDAPredictor::CUDAPredictor() {}
 
-CUDAPredictor::~CUDAPredictor() {}
+CUDAPredictor::~CUDAPredictor() {
+  for (const auto& kv : streams_) {
+    cudaStreamDestroy(kv.second);   // an error at process exit (context gone) is of no consequence
+  }
+}
 
 void CUDAPredictor::Invalidate() {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -935,23 +949,31 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   if (!row_major && !col_major) {
     Log::Fatal("CUDA predictor: a host input must be C- or F-contiguous");
   }
-  size_t free_bytes = 0, total_bytes = 0;
-  CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &total_bytes));
   const size_t row_bytes = std::max<size_t>(1, static_cast<size_t>(req.num_col)) * elem + num_output * out_elem;
-  // two chunks in flight: the next chunk is copied while the kernel runs on the current one
-  const size_t budget = std::min<size_t>(std::max<size_t>(free_bytes / 8, size_t(32) << 20), size_t(512) << 20);
+  // two chunks in flight: the next chunk is copied while the kernel runs on the current one; an input of at most
+  // 32 MiB is one chunk without asking the device for its free memory
+  size_t budget = size_t(32) << 20;
+  if (static_cast<size_t>(req.num_row) * row_bytes > budget) {
+    size_t free_bytes = 0, total_bytes = 0;
+    CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &total_bytes));
+    budget = std::min<size_t>(std::max<size_t>(free_bytes / 8, size_t(32) << 20), size_t(512) << 20);
+  }
   int64_t chunk_rows = std::max<int64_t>(1, std::min<int64_t>(req.num_row, budget / row_bytes));
   if (FalcataDebug().predict_chunk_rows > 0) {
     chunk_rows = std::min<int64_t>(req.num_row, FalcataDebug().predict_chunk_rows);
   }
   const int64_t num_chunks = (req.num_row + chunk_rows - 1) / chunk_rows;
   const int lanes = num_chunks > 1 ? 2 : 1;
-  std::vector<CUDAVector<char>> in_buf(lanes), out_buf(lanes);
-  std::vector<OwnedStream> streams(lanes);
+  // the chunk buffers and streams are the predictor's, kept across calls (no allocation per call)
+  std::vector<char*> in_buf(lanes), out_buf(lanes);
+  std::vector<cudaStream_t> streams(lanes);
   for (int l = 0; l < lanes; ++l) {
-    in_buf[l].Resize(static_cast<size_t>(chunk_rows) * req.num_col * elem + 1);
-    out_buf[l].Resize(static_cast<size_t>(chunk_rows) * num_output * out_elem + 1);
-    stats->scratch_bytes += VectorBytes(in_buf[l]) + VectorBytes(out_buf[l]);
+    streams[l] = scratch.Stream(l);
+    const size_t in_bytes = static_cast<size_t>(chunk_rows) * req.num_col * elem + 1;
+    const size_t out_bytes = static_cast<size_t>(chunk_rows) * num_output * out_elem + 1;
+    in_buf[l] = reinterpret_cast<char*>(scratch.Get(in_bytes, l, streams[l], 1));
+    out_buf[l] = reinterpret_cast<char*>(scratch.Get(out_bytes, l, streams[l], 2));
+    stats->scratch_bytes += static_cast<int64_t>(in_bytes + out_bytes);
   }
   // the second lane's contribution kernels run beside the first's: their own path buffers
   RunContext lane_ctx[2] = {ctx, ctx};
@@ -970,24 +992,24 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
     const int l = static_cast<int>(c % lanes);
     const int64_t r0 = c * chunk_rows;
     const int64_t nr = std::min<int64_t>(chunk_rows, req.num_row - r0);
-    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(dst + r0 * num_output * out_elem, out_buf[l].RawData(),
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(dst + r0 * num_output * out_elem, out_buf[l],
                                          static_cast<size_t>(nr) * num_output * out_elem, cudaMemcpyDeviceToHost,
-                                         streams[l].get()));
+                                         streams[l]));
   };
   for (int64_t c = 0; c < num_chunks; ++c) {
     const int l = static_cast<int>(c % lanes);
-    cudaStream_t stream = streams[l].get();
+    cudaStream_t stream = streams[l];
     const int64_t r0 = c * chunk_rows;
     const int64_t nr = std::min<int64_t>(chunk_rows, req.num_row - r0);
     if (req.num_col > 0) {
       // the chunk's rows as one contiguous device block, in the input's layout
       // pageable copies (a pinned staging copy measured slower: the host memcpy into it costs more than it saves)
       if (row_major) {
-        CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(in_buf[l].RawData(), src + r0 * req.num_col * elem,
+        CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(in_buf[l], src + r0 * req.num_col * elem,
                                              static_cast<size_t>(nr) * req.num_col * elem, cudaMemcpyHostToDevice,
                                              stream));
       } else {
-        CUDASUCCESS_OR_FATAL(cudaMemcpy2DAsync(in_buf[l].RawData(), static_cast<size_t>(nr) * elem, src + r0 * elem,
+        CUDASUCCESS_OR_FATAL(cudaMemcpy2DAsync(in_buf[l], static_cast<size_t>(nr) * elem, src + r0 * elem,
                                                static_cast<size_t>(req.num_row) * elem,
                                                static_cast<size_t>(nr) * elem, req.num_col, cudaMemcpyHostToDevice,
                                                stream));
@@ -996,12 +1018,12 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
     const int64_t rs = row_major ? req.num_col : 1;
     const int64_t cs = row_major ? 1 : nr;
     if (is_double) {
-      DeviceRows<double> rows{reinterpret_cast<const double*>(in_buf[l].RawData()), nr, req.num_col, rs, cs};
-      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf[l].RawData(), stream,
+      DeviceRows<double> rows{reinterpret_cast<const double*>(in_buf[l]), nr, req.num_col, rs, cs};
+      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf[l], stream,
               lane_ctx[l]);
     } else {
-      DeviceRows<float> rows{reinterpret_cast<const float*>(in_buf[l].RawData()), nr, req.num_col, rs, cs};
-      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf[l].RawData(), stream,
+      DeviceRows<float> rows{reinterpret_cast<const float*>(in_buf[l]), nr, req.num_col, rs, cs};
+      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf[l], stream,
               lane_ctx[l]);
     }
     // the previous chunk's result is read back only now, so its kernel overlapped this chunk's copy
@@ -1010,8 +1032,8 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
     }
   }
   copy_out(num_chunks - 1);
-  for (auto& st : streams) {
-    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(st.get()));
+  for (cudaStream_t st : streams) {
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(st));
   }
   if (convert) {
     ConvertOnHost(boosting, range, reinterpret_cast<double*>(req.out), req.num_row, num_output);
@@ -1038,6 +1060,35 @@ struct PreparedJob {
   int64_t part_offset = 0;    // double offset of its span sums in the partials buffer
 };
 
+/*!
+ * \brief A device's buffers and stream for PredictMany, kept across calls (grow only) so that a call allocates
+ *        nothing; one call at a time per device. Never freed: the process ends with them (no teardown order issue).
+ */
+struct BatchScratch {
+  std::mutex mutex;
+  cudaStream_t stream = nullptr;
+  CUDAVector<char> in, out, part, tables;
+  std::vector<double> host_out;
+};
+
+BatchScratch& BatchScratchOf(int device) {
+  static std::mutex mutex;
+  static auto* cache = new std::map<int, std::unique_ptr<BatchScratch>>();
+  std::lock_guard<std::mutex> lock(mutex);
+  std::unique_ptr<BatchScratch>& slot = (*cache)[device];
+  if (slot == nullptr) {
+    slot.reset(new BatchScratch());
+    CUDASUCCESS_OR_FATAL(cudaStreamCreateWithFlags(&slot->stream, cudaStreamNonBlocking));
+  }
+  return *slot;
+}
+
+void GrowTo(CUDAVector<char>* buf, size_t bytes) {
+  if (buf->Size() < bytes) {
+    buf->ResizeDiscard(bytes);
+  }
+}
+
 /*! \brief the shared-memory class of a launch: jobs of one class run together (a launch reserves its largest) */
 int SharedClass(size_t bytes) {
   int c = 0;
@@ -1061,7 +1112,7 @@ void LaunchJobs(const std::vector<PreparedJob>& prepared, const std::vector<CUDA
   for (const auto& g : groups) {
     table_bytes += g.second.size() * sizeof(PairwiseJob<T>);
   }
-  tables->ResizeDiscard(table_bytes + 1);
+  GrowTo(tables, table_bytes + 1);
   host_tables->clear();
   size_t offset = 0;
   for (const auto& g : groups) {
@@ -1202,8 +1253,9 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
     p.shared = PairwiseSharedBytes(p.plan, job.num_col, elem);
   }
   // device buffers: host inputs (one copy per distinct input), host outputs, span sums
-  OwnedStream owned;
-  cudaStream_t stream = common.on_device ? common.stream : owned.get();
+  BatchScratch& scratch = BatchScratchOf(device_id);
+  std::lock_guard<std::mutex> scratch_lock(scratch.mutex);
+  cudaStream_t stream = common.on_device ? common.stream : scratch.stream;
   std::map<std::tuple<const void*, int64_t, int32_t, int64_t, int64_t>, int64_t> input_offsets;
   int64_t in_elems = 0, out_elems = 0, part_elems = 0;
   for (PreparedJob& p : prepared) {
@@ -1229,10 +1281,13 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
       part_elems += static_cast<int64_t>(p.plan.num_spans) * job.num_row * p.num_tree_per_iteration;
     }
   }
-  CUDAVector<char> in_buf, out_buf, part_buf, tables;
-  if (in_elems > 0) in_buf.Resize(static_cast<size_t>(in_elems) * elem);
-  if (out_elems > 0) out_buf.Resize(static_cast<size_t>(out_elems) * sizeof(double));
-  if (part_elems > 0) part_buf.Resize(static_cast<size_t>(part_elems) * sizeof(double));
+  CUDAVector<char>& in_buf = scratch.in;
+  CUDAVector<char>& out_buf = scratch.out;
+  CUDAVector<char>& part_buf = scratch.part;
+  CUDAVector<char>& tables = scratch.tables;
+  if (in_elems > 0) GrowTo(&in_buf, static_cast<size_t>(in_elems) * elem);
+  if (out_elems > 0) GrowTo(&out_buf, static_cast<size_t>(out_elems) * sizeof(double));
+  if (part_elems > 0) GrowTo(&part_buf, static_cast<size_t>(part_elems) * sizeof(double));
   stats->scratch_bytes = VectorBytes(in_buf) + VectorBytes(out_buf) + VectorBytes(part_buf);
   stats->num_chunks = 1;
   stats->chunk_rows = 0;
@@ -1287,15 +1342,21 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
       LaunchJobs<float>(prepared, jobs, rows.data(), out_of.data(), partials, stream, &tables, &host_tables);
     }
   }
-  if (!common.on_device) {
-    for (size_t i = 0; i < prepared.size(); ++i) {
-      const PreparedJob& p = prepared[i];
-      const CUDAPredictJob& job = jobs[p.index];
-      CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(job.out, out_of[i], static_cast<size_t>(job.num_row) * p.num_output *
-                                           sizeof(double), cudaMemcpyDeviceToHost, stream));
-    }
+  // host outputs: one copy of the whole output buffer, then each job's part on the host
+  if (!common.on_device && out_elems > 0) {
+    scratch.host_out.resize(static_cast<size_t>(out_elems));
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(scratch.host_out.data(), out_buf.RawData(),
+                                         static_cast<size_t>(out_elems) * sizeof(double), cudaMemcpyDeviceToHost,
+                                         stream));
   }
   CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
+  if (!common.on_device) {
+    for (const PreparedJob& p : prepared) {
+      const CUDAPredictJob& job = jobs[p.index];
+      std::memcpy(job.out, scratch.host_out.data() + p.out_offset,
+                  static_cast<size_t>(job.num_row) * p.num_output * sizeof(double));
+    }
+  }
   if (common.predict_type == C_API_PREDICT_NORMAL) {
     for (const PreparedJob& p : prepared) {
       const CUDAPredictJob& job = jobs[p.index];
