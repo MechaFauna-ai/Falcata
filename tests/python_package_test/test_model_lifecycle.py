@@ -29,41 +29,6 @@ def test_failed_text_and_binary_replacement_keep_old_model():
     np.testing.assert_array_equal(model.predict(x), expected)
 
 
-def test_model_replacement_invalidates_cached_fil_prediction(monkeypatch):
-    model, x = _trained_model()
-    replacement, _ = _trained_model(target_sign=-1.0)
-    replacement_binary = replacement.model_to_binary()
-    model.params["device_type"] = "cuda"
-    monkeypatch.setenv("FALCATA_FIL", "1")
-
-    class FakeFilModel:
-        is_classifier = False
-
-        def __init__(self, value):
-            self.value = value
-
-        def predict(self, data):
-            return np.full(data.shape[0], self.value, dtype=np.float64)
-
-    built = []
-
-    def build_fake(**_kwargs):
-        result = FakeFilModel(float(len(built) + 1))
-        built.append(result)
-        return result
-
-    monkeypatch.setattr(basic, "_load_fil_modules", lambda: (object(), object()))
-    monkeypatch.setattr(model, "_build_fil_model", build_fake)
-    first = model.predict(x)
-    np.testing.assert_array_equal(first, np.ones(x.shape[0]))
-
-    model.model_from_binary(replacement_binary)
-    model.params["device_type"] = "cuda"
-    second = model.predict(x)
-    np.testing.assert_array_equal(second, np.full(x.shape[0], 2.0))
-    assert len(built) == 2
-
-
 @pytest.mark.parametrize("populate_config_first", [False, True])
 def test_loaded_model_rejects_forced_splits_without_poisoning_config(tmp_path, populate_config_first):
     trained, _ = _trained_model()

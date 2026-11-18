@@ -5,7 +5,6 @@ import pytest
 from scipy.sparse import csr_matrix
 
 import falcata as flc
-from falcata.basic import _fil_run_host_slabs
 
 
 @pytest.mark.parametrize("kind", ["normal", "raw", "leaf", "contrib"])
@@ -25,7 +24,7 @@ def test_empty_predictions(kind, sparse, multiclass):
         "pred_leaf": kind == "leaf",
         "pred_contrib": kind == "contrib",
         "raw_score": kind == "raw",
-        "use_fil": False,
+        "device": "cpu",
     }
     batch = csr_matrix(data) if sparse else data
     prediction = booster.predict(batch[:0], **options)
@@ -36,7 +35,3 @@ def test_empty_predictions(kind, sparse, multiclass):
             assert empty.shape == (0, *one_row.shape[1:])
     else:
         assert prediction.shape == (0, *expected.shape[1:])
-
-
-def test_empty_fil_host_input_falls_back():
-    assert _fil_run_host_slabs(object(), np.empty((0, 2))) is None

@@ -19,6 +19,7 @@ namespace Falcata {
 
 /*! \brief forward declaration */
 class Dataset;
+class Tree;
 class ObjectiveFunction;
 class Metric;
 struct PredictionEarlyStopInstance;
@@ -347,6 +348,44 @@ class FALCATA_EXPORT Boosting {
   virtual void PredictContribByMapInRange(const std::unordered_map<int, double>& features,
                                           std::vector<std::unordered_map<int, double>>* output,
                                           const PredictRange& range) const = 0;
+
+  /*!
+  * \brief What a predictor that evaluates the trees itself (the CUDA predictor) needs: the trees of an iteration
+  *        range in the order PredictRawInRange adds them, and how they map to outputs
+  */
+  struct TreeRangeView {
+    /*! \brief trees in prediction order: iteration by iteration, and within an iteration tree k feeds output k */
+    std::vector<const Tree*> trees;
+    /*! \brief trees per iteration (num_class for multiclass, 1 for vector leaves) */
+    int num_tree_per_iteration = 1;
+    /*! \brief raw outputs per row (NumOutputPerIteration) */
+    int num_output = 1;
+    /*! \brief true when every tree adds a vector of num_output values (vector-leaf models) */
+    bool vector_leaf = false;
+    /*! \brief number of input features the model expects (MaxFeatureIdx() + 1) */
+    int num_feature = 0;
+  };
+  virtual TreeRangeView TreesInRange(const PredictRange& /*range*/) const {
+    Log::Fatal("This boosting type does not expose its trees to device predictors");
+    return TreeRangeView();
+  }
+
+  /*! \brief TreesInRange without the tree list (the shape fields only): what a prediction from a packed copy needs */
+  virtual TreeRangeView RangeShape(const PredictRange& /*range*/) const {
+    Log::Fatal("This boosting type does not expose its trees to device predictors");
+    return TreeRangeView();
+  }
+
+  /*!
+  * \brief Turn the raw scores of one row (as PredictRawInRange leaves them) into the normal prediction, in place:
+  *        the average of a forest, then the objective's output transform; PredictInRange applies exactly this
+  */
+  virtual void ConvertRawToPrediction(double* /*output*/, const PredictRange& /*range*/) const {
+    Log::Fatal("This boosting type does not convert raw scores for device predictors");
+  }
+
+  /*! \brief Whether ConvertRawToPrediction can change a raw score (an average or an objective with a transform) */
+  virtual bool HasOutputConversion() const { return true; }
 
   /*!
   * \brief Name of submodel

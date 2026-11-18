@@ -21,7 +21,7 @@ def rejects(operation, message):
     else:
         raise AssertionError("oversized sparse dimension accepted")
 for contrib in [False, True]:
-    rejects(lambda: bst.predict(sparse, use_fil=False, pred_contrib=contrib), "more than 2147483647 columns")
+    rejects(lambda: bst.predict(sparse, device="cpu", pred_contrib=contrib), "more than 2147483647 columns")
 rejects(lambda: flc.Dataset(sparse, params={"device_type": "cpu"}).construct(), "more than 2147483647 columns")
 tall = csc_matrix(([1.0], ([2**31], [0])), shape=(2**31 + 1, 1))
 rejects(lambda: flc.Dataset(tall, params={"device_type": "cpu"}).construct(), "more than 2147483647 rows")

@@ -34,12 +34,10 @@ What makes it fast
   overridable with ``quant_bins``; both modes are bit-reproducible run to run
   and across GPU models (verified sm_89 vs sm_120 on a pre-launch build; the
   integer-only Philox stream keeps the guarantee by construction).
-- **GPU inference via NVIDIA FIL** — with cuML installed (``cuml-cu13`` for
-  the prebuilt CUDA 13 wheel), ``Booster.predict()`` transparently runs on the
-  Forest Inference Library; CuPy arrays stay on the device end to end. The
-  default fp32 thresholds can route rows near a split threshold differently
-  from the exact predictor; ``FALCATA_FIL_PRECISION=double`` restores exact
-  routing and ``FALCATA_FIL=0`` disables FIL.
+- **Native GPU inference** — ``Booster.predict()`` scores dense rows with its
+  own CUDA predictor, with raw scores and leaf indices bit-identical to the CPU
+  predictor's; device arrays (CuPy, PyTorch) stay on the device end to end, and
+  ``device="cpu"`` / ``device="cuda"`` pin the choice.
 - **An execution planner** — shape-conditional kernel choices are resolved once
   from the data and parameters (``cuda_plan=auto``), every decision
   bit-identical except where the ``cuda_plan`` documentation says otherwise,

@@ -112,9 +112,9 @@ def fake_lightgbm(monkeypatch):
 
         def predict(self, data, **kwargs):
             assert kwargs["raw_score"] is True
-            # Falcata must bypass FIL; upstream has no use_fil argument.
-            if "use_fil" in kwargs:
-                assert kwargs["use_fil"] is False
+            # Falcata scores AUC margins on the CPU predictor; upstream has no device argument.
+            if "device" in kwargs:
+                assert kwargs["device"] == "cpu"
             return state.raw[np.asarray(data)[:, 0].astype(int)]
 
     def train(params, train_set, num_boost_round):
