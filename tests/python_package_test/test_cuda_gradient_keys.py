@@ -78,7 +78,9 @@ def test_gradient_keys_are_bit_identical_cuda(objective, extra, quantized, weigh
     base = "auto" if quantized else "auto,nonquant_deterministic:on"
     reference = _model_md5({**params, "cuda_plan": base}, X, y, rounds=30, weight=weight)
     for key in KEYS:
-        assert _model_md5({**params, "cuda_plan": f"{base},{key}:off"}, X, y, rounds=30, weight=weight) == reference, key
+        assert _model_md5({**params, "cuda_plan": f"{base},{key}:off"}, X, y, rounds=30, weight=weight) == reference, (
+            key
+        )
 
 
 @_REQUIRES_CUDA
