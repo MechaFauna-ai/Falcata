@@ -33,7 +33,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from predict_gpu import fil_model, rows_in_ranges, threshold_ranges  # noqa: E402
+from predict_gpu import fil_model, rows_in_ranges, threshold_ranges, treelite_model  # noqa: E402
 
 
 def median_time(fn, sync, reps):
@@ -74,8 +74,20 @@ def main():
     ap.add_argument("--fil-precisions", default="single,double")
     ap.add_argument("--inputs-dir", default="", help="rows per model as <stem>.npy (made here when missing)")
     ap.add_argument("--make-inputs", action="store_true", help="only write the inputs (CPU) and stop")
+    ap.add_argument("--treelite-cache", default="", help="Treelite checkpoints of the models (<stem>.tl)")
+    ap.add_argument("--treelite-only", action="store_true", help="only write the Treelite checkpoints (CPU)")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
+    if args.treelite_only:
+        paths = sorted(Path(args.model_dir).glob(args.glob))[args.first :]
+        if args.count:
+            paths = paths[: args.count]
+        Path(args.treelite_cache).mkdir(parents=True, exist_ok=True)
+        for p in paths:
+            target = Path(args.treelite_cache) / f"{p.stem}.tl"
+            if not target.exists():
+                treelite_model(p.read_text(), target)
+        return
     if args.make_inputs:
         paths = sorted(Path(args.model_dir).glob(args.glob))
         Path(args.inputs_dir).mkdir(parents=True, exist_ok=True)
@@ -189,7 +201,10 @@ def main():
                 tag = f"fil_{precision}"
                 try:
                     t0 = time.perf_counter()
-                    models = [fil_model(t, True, precision) for t in texts]
+                    caches = [
+                        Path(args.treelite_cache) / f"{p.stem}.tl" if args.treelite_cache else None for p in chunk
+                    ]
+                    models = [fil_model(t, True, precision, None, c) for t, c in zip(texts, caches, strict=True)]
                     rec[f"{tag}_build_s"] = time.perf_counter() - t0
                     preds = [m.predict(x) for m, x in zip(models, Xd, strict=True)]
                     sync()
