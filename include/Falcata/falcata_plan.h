@@ -14,6 +14,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -93,6 +94,13 @@ struct FalcataPlan {
   // cuda_precision=fp32 the fp32 histogram layout. Not covered: linear trees, ranking objectives' gradients,
   // multi-plane vector-leaf trees, multi-GPU. Quantized training never reads the key.
   bool nonquant_deterministic = false;  // key: nonquant_deterministic
+  // non-quantized histograms by measured cost: with nonquant_deterministic off, a training whose fixed-point construct
+  // (the deterministic one) is expected to be the cheaper histogram construct takes it anyway, and the others take the
+  // float-atomic kernels (with the fp32 layout under cuda_precision=fp32): NonquantOrderedPays below, decided once per
+  // training (CUDAHistogramConstructor::DecideNonquantHistograms). The choice is made for speed only; a model that
+  // happens to repeat is not promised to (only nonquant_deterministic is). Off = the float-atomic kernels for every
+  // training without the key. Scalar trees on a device that holds the fixed-point table only.
+  bool nonquant_hist_cost = true;  // key: nonquant_hist_cost
   // per-tree compact column view for quantized construct at any
   // 0 < feature_fraction < 1 (win scales with the excluded fraction:
   // ~3.4x at ff=0.1, ~1.1x at ff=0.6)
@@ -1041,6 +1049,7 @@ struct FalcataPlan {
   bool* KeySlot(const std::string& key) {
     if (key == "hybrid") return &hybrid;
     if (key == "nonquant_deterministic") return &nonquant_deterministic;
+    if (key == "nonquant_hist_cost") return &nonquant_hist_cost;
     if (key == "compact_quant") return &compact_quant;
     if (key == "row_batch") return &row_batch;
     if (key == "fused_root_hist") return &fused_root_hist;
@@ -1167,6 +1176,42 @@ struct FalcataPlan {
     if (key == "index_parity_canonical") return &index_parity_canonical;
     return nullptr;
   }
+
+  /*!
+   * \brief cuda_plan key nonquant_hist_cost: whether the fixed-point (ordered) non-quantized histogram construct is
+   * expected to be faster than the float-atomic one for a training of this shape. The two differ in where their cost
+   * grows: the fixed-point construct sums rows with native integer shared-memory atomics (cheaper per row than the
+   * float atomics on the measured shapes) but converts every level's histograms and keeps them in fp64, while the
+   * atomic one has no convert and, under cuda_precision=fp32, halves the bytes of every histogram read. The rule
+   * compares histogram bins per tree with row work per tree,
+   *   rho = num_leaves * (total_bins / num_features) / (num_data * levels),
+   * where levels is the depth of a balanced tree with num_leaves leaves, capped by max_depth when that is set, and
+   * takes the fixed-point construct when rho is at most the threshold for the histogram layout the atomic kernels
+   * would use (fp32 or fp64). The thresholds are measured: docs/performance.md section 10v.
+   */
+  static bool NonquantOrderedPays(int64_t num_data, int num_features, int64_t total_bins, int num_leaves,
+                                  int max_depth, bool fp32_layout) {
+    return NonquantHistRho(num_data, num_features, total_bins, num_leaves, max_depth) <=
+           (fp32_layout ? kNonquantOrderedMaxRhoFp32 : kNonquantOrderedMaxRhoFp64);
+  }
+  /*! \brief NonquantOrderedPays's histogram-to-row work ratio (infinite for an empty shape: the atomic kernels) */
+  static double NonquantHistRho(int64_t num_data, int num_features, int64_t total_bins, int num_leaves,
+                                int max_depth) {
+    if (num_data <= 0 || num_features <= 0 || num_leaves < 2 || total_bins <= 0) {
+      return std::numeric_limits<double>::infinity();
+    }
+    int levels = 1;
+    while (levels < 30 && (int64_t{1} << levels) < num_leaves) {
+      ++levels;
+    }
+    if (max_depth > 0) {
+      levels = std::min(levels, max_depth);
+    }
+    return static_cast<double>(num_leaves) * (static_cast<double>(total_bins) / num_features) /
+           (static_cast<double>(num_data) * levels);
+  }
+  static constexpr double kNonquantOrderedMaxRhoFp32 = 0.025;
+  static constexpr double kNonquantOrderedMaxRhoFp64 = 0.03;
 
   /*! \brief The process-global plan (mutable form, for the resolve points). */
   static FalcataPlan& Mutable() {

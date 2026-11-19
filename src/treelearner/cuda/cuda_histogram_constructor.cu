@@ -1931,7 +1931,9 @@ void CUDAHistogramConstructor::InitNonquantFixed() {
   nq_fixed_smem_bytes_ = 0;
   nq_fixed_smem_set_.clear();
   nq_fixed_supported_ = true;
-  if (use_quantized_grad_ || !FalcataPlan::Get().nonquant_deterministic) {
+  // whether the fixed-point table fits: read by nonquant_deterministic and by nonquant_hist_cost's choice
+  // (DecideNonquantHistograms, which runs after this)
+  if (use_quantized_grad_) {
     return;
   }
   const std::vector<uint32_t>& offsets = cuda_row_data_->host_partition_hist_offsets();
@@ -1959,14 +1961,8 @@ void CUDAHistogramConstructor::InitNonquantFixed() {
   }
   nq_fixed_supported_ = need <= static_cast<size_t>(shared_limit);
   if (!nq_fixed_supported_) {
-    static bool warned = false;  // once per process, across datasets and resets
-    if (!warned) {
-      warned = true;
-      Log::Warning("nonquant_deterministic: the fixed-point histogram construct needs %zu bytes of shared memory per "
-                   "block (widest partition %u bins), this GPU gives %d: using the deterministic classic CUDA "
-                   "training loop for this dataset",
-                   need, max_bins, shared_limit);
-    }
+    Log::Debug("fixed-point histogram construct: needs %zu bytes of shared memory per block (widest partition %u "
+               "bins), this GPU gives %d", need, max_bins, shared_limit);
   }
 }
 

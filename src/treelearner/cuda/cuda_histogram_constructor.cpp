@@ -1527,12 +1527,16 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   // entry points size it because either can be the only one a flow calls).
   InitDeterministicTileScratch(train_data->num_data());
   InitDeterministicDenseScratch();
+  // whether the device holds the fixed-point table, then the non-quantized constructs (nonquant_deterministic, or
+  // nonquant_hist_cost's choice), which the fp32 layout below depends on
+  InitNonquantFixed();
+  DecideNonquantHistograms();
 
   // fp32-pair global histograms: dense shared-memory non-quantized layout only
   // (sparse / large-bin construct kernels and the categorical find path stay
   // hist_t and are excluded)
-  // (not under cuda_plan key nonquant_deterministic: the deterministic and fixed-point constructs store hist_t; the
-  // fp32 gain math of cuda_precision=fp32 stays)
+  // (not with the deterministic constructs, NonquantDet: they store hist_t; the fp32 gain math of
+  // cuda_precision=fp32 stays)
   hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
     !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
     !has_categorical_feature_ && !NonquantDet();
@@ -1610,7 +1614,6 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   full_view_.Clear();
   colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
   InitCountConstruct();
-  InitNonquantFixed();
 
   // one int32 region of num_total_bin_ entries per histogram pipeline (the pairs
   // of a level run concurrently on different pipeline streams and must not share
@@ -2306,9 +2309,11 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
 
   InitDeterministicTileScratch(num_data_);
   InitDeterministicDenseScratch();
+  InitNonquantFixed();
+  DecideNonquantHistograms();
 
-  // (not under cuda_plan key nonquant_deterministic: the deterministic and fixed-point constructs store hist_t; the
-  // fp32 gain math of cuda_precision=fp32 stays)
+  // (not with the deterministic constructs, NonquantDet: they store hist_t; the fp32 gain math of
+  // cuda_precision=fp32 stays)
   hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
     !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
     !has_categorical_feature_ && !NonquantDet();
@@ -2319,12 +2324,54 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   // the tree learner chooses the regime for the new data (ChooseViewRegime)
   colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
   InitCountConstruct();
-  InitNonquantFixed();
+}
+
+void CUDAHistogramConstructor::DecideNonquantHistograms() {
+  nonquant_ordered_ = false;
+  if (use_quantized_grad_) {
+    return;
+  }
+  const FalcataPlan& plan = FalcataPlan::Get();
+  // the layout the float-atomic kernels would use (the fp32 layout's own conditions, see hist_fp32_)
+  const bool fp32_layout = FalcataFP32HistRequested() && !gpu_use_dp_ && !cuda_row_data_->is_sparse() &&
+    cuda_row_data_->NumLargeBinPartition() == 0 && !has_categorical_feature_;
+  const double rho = FalcataPlan::NonquantHistRho(num_data_, num_features_, num_total_bin_, num_leaves_, max_depth_);
+  const char* why = "float-atomic kernels (nonquant_hist_cost:off)";
+  if (plan.nonquant_deterministic) {
+    nonquant_ordered_ = true;
+    why = "deterministic constructs (nonquant_deterministic)";
+    if (num_hist_planes_ == 1 && !nq_fixed_supported_) {
+      static bool warned = false;  // once per process, across datasets and resets
+      if (!warned) {
+        warned = true;
+        Log::Warning("nonquant_deterministic: this GPU cannot give a block the fixed-point histogram construct's "
+                     "shared memory (widest partition of this dataset): using the deterministic classic CUDA "
+                     "training loop");
+      }
+    }
+  } else if (plan.nonquant_hist_cost) {
+    if (num_hist_planes_ != 1) {
+      why = "float-atomic kernels (multi-plane vector leaves)";
+    } else if (!nq_fixed_supported_) {
+      why = "float-atomic kernels (fixed-point table does not fit this device)";
+    } else if (FalcataPlan::NonquantOrderedPays(num_data_, num_features_, num_total_bin_, num_leaves_, max_depth_,
+                                                fp32_layout)) {
+      nonquant_ordered_ = true;
+      why = "fixed-point construct (nonquant_hist_cost: cheaper here)";
+    } else {
+      why = "float-atomic kernels (nonquant_hist_cost: cheaper here)";
+    }
+  }
+  Log::Info("non-quantized histograms: %s; rho %.6g (rows %d, features %d, bins %d, leaves %d, max_depth %d), "
+            "threshold %.6g (%s layout)", why, rho, num_data_, num_features_, num_total_bin_, num_leaves_, max_depth_,
+            fp32_layout ? FalcataPlan::kNonquantOrderedMaxRhoFp32 : FalcataPlan::kNonquantOrderedMaxRhoFp64,
+            fp32_layout ? "fp32" : "fp64");
 }
 
 void CUDAHistogramConstructor::ResetConfig(const Config* config) {
   num_threads_ = OMP_NUM_THREADS();
   num_leaves_ = config->num_leaves;
+  max_depth_ = config->max_depth;
   min_data_in_leaf_ = config->min_data_in_leaf;
   feature_fraction_ = config->feature_fraction;
   min_sum_hessian_in_leaf_ = config->min_sum_hessian_in_leaf;

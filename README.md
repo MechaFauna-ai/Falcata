@@ -50,14 +50,16 @@ What makes it fast
   across GPU models and host machines: the same seed trains the bit-identical
   model on any CUDA device (verified sm_89 vs sm_120 on a pre-launch build; the
   integer-only Philox stream keeps the guarantee by construction);
-  `quant_mode=none` is full precision, with the fastest float-atomic histograms
-  by default (its models can differ in the last bits from run to run;
-  `deterministic=true` with `quant_mode=none` makes it repeat bit for bit).
+  `quant_mode=none` is full precision; by default its histograms take whichever
+  construct is faster for the training's shape (float atomics or fixed point,
+  `cuda_plan` key `nonquant_hist_cost`), so its models can differ in the last
+  bits from run to run; `deterministic=true` with `quant_mode=none` makes it
+  repeat bit for bit.
 - **An execution planner.** Shape-conditional kernel choices are resolved once
   from the data and parameters (`cuda_plan=auto`) instead of from a pile of
   environment variables — every decision bit-identical except where the
   `cuda_plan` documentation says otherwise (`robust_scale`,
-  `nonquant_deterministic`), and individually
+  `nonquant_deterministic`, `nonquant_hist_cost`), and individually
   overridable for experiments.
 - **GPU inference via NVIDIA FIL.** `Booster.predict()` transparently runs on
   cuML's Forest Inference Library when available (see below); CuPy arrays stay

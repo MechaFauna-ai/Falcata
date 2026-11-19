@@ -298,20 +298,21 @@ def build_cells():
         perf=True,
     )
     # --- nondeterministic tier: validity + metric floor only ---------------- #
-    # nonquant_deterministic:off, the default since 1.2, keeps the float-atomic kernels: the mode whose models vary
-    # run to run, exactly the path md5 cannot cover. The atomic cell names the key (it equals the default plan);
-    # the fp32 cell runs the default plan, whose cuda_precision=fp32 takes the fp32 histogram layout.
+    # the float-atomic kernels (nonquant_deterministic off, the default since 1.2, with nonquant_hist_cost:off so
+    # that the cost rule cannot pick the fixed-point construct): the mode whose models vary run to run, exactly the
+    # path md5 cannot cover; the fp32 cell's cuda_precision=fp32 takes the fp32 histogram layout. (On this shape the
+    # default plan's rule picks the same kernels.)
     cell(
         "dense/nonquant-atomic",
         "dense",
-        {"quant_mode": "none", "cuda_plan": "auto,nonquant_deterministic:off"},
+        {"quant_mode": "none", "cuda_plan": "auto,nonquant_deterministic:off,nonquant_hist_cost:off"},
         rounds=50,
         fingerprint=False,
     )
     cell(
         "dense/fp32-atomic",
         "dense",
-        {"quant_mode": "none", "cuda_precision": "fp32"},
+        {"quant_mode": "none", "cuda_precision": "fp32", "cuda_plan": "auto,nonquant_hist_cost:off"},
         rounds=50,
         fingerprint=False,
     )

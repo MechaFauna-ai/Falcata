@@ -582,10 +582,11 @@ class CUDAHistogramConstructor {
   /*! \brief kill-switch of the small-leaf construct path
    *  (cuda_plan=auto,small_leaf_construct:off restores the shared-memory
    *  batched kernels for every level) */
-  /*! \brief cuda_plan key nonquant_deterministic under non-quantized training: every construct takes the
-   *  deterministic kernels (never true under quantized training) */
+  /*! \brief non-quantized training takes the deterministic constructs (the fixed-point batched one where the float
+   *  atomics would run): the cuda_plan key nonquant_deterministic, or nonquant_hist_cost's choice where they are
+   *  expected to be faster (DecideNonquantHistograms; never true under quantized training) */
   bool NonquantDet() const {
-    return !use_quantized_grad_ && FalcataPlan::Get().nonquant_deterministic;
+    return !use_quantized_grad_ && nonquant_ordered_;
   }
 
   // A scalar nonquantized run must never drop to float atomics when its fixed table cannot fit.
@@ -751,6 +752,11 @@ class CUDAHistogramConstructor {
     CHECK_GE(planes, 1);
     num_hist_planes_ = planes;
   }
+
+  /*! \brief the training's max_depth, for nonquant_hist_cost's rule (levels per tree). Called before Init(); a
+   *  later ResetConfig updates it without deciding again (like the fp32 layout, the choice is made at Init and at
+   *  ResetTrainingData) */
+  void SetMaxDepth(const int max_depth) { max_depth_ = max_depth; }
 
   /*! \brief vector-leaf mode: point the construct kernels at one target's
    *  gradient/hessian slices (pointer swap only; BeforeTrain remains the
@@ -1573,6 +1579,12 @@ class CUDAHistogramConstructor {
   // the device gives a block the fixed-point table (InitNonquantFixed); otherwise scalar nonquantized training
   // uses the deterministic classic loop for every layout (NonquantClassicFallback)
   bool nq_fixed_supported_ = true;
+  // non-quantized histograms from the deterministic constructs (NonquantDet): nonquant_deterministic, or the
+  // nonquant_hist_cost rule's choice (DecideNonquantHistograms)
+  bool nonquant_ordered_ = false;
+  int max_depth_ = -1;
+  /*! \brief decides nonquant_ordered_ from the plan keys and the training's shape (after InitNonquantFixed) */
+  void DecideNonquantHistograms();
   // dynamic shared bytes of the fixed-point table (the widest partition's items x 8) and the kernels whose
   // max-dynamic-shared attribute is already raised to it
   size_t nq_fixed_smem_bytes_ = 0;

@@ -191,6 +191,8 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     // one (grad, hess)-pair histogram plane per target within each leaf slot
     cuda_histogram_constructor_->SetNumHistPlanes(vec_num_targets_);
   }
+  // levels per tree for cuda_plan key nonquant_hist_cost (the non-quantized construct by measured cost)
+  cuda_histogram_constructor_->SetMaxDepth(config_->max_depth);
   if (forest_row_data_source_ != nullptr) {
     // cuda_plan key forest_batched: a slot reads the booster learner's bin matrix (same data, read-only after Init)
     cuda_histogram_constructor_->ShareRowData(forest_row_data_source_->cuda_histogram_constructor_->row_data_shared());

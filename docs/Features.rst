@@ -80,15 +80,17 @@ Bin counts default to 4 and 64 respectively; stochastic raises itself to 16
 expected leaves hold fewer than 4,096 rows (not for multiclass or
 >=50:1-imbalanced binary). Both can be overridden with ``quant_bins``. Both
 modes are bit-reproducible run to run (integer histograms, whose sums do not
-depend on order); ``quant_mode=none`` is full precision and, by default, uses
-the fastest float-atomic histogram kernels, so its models can differ in the
-last bits from run to run. Run-to-run identity on the non-quantized path is
-opt-in: ``deterministic=true`` with ``quant_mode=none`` (or the plan key
-``cuda_plan=auto,nonquant_deterministic:on``) builds its histograms with
-deterministic kernels. ``cuda_precision=fp32`` uses single-precision
-split-gain math and, on the non-quantized path, float histograms that halve
-global-histogram bandwidth (quality-gated, not bit-identical); with the
-deterministic histograms requested they stay fp64.
+depend on order); ``quant_mode=none`` is full precision. By default its
+histograms take whichever construct is expected to be faster for the
+training's shape and precision (plan key ``nonquant_hist_cost``, a measured
+cost rule): the float-atomic kernels or the fixed-point construct, so its
+models can differ in the last bits from run to run. Run-to-run identity on the
+non-quantized path is opt-in: ``deterministic=true`` with ``quant_mode=none``
+(or ``cuda_plan=auto,nonquant_deterministic:on``) always takes the
+deterministic constructs. ``cuda_precision=fp32`` uses single-precision
+split-gain math and, where the float-atomic kernels run, float histograms that
+halve global-histogram bandwidth (quality-gated, not bit-identical); with the
+fixed-point construct they stay fp64.
 
 .. _The Execution Planner:
 
@@ -99,7 +101,7 @@ Every shape-conditional kernel choice above is resolved once from the data
 and parameters by ``cuda_plan=auto`` -- not from environment variables or
 hidden heuristics scattered through the code. Each decision is bit-identical
 except where the ``cuda_plan`` parameter documents otherwise (``robust_scale``,
-``nonquant_deterministic``), enforced by local GPU regression
+``nonquant_deterministic``, ``nonquant_hist_cost``), enforced by local GPU regression
 gates that flip every key and require identical models (non-quantized cells
 with the deterministic histograms on), and individually
 overridable, e.g.

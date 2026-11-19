@@ -344,3 +344,44 @@ def test_nonquant_sparse_tile_budget_keeps_the_model_cuda(rows, cols, extra, bud
     log = capfd.readouterr()
     assert "Deterministic sparse histogram construct:" in log.out + log.err, "the budget did not cap the tiles"
     assert capped == default
+
+
+def _decision(capfd, params, X, y):
+    """the non-quantized histogram decision logged at Init (verbose 1), and the trees' md5"""
+    capfd.readouterr()
+    md5 = _model_md5({**params, "verbose": 1}, X, y, 6)
+    out = capfd.readouterr()
+    lines = [line for line in (out.out + out.err).splitlines() if "non-quantized histograms:" in line]
+    assert lines, (out.out + out.err)[-3000:]
+    return lines[-1], md5
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("precision", ["fp64", "fp32"])
+def test_nonquant_hist_cost_takes_the_cheaper_construct_cuda(precision, capfd):
+    """cuda_plan key nonquant_hist_cost (default on): without nonquant_deterministic, a training whose histogram work
+    is small against its row work (FalcataPlan::NonquantOrderedPays) takes the fixed-point construct, the same kernels
+    and model as the key; one whose histogram work dominates takes the float-atomic kernels. nonquant_hist_cost:off
+    takes the float atomics everywhere."""
+    base = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "quant_mode": "none",
+        "cuda_precision": precision,
+        "learning_rate": 0.1,
+        "seed": 7,
+    }
+    # many rows over few bins: rho = 63 * 15 / (100000 * 6), far below the thresholds
+    X, y = _data("regression", 100000, 10, seed=31)
+    small = {**base, "num_leaves": 63, "max_depth": 6, "max_bin": 15}
+    line, md5 = _decision(capfd, small, X, y)
+    assert "fixed-point construct (nonquant_hist_cost: cheaper here)" in line, line
+    assert md5 == _model_md5(_with_det(small), X, y, 6)
+    line, _ = _decision(capfd, {**small, "cuda_plan": "auto,nonquant_hist_cost:off"}, X, y)
+    assert "float-atomic kernels (nonquant_hist_cost:off)" in line, line
+    line, _ = _decision(capfd, _with_det(small), X, y)
+    assert "deterministic constructs (nonquant_deterministic)" in line, line
+    # few rows over many bins and leaves: rho = 255 * 255 / (8000 * 8), far above
+    X, y = _data("regression", 8000, 40, seed=37)
+    line, _ = _decision(capfd, {**base, "num_leaves": 255, "max_depth": 8, "min_data_in_leaf": 5}, X, y)
+    assert "float-atomic kernels (nonquant_hist_cost: cheaper here)" in line, line

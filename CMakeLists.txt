@@ -1095,6 +1095,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_multiclass_early_stop.cpp
       tests/cpp_tests/test_nccl_row_split.cpp
       tests/cpp_tests/test_ndcg_reinitialization.cpp
+      tests/cpp_tests/test_nonquant_hist_cost.cpp
       tests/cpp_tests/test_opencl_host_buffers.cpp
       tests/cpp_tests/test_partition_leaf_predictions.cpp
       tests/cpp_tests/test_predictor_threads.cpp
