@@ -768,6 +768,7 @@ set(
       src/treelearner/cuda/cuda_best_split_finder_leaf_rand_no_l1_smoothing.cu
       src/treelearner/cuda/cuda_best_split_finder_leaf_rand_l1_no_smoothing.cu
       src/treelearner/cuda/cuda_best_split_finder_leaf_rand_l1_smoothing.cu
+      src/treelearner/cuda/cuda_best_split_finder_level_l1_smoothing.cu
       src/treelearner/cuda/cuda_data_partition.cu
       src/treelearner/cuda/cuda_gradient_discretizer.cu
       src/treelearner/cuda/cuda_histogram_constructor.cu
