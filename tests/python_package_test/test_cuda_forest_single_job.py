@@ -81,9 +81,10 @@ def _params(objective, quant_mode, **extra):
 
 def _md5(params, plan, X, y, rounds):
     if params["quant_mode"] == "none":
-        # sequential training (forest_batched off) may take the complete non-quantized device tree (fixed-point
-        # levels), forest groups never take it: both arms keep the one-sync host loop
-        plan += ",device_tree:off"
+        # sequential training (forest_batched off) may take the complete non-quantized device tree, forest groups
+        # never take it: both arms keep the one-sync host loop, with the deterministic histograms (opt-in since 1.2)
+        # since they are compared bit for bit
+        plan += ",device_tree:off,nonquant_deterministic:on"
     ds = flc.Dataset(X, label=y, params={"max_bin": 63, "verbose": -1})
     booster = flc.train({**params, "cuda_plan": plan}, ds, num_boost_round=rounds)
     return hashlib.md5(_strip_parameters(booster.model_to_string()).encode()).hexdigest()

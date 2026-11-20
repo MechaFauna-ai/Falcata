@@ -11,7 +11,10 @@ double merge produces, so the histograms, the splits and the model are the same:
 wherever the key-off learner runs the deterministic construct. Where it runs the float atomic construct instead (the
 compact column view of feature_fraction < 1; levels with more pairs than the deterministic slot slab holds,
 test_count_hist_level_beyond_det_pairs) its sums round and its model need not be run-to-run stable; the count construct's are exact
-and deterministic, and its predictions agree with the key-off ones to rounding.
+and deterministic, and its predictions agree with the key-off ones to rounding. Every model comparison here asks
+for the deterministic non-quantized histograms (cuda_plan key nonquant_deterministic, opt-in since 1.2; _det), so
+"key off" means forest_count_hist off on the deterministic constructs, as when this was written; the engagement
+checks run the default plan.
 """
 
 import hashlib
@@ -98,9 +101,14 @@ def _params(objective, shape, **extra):
     return params
 
 
+def _det(params, plan):
+    """plan with the deterministic non-quantized histograms (opt-in since 1.2) for a non-quantized forest"""
+    return plan + ",nonquant_deterministic:on" if params.get("quant_mode") == "none" else plan
+
+
 def _train(params, plan, X, y, rounds, weight=None):
     ds = flc.Dataset(X, label=y, weight=weight, params={"max_bin": 63, "verbose": -1}, free_raw_data=False)
-    return flc.train({**params, "cuda_plan": plan}, ds, num_boost_round=rounds)
+    return flc.train({**params, "cuda_plan": _det(params, plan)}, ds, num_boost_round=rounds)
 
 
 QUALIFYING = [
@@ -369,7 +377,7 @@ def test_count_hist_reset_rebuilds_codes():
             X, label=y, params={"max_bin": 63, "verbose": -1, "feature_pre_filter": False}, free_raw_data=False
         )
         b = flc.train(
-            {**params, "cuda_plan": plan},
+            {**params, "cuda_plan": _det(params, plan)},
             ds,
             num_boost_round=5,
             callbacks=[flc.reset_parameter(min_data_in_leaf=lambda i: 20 + (i % 2))],
@@ -389,9 +397,9 @@ def test_count_hist_level_beyond_det_pairs():
     y = (z > 0).astype(np.float32)
     params = _params("binary", "depth", max_depth=12, max_bin=255, feature_fraction_bynode=0.1)
     ds = flc.Dataset(X, label=y, params={"max_bin": 255, "verbose": -1, "min_data_in_leaf": 1}, free_raw_data=False)
-    got = flc.train({**params, "cuda_plan": ON}, ds, num_boost_round=2)
-    again = flc.train({**params, "cuda_plan": ON}, ds, num_boost_round=2)
-    ref = flc.train({**params, "cuda_plan": OFF + ",hybrid:off"}, ds, num_boost_round=2)
+    got = flc.train({**params, "cuda_plan": _det(params, ON)}, ds, num_boost_round=2)
+    again = flc.train({**params, "cuda_plan": _det(params, ON)}, ds, num_boost_round=2)
+    ref = flc.train({**params, "cuda_plan": _det(params, OFF + ",hybrid:off")}, ds, num_boost_round=2)
     assert _md5(again) == _md5(got)
     # wide levels: about 1000 pairs at depth 11 (the slot slab holds fewer rows of this 76.5k-bin histogram)
     assert max(t["num_leaves"] for t in got.dump_model()["tree_info"]) > 1500
@@ -456,6 +464,7 @@ def test_forest_group_out_of_memory_retried(quant_mode):
         "verbose": 0,
         "cuda_plan": "auto,forest_group:4",
     }
+    params["cuda_plan"] = _det(params, params["cuda_plan"])
     want, _ = _oom_child(params, None)
     got, log = _oom_child(params, 1)
     assert got == want
@@ -484,6 +493,7 @@ def test_forest_group_out_of_memory_inside_a_tree(quant_mode):
         "verbose": 0,
         "cuda_plan": "auto,forest_group:4",
     }
+    params["cuda_plan"] = _det(params, params["cuda_plan"])
     want, _ = _oom_child(params, None)
     got, log = _oom_child(params, 5, hook="FALCATA_TEST_FOREST_ABORT_TREE")
     assert "ran out of device memory" in log, log[-3000:]

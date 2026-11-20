@@ -554,6 +554,9 @@ def test_cat_random_search_cuda(n_cat, quantized):
         "max_cat_threshold": 32,
         "use_quantized_grad": quantized,
     }
+    if not quantized:
+        # the same seed is compared bit for bit below: non-quantized, the deterministic histograms (opt-in since 1.2)
+        params["cuda_plan"] = "auto,nonquant_deterministic:on"
 
     def train(num_trials, rounds):
         train_set = lgb.Dataset(X[tr], y[tr], categorical_feature=[0], free_raw_data=False, params=params)

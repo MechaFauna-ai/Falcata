@@ -41,7 +41,7 @@ OUT_DEFAULT = Path(__file__).resolve().parent / "ablation_results.jsonl"
 ALL_KEYS = {
     "hybrid": True,
     "one_sync": True,
-    "nonquant_deterministic": True,
+    "nonquant_deterministic": False,
     "compact_quant": True,
     "fast_rowdata": True,
     "dense_rowdata": True,

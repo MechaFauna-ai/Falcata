@@ -42,6 +42,8 @@ def test_categorical_extra_trees_is_run_to_run_deterministic_cuda():
         "min_data_in_leaf": 20,
         "seed": 7,
         "verbose": -1,
+        # non-quantized: the deterministic histograms (opt-in since 1.2), so only the threshold draw could differ
+        "cuda_plan": "auto,nonquant_deterministic:on",
     }
     hashes = set()
     for _ in range(4):

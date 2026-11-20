@@ -64,6 +64,10 @@
    "metric": 1.585247,
    "metric_name": "rmse"
   },
+  "dense/fp32-atomic": {
+   "metric": 1.585247,
+   "metric_name": "rmse"
+  },
   "dense/nonquant": {
    "md5": "5d5153509c6aef803586d7740377f5ec",
    "metric": 1.593959,

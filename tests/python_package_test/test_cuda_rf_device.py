@@ -118,8 +118,8 @@ def _params(objective, quant_mode, extra=None):
     if objective == "multiclass":
         params["num_class"] = 5
     if quant_mode == "none":
-        # the hybrid level loop with fp64 histograms is not run-to-run deterministic; the host loop is
-        params["cuda_plan_extra"] = ",device_tree:off"
+        # the arms are compared bit for bit: the host loop with the deterministic histograms (opt-in since 1.2)
+        params["cuda_plan_extra"] = ",device_tree:off,nonquant_deterministic:on"
     params.update(extra or {})
     return params
 

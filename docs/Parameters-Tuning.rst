@@ -49,11 +49,16 @@ training loop was built for it (see `Features
   data with small leaves); on suitable data it reaches quality
   parity with full precision. ``quant_mode=fixedpoint`` is the near-lossless
   alternative. Both are bit-reproducible.
-- ``cuda_precision=fp32`` together with
-  ``cuda_plan=auto,nonquant_deterministic:off`` halves global-histogram
-  bandwidth for *non-quantized* training, at the cost of run-to-run
-  determinism (quality-gated, not bit-identical). ``fp32`` alone only switches
-  the split-gain math; the histograms stay fp64 and deterministic.
+- ``cuda_precision=fp32`` halves global-histogram bandwidth for
+  *non-quantized* training (quality-gated, not bit-identical). Non-quantized
+  training uses the fastest float-atomic histogram kernels by default, so its
+  models can differ in the last bits from run to run; ask for run-to-run
+  identity only where you need it (``deterministic=true`` with
+  ``quant_mode=none``, or ``cuda_plan=auto,nonquant_deterministic:on``), which
+  keeps fp64 deterministic histograms; it is slower on high-bin ``fp32``
+  shapes and as fast or faster on some deep ones (see
+  `performance <https://github.com/MechaFauna-ai/Falcata/blob/master/docs/performance.md>`__,
+  section 10v).
 - Leave ``cuda_plan=auto`` alone: the planner already resolves the fastest
   kernel choices from your data shape; the override keys exist for
   experiments, not tuning.

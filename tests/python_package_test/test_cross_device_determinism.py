@@ -14,6 +14,14 @@ The token is read once per process, so every run here is a subprocess.
 
 Measured 2026-11-17 for the PR that added the token: the same models on an RTX 5090 (170 SMs) and an RTX PRO 6000
 Max-Q (188 SMs), and on each card under smcount=170 and 188.
+
+The unquantized cases ask for the deterministic histograms (cuda_plan key nonquant_deterministic, opt-in since 1.2):
+the default float-atomic kernels may give another model on every run, so md5 equality across SM counts is a test of
+the opt-in mode. Measured 2026-11-18 on the default plan, three trainings each: unquantized_fp32 (the fp32 histogram
+layout) gave three models; unquantized_fp64 and random_forest_fp64 gave one each, since their trees grow on the
+selective one-sync host loop (and the forest's continuous labels keep it off the count construct), whose
+deterministic construct does not read the key. They ask for it anyway, so the test keeps its meaning if their route
+changes.
 """
 
 import os
@@ -96,7 +104,13 @@ CASES = {
         "missing": False,
         "weighted": True,
         "rounds": 20,
-        "params": {"quant_mode": "none", "cuda_precision": "fp32", "num_leaves": 127, "max_bin": 63},
+        "params": {
+            "quant_mode": "none",
+            "cuda_precision": "fp32",
+            "num_leaves": 127,
+            "max_bin": 63,
+            "cuda_plan": "auto,nonquant_deterministic:on",
+        },
         "sites": {"count_tiles"},
     },
     "unquantized_fp64": {
@@ -105,7 +119,13 @@ CASES = {
         "missing": True,
         "weighted": True,
         "rounds": 15,
-        "params": {"quant_mode": "none", "cuda_precision": "fp64", "num_leaves": 63, "max_bin": 63},
+        "params": {
+            "quant_mode": "none",
+            "cuda_precision": "fp64",
+            "num_leaves": 63,
+            "max_bin": 63,
+            "cuda_plan": "auto,nonquant_deterministic:on",
+        },
         "sites": {"count_tiles"},
     },
     # a random forest without quantization: the count histograms (cuda_plan key forest_count_hist)
@@ -124,6 +144,7 @@ CASES = {
             "bagging_fraction": 0.6,
             "bagging_freq": 1,
             "feature_fraction": 0.5,
+            "cuda_plan": "auto,nonquant_deterministic:on",
         },
         "sites": {"count_tiles"},
     },

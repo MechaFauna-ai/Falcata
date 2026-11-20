@@ -94,7 +94,8 @@ def _params(objective, quant_mode, shape, **extra):
 
 def _train(params, plan, X, y, rounds, valid=None, eval_train=False, early_stopping=None, callbacks=()):
     if params["quant_mode"] == "none":
-        plan += ",device_tree:off"
+        # the arms are compared bit for bit: the one-sync host loop with the deterministic histograms (opt-in since 1.2)
+        plan += ",device_tree:off,nonquant_deterministic:on"
     ds = flc.Dataset(X, label=y, params={"max_bin": 63, "verbose": -1}, free_raw_data=False)
     valid_sets, valid_names = [], []
     if eval_train:

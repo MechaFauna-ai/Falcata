@@ -23,7 +23,8 @@ offsets summed on the device, into record buffers presized for the tree's worst 
 per tree. The host level loop (cuda_plan key device_tree:off, also the forest slots' flow) records each level with
 CUDATree::SplitLevel, growing its buffers when a level's worst case passes their capacity; every shape is also
 trained there and must give the same model text and predictions. Non-quantized, the trees grow on the one-sync host
-level loop (reason `categorical`), which records by level with SplitLevel too. max_cat_32 and max_cat_64 have a categorical
+level loop (reason `categorical`), which records by level with SplitLevel too; they ask for the deterministic
+histograms (cuda_plan key nonquant_deterministic), since every comparison here is bit for bit. max_cat_32 and max_cat_64 have a categorical
 feature whose largest value is a multiple of 32 (its bitset needs max_cat_value / 32 + 1 words; with values 0..64 a
 bitset sized one word short failed training with an invalid-argument CUDA copy). FALCATA_DEBUG=diag reports per tree
 what the level record did; the test checks that the device tree grew the tree and the fast path ran: one tree-end
@@ -209,6 +210,9 @@ def _per_tree_words(text, key):
 def test_cuda_categorical_record(shape, quant):
     extra, data_kw, rounds = SHAPES[shape]
     params = {**BASE, "quant_mode": quant, **extra}
+    if quant == "none":
+        # the trainings below are compared bit for bit: the deterministic histograms (opt-in since 1.2)
+        params["cuda_plan"] = params.get("cuda_plan", "auto") + ",nonquant_deterministic:on"
     bst, x, xv = _train(params, data_kw, rounds)
     text = bst.model_to_string()
     assert sum(int(line[8:]) for line in text.splitlines() if line.startswith("num_cat=")) > 0, "no categorical split"
@@ -272,7 +276,8 @@ def test_cuda_categorical_record(shape, quant):
 
     if shape == "rf_forest_slots":
         # concurrent slots grow the same forest as sequential training
-        seq, _, _ = _train({**params, "cuda_plan": "auto,forest_batched:off"}, data_kw, rounds)
+        det = ",nonquant_deterministic:on" if quant == "none" else ""
+        seq, _, _ = _train({**params, "cuda_plan": "auto,forest_batched:off" + det}, data_kw, rounds)
         assert _md5(seq.model_to_string()) == _md5(text)
 
 

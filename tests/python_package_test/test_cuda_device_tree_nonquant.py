@@ -3,13 +3,15 @@
 
 Depth-limited non-quantized trees inside the bound the removed non-quantized graph loop served (max_depth <= 11,
 num_leaves <= 2047; single GPU, scalar leaves, no categorical features, no per-node masks) grow as the complete device
-tree: its levels construct in 64-bit fixed point and convert in place (cuda_plan key nonquant_deterministic), then run
-the non-quantized fix / subtract and level find on the level's live pairs, the graph loop's kernels. The models are the
-graph loop's (the lattice's route/r04a and nonquant cells pin their md5s). Shapes outside the bound keep the one-sync
+tree: its levels construct with the float-atomic kernels (the default) or, with the cuda_plan key
+nonquant_deterministic (opt-in since 1.2), in 64-bit fixed point and convert in place, then run the non-quantized fix /
+subtract and level find on the level's live pairs, the graph loop's kernels. With the key, the models are the graph
+loop's (the lattice's route/r04a and nonquant cells pin their md5s). Shapes outside the bound keep the one-sync
 host flow, budget-limited ones the selective one-sync flow; device_tree:off restores the one-sync flow everywhere.
 
-The device tree must be run-to-run deterministic (#122), train the same model with its level graph captured or
-enqueued directly, and report every tree as `device_tree: complete`.
+With the key the device tree must be run-to-run deterministic (#122) and train the same model with its level graph
+captured or enqueued directly; every bit-for-bit comparison here asks for the key. With or without it, every tree
+reports `device_tree: complete`.
 """
 
 import hashlib
@@ -28,6 +30,9 @@ _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
     reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
+
+# the deterministic histograms, asked for by every comparison of two models bit for bit
+_DET = "nonquant_deterministic:on"
 
 # (name, objective, rows, cols, params, rounds)
 _SHAPES = {
@@ -100,21 +105,23 @@ def _subprocess(name, plan):
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("name", sorted(_SHAPES))
 def test_nonquant_device_tree_complete_and_deterministic_cuda(name):
-    # three trainings in fresh processes: every tree is a complete device tree, and the model is the same each time
-    runs = [_subprocess(name, "auto") for _ in range(3)]
+    # three trainings in fresh processes with the key: every tree is a complete device tree, and the model is the same
+    # each time
+    runs = [_subprocess(name, f"auto,{_DET}") for _ in range(3)]
     md5s = {md5 for md5, _ in runs}
     assert len(md5s) == 1, f"{name}: {len(md5s)} different models in 3 trainings"
-    _, diag = runs[0]
     rounds = _SHAPES[name][4] * (_SHAPES[name][3].get("num_class", 1))
-    assert len(re.findall(r"device_tree: complete depth=", diag)) == rounds, diag[-3000:]
-    assert not re.search(r"device_tree: fallback", diag), diag[-3000:]
+    # the default plan's float-atomic levels grow the same complete device trees
+    for diag in (runs[0][1], _subprocess(name, "auto")[1]):
+        assert len(re.findall(r"device_tree: complete depth=", diag)) == rounds, diag[-3000:]
+        assert not re.search(r"device_tree: fallback", diag), diag[-3000:]
 
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("name", ["reg-63-6", "compact-255-8", "multiclass-31-5-bag"])
 def test_nonquant_device_tree_graph_matches_enqueue_cuda(name):
     # the cached level graph (captured on a tree's first key, replayed after) and the direct enqueue: the same model
-    assert _md5(name, "auto,device_level_graph:off") == _md5(name, "auto")
+    assert _md5(name, f"auto,device_level_graph:off,{_DET}") == _md5(name, f"auto,{_DET}")
 
 
 @_REQUIRES_CUDA
@@ -124,10 +131,10 @@ def test_nonquant_device_tree_off_takes_one_sync_cuda():
     _, diag = _subprocess("reg-63-6", "auto,device_tree:off")
     assert "device_tree: fallback (plan_off) route=one_sync" in diag, diag[-3000:]
     assert "device_tree: complete" not in diag
-    removed, diag = _subprocess("reg-63-6", "auto,graph_loop:off,graph_det:on")
+    removed, diag = _subprocess("reg-63-6", f"auto,graph_loop:off,graph_det:on,{_DET}")
     assert "device_tree: complete" in diag
     assert not re.search(r"device_tree: fallback", diag), diag[-3000:]
-    assert removed == _subprocess("reg-63-6", "auto")[0]
+    assert removed == _subprocess("reg-63-6", f"auto,{_DET}")[0]
 
 
 def _train_diag(params, rounds, X, y):
@@ -190,6 +197,8 @@ def test_nonquant_device_tree_engages_cuda(extra):
     # GOSS, random forests and depth-limited linear trees grow as complete device trees too
     X, y = _data("regression", 20000, 30)
     params = {**_params("reg-63-6"), **extra}
+    if params.get("linear_tree"):
+        params["cuda_plan"] = f"auto,{_DET}"  # its two flows are compared bit for bit below
     rounds = 6
     diag, pred = _train_diag(params, rounds, X, y)
     assert len(re.findall(r"device_tree: complete depth=", diag)) == rounds, diag[-3000:]
@@ -197,6 +206,6 @@ def test_nonquant_device_tree_engages_cuda(extra):
     if params.get("linear_tree"):
         # the linear leaf fit is a fixed-order reduction over each leaf's rows in partition order, and both flows
         # leave every leaf's rows in the same order: the one-sync flow's model is the same, coefficients included
-        off_diag, off_pred = _train_diag({**params, "cuda_plan": "auto,device_tree:off"}, rounds, X, y)
+        off_diag, off_pred = _train_diag({**params, "cuda_plan": f"auto,device_tree:off,{_DET}"}, rounds, X, y)
         assert "device_tree: complete" not in off_diag
         np.testing.assert_array_equal(pred, off_pred)
