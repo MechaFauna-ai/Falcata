@@ -25,7 +25,7 @@ def test_empty_predictions(kind, sparse, multiclass):
         "pred_leaf": kind == "leaf",
         "pred_contrib": kind == "contrib",
         "raw_score": kind == "raw",
-        "use_fil": False,
+        "device": "cpu",
     }
     batch = csr_matrix(data) if sparse else data
     prediction = booster.predict(batch[:0], **options)
