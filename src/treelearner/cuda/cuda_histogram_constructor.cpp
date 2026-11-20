@@ -2336,6 +2336,8 @@ void CUDAHistogramConstructor::DecideNonquantHistograms() {
   const bool fp32_layout = FalcataFP32HistRequested() && !gpu_use_dp_ && !cuda_row_data_->is_sparse() &&
     cuda_row_data_->NumLargeBinPartition() == 0 && !has_categorical_feature_;
   const double rho = FalcataPlan::NonquantHistRho(num_data_, num_features_, num_total_bin_, num_leaves_, max_depth_);
+  const double cost = FalcataPlan::NonquantOrderedCost(rho, num_total_bin_, fp32_layout);
+  const double threshold = FalcataPlan::NonquantOrderedMaxCost(fp32_layout);
   const char* why = "float-atomic kernels (nonquant_hist_cost:off)";
   if (plan.nonquant_deterministic) {
     nonquant_ordered_ = true;
@@ -2354,8 +2356,7 @@ void CUDAHistogramConstructor::DecideNonquantHistograms() {
       why = "float-atomic kernels (multi-plane vector leaves)";
     } else if (!nq_fixed_supported_) {
       why = "float-atomic kernels (fixed-point table does not fit this device)";
-    } else if (FalcataPlan::NonquantOrderedPays(num_data_, num_features_, num_total_bin_, num_leaves_, max_depth_,
-                                                fp32_layout)) {
+    } else if (cost <= threshold) {
       nonquant_ordered_ = true;
       why = "fixed-point construct (nonquant_hist_cost: cheaper here)";
     } else {
@@ -2363,8 +2364,8 @@ void CUDAHistogramConstructor::DecideNonquantHistograms() {
     }
   }
   Log::Info("non-quantized histograms: %s; rho %.6g (rows %d, features %d, bins %d, leaves %d, max_depth %d), "
-            "threshold %.6g (%s layout)", why, rho, num_data_, num_features_, num_total_bin_, num_leaves_, max_depth_,
-            fp32_layout ? FalcataPlan::kNonquantOrderedMaxRhoFp32 : FalcataPlan::kNonquantOrderedMaxRhoFp64,
+            "cost %.6g, threshold %.6g (%s layout)", why, rho, num_data_, num_features_, num_total_bin_, num_leaves_,
+            max_depth_, cost, threshold,
             fp32_layout ? "fp32" : "fp64");
 }
 

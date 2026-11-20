@@ -1186,15 +1186,21 @@ struct FalcataPlan {
    * compares histogram bins per tree with row work per tree,
    *   rho = num_leaves * (total_bins / num_features) / (num_data * levels),
    * where levels is the depth of a balanced tree with num_leaves leaves, capped by max_depth when that is set, and
-   * takes the fixed-point construct when rho is at most the threshold for the histogram layout the atomic kernels
-   * would use (fp32 or fp64). The thresholds are measured: docs/performance.md section 10v.
+   * uses the full leaf histogram footprint to weight rho when float atomics can use fp32. Scalar
+   * multiclass training reuses the same histogram slab for each class, so the footprint is per leaf.
+   * The thresholds are measured: docs/performance.md section 10v.
    */
-  static bool NonquantOrderedPays(int64_t num_data, int num_features, int64_t total_bins, int num_leaves,
-                                  int max_depth, bool fp32_layout) {
-    return NonquantHistRho(num_data, num_features, total_bins, num_leaves, max_depth) <=
-           (fp32_layout ? kNonquantOrderedMaxRhoFp32 : kNonquantOrderedMaxRhoFp64);
+  static double NonquantOrderedCost(double rho, int64_t total_bins, bool fp32_layout) {
+    if (!fp32_layout) {
+      return rho;
+    }
+    // Use a shared-memory-sized reference footprint. The construct partitions wide leaf tables,
+    // but conversion and split finding still move the full gradient/hessian pairs through memory.
+    constexpr double kSharedFootprintBytes = 48 * 1024;
+    const double ordered_bytes = static_cast<double>(total_bins) * 2 * sizeof(double);
+    return rho * std::max(1.0, ordered_bytes / kSharedFootprintBytes);
   }
-  /*! \brief NonquantOrderedPays's histogram-to-row work ratio (infinite for an empty shape: the atomic kernels) */
+  /*! \brief Histogram-to-row work ratio (infinite for an empty shape: the atomic kernels) */
   static double NonquantHistRho(int64_t num_data, int num_features, int64_t total_bins, int num_leaves,
                                 int max_depth) {
     if (num_data <= 0 || num_features <= 0 || num_leaves < 2 || total_bins <= 0) {
@@ -1210,8 +1216,9 @@ struct FalcataPlan {
     return static_cast<double>(num_leaves) * (static_cast<double>(total_bins) / num_features) /
            (static_cast<double>(num_data) * levels);
   }
-  static constexpr double kNonquantOrderedMaxRhoFp32 = 0.025;
-  static constexpr double kNonquantOrderedMaxRhoFp64 = 0.03;
+  static constexpr double NonquantOrderedMaxCost(bool fp32_layout) {
+    return fp32_layout ? 0.025 : 0.08;
+  }
 
   /*! \brief The process-global plan (mutable form, for the resolve points). */
   static FalcataPlan& Mutable() {

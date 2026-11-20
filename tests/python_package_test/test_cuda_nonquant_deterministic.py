@@ -360,7 +360,7 @@ def _decision(capfd, params, X, y):
 @pytest.mark.parametrize("precision", ["fp64", "fp32"])
 def test_nonquant_hist_cost_takes_the_cheaper_construct_cuda(precision, capfd):
     """cuda_plan key nonquant_hist_cost (default on): without nonquant_deterministic, a training whose histogram work
-    is small against its row work (FalcataPlan::NonquantOrderedPays) takes the fixed-point construct, the same kernels
+    is small against its row work takes the fixed-point construct, the same kernels
     and model as the key; one whose histogram work dominates takes the float-atomic kernels. nonquant_hist_cost:off
     takes the float atomics everywhere."""
     base = {

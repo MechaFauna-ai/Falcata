@@ -4,7 +4,7 @@
  */
 
 // cuda_plan key nonquant_hist_cost: the rule that picks the cheaper non-quantized histogram construct
-// (FalcataPlan::NonquantOrderedPays). Pure arithmetic, so it runs in the CPU test binary too.
+// Pure arithmetic, so it runs in the CPU test binary too.
 
 #include <gtest/gtest.h>
 
@@ -28,18 +28,25 @@ TEST(NonquantHistCost, EmptyShapesTakeTheAtomicKernels) {
   EXPECT_TRUE(std::isinf(FalcataPlan::NonquantHistRho(1000, 0, 100, 31, -1)));
   EXPECT_TRUE(std::isinf(FalcataPlan::NonquantHistRho(1000, 10, 0, 31, -1)));
   EXPECT_TRUE(std::isinf(FalcataPlan::NonquantHistRho(1000, 10, 100, 1, -1)));
-  EXPECT_FALSE(FalcataPlan::NonquantOrderedPays(0, 10, 100, 31, -1, false));
-  EXPECT_FALSE(FalcataPlan::NonquantOrderedPays(0, 10, 100, 31, -1, true));
+  const double rho = FalcataPlan::NonquantHistRho(0, 10, 100, 31, -1);
+  EXPECT_GT(FalcataPlan::NonquantOrderedCost(rho, 100, false), FalcataPlan::NonquantOrderedMaxCost(false));
+  EXPECT_GT(FalcataPlan::NonquantOrderedCost(rho, 100, true), FalcataPlan::NonquantOrderedMaxCost(true));
 }
 
-TEST(NonquantHistCost, ThresholdPerLayout) {
-  // at the threshold the fixed-point construct is taken, just above it the atomic kernels; rows set rho exactly
-  const double t64 = FalcataPlan::kNonquantOrderedMaxRhoFp64;
-  const double t32 = FalcataPlan::kNonquantOrderedMaxRhoFp32;
-  // rho = 64 * 100 / (rows * 6) for 64 leaves, 100 bins per feature
-  const auto rows_for = [](double rho) { return static_cast<int64_t>(std::ceil(64.0 * 100 / (rho * 6))); };
-  EXPECT_TRUE(FalcataPlan::NonquantOrderedPays(rows_for(t64), 10, 1000, 64, 6, false));
-  EXPECT_FALSE(FalcataPlan::NonquantOrderedPays(rows_for(t64) / 2, 10, 1000, 64, 6, false));
-  EXPECT_TRUE(FalcataPlan::NonquantOrderedPays(rows_for(t32), 10, 1000, 64, 6, true));
-  EXPECT_FALSE(FalcataPlan::NonquantOrderedPays(rows_for(t32) / 2, 10, 1000, 64, 6, true));
+TEST(NonquantHistCost, Fp32WeightsTheFullLeafFootprint) {
+  // Both shapes have the same bins per feature, leaves, rows and depth.
+  const double rho = FalcataPlan::NonquantHistRho(460000, 8, 2048, 63, 6);
+  EXPECT_DOUBLE_EQ(rho, FalcataPlan::NonquantHistRho(460000, 96, 24576, 63, 6));
+  EXPECT_DOUBLE_EQ(FalcataPlan::NonquantOrderedCost(rho, 2048, true), rho);
+  EXPECT_DOUBLE_EQ(FalcataPlan::NonquantOrderedCost(rho, 24576, true), 8 * rho);
+  EXPECT_LT(FalcataPlan::NonquantOrderedCost(rho, 2048, true), FalcataPlan::NonquantOrderedMaxCost(true));
+  EXPECT_GT(FalcataPlan::NonquantOrderedCost(rho, 24576, true), FalcataPlan::NonquantOrderedMaxCost(true));
+  EXPECT_DOUBLE_EQ(FalcataPlan::NonquantOrderedCost(rho, 24576, false), rho);
+}
+
+TEST(NonquantHistCost, Fp64ThresholdSeparatesDeepShapes) {
+  const double year = FalcataPlan::NonquantHistRho(463715, 90, 23027, 1023, 10);
+  const double fraud = FalcataPlan::NonquantHistRho(227845, 29, 7423, 1023, 10);
+  EXPECT_LT(FalcataPlan::NonquantOrderedCost(year, 23027, false), FalcataPlan::NonquantOrderedMaxCost(false));
+  EXPECT_GT(FalcataPlan::NonquantOrderedCost(fraud, 7423, false), FalcataPlan::NonquantOrderedMaxCost(false));
 }
