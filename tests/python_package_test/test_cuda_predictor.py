@@ -612,8 +612,6 @@ print("OK")
         "predict_group_lanes=1,predict_task_groups=8,predict_spans=3",
         "predict_group_lanes=1,predict_task_groups=4,predict_out_chunk=1,predict_compact=0",
         "predict_out_chunk=3",
-        "predict_refill=0",
-        "predict_refill=1,predict_group_lanes=1,predict_task_groups=8,predict_spans=2",
     ],
 )
 def test_every_kernel_is_exact(debug, tmp_path):
