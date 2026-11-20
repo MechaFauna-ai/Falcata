@@ -1279,13 +1279,142 @@ before the last change.
 Not taken: tree-shaped shuffle scans for the threshold prefixes on trees whose level construct is the
 order-dependent atomic one (the default graph loop); see `perf-dead-ends.md`.
 
-## 8. GPU inference via NVIDIA FIL
+## 8. GPU inference: the native CUDA predictor
 
-`Booster.predict()` on a CUDA-trained model routes through cuML's Forest
-Inference Library when available: numerai predict 0.90s → **0.046s** (CuPy
-in/out), higgs 0.37s → 0.004s (July 2026, pre-launch build; no recorded run
-is checked in; not re-measured for 1.1). See the README for precision notes
-and the opt-out.
+**The problem.** `Booster.predict()` reached the GPU only through cuML's Forest Inference Library (FIL): a Treelite
+handoff per iteration slice, host slabs of 2**29 cells around FIL's 32-bit offsets, and fp32 routing by default that
+sends rows near a threshold to another leaf (max |difference| about 1e-2 on the matrix below), with exact routing
+(fp64) at half the speed.
+
+**The idea.** Falcata's own predictor (`src/boosting/cuda/cuda_predictor.*`), bit-identical to the CPU predictor
+(raw scores, leaf indices and TreeSHAP contributions; see the README). The exactness has one cost that shapes every
+kernel: each output's leaf values must be added in tree order, so each (row, output) is one chain of dependent double
+additions as long as the model. The kernel the plan uses (`kTileWs`) stages 8 rows (4 for small batches) in shared
+memory; warp 0 keeps their running sums, lane r adding row r's leaf values in tree order, while seven warps walk the
+next tile of 64 trees for every (row, tree) pair, two walks in flight per thread; the tiles' leaf values are
+double-buffered, so the chains run beside the walks.
+
+**Speed rounds** (RTX 5090 on a rented box: driver 595.91.07, AMD Ryzen 9 9950X, 16 threads for the CPU predictor;
+device input, rows per second; every variant exact against the CPU predictor):
+
+| round | change | 1k trees x 15 leaves, 50 feat., 1M rows | 1k x 63, 500 feat., 1M rows | 1k x 63, 500, 1k rows | v6 model 0151 (20k x 21, 248), 100k rows | v6 model 0204 (125k x 5, 13 classes, 533), 100k rows |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | a thread per row, gathers from global memory | 36.4M | 4.1M | 0.34M | 1.40M | 0.09M |
+| 1 | + 2-8 tree walks in flight per thread | 36.4M | 4.1M | 0.34M | - | - |
+| 2 | 8 rows staged in shared memory, threads over trees, a barrier then one thread per row sums | 90.5M | 41.0M | 8.7M | 3.28M | 0.35M |
+| 3 | + a summing warp beside the walking warps (32 rows) | 50.2M | 15.4M | 9.8M | 1.03M | 0.33M |
+| 4 | summing warp with 8 rows (4 below two blocks per multiprocessor) | 88.9M | 42.4M | 9.8M | 3.21M | 0.67M |
+| 4 | + 8-byte depth-first nodes (left child implicit) | 79.2M | 37.0M | 9.3M | 2.93M | 0.60M |
+| 5 | + tree nodes staged in shared memory per tile | 18.3M | 7.6M | 4.9M | - | - |
+| 6 | + summing warp and nodes in shared memory | 51.5M | 16.1M | 5.8M | 1.40M | - |
+| 7 | two passes for small batches (all leaf values, then the sums) | - | - | 4.9M | 1.64M | 0.24M at 1k rows (0.20M) |
+
+Round 4's kernel without the 8-byte nodes is the plan: the best or within 3% of the best on every shape measured
+except the 100k-row narrow case of round 3's 32-tree tiles (91.5M against 88.9M). Rounds 5-7 gained nothing on the
+large shapes (the two-pass variant only on the smallest batches of tiny-tree models, 1.2-2x, not worth a third kernel),
+so the rounds stopped there; the measured losers are not kept.
+
+**The matrix** (the plan's kernel against the CPU predictor and FIL 26.10 through Treelite 4.7, each FIL precision at
+its best of default and `optimize()`d layout and chunk size; "/ FIL" is native over FIL, both with the rows on the
+device; "numpy in" columns include the host-to-device copy):
+
+| model (trees x leaves, features) | rows | CPU | FIL fp32 | FIL fp64 | native | / FIL fp32 | / FIL fp64 | FIL fp32, numpy in | native, numpy in | FIL fp32 max abs diff |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 100 x 15 leaves, 50 feat. | 1,000 | 3.55M | 79.5M | 51.8M | 35.2M | 0.44 | 0.68 | 19.7M | 15.5M | 4.6e-08 |
+| 100 x 15 leaves, 50 feat. | 100,000 | 4.85M | 1.09G | 354M | 620M | 0.57 | 1.75 | 72.9M | 83.7M | 4.7e-08 |
+| 100 x 15 leaves, 50 feat. | 1,000,000 | 5.11M | 1.24G | 357M | 727M | 0.58 | 2.04 | 64.4M | 70.8M | 2.1e-02 |
+| 100 x 15 leaves, 50 feat. | 10,000,000 | 5.03M | 1.28G | 357M | 740M | 0.58 | 2.07 | 63.9M | 76.9M | 1.4e-03 |
+| 1k x 15, 50 feat. | 1,000 | 290k | 37.4M | 24.6M | 13.4M | 0.36 | 0.54 | 4.68M | 8.89M | 1.9e-07 |
+| 1k x 15, 50 feat. | 100,000 | 446k | 112M | 48.9M | 87.5M | 0.78 | 1.79 | 46.7M | 46.4M | 3.6e-07 |
+| 1k x 15, 50 feat. | 1,000,000 | 475k | 122M | 51.5M | 88.8M | 0.73 | 1.72 | 43.8M | 41.6M | 2.1e-02 |
+| 1k x 15, 50 feat. | 10,000,000 | 475k | 123M | 52M | 86.7M | 0.71 | 1.67 | 43.9M | 65.4M | 2.5e-02 |
+| 1k x 63, 500 | 1,000 | 157k | 29.7M | 19.1M | 9.74M | 0.33 | 0.51 | 2.44M | 3.38M | 1.5e-07 |
+| 1k x 63, 500 | 100,000 | 277k | 70.2M | 32.6M | 41.2M | 0.59 | 1.26 | 5.08M | 6.82M | 1.9e-07 |
+| 1k x 63, 500 | 1,000,000 | 277k | 72.6M | 33.3M | 42.4M | 0.58 | 1.27 | 5.08M | 7.92M | 1.7e-02 |
+| 1k x 255, 500 | 1,000 | 61k | 20M | 15.5M | 8.02M | 0.40 | 0.52 | 2.1M | 3.1M | 1.6e-07 |
+| 1k x 255, 500 | 100,000 | 190k | 54.1M | 27.6M | 26.5M | 0.49 | 0.96 | 4.79M | 6.21M | 1.6e-02 |
+| 1k x 255, 500 | 1,000,000 | 189k | 54.4M | 28.2M | 26.7M | 0.49 | 0.95 | 4.8M | 7.76M | 1.6e-02 |
+| 1k x 255 balanced, 500 | 1,000 | 72.2k | 17.2M | 13.5M | 9.68M | 0.56 | 0.72 | 2.53M | 3.22M | 1.6e-07 |
+| 1k x 255 balanced, 500 | 100,000 | 124k | 57.6M | 24.6M | 31.4M | 0.55 | 1.28 | 5.15M | 6.48M | 3.7e-03 |
+| 1k x 255 balanced, 500 | 1,000,000 | 172k | 57.9M | 25.2M | 30.7M | 0.53 | 1.22 | 5.11M | 7.82M | 1.4e-02 |
+| 1k x 255 deep, 500 | 1,000 | 196k | 31.2M | 19.8M | 10.1M | 0.32 | 0.51 | 2.51M | 3.27M | 1.5e-07 |
+| 1k x 255 deep, 500 | 100,000 | 340k | 74.8M | 35M | 45M | 0.60 | 1.28 | 5.09M | 6.91M | 2.5e-02 |
+| 1k x 255 deep, 500 | 1,000,000 | 339k | 74.5M | 35.4M | 46.3M | 0.62 | 1.31 | 5.12M | 7.95M | 2.5e-02 |
+| 300 x 1023, 500 | 1,000 | 167k | 35.7M | 25M | 16.8M | 0.47 | 0.67 | 3.81M | 3.76M | 1.2e-07 |
+| 300 x 1023, 500 | 100,000 | 524k | 121M | 59M | 65.4M | 0.54 | 1.11 | 5.88M | 7.28M | 8.2e-03 |
+| 300 x 1023, 500 | 1,000,000 | 521k | 124M | 60.2M | 67.7M | 0.55 | 1.12 | 5.83M | 8.03M | 7.2e-03 |
+| 2k x 1023 deep, 500 | 1,000 | 55.5k | 19M | 12.3M | 5.58M | 0.29 | 0.45 | 1.43M | 3.27M | 2.5e-07 |
+| 2k x 1023 deep, 500 | 100,000 | 125k | 35.2M | 18.3M | 21.6M | 0.61 | 1.18 | 4.04M | 5.94M | 3.6e-07 |
+| 2k x 1023 deep, 500 | 1,000,000 | 136k | 35.7M | 18.4M | 22.2M | 0.62 | 1.21 | 4.04M | 7.64M | 3.2e-07 |
+| 5k x 31, 5000 | 1,000 | 62.7k | 8.78M | 2.71M | 2.25M | 0.26 | 0.83 | 615k | 700k | 4.1e-07 |
+| 5k x 31, 5000 | 100,000 | 66.7k | 9.5M | 2.62M | 3.07M | 0.32 | 1.17 | 590k | 782k | 2.0e-02 |
+| 1k x 63, 5000 | 1,000 | 155k | 22.2M | 7.81M | 7.31M | 0.33 | 0.94 | 705k | 922k | 2.2e-07 |
+| 1k x 63, 5000 | 100,000 | 230k | 28.4M | 6.54M | 10.3M | 0.36 | 1.58 | 656k | 811k | 1.1e-03 |
+| 2k it. x 5 classes x 63, 500 | 1,000 | 16.8k | 3.85M | 3.07M | 1.25M | 0.32 | 0.41 | - | 986k | - |
+| 2k it. x 5 classes x 63, 500 | 100,000 | 16.9k | 6.35M | 3.86M | 3.41M | 0.54 | 0.88 | - | 2.39M | - |
+| 2k it. x 5 classes x 63, 500 | 1,000,000 | 16.9k | 6.35M | 3.89M | 3.47M | 0.55 | 0.89 | - | 3.09M | - |
+| 5k it. x 13 classes x 7, 500 | 1,000 | 3.33k | 1.44M | 647k | 375k | 0.26 | 0.58 | - | 348k | - |
+| 5k it. x 13 classes x 7, 500 | 100,000 | 3.35k | 2.1M | 691k | 1.08M | 0.51 | 1.57 | - | 949k | - |
+| 5k it. x 13 classes x 7, 500 | 1,000,000 | 3.35k | 2.11M | 692k | 1.1M | 0.52 | 1.59 | - | 1.06M | - |
+| 1k x 63, 200, 20% categorical | 1,000 | 155k | 21.7M | 14.7M | 5.22M | 0.24 | 0.36 | 2.07M | 3.68M | 3.5e-01 |
+| 1k x 63, 200, 20% categorical | 100,000 | 217k | 50.1M | 22.9M | 28.8M | 0.57 | 1.25 | 10.9M | 12.1M | 5.1e-01 |
+| 1k x 63, 200, 20% categorical | 1,000,000 | 217k | 52.5M | 23.2M | 30.2M | 0.57 | 1.30 | 10.7M | 14.8M | 5.9e-01 |
+| 20k x 15, 250 | 1,000 | 17k | 3.56M | 2.28M | 905k | 0.25 | 0.40 | 269k | 794k | 1.1e-06 |
+| 20k x 15, 250 | 100,000 | 17.1k | 5.7M | 2.69M | 4.09M | 0.72 | 1.52 | 2.5M | 3.29M | 4.9e-02 |
+| 20k x 15, 250 | 1,000,000 | 17k | 6.02M | 2.73M | 4.22M | 0.70 | 1.54 | 2.59M | 3.69M | 2.8e-02 |
+| 20k x 63, 250 | 1,000 | 5.87k | 2.47M | 1.73M | 631k | 0.26 | 0.37 | 186k | 598k | 1.1e-02 |
+| 20k x 63, 250 | 100,000 | 5.88k | 4.13M | 2.02M | 2.52M | 0.61 | 1.25 | 1.85M | 2.18M | 1.3e-02 |
+| 20k x 63, 250 | 1,000,000 | 5.88k | 4.36M | 2.04M | 2.57M | 0.59 | 1.26 | 1.92M | 2.38M | 1.1e-02 |
+| 20k x 255, 250 | 1,000 | 2.78k | 1.64M | 970k | 361k | 0.22 | 0.37 | 150k | 349k | 1.4e-06 |
+| 20k x 255, 250 | 100,000 | 2.8k | 3.04M | 1.33M | 1.38M | 0.45 | 1.03 | 1.51M | 1.27M | 4.0e-06 |
+| v6_fit_0151 (20000 trees, 248 feat.) | 400 | 11.2k | 2.17M | 1.43M | 298k | 0.14 | 0.21 | 90.3k | 287k | 3.1e-04 |
+| v6_fit_0151 (20000 trees, 248 feat.) | 1,000 | 11.2k | 3M | 1.87M | 740k | 0.25 | 0.40 | 224k | 649k | 3.1e-04 |
+| v6_fit_0151 (20000 trees, 248 feat.) | 100,000 | 11.3k | 4.85M | 2.24M | 3.21M | 0.66 | 1.43 | 2.16M | 2.69M | 7.3e-03 |
+| v6_fit_0151 (20000 trees, 248 feat.) | 1,000,000 | 11.3k | 5.12M | 2.27M | 3.27M | 0.64 | 1.44 | 2.25M | 2.94M | 6.5e-03 |
+| v6_fit_0204 (125593 trees, 533 feat.) | 400 | 2.04k | 640k | 247k | 83.8k | 0.13 | 0.34 | - | 81.1k | - |
+| v6_fit_0204 (125593 trees, 533 feat.) | 1,000 | 2.01k | 876k | 393k | 202k | 0.23 | 0.51 | - | 194k | - |
+| v6_fit_0204 (125593 trees, 533 feat.) | 100,000 | 1.94k | 1.24M | 417k | 672k | 0.54 | 1.61 | - | 615k | - |
+| v6_fit_0204 (125593 trees, 533 feat.) | 1,000,000 | 2.02k | 1.25M | 418k | 686k | 0.55 | 1.64 | - | 670k | - |
+| v6_fit_0010 (559 trees, 6287 feat.) | 400 | 219k | 8.93M | 4.52M | 2.93M | 0.33 | 0.65 | 711k | 599k | 1.2e-04 |
+| v6_fit_0010 (559 trees, 6287 feat.) | 1,000 | 226k | 15M | 5.85M | 7.09M | 0.47 | 1.21 | 584k | 731k | 9.5e-05 |
+| v6_fit_0010 (559 trees, 6287 feat.) | 100,000 | 248k | 16M | 4.87M | 14.2M | 0.89 | 2.93 | 533k | 655k | 1.5e-04 |
+| v6_fit_0137 (14792 trees, 60 feat.) | 400 | 38.9k | 3.49M | 2.29M | 523k | 0.15 | 0.23 | 183k | 508k | 1.3e-02 |
+| v6_fit_0137 (14792 trees, 60 feat.) | 1,000 | 37.7k | 5.09M | 3.13M | 1.33M | 0.26 | 0.42 | 453k | 1.25M | 1.3e-02 |
+| v6_fit_0137 (14792 trees, 60 feat.) | 100,000 | 39.1k | 9.37M | 4M | 6.91M | 0.74 | 1.73 | 8.15M | 6.36M | 1.4e-02 |
+| v6_fit_0137 (14792 trees, 60 feat.) | 1,000,000 | 39.1k | 10.1M | 4.29M | 7.06M | 0.70 | 1.64 | 8.59M | 6.37M | 1.5e-02 |
+| v6_fit_0268 (61730 trees, 2511 feat.) | 400 | 2.27k | 420k | 215k | 67.7k | 0.16 | 0.31 | - | 64.5k | - |
+| v6_fit_0268 (61730 trees, 2511 feat.) | 1,000 | 2.25k | 606k | 338k | 165k | 0.27 | 0.49 | - | 151k | - |
+| v6_fit_0268 (61730 trees, 2511 feat.) | 100,000 | 2.27k | 651k | 358k | 238k | 0.36 | 0.66 | - | 220k | - |
+| v6_fit_0174 (16111 trees, 694 feat.) | 400 | 5.65k | 1.16M | 1.01M | 216k | 0.19 | 0.21 | 63.8k | 206k | 9.7e-09 |
+| v6_fit_0174 (16111 trees, 694 feat.) | 1,000 | 5.62k | 1.9M | 1.42M | 531k | 0.28 | 0.37 | 157k | 468k | 1.2e-08 |
+| v6_fit_0174 (16111 trees, 694 feat.) | 100,000 | 5.66k | 2.6M | 1.67M | 1.44M | 0.55 | 0.86 | 764k | 1.15M | 1.2e-04 |
+| v6_fit_0174 (16111 trees, 694 feat.) | 1,000,000 | 5.66k | 2.62M | 1.67M | 1.47M | 0.56 | 0.88 | 782k | 1.39M | 7.4e-05 |
+| v6_fit_0064 (312 trees, 8405 feat.) | 400 | 232k | 7.6M | 4.96M | 4.4M | 0.58 | 0.89 | 516k | 521k | 5.1e-03 |
+| v6_fit_0064 (312 trees, 8405 feat.) | 1,000 | 241k | 12M | 5.79M | 10.1M | 0.84 | 1.75 | 473k | 479k | 5.3e-03 |
+| v6_fit_0064 (312 trees, 8405 feat.) | 100,000 | 256k | 9.79M | 4.73M | 11.8M | 1.21 | 2.50 | 397k | 494k | 8.0e-03 |
+| v6_fit_0081 (25840 trees, 222 feat.) | 400 | 4.42k | 840k | 311k | 152k | 0.18 | 0.49 | - | 149k | - |
+| v6_fit_0081 (25840 trees, 222 feat.) | 1,000 | 4.39k | 1.3M | 414k | 368k | 0.28 | 0.89 | - | 344k | - |
+| v6_fit_0081 (25840 trees, 222 feat.) | 100,000 | 4.41k | 2.07M | 460k | 1.63M | 0.79 | 3.55 | - | 1.48M | - |
+| v6_fit_0081 (25840 trees, 222 feat.) | 1,000,000 | 4.42k | 2.08M | 468k | 1.68M | 0.81 | 3.59 | - | 1.58M | - |
+| v6_fit_0017 (37656 trees, 6339 feat.) | 400 | 4.82k | 418k | 315k | 236k | 0.56 | 0.75 | - | 179k | - |
+| v6_fit_0017 (37656 trees, 6339 feat.) | 1,000 | 4.74k | 518k | 368k | 306k | 0.59 | 0.83 | - | 214k | - |
+| v6_fit_0017 (37656 trees, 6339 feat.) | 100,000 | 4.8k | 552k | 395k | 322k | 0.58 | 0.82 | - | 290k | - |
+| v6_fit_0225 (4553 trees, 2426 feat.) | 400 | 49.5k | 4.75M | 3.28M | 769k | 0.16 | 0.23 | 608k | 506k | 1.3e-03 |
+| v6_fit_0225 (4553 trees, 2426 feat.) | 1,000 | 23.7k | 7.32M | 3.97M | 1.88M | 0.26 | 0.47 | 1.06M | 948k | 1.6e-03 |
+| v6_fit_0225 (4553 trees, 2426 feat.) | 100,000 | 49.4k | 10M | 4.77M | 2.77M | 0.28 | 0.58 | 971k | 1.31M | 3.3e-03 |
+| v6_fit_0091 (35835 trees, 2568 feat.) | 400 | 8.36k | 1.69M | 747k | 278k | 0.16 | 0.37 | - | 233k | - |
+| v6_fit_0091 (35835 trees, 2568 feat.) | 1,000 | 8.32k | 2.28M | 1.18M | 686k | 0.30 | 0.58 | - | 494k | - |
+| v6_fit_0091 (35835 trees, 2568 feat.) | 100,000 | 8.37k | 2.62M | 1.26M | 950k | 0.36 | 0.75 | - | 716k | - |
+
+Wide rows (2,000+ columns) are the round-8 plan: as many rows as fit in 48 KiB of shared memory when the walks
+read more features than the staging copies (1.4-2.4x on those rows over 8 rows read from global memory). FIL
+multiclass rows were timed with `predict()`; their outputs were not compared (no max abs diff).
+
+**What it shows.** Against FIL with exact (fp64) routing, the native predictor is faster on every shape at 100k rows
+and more (1.1-2x) and slower on small batches (0.45-0.7x at 1k rows), where the chain of additions per row dominates.
+Against FIL's default fp32 routing (inexact) it reaches 0.5-0.8x at 100k rows and more, 0.3-0.5x on small batches.
+With numpy input (the common call) the host-to-device copy dominates wide inputs and the native predictor is faster
+than FIL on every shape. The CPU predictor is 10-500x slower.
 
 ## 8b. Model size: the FALB binary format
 

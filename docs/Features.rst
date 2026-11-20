@@ -104,10 +104,10 @@ feature's contribution measurable by leave-one-out ablation.
 GPU Inference
 ~~~~~~~~~~~~~
 
-With cuML installed, ``Booster.predict()`` transparently runs on NVIDIA's
-Forest Inference Library; CuPy input stays on the device end to end. See the
-README's `GPU inference section
-<https://github.com/MechaFauna-ai/Falcata#gpu-inference-nvidia-fil>`__.
+``Booster.predict()`` scores dense rows with Falcata's own CUDA predictor,
+bit-identical to the CPU predictor; device arrays stay on the device end to
+end. See the README's `GPU inference section
+<https://github.com/MechaFauna-ai/Falcata#gpu-inference>`__.
 
 A legacy OpenCL backend (``device_type=gpu``, from upstream
 LightGBM\ `[11] <#references>`__) still exists but is not developed here.

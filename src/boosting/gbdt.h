@@ -383,6 +383,10 @@ class GBDT : public GBDTBase {
   void PredictContribByMapInRange(const std::unordered_map<int, double>& features,
                                   std::vector<std::unordered_map<int, double>>* output,
                                   const PredictRange& range) const override;
+  TreeRangeView TreesInRange(const PredictRange& range) const override;
+  TreeRangeView RangeShape(const PredictRange& range) const override;
+  void ConvertRawToPrediction(double* output, const PredictRange& range) const override;
+  bool HasOutputConversion() const override { return average_output_ || objective_function_ != nullptr; }
   /*! \brief the range set by the last InitPredict (the legacy, model-wide prediction state) */
   inline PredictRange InitializedPredictRange() const {
     PredictRange range;

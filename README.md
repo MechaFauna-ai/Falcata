@@ -56,9 +56,11 @@ What makes it fast
   environment variables — every decision bit-identical except where the
   `cuda_plan` documentation says otherwise (`robust_scale`), and individually
   overridable for experiments.
-- **GPU inference via NVIDIA FIL.** `Booster.predict()` transparently runs on
-  cuML's Forest Inference Library when available (see below); CuPy arrays stay
-  on the device end to end.
+- **Native GPU inference.** `Booster.predict()` scores dense rows with its own
+  CUDA predictor (speed against NVIDIA FIL in docs/performance.md section 8),
+  with a deterministic mode bit-identical to the CPU predictor; device arrays
+  stay on the device end to end, and `falcata.predict_many` scores many models
+  in one call.
 
 Correctness discipline
 ----------------------
@@ -95,32 +97,60 @@ model = flc.train(
 )
 ```
 
-GPU inference (NVIDIA FIL)
---------------------------
+GPU inference
+-------------
 
-With cuML installed (`pip install cuml-cu13` alongside the prebuilt CUDA 13
-wheel; `cuml-cu12` for a source build against CUDA 12), `Booster.predict()` on a
-CUDA-trained model transparently runs on NVIDIA's Forest Inference Library —
-no API change. 2-D numpy input returns numpy; CuPy (or any
-`__cuda_array_interface__` array) stays on the device end to end. Converted
-FIL models are cached per iteration slice and invalidated automatically when
-the booster changes.
+`Booster.predict()` has its own CUDA predictor: the trees are packed once for
+the device (and kept until the model changes), and dense rows are scored on
+the GPU with no extra dependency. Every row reaches the CPU predictor's
+leaves: float32 inputs are routed with thresholds rounded down to float (exact
+for every float), and NaN, zero-as-missing and categorical splits follow the
+CPU rules, so leaf indices and feature contributions are **bit-identical**.
+How each output's leaf values are added depends on the mode:
+
+- **default (fast)**: in one fixed pairwise order (groups of 8 iterations in
+  tree order, then a binary tree over the groups), so that one row's trees are
+  spread over the GPU. The order depends only on the model and the iteration
+  range: a row gets the same bits in any batch, call and GPU. It differs from
+  the CPU predictor's in-order sum by rounding only (largest difference on the
+  benchmark models about 1e-13, see docs/performance.md section 8);
+- **`deterministic=True`**: in tree order, exactly as the CPU predictor: raw
+  scores and normal predictions are bit-identical to `device="cpu"`.
+
+Normal (transformed) predictions are converted from the raw scores by the same
+host code the CPU predictor runs.
 
 ```python
-preds = model.predict(X_test)          # numpy in -> numpy out, FIL under the hood
-preds = model.predict(cupy_X)          # device in -> device out, no host round-trip
+preds = model.predict(X_test)                       # numpy in -> numpy out
+preds = model.predict(cupy_X)                       # device in -> device out (CuPy, PyTorch, any __cuda_array_interface__)
+preds = model.predict(X_test, device="cuda")        # force the GPU (an error where it cannot run)
+preds = model.predict(X_test, device="cpu")         # force the CPU predictor
+preds = model.predict(X_test, deterministic=True)   # GPU sums in tree order: bit-identical to the CPU predictor
+outs = falcata.predict_many([m1, m2, m2], [X1, X2, X2], num_iteration=[None, 100, 200])  # many models, one call
 ```
 
-- `FALCATA_FIL=0` disables the FIL path; without cuML installed, predict
-  silently falls back to the regular CPU predictor.
-- `FALCATA_FIL_PRECISION=single` (default) evaluates thresholds in fp32 —
-  rows near a split threshold can route differently than the exact predictor
-  (~0.01% of rows; July 2026, pre-launch build; not re-measured for 1.1);
-  `double` restores exact routing (differences ~1e-13; same check, not
-  re-measured for 1.1), `native` uses the model's own precision.
-- Training-time validation metrics (and early stopping) do **not** go through
-  FIL: they use the booster's internal evaluation on the attached validation
-  set, which is already GPU-resident under `device_type=cuda`.
+- With `device=None` (the default) a device array is predicted on its GPU, and
+  a 2-D numpy array is predicted on the GPU when the model was configured with
+  `device_type="cuda"` and this build and machine can run the CUDA predictor;
+  everything else uses the CPU predictor. A failure on the GPU is raised, never
+  retried on the CPU.
+- `falcata.predict_many` predicts many (booster, input, iteration range) jobs
+  in a few launches, each job with exactly its own `predict` result: the shape
+  of a daily scoring run of thousands of small predictions.
+- Host inputs go to the device in row chunks (any number of rows, 64-bit
+  offsets); `Booster.cuda_predict_stats` reports the device memory of the last
+  CUDA prediction (the cached model and the call's buffers) and its chunking.
+- Normal and raw-score predictions, leaf indices (`pred_leaf`), feature
+  contributions (`pred_contrib`, TreeSHAP, bit-identical too), iteration
+  slices, multiclass, vector leaves, linear trees and categorical splits are
+  served. `pred_early_stop` is not implemented on the GPU: with `device=None`
+  and a numpy array it uses the CPU predictor; on a device array or with
+  `device="cuda"` it is an error.
+- `use_fil=True` (deprecated, to be removed) still routes through cuML's
+  Forest Inference Library when it is installed.
+- Training-time validation metrics (and early stopping) do not go through
+  `predict()`: they use the booster's internal evaluation on the attached
+  validation set, which is already GPU-resident under `device_type=cuda`.
 
 Install
 -------
