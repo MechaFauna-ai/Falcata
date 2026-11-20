@@ -1532,14 +1532,6 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   InitNonquantFixed();
   DecideNonquantHistograms();
 
-  // fp32-pair global histograms: dense shared-memory non-quantized layout only
-  // (sparse / large-bin construct kernels and the categorical find path stay
-  // hist_t and are excluded)
-  // (not with the deterministic constructs, NonquantDet: they store hist_t; the fp32 gain math of
-  // cuda_precision=fp32 stays)
-  hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
-    !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
-    !has_categorical_feature_ && !NonquantDet();
   if (FalcataFP32HistRequested() && !use_quantized_grad_) {
     Log::Debug("CUDAHistogramConstructor: fp32 histogram mode %s", hist_fp32_ ? "engaged" : "unsupported for this dataset, using fp64");
   }
@@ -2312,12 +2304,6 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   InitNonquantFixed();
   DecideNonquantHistograms();
 
-  // (not with the deterministic constructs, NonquantDet: they store hist_t; the fp32 gain math of
-  // cuda_precision=fp32 stays)
-  hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
-    !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
-    !has_categorical_feature_ && !NonquantDet();
-
   cuda_need_fix_histogram_features_.InitFromHostVector(need_fix_histogram_features_);
   cuda_need_fix_histogram_features_num_bin_aligned_.InitFromHostVector(need_fix_histogram_features_num_bin_aligend_);
   InitFixMFBMask();
@@ -2328,13 +2314,15 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
 
 void CUDAHistogramConstructor::DecideNonquantHistograms() {
   nonquant_ordered_ = false;
+  hist_fp32_ = false;
   if (use_quantized_grad_) {
     return;
   }
   const FalcataPlan& plan = FalcataPlan::Get();
-  // the layout the float-atomic kernels would use (the fp32 layout's own conditions, see hist_fp32_)
-  const bool fp32_layout = FalcataFP32HistRequested() && !gpu_use_dp_ && !cuda_row_data_->is_sparse() &&
-    cuda_row_data_->NumLargeBinPartition() == 0 && !has_categorical_feature_;
+  // Float pairs are supported for dense, scalar, numerical shared-memory
+  // histograms. Vector leaves keep their fp64 histogram planes.
+  const bool fp32_layout = FalcataFP32HistRequested() && num_hist_planes_ == 1 && !gpu_use_dp_ &&
+    !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 && !has_categorical_feature_;
   const double rho = FalcataPlan::NonquantHistRho(num_data_, num_features_, num_total_bin_, num_leaves_, max_depth_);
   const double cost = FalcataPlan::NonquantOrderedCost(rho, num_total_bin_, fp32_layout);
   const double threshold = FalcataPlan::NonquantOrderedMaxCost(fp32_layout);
@@ -2363,6 +2351,7 @@ void CUDAHistogramConstructor::DecideNonquantHistograms() {
       why = "float-atomic kernels (nonquant_hist_cost: cheaper here)";
     }
   }
+  hist_fp32_ = fp32_layout && !nonquant_ordered_;
   Log::Info("non-quantized histograms: %s; rho %.6g (rows %d, features %d, bins %d, leaves %d, max_depth %d), "
             "cost %.6g, threshold %.6g (%s layout)", why, rho, num_data_, num_features_, num_total_bin_, num_leaves_,
             max_depth_, cost, threshold,

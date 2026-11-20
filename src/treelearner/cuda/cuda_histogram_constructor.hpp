@@ -1583,7 +1583,7 @@ class CUDAHistogramConstructor {
   // nonquant_hist_cost rule's choice (DecideNonquantHistograms)
   bool nonquant_ordered_ = false;
   int max_depth_ = -1;
-  /*! \brief decides nonquant_ordered_ from the plan keys and the training's shape (after InitNonquantFixed) */
+  /*! \brief resolves the non-quantized construct and storage layout after InitNonquantFixed */
   void DecideNonquantHistograms();
   // dynamic shared bytes of the fixed-point table (the widest partition's items x 8) and the kernels whose
   // max-dynamic-shared attribute is already raised to it

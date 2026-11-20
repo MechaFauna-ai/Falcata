@@ -92,6 +92,24 @@ def _train_scalar(X, y, num_boost_round=20, extra_params=None):
 
 
 @_REQUIRES_CUDA
+def test_vector_leaf_cuda_fp32_request_is_rejected():
+    # Multi-target vector leaves keep fp64 histogram planes: the configuration
+    # refuses cuda_precision=fp32, so the CUDA histogram planner never sees a
+    # multi-plane training with the fp32 layout (DecideNonquantHistograms).
+    X, y0, y1 = _make_data()
+    labels = np.column_stack((y0, y1))
+    params = {
+        **_base_params(),
+        "objective": "multi_regression",
+        "num_class": 2,
+        "tree_mode": "vector_leaf",
+        "cuda_precision": "fp32",
+    }
+    with pytest.raises(lgb.basic.FalcataError, match="requires cuda_precision=fp64"):
+        lgb.train(params, lgb.Dataset(X, label=labels), num_boost_round=1)
+
+
+@_REQUIRES_CUDA
 def test_vector_leaf_cuda_train_predict_save_load_roundtrip():
     X, y0, y1 = _make_data()
     labels = np.column_stack((y0, y1))
