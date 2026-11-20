@@ -1448,6 +1448,14 @@ def build_cells():
             cell(base, profile, params)
             plan = params.get("cuda_plan", "auto") + ",split_packed_read8:off"
             cell(f"{profile}/flip-split_packed_read8-{name}", profile, {**params, "cuda_plan": plan}, equal_to=base)
+            if name == "quant":
+                # the cost rule (split_packed_read8_cost) only chooses between the strided read and the gather
+                cell(
+                    f"{profile}/flip-split_packed_read8_cost-{name}",
+                    profile,
+                    {**params, "cuda_plan": "auto,split_packed_read8_cost:off"},
+                    equal_to=base,
+                )
             if name == "quant-bagged":
                 for key in ("compact_dense_wide_skip", "compact_quant"):
                     cell(

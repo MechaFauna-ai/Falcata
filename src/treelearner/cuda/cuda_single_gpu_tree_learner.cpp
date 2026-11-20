@@ -124,6 +124,12 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     gpu_device_id_ = config_->gpu_device_id >= 0 ? config_->gpu_device_id : 0;
     SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
   }
+  {
+    int l2 = 0;
+    if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, gpu_device_id_ < 0 ? 0 : gpu_device_id_) == cudaSuccess) {
+      l2_cache_bytes_ = static_cast<size_t>(std::max(l2, 0));
+    }
+  }
   // quant_mode=fixedpoint: xgboost-inspired near-lossless deterministic
   // quantization. Non-stochastic round-to-nearest over a high bin count fills
   // the int16 gradient range, and the existing packed-histogram path already
@@ -719,6 +725,29 @@ bool CUDASingleGPUTreeLearner::TreesReadFullMatrix() const {
   return config_->use_quantized_grad && (!HybridGrowthUsable() || !config_->forcedsplits_filename.empty());
 }
 
+// Whether a feature-sampled tree over 8-bit rows should read each split column strided from the row matrix
+// (split_packed_read8, #613) rather than gather its sampled columns into a column-major copy first. Bytes moved per
+// row and tree:
+//   gather:  the source row once (row_bytes) + the k sampled columns written + one contiguous byte per level;
+//   strided: one 32-byte sector per level (a byte every row_bytes; row_bytes itself when narrower than a sector).
+// While the whole row matrix fits in the L2 cache every strided level after the first reads the cache, so the strided
+// read is taken there regardless (it also saves the gather's device synchronisation). Levels: max_depth when set,
+// else the depth of a balanced tree with num_leaves leaves. Higgs (28 columns, 25 sampled, depth 10, 10.5M rows,
+// 294 MB): 280 against 63 bytes, gather (the strided read made its trees 1.36x slower); the 2,568-column fit of #613
+// (1,525 sampled, 6 leaves): 96 against 4,100 bytes, strided (3.5x faster than the gather).
+bool CUDASingleGPUTreeLearner::SplitPackedRead8Pays(const data_size_t num_rows, const int row_bytes, const int k,
+                                                     const int max_depth, const int num_leaves, const size_t l2_bytes) {
+  if (l2_bytes > 0 && static_cast<double>(num_rows) * row_bytes <= static_cast<double>(l2_bytes)) {
+    return true;
+  }
+  int levels = 1;
+  while ((1 << levels) < num_leaves && levels < 30) ++levels;
+  if (max_depth > 0) levels = std::min(levels, max_depth);
+  const double strided = static_cast<double>(levels) * std::min(row_bytes, 32);
+  const double gather = static_cast<double>(row_bytes) + k + levels;
+  return strided < gather;
+}
+
 void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   const auto* row_data = cuda_histogram_constructor_->cuda_row_data_internal();
   if (row_data == nullptr || train_data_->num_features() == 0) return;  // no row data was built
@@ -865,7 +894,13 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   // (higgs, 28 columns, 1023 leaves / depth 10: trees 1.50x slower with the strided read on an RTX 5090), so the
   // strided read is kept for sampled trees only. Bit-identical either way.
   const bool tree_is_sampled = num_compact_cols < num_total_cols;
-  const bool packed_read8 = !gather_src_is_4bit && FalcataPlan::Get().split_packed_read8 && tree_is_sampled;
+  bool packed_read8 = !gather_src_is_4bit && FalcataPlan::Get().split_packed_read8 && tree_is_sampled;
+  if (packed_read8 && FalcataPlan::Get().split_packed_read8_cost) {
+    // the gather source's row width: the compact matrix holds the sampled columns, the full matrix every column
+    const int src_row_bytes = compact_src ? num_compact_cols : num_total_cols;
+    packed_read8 = SplitPackedRead8Pays(num_data, src_row_bytes, num_compact_cols, config_->max_depth,
+                                        config_->num_leaves, l2_cache_bytes_);
+  }
   if ((gather_src_is_4bit || packed_read8) && PackedSplitReadUsable()) {
     // categorical batched-apply descriptors need the plain per-column view
     // (SplitLevelBatched CHECK-enforces it); numerical-only datasets keep the packed read

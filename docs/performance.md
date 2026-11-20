@@ -714,6 +714,16 @@ numerai-deep corrected for its slow baseline run) it says so.
   (17 Nov 2026 on `370df221`, RTX 5090, ms per tree): 16.7 → 4.7 at 1,525
   sampled of 2,568 columns, 10.9 → 4.8 at 875 of 2,000, 2.73 → 1.44 at 172
   of 222, 1.00 → 0.57 at 60 of 63, 0.42 → 0.38 at 46 of 122.
+  **`split_packed_read8_cost`** (1.2, #637) keeps the gather where it moves
+  fewer bytes per row and tree than the strided read: a sector per level
+  against the source row, the sampled columns written and a contiguous byte
+  per level. The strided read stays wherever the row matrix fits in L2. On
+  higgs at `feature_fraction` 0.9 (10.5M x 28, depth 10, 18 Nov 2026 on
+  `a60880d6`, RTX 5090, ms per iteration), the strided read on every sampled
+  tree took 6.78, the gather 5.02 and the rule 5.04. At 2M rows (56 MB, in
+  L2) the rule keeps the strided read: 1.11 against the gather's 1.38. The
+  #613 shapes and the v6 folds keep the strided read and its speed, within
+  ±3%.
 - **`batch_reghist`** — for ≤8-bin datasets, accumulate a thread's rows in
   registers and flush once instead of two shared-memory atomics per row.
 - **`batch_wide`** — wide-shape batched search for many-column datasets
