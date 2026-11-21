@@ -312,7 +312,9 @@ class CUDAPredictor {
   // (device, double thresholds, compact layout)
   std::map<std::tuple<int, bool, bool>, std::shared_ptr<const CUDAPackedForest>> forests_;
   std::mutex scratch_mutex_;
-  std::map<std::pair<int, int>, std::unique_ptr<CUDAVector<char>>> scratch_;   // (device, stream lane)
+  // (device, stream lane, use): the default mode's span sums, a host input's chunk, its output chunk
+  std::map<std::tuple<int, int, int>, std::unique_ptr<CUDAVector<char>>> scratch_;
+  std::map<std::pair<int, int>, cudaStream_t> streams_;   // (device, lane): the chunk streams of host inputs
 };
 
 }  // namespace Falcata
