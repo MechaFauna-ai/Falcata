@@ -21,6 +21,7 @@
 #include <type_traits>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1172,15 +1173,48 @@ struct PreparedJob {
   int64_t part_offset = 0;    // double offset of its span sums in the partials buffer
 };
 
+/*! \brief page-locked host memory that only grows (the async copies of PredictMany's tables and outputs) */
+struct PinnedHostBuffer {
+  char* data = nullptr;
+  size_t bytes = 0;
+  char* Reserve(size_t n) {
+    if (n > bytes) {
+      if (data != nullptr) {
+        CUDASUCCESS_OR_FATAL(cudaFreeHost(data));   // no copy of this call reads it yet (reserved first)
+        data = nullptr;
+      }
+      const size_t grown = std::max(n, 2 * bytes);
+      bytes = 0;
+      CUDASUCCESS_OR_FATAL(cudaMallocHost(reinterpret_cast<void**>(&data), grown));
+      bytes = grown;
+    }
+    return data;
+  }
+};
+
+/*! \brief a host input of PredictMany: copied to the device once however many jobs read it */
+struct HostInput {
+  std::tuple<const void*, int64_t, int32_t, int64_t, int64_t> key;   // data, rows, columns, strides
+  size_t job = 0;                                                    // index into the prepared jobs
+};
+
 /*!
- * \brief A device's buffers and stream for PredictMany, kept across calls (grow only) so that a call allocates
- *        nothing; one call at a time per device. Never freed: the process ends with them (no teardown order issue).
+ * \brief A device's buffers, stream and host-side lists for PredictMany, kept across calls (grow only) so that a
+ *        call allocates nothing once the batch shape has been seen; one call at a time per device. Never freed: the
+ *        process ends with them (no teardown order issue).
  */
 struct BatchScratch {
   std::mutex mutex;
   cudaStream_t stream = nullptr;
   CUDAVector<char> in, out, part, tables;
-  std::vector<double> host_out;
+  PinnedHostBuffer host_tables, host_out;
+  std::vector<PreparedJob> prepared;
+  std::vector<size_t> solo, order;
+  std::vector<HostInput> inputs;
+  std::vector<double*> out_of;
+  std::vector<DeviceRows<float>> rows_float;
+  std::vector<DeviceRows<double>> rows_double;
+  std::vector<double> convert;
 };
 
 BatchScratch& BatchScratchOf(int device) {
@@ -1210,33 +1244,44 @@ int SharedClass(size_t bytes) {
   return c;
 }
 
+/*!
+ * \brief the launch a job joins: layout, staging, categorical kernel, shared-memory class, groups per task and
+ *        threads per block. A launch runs every block with its largest job's threads and reserves its largest shared
+ *        memory, so jobs of other block sizes would hold idle threads for the whole block.
+ */
+std::tuple<bool, bool, bool, int, int, int> LaunchKey(const PreparedJob& p) {
+  return std::make_tuple(p.plan.compact, p.plan.stage_rows, p.categorical, SharedClass(p.shared), p.plan.task_groups,
+                         p.plan.block_threads);
+}
+
 template <typename T>
 void LaunchJobs(const std::vector<PreparedJob>& prepared, const std::vector<CUDAPredictJob>& jobs,
                 const DeviceRows<T>* rows_of, double* const* out_of, double* partials, cudaStream_t stream,
-                CUDAVector<char>* tables, std::vector<std::vector<char>>* host_tables) {
-  // groups: layout, staging, shared-memory class; categorical splits make a group use the categorical kernel
-  std::map<std::tuple<bool, bool, int, int>, std::vector<size_t>> groups;
+                CUDAVector<char>* tables, PinnedHostBuffer* host_tables, std::vector<size_t>* order) {
+  order->resize(prepared.size());
   for (size_t i = 0; i < prepared.size(); ++i) {
-    const PreparedJob& p = prepared[i];
-    groups[std::make_tuple(p.plan.compact, p.plan.stage_rows, SharedClass(p.shared), p.plan.task_groups)]
-        .push_back(i);
+    (*order)[i] = i;
   }
-  size_t table_bytes = 0;
-  for (const auto& g : groups) {
-    table_bytes += g.second.size() * sizeof(PairwiseJob<T>);
-  }
+  std::stable_sort(order->begin(), order->end(),
+                   [&](size_t a, size_t b) { return LaunchKey(prepared[a]) < LaunchKey(prepared[b]); });
+  const size_t table_bytes = prepared.size() * sizeof(PairwiseJob<T>);
   GrowTo(tables, table_bytes + 1);
-  host_tables->clear();
-  size_t offset = 0;
-  for (const auto& g : groups) {
-    std::vector<PairwiseJob<T>> table;
-    table.reserve(g.second.size());
+  PairwiseJob<T>* host = reinterpret_cast<PairwiseJob<T>*>(host_tables->Reserve(table_bytes + 1));
+  size_t begin = 0;
+  while (begin < order->size()) {
+    size_t end = begin + 1;
+    while (end < order->size() && LaunchKey(prepared[(*order)[end]]) == LaunchKey(prepared[(*order)[begin]])) {
+      ++end;
+    }
+    PairwiseJob<T>* table = host + begin;
     int64_t blocks = 0, cells = 0;
     size_t shared = 0;
     bool categorical = false;
-    for (size_t i : g.second) {
+    for (size_t t = begin; t < end; ++t) {
+      const size_t i = (*order)[t];
       const PreparedJob& p = prepared[i];
-      PairwiseJob<T> job;
+      PairwiseJob<T>& job = table[t - begin];
+      job = PairwiseJob<T>();
       job.forest = p.forest->View<T>();
       job.rows = rows_of[i];
       job.tree_begin = p.tree_begin;
@@ -1252,16 +1297,15 @@ void LaunchJobs(const std::vector<PreparedJob>& prepared, const std::vector<CUDA
       cells += job.rows.num_row * p.num_tree_per_iteration;
       shared = std::max(shared, p.shared);
       categorical = categorical || p.categorical;
-      table.push_back(job);
     }
-    host_tables->emplace_back(reinterpret_cast<const char*>(table.data()),
-                              reinterpret_cast<const char*>(table.data() + table.size()));
-    char* device_table = tables->RawData() + offset;
-    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(device_table, host_tables->back().data(), host_tables->back().size(),
-                                         cudaMemcpyHostToDevice, stream));
-    offset += host_tables->back().size();
-    LaunchPredictPairwiseJobs<T>(table, reinterpret_cast<const PairwiseJob<T>*>(device_table), categorical,
-                                 std::get<0>(g.first), std::get<1>(g.first), shared, stream);
+    const size_t count = end - begin;
+    PairwiseJob<T>* device_table = reinterpret_cast<PairwiseJob<T>*>(tables->RawData()) + begin;
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(device_table, table, count * sizeof(PairwiseJob<T>), cudaMemcpyHostToDevice,
+                                         stream));
+    const PreparedJob& first = prepared[(*order)[begin]];
+    LaunchPredictPairwiseJobs<T>(table, static_cast<int>(count), device_table, categorical, first.plan.compact,
+                                 first.plan.stage_rows, shared, stream);
+    begin = end;
   }
 }
 
@@ -1298,9 +1342,13 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
   DeviceGuard guard(device_id);
   device_id = guard.device();
   const DeviceLimits& limits = LimitsOf(device_id);
+  BatchScratch& scratch = BatchScratchOf(device_id);
+  std::lock_guard<std::mutex> scratch_lock(scratch.mutex);
   // which jobs batch: the default mode, scalar leaves, no linear leaves; the others go through Predict one by one
-  std::vector<PreparedJob> prepared;
-  std::vector<size_t> solo;
+  std::vector<PreparedJob>& prepared = scratch.prepared;
+  std::vector<size_t>& solo = scratch.solo;
+  prepared.clear();
+  solo.clear();
   for (size_t i = 0; i < jobs.size(); ++i) {
     const CUDAPredictJob& job = jobs[i];
     const Boosting::TreeRangeView view = job.boosting->RangeShape(job.range);
@@ -1366,12 +1414,12 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
     p.shared = PairwiseSharedBytes(p.plan, job.num_col, elem);
   }
   // device buffers: host inputs (one copy per distinct input), host outputs, span sums
-  BatchScratch& scratch = BatchScratchOf(device_id);
-  std::lock_guard<std::mutex> scratch_lock(scratch.mutex);
   cudaStream_t stream = common.on_device ? common.stream : scratch.stream;
-  std::map<std::tuple<const void*, int64_t, int32_t, int64_t, int64_t>, int64_t> input_offsets;
+  std::vector<HostInput>& inputs = scratch.inputs;
+  inputs.clear();
   int64_t in_elems = 0, out_elems = 0, part_elems = 0;
-  for (PreparedJob& p : prepared) {
+  for (size_t i = 0; i < prepared.size(); ++i) {
+    PreparedJob& p = prepared[i];
     const CUDAPredictJob& job = jobs[p.index];
     if (!common.on_device) {
       const bool row_major = job.col_stride == 1 && job.row_stride == job.num_col;
@@ -1379,13 +1427,10 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
       if (!row_major && !col_major) {
         Log::Fatal("CUDA predictor: a host input must be C- or F-contiguous");
       }
-      auto key = std::make_tuple(job.data, job.num_row, job.num_col, job.row_stride, job.col_stride);
-      auto it = input_offsets.find(key);
-      if (it == input_offsets.end()) {
-        it = input_offsets.emplace(key, in_elems).first;
-        in_elems += job.num_row * job.num_col;
-      }
-      p.in_offset = it->second;
+      HostInput input;
+      input.key = std::make_tuple(job.data, job.num_row, job.num_col, job.row_stride, job.col_stride);
+      input.job = i;
+      inputs.push_back(input);
       p.out_offset = out_elems;
       out_elems += job.num_row * p.num_output;
     }
@@ -1393,6 +1438,18 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
       p.part_offset = part_elems;
       part_elems += static_cast<int64_t>(p.plan.num_spans) * job.num_row * p.num_tree_per_iteration;
     }
+  }
+  // one device copy per distinct host input: equal keys are adjacent once sorted (stable: the first job copies)
+  std::stable_sort(inputs.begin(), inputs.end(),
+                   [](const HostInput& a, const HostInput& b) { return a.key < b.key; });
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    PreparedJob& p = prepared[inputs[i].job];
+    if (i > 0 && inputs[i].key == inputs[i - 1].key) {
+      p.in_offset = prepared[inputs[i - 1].job].in_offset;
+      continue;
+    }
+    p.in_offset = in_elems;
+    in_elems += jobs[p.index].num_row * jobs[p.index].num_col;
   }
   CUDAVector<char>& in_buf = scratch.in;
   CUDAVector<char>& out_buf = scratch.out;
@@ -1404,26 +1461,24 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
   stats->scratch_bytes = VectorBytes(in_buf) + VectorBytes(out_buf) + VectorBytes(part_buf);
   stats->num_chunks = 1;
   stats->chunk_rows = 0;
-  for (const auto& kv : input_offsets) {
-    const CUDAPredictJob* job = nullptr;
-    for (const PreparedJob& p : prepared) {
-      if (p.in_offset == kv.second) {
-        job = &jobs[p.index];
-        break;
-      }
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    if (i > 0 && inputs[i].key == inputs[i - 1].key) {
+      continue;
     }
-    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(in_buf.RawData() + kv.second * elem, job->data,
-                                         static_cast<size_t>(job->num_row) * job->num_col * elem,
+    const PreparedJob& p = prepared[inputs[i].job];
+    const CUDAPredictJob& job = jobs[p.index];
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(in_buf.RawData() + p.in_offset * elem, job.data,
+                                         static_cast<size_t>(job.num_row) * job.num_col * elem,
                                          cudaMemcpyHostToDevice, stream));
   }
-  std::vector<double*> out_of(prepared.size());
+  std::vector<double*>& out_of = scratch.out_of;
+  out_of.resize(prepared.size());
   for (size_t i = 0; i < prepared.size(); ++i) {
     const PreparedJob& p = prepared[i];
     out_of[i] = common.on_device ? reinterpret_cast<double*>(jobs[p.index].out)
                                  : reinterpret_cast<double*>(out_buf.RawData()) + p.out_offset;
   }
   double* partials = reinterpret_cast<double*>(part_buf.RawData());
-  std::vector<std::vector<char>> host_tables;
   auto rows_for = [&](auto tag, std::vector<DeviceRows<decltype(tag)>>* rows) {
     using T = decltype(tag);
     rows->resize(prepared.size());
@@ -1446,28 +1501,28 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
   };
   if (!prepared.empty()) {
     if (is_double) {
-      std::vector<DeviceRows<double>> rows;
-      rows_for(0.0, &rows);
-      LaunchJobs<double>(prepared, jobs, rows.data(), out_of.data(), partials, stream, &tables, &host_tables);
+      rows_for(0.0, &scratch.rows_double);
+      LaunchJobs<double>(prepared, jobs, scratch.rows_double.data(), out_of.data(), partials, stream, &tables,
+                         &scratch.host_tables, &scratch.order);
     } else {
-      std::vector<DeviceRows<float>> rows;
-      rows_for(0.0f, &rows);
-      LaunchJobs<float>(prepared, jobs, rows.data(), out_of.data(), partials, stream, &tables, &host_tables);
+      rows_for(0.0f, &scratch.rows_float);
+      LaunchJobs<float>(prepared, jobs, scratch.rows_float.data(), out_of.data(), partials, stream, &tables,
+                        &scratch.host_tables, &scratch.order);
     }
   }
-  // host outputs: one copy of the whole output buffer, then each job's part on the host
+  // host outputs: one copy of the whole output buffer (page-locked), then each job's part on the host
+  const double* host_out = nullptr;
   if (!common.on_device && out_elems > 0) {
-    scratch.host_out.resize(static_cast<size_t>(out_elems));
-    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(scratch.host_out.data(), out_buf.RawData(),
-                                         static_cast<size_t>(out_elems) * sizeof(double), cudaMemcpyDeviceToHost,
+    const size_t bytes = static_cast<size_t>(out_elems) * sizeof(double);
+    host_out = reinterpret_cast<const double*>(scratch.host_out.Reserve(bytes));
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(scratch.host_out.data, out_buf.RawData(), bytes, cudaMemcpyDeviceToHost,
                                          stream));
   }
   CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
-  if (!common.on_device) {
+  if (host_out != nullptr) {
     for (const PreparedJob& p : prepared) {
       const CUDAPredictJob& job = jobs[p.index];
-      std::memcpy(job.out, scratch.host_out.data() + p.out_offset,
-                  static_cast<size_t>(job.num_row) * p.num_output * sizeof(double));
+      std::memcpy(job.out, host_out + p.out_offset, static_cast<size_t>(job.num_row) * p.num_output * sizeof(double));
     }
   }
   if (common.predict_type == C_API_PREDICT_NORMAL) {
@@ -1478,7 +1533,8 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
       }
       const size_t n = static_cast<size_t>(job.num_row) * p.num_output;
       if (common.on_device) {
-        std::vector<double> host(n);
+        std::vector<double>& host = scratch.convert;
+        host.resize(n);
         CUDASUCCESS_OR_FATAL(cudaMemcpy(host.data(), job.out, n * sizeof(double), cudaMemcpyDeviceToHost));
         ConvertOnHost(job.boosting, job.range, host.data(), job.num_row, p.num_output);
         CUDASUCCESS_OR_FATAL(cudaMemcpy(job.out, host.data(), n * sizeof(double), cudaMemcpyHostToDevice));

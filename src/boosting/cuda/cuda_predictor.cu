@@ -1346,17 +1346,18 @@ template void LaunchPredictRawKernel<float, float>(const DeviceForestView<float>
 template void LaunchPredictRawKernel<double, double>(const DeviceForestView<double>&, const DeviceRows<double>&, int,
                                                      int, int, int, bool, const PredictPlan&, double*, cudaStream_t);
 template <typename T>
-void LaunchPredictPairwiseJobs(const std::vector<PairwiseJob<T>>& jobs, const PairwiseJob<T>* device_jobs,
+void LaunchPredictPairwiseJobs(const PairwiseJob<T>* jobs, int num_jobs, const PairwiseJob<T>* device_jobs,
                                bool has_categorical, bool compact, bool stage, size_t shared_bytes,
                                cudaStream_t stream) {
-  if (jobs.empty()) {
+  if (num_jobs <= 0) {
     return;
   }
-  const int task_groups = jobs.front().plan.task_groups;   // one value per launch (LaunchJobs groups by it)
+  const int task_groups = jobs[0].plan.task_groups;   // one value per launch (LaunchJobs groups by it)
   int64_t blocks = 0, cells = 0;
   int threads = 32;
   bool combine = false;
-  for (const PairwiseJob<T>& job : jobs) {
+  for (int j = 0; j < num_jobs; ++j) {
+    const PairwiseJob<T>& job = jobs[j];
     blocks = job.block_begin + ((job.rows.num_row + job.plan.tile_rows - 1) / job.plan.tile_rows) *
              job.plan.num_spans * ((job.num_tree_per_iteration + job.plan.out_chunk - 1) / job.plan.out_chunk);
     cells = job.cell_begin + job.rows.num_row * job.num_tree_per_iteration;
@@ -1367,7 +1368,6 @@ void LaunchPredictPairwiseJobs(const std::vector<PairwiseJob<T>>& jobs, const Pa
     Log::Fatal("CUDA predictor: a batch of %lld blocks is too large for one launch",
                static_cast<long long>(blocks));  // NOLINT(runtime/int)
   }
-  const int num_jobs = static_cast<int>(jobs.size());
 #define FLC_JOBS_KERNEL(CAT, COMPACT, STAGE)                                                                   \
   {                                                                                                            \
     auto kernel = task_groups > 1 ? PredictPairwiseJobsKernel<T, CAT, COMPACT, STAGE, 8, 8>                    \
@@ -1398,10 +1398,10 @@ void LaunchPredictPairwiseJobs(const std::vector<PairwiseJob<T>>& jobs, const Pa
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
-template void LaunchPredictPairwiseJobs<float>(const std::vector<PairwiseJob<float>>&, const PairwiseJob<float>*,
-                                               bool, bool, bool, size_t, cudaStream_t);
-template void LaunchPredictPairwiseJobs<double>(const std::vector<PairwiseJob<double>>&, const PairwiseJob<double>*,
-                                                bool, bool, bool, size_t, cudaStream_t);
+template void LaunchPredictPairwiseJobs<float>(const PairwiseJob<float>*, int, const PairwiseJob<float>*, bool, bool,
+                                               bool, size_t, cudaStream_t);
+template void LaunchPredictPairwiseJobs<double>(const PairwiseJob<double>*, int, const PairwiseJob<double>*, bool, bool,
+                                                bool, size_t, cudaStream_t);
 template void LaunchPredictPairwiseKernel<float, float>(const DeviceForestView<float>&, const DeviceRows<float>&, int,
                                                         int, int, const PairwisePlan&, double*, double*,
                                                         cudaStream_t);

@@ -218,10 +218,11 @@ struct PairwiseJob {
 /*!
  * \brief Launches a batch of jobs that share the input type, the layout (compact when `compact`) and whether rows
  *        are staged; `device_jobs` is the jobs' table in device memory (block_begin and cell_begin filled, ascending),
- *        `jobs` the same table on the host. Each job's result equals its own LaunchPredictPairwiseKernel's.
+ *        `jobs` the same `num_jobs` entries on the host. Each job's result equals its own
+ *        LaunchPredictPairwiseKernel's.
  */
 template <typename T>
-void LaunchPredictPairwiseJobs(const std::vector<PairwiseJob<T>>& jobs, const PairwiseJob<T>* device_jobs,
+void LaunchPredictPairwiseJobs(const PairwiseJob<T>* jobs, int num_jobs, const PairwiseJob<T>* device_jobs,
                                bool has_categorical, bool compact, bool stage, size_t shared_bytes,
                                cudaStream_t stream);
 
