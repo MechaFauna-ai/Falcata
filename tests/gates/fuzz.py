@@ -120,6 +120,13 @@ def sample_spec(rng):
     }
     if spec["bagging_fraction"] < 1.0:
         spec["bagging_freq"] = 1
+    # Half of the non-quantized specs ask for the opt-in deterministic histograms
+    # (cuda_plan key nonquant_deterministic:on, which deterministic=true selects),
+    # so the determinism rerun below fuzzes that mode; the other half run the
+    # default plan's float-atomic kernels. The coin is the parity of data_seed,
+    # already drawn, so a --seed samples the same specs as before.
+    if quant_mode == "none" and spec["data_seed"] % 2 == 0:
+        spec["cuda_plan"] += ",nonquant_deterministic:on"
 
     # CPU-reference cost guard: the parity arm runs on 8 CPU threads under a
     # bounded timeout, and an unlucky joint draw (40k rows x 800 cols x 150
@@ -385,10 +392,11 @@ def check_spec(spec):
     # (integer atomics); non-quantized training only in its opt-in mode, the
     # cuda_plan key nonquant_deterministic:on (the float-atomic batched levels
     # then accumulate in 64-bit fixed point, the rest were deterministic
-    # already). The fuzzer draws non-quantized specs on the default plan, the
-    # float-atomic kernels, whose models may differ run to run: they are
-    # checked for validity and CPU quality only; a spec (corpus or --spec)
-    # that names the key on is md5-checked too. (Linear trees, ranking
+    # already). sample_spec names the key on half of the non-quantized specs,
+    # and the corpus ends with key-on copies of six non-quantized specs: those
+    # are md5-checked. The others run the default plan's float-atomic kernels,
+    # whose models may differ run to run, and are checked for validity and CPU
+    # quality only. (Linear trees, ranking
     # objectives and multi-plane vector-leaf trees stay nondeterministic; the
     # fuzzer draws none of them.)
     md5_checked = spec["quant_mode"] != "none" or "nonquant_deterministic:on" in spec.get("cuda_plan", "")
