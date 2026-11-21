@@ -50,11 +50,10 @@ What makes it fast
   across GPU models and host machines: the same seed trains the bit-identical
   model on any CUDA device (verified sm_89 vs sm_120 on a pre-launch build; the
   integer-only Philox stream keeps the guarantee by construction);
-  `quant_mode=none` is full precision; by default its histograms take whichever
-  construct is faster for the training's shape (float atomics or fixed point,
-  `cuda_plan` key `nonquant_hist_cost`), so its models can differ in the last
-  bits from run to run; `deterministic=true` with `quant_mode=none` makes it
-  repeat bit for bit.
+  With `quant_mode=none`, the `nonquant_hist_cost` planner rule selects float
+  atomics or fixed point from the training shape and histogram precision.
+  Float atomics can give different model bits on repeated runs.
+  Set `deterministic=true` with `quant_mode=none` to request repeatable models.
 - **An execution planner.** Shape-conditional kernel choices are resolved once
   from the data and parameters (`cuda_plan=auto`) instead of from a pile of
   environment variables — every decision bit-identical except where the

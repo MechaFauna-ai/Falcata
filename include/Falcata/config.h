@@ -1213,14 +1213,14 @@ struct Config {
 
   // desc = floating-point precision of CUDA histogram accumulation and split-gain math (Falcata)
   // desc = ``fp64``: double-precision accumulation (bit-stable reference)
-  // desc = ``fp32``: single-precision split-gain math and, for non-quantized training on dense data without categorical features where the histograms take the float-atomic kernels (the ``cuda_plan`` key ``nonquant_hist_cost`` decides by shape, the fp32 layout counted), single-precision histogram atomics (measurably faster on high-bin workloads at <=0.1pp quality cost); with the fixed-point construct (the rule's choice, or run-to-run determinism requested by ``deterministic=true`` with ``quant_mode=none`` or ``nonquant_deterministic:on``) the histograms stay fp64 and only the gain math is single precision
+  // desc = ``fp32``: single-precision split-gain math. During non-quantized training on supported dense numeric data with a single histogram plane, the float-atomic construct also uses single-precision histogram storage and atomics. The ``nonquant_hist_cost`` planner rule counts that smaller histogram layout when selecting the construct. The fixed-point construct uses fp64 histograms and fp32 gain math.
   // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
   std::string cuda_precision = "fp64";
 
   // desc = CUDA execution-plan override string (Falcata)
   // desc = ``auto`` resolves every shape-conditional kernel choice from the data/params via the built-in planner; the resolved plan is logged at startup
   // desc = experts can pin individual decisions with comma-separated ``key:on|off`` overrides after ``auto``, e.g. ``auto,device_tree:off,row_batch:off``
-  // desc = nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires; ``nonquant_deterministic`` (non-quantized training only; off by default, on under ``deterministic=true``) chooses deterministic histograms: on, every run trains the same model; off, ``nonquant_hist_cost`` (on by default) picks per training whichever of the float-atomic kernels and the fixed-point construct is expected to be faster, and the two train models that differ in the last bits (``nonquant_hist_cost:off`` always takes the float atomics)
+  // desc = nearly all plan decisions preserve the trained model bit for bit. ``robust_scale`` changes the model when it fires for ``quant_mode=fixedpoint`` on extreme label imbalance. For non-quantized training, ``nonquant_deterministic:on`` requests deterministic histograms. With determinism off, ``nonquant_hist_cost`` chooses between float atomics and fixed point based on tree work and histogram footprint. Set ``nonquant_hist_cost:off`` with determinism off to use float atomics. The two constructs can give different model bits.
   // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
   std::string cuda_plan = "auto";
 
