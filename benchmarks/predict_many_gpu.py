@@ -9,9 +9,10 @@ script times, after one warm-up pass (which packs the models for the device, or 
   with numpy input;
 - with ``--checkpoints FILE`` (JSON: model file stem -> list of iteration counts), the same with one job per
   (model, checkpoint): ``native_ckpt_loop`` and ``native_ckpt_many``;
-- with ``--fil``, NVIDIA FIL in its default configuration (no ``optimize()``), one ``predict`` call per model, in
-  float32 (``fil_single_loop``) and float64 (``fil_double_loop``); FIL has no iteration ranges, so checkpoints are
-  native only.
+- with ``--fil``, NVIDIA FIL in its default configuration (no ``optimize()``), one call per model for its raw
+  outputs (``predict_proba`` for a classifier, whose ``predict`` gives class labels), in float32
+  (``fil_single_loop``) and float64 (``fil_double_loop``); FIL has no iteration ranges, so checkpoints are native
+  only.
 
 Rows are drawn per model inside its threshold ranges (``predict_gpu.rows_in_ranges``). Each timing is the median of
 ``--reps`` passes. The batched results are checked bit for bit against the one-by-one calls, and FIL's largest
@@ -33,7 +34,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from predict_gpu import fil_model, rows_in_ranges, threshold_ranges, treelite_model  # noqa: E402
+from predict_gpu import fil_model, fil_raw_predict, rows_in_ranges, threshold_ranges, treelite_model  # noqa: E402
 
 
 def median_time(fn, sync, reps):
@@ -204,20 +205,21 @@ def main():
                     caches = [
                         Path(args.treelite_cache) / f"{p.stem}.tl" if args.treelite_cache else None for p in chunk
                     ]
-                    models = [fil_model(t, True, precision, None, c) for t, c in zip(texts, caches, strict=True)]
+                    models = [
+                        fil_raw_predict(fil_model(t, True, precision, None, c))
+                        for t, c in zip(texts, caches, strict=True)
+                    ]
                     rec[f"{tag}_build_s"] = time.perf_counter() - t0
-                    preds = [m.predict(x) for m, x in zip(models, Xd, strict=True)]
+                    preds = [m(x) for m, x in zip(models, Xd, strict=True)]
                     sync()
-                    # FIL's predict() gives class labels for multi-output models: compare single-output models only
                     diffs = [
                         float(np.nanmax(np.abs(cupy.asnumpy(p).reshape(args.rows, -1) - r)))
                         for p, r in zip(preds, ref_host, strict=True)
-                        if r.shape[1] == 1
                     ]
                     rec[f"{tag}_max_abs_diff"] = max(diffs) if diffs else None
                     del preds
                     rec[f"{tag}_loop_s"] = median_time(
-                        lambda ms=models, xs=Xd: [m.predict(x) for m, x in zip(ms, xs, strict=True)], sync, args.reps
+                        lambda ms=models, xs=Xd: [m(x) for m, x in zip(ms, xs, strict=True)], sync, args.reps
                     )
                     del models
                 except Exception as exc:  # recorded: one failing FIL configuration is a result

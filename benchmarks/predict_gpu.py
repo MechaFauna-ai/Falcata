@@ -310,6 +310,15 @@ def treelite_model(model_text, cache=None):
     return tl
 
 
+def fil_raw_predict(model):
+    """Return FIL's call for raw outputs, which is what the native timings return.
+
+    A classifier's predict() gives class labels (an argmax or a threshold on top of the outputs); predict_proba()
+    gives the outputs themselves, raw scores under the identity postprocessor.
+    """
+    return getattr(model, "predict_proba", model.predict)
+
+
 def fil_model(model_text, raw_score, precision, optimize_rows=None, cache=None):
     import nvforest  # noqa: PLC0415
 
@@ -398,10 +407,10 @@ def run_case(name, model_text, n_features, rows_list, nan_frac, args, out, range
                             model_text, True, precision, Xd[: min(n, 100000)] if optimized else None, tl_cache
                         )
                         rec[f"{tag}_build_s"] = time.perf_counter() - t0
-                    fm = fil_cache[key]
+                    fm = fil_raw_predict(fil_cache[key])
                     # FIL's call time varies from one timing to the next on some shapes (an order of magnitude at
                     # small batches): its best of three timings is the reference
-                    fil_runs = [timed(lambda fm=fm, Xd=Xd: fm.predict(Xd), sync, args.min_time) for _ in range(3)]
+                    fil_runs = [timed(lambda fm=fm, Xd=Xd: fm(Xd), sync, args.min_time) for _ in range(3)]
                     fil_s = min(t[1] for t in fil_runs)
                     fp = fil_runs[-1][2]
                     rec[f"{tag}_dev_rows_per_s"] = n / fil_s
@@ -409,10 +418,10 @@ def run_case(name, model_text, n_features, rows_list, nan_frac, args, out, range
                     fp = cupy.asnumpy(fp).reshape(n, -1)[:cpu_rows].reshape(ref.shape)
                     rec[f"{tag}_max_abs_diff"] = float(np.nanmax(np.abs(fp - ref)))
                     if not optimized and args.fil_host:
-                        _, fil_h, _ = timed(lambda fm=fm, X=X: fm.predict(X), None, args.min_time)
+                        _, fil_h, _ = timed(lambda fm=fm, X=X: fm(X), None, args.min_time)
                         rec[f"{tag}_host_rows_per_s"] = n / fil_h
-                    rec[f"{tag}_layout"] = getattr(fm, "layout", None)
-                    rec[f"{tag}_chunk"] = getattr(fm, "default_chunk_size", None)
+                    rec[f"{tag}_layout"] = getattr(fil_cache[key], "layout", None)
+                    rec[f"{tag}_chunk"] = getattr(fil_cache[key], "default_chunk_size", None)
                 except Exception as exc:  # report and keep going: one failing FIL config is a result
                     rec[f"{tag}_error"] = f"{type(exc).__name__}: {exc}"
             cupy.get_default_memory_pool().free_all_blocks()
