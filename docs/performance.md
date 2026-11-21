@@ -2617,6 +2617,18 @@ construction and split finding. The rule uses two estimates.
   same histogram slab for each class. The fixed-point cost choice also
   requires the widest partition's table to fit in the device's shared memory.
 
+The thresholds 0.08 and 0.025 and the 48 KiB reference were measured on one
+RTX 5090 (SM 120, 96 MB L2), and the crossover depends on the GPU: on its
+shared-memory size, its integer against float shared-atomic throughput and its
+memory bandwidth. On another GPU the rule can pick the slower construct for a
+shape. That costs speed, never correctness: both constructs train valid models,
+and the fixed-point choice gives the model `nonquant_deterministic:on` gives.
+On the 5090 itself the wrong choice costs up to about 1.17x (covtype shallow
+fp32: 3.39 ms per round with forced float atomics against 2.90 ms with fixed
+point). Where it matters, time both: `cuda_plan=auto,nonquant_hist_cost:off`
+forces float atomics, and `cuda_plan=auto,nonquant_deterministic:on` forces
+the fixed-point construct (and run-to-run identity).
+
 `cuda_plan=auto,nonquant_hist_cost:off` forces float atomics when determinism
 is off. `deterministic=true` turns on `nonquant_deterministic` if training
 stays non-quantized. An explicit `nonquant_deterministic:on` or `:off` takes
@@ -2625,7 +2637,11 @@ regardless of either setting.
 
 ### RTX 5090 measurements for #636
 
-The benchmark interleaved the default plan, both forced constructs, the
+The table was measured with a wheel of commit `3ba2dfb5`, the cost rule
+without the later layout refactor. That refactor adds a single-plane condition
+to the fp32 layout and assigns `hist_fp32_` in `DecideNonquantHistograms`. It
+leaves every scalar training here on the same construct and layout. The
+benchmark interleaved the default plan, both forced constructs, the
 1.2 master baseline (`e7cfff48`, whose default is the fixed-point construct),
 and `v1.1.0` (`4e532f2f`) in rotating order, one process per binary. The
 candidate and master wheels were built with CUDA 13.4 for SM 120. All shapes
@@ -2635,7 +2651,8 @@ leaves at depth 5, learning rate 0.01 and `feature_fraction=0.1`. The timing
 metric is the median steady-state milliseconds per boosting round after five
 warm-up intervals. The ratio is the geometric mean of the paired
 default/master ratios with a t-based 95% interval. Cells with more than three
-pairs include balanced repeats (GPU Queue 9951, 9952, 9953, 9956).
+pairs include balanced repeats (GPU Queue 9951, 9952, 9953, 9956); Numerai fp64
+also pools the one complete pair of an earlier, stopped run (job 9920).
 
 | Shape | Precision | Construct | Pairs | Default ms | Master ms | Default / master (95% CI) | v1.1.0 ms |
 |---|---|---|---:|---:|---:|---:|---:|
@@ -2663,7 +2680,7 @@ pairs include balanced repeats (GPU Queue 9951, 9952, 9953, 9956).
 | airline-shallow | fp32 | fixed point | 3 | 38.752 | 38.008 | 1.017 (0.982-1.054) | 52.492 |
 | airline-deep | fp64 | fixed point | 3 | 64.325 | 60.679 | 1.006 (0.892-1.135) | 147.462 |
 | airline-deep | fp32 | fixed point | 5 | 63.319 | 63.886 | 1.006 (0.994-1.018) | 156.431 |
-| numerai | fp64 | fixed point | 3 | 23.635 | 24.149 | 0.983 (0.974-0.991) | 27.894 |
+| numerai | fp64 | fixed point | 4 | 23.959 | 24.203 | 0.993 (0.959-1.028) | 27.855 |
 | numerai | fp32 | fixed point | 3 | 23.843 | 23.448 | 1.010 (0.963-1.059) | 28.072 |
 
 The rule takes float atomics on 8 of the 26 cells, and each is faster than
@@ -2672,8 +2689,11 @@ default trains the same model as master, bit for bit, so the ratios there
 measure noise between two binaries running the same construct. Covtype deep
 fp32 pools 3 rotating pairs (1.030) with 8 balanced AB/BA pairs (1.004,
 0.996-1.012). The batched dense construct and fixed-point conversion kernels
-it runs disassemble to the same SASS in both binaries. Every
-cell is faster than v1.1.0. Quantized controls (higgs shallow and Numerai,
+it runs disassemble to the same SASS in both binaries. Three float-atomic
+cells had wide 3-pair intervals. They were rerun on a wheel of the final commit
+(`59bfb4b1`) with 8 balanced pairs each: year shallow fp32 0.914 (0.910-0.917),
+year deep fp32 0.896 (0.892-0.900), epsilon shallow fp32 0.904 (0.901-0.907).
+Every cell is faster than v1.1.0. Quantized controls (higgs shallow and Numerai,
 `quant_mode=fixedpoint`) train one model across the default, master and
 both forced plans, at 0.99 to 1.00 of master's time.
 

@@ -69,8 +69,8 @@ Correctness discipline
 
 Every optimization above must be *bit-identical* to the reference path, and
 that is enforced mechanically rather than trusted. A regression-gate suite runs
-locally on a GPU for every merge and nightly (hosted CI has no GPU): a 494-cell
-lattice of (config × data-shape) training cells (148 md5-fingerprinted, 343
+locally on a GPU for every merge and nightly (hosted CI has no GPU): a 496-cell
+lattice of (config × data-shape) training cells (148 md5-fingerprinted, 345
 plan-flip equality cells that prove each planner decision changes nothing,
 3 metric cells), validity assertions, metric floors, and a perf gate against a
 rolling baseline. The nightly tier adds a config × shape fuzzer with CPU-parity
