@@ -4290,6 +4290,7 @@ int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
                                   int start_iteration,
                                   int num_iteration,
                                   const char* parameter,
+                                  int deterministic,
                                   int64_t* out_len,
                                   void* out_result,
                                   int64_t* out_stats) {
@@ -4308,6 +4309,7 @@ int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
   (void)start_iteration;
   (void)num_iteration;
   (void)parameter;
+  (void)deterministic;
   (void)out_len;
   (void)out_result;
   (void)out_stats;
@@ -4317,9 +4319,18 @@ int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
     Log::Fatal("FLC_BoosterPredictForMatCUDA: negative shape (%s rows, %d columns)", std::to_string(nrow).c_str(),
                ncol);
   }
-  auto param = Config::Str2Map(parameter);
-  Config config;
-  config.Set(param);
+  // no parameters (the usual call): the defaults, set up once -- building a Config costs more than a small prediction
+  static const Config default_config = []() {
+    Config c;
+    c.Set(std::unordered_map<std::string, std::string>());
+    return c;
+  }();
+  std::unique_ptr<Config> parsed;
+  if (parameter != nullptr && parameter[0] != '\0') {
+    parsed.reset(new Config());
+    parsed->Set(Config::Str2Map(parameter));
+  }
+  const Config& config = parsed != nullptr ? *parsed : default_config;
   OMP_SET_NUM_THREADS(config.num_threads);
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   Falcata::CUDAPredictRequest request;
@@ -4332,6 +4343,7 @@ int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
   request.on_device = data_on_device != 0;
   request.stream = reinterpret_cast<cudaStream_t>(stream);
   request.predict_type = predict_type;
+  request.deterministic = deterministic != 0;
   request.out = out_result;
   Falcata::CUDAPredictStats stats;
   ref_booster->PredictCUDA(start_iteration, num_iteration, config, request, out_len, &stats);

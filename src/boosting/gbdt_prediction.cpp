@@ -84,12 +84,20 @@ void GBDT::ConvertRawToPrediction(double* output, const PredictRange& range) con
   }
 }
 
-Boosting::TreeRangeView GBDT::TreesInRange(const PredictRange& range) const {
+Boosting::TreeRangeView GBDT::RangeShape(const PredictRange& range) const {
   TreeRangeView view;
   view.num_tree_per_iteration = num_tree_per_iteration_;
   view.num_output = NumOutputPerIteration();
   view.vector_leaf = vector_leaf_mode_;
   view.num_feature = max_feature_idx_ + 1;
+  const size_t end = (static_cast<size_t>(range.start_iteration) + static_cast<size_t>(range.num_iteration)) *
+                     num_tree_per_iteration_;
+  CHECK_LE(end, models_.size());
+  return view;
+}
+
+Boosting::TreeRangeView GBDT::TreesInRange(const PredictRange& range) const {
+  TreeRangeView view = RangeShape(range);
   const size_t begin = static_cast<size_t>(range.start_iteration) * num_tree_per_iteration_;
   const size_t end = begin + static_cast<size_t>(range.num_iteration) * num_tree_per_iteration_;
   CHECK_LE(end, models_.size());

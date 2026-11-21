@@ -80,6 +80,55 @@ void SetThresholdBits<double>(double* threshold, uint32_t bits) {
 }
 
 template <typename T>
+CompactSlot<T> LeafSlot(double value);
+template <>
+CompactSlot<float> LeafSlot<float>(double value) {
+  uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  CompactSlot<float> s;
+  s.lo = static_cast<uint32_t>(bits);
+  s.meta = static_cast<uint32_t>(bits >> 32);
+  return s;
+}
+template <>
+CompactSlot<double> LeafSlot<double>(double value) {
+  CompactSlot<double> s;
+  s.value = value;
+  s.meta = 0;
+  s.pad = 0;
+  return s;
+}
+
+template <typename T>
+CompactSlot<T> InternalSlot(T threshold, uint32_t meta);
+template <>
+CompactSlot<float> InternalSlot<float>(float threshold, uint32_t meta) {
+  CompactSlot<float> s;
+  std::memcpy(&s.lo, &threshold, sizeof(threshold));
+  s.meta = meta;
+  return s;
+}
+template <>
+CompactSlot<double> InternalSlot<double>(double threshold, uint32_t meta) {
+  CompactSlot<double> s;
+  s.value = threshold;
+  s.meta = meta;
+  s.pad = 0;
+  return s;
+}
+
+// a categorical node keeps its range index where the threshold would be (the low word for doubles, as ThresholdBits)
+template <typename T>
+void SetRangeBits(CompactSlot<T>* slot, uint32_t range);
+template <>
+void SetRangeBits<float>(CompactSlot<float>* slot, uint32_t range) { slot->lo = range; }
+template <>
+void SetRangeBits<double>(CompactSlot<double>* slot, uint32_t range) {
+  const uint64_t pattern = range;
+  std::memcpy(&slot->value, &pattern, sizeof(pattern));
+}
+
+template <typename T>
 int64_t VectorBytes(const CUDAVector<T>& v) {
   return static_cast<int64_t>(v.Size() * sizeof(T));
 }
@@ -130,8 +179,10 @@ class CUDAPackedForest {
     leaf_dim_ = view.vector_leaf ? view.num_output : 1;
     if (double_thresholds) {
       Pack<double>(view, &nodes_double_);
+      PackCompact<double>(view, &slots_double_);
     } else {
       Pack<float>(view, &nodes_float_);
+      PackCompact<float>(view, &slots_float_);
     }
   }
 
@@ -139,7 +190,8 @@ class CUDAPackedForest {
   DeviceForestView<T> View() const;
 
   int64_t Bytes() const {
-    return VectorBytes(nodes_float_) + VectorBytes(nodes_double_) + VectorBytes(tree_root_) +
+    return VectorBytes(nodes_float_) + VectorBytes(nodes_double_) + VectorBytes(slots_float_) +
+           VectorBytes(slots_double_) + VectorBytes(slot_start_) + VectorBytes(tree_root_) +
            VectorBytes(tree_leaf_begin_) + VectorBytes(leaf_values_) + VectorBytes(node_count_) +
            VectorBytes(leaf_count_) + VectorBytes(tree_expected_) + VectorBytes(cat_words_) +
            VectorBytes(cat_range_) + VectorBytes(tree_is_linear_) + VectorBytes(linear_begin_) +
@@ -256,6 +308,7 @@ class CUDAPackedForest {
       has_linear_ = has_linear_ || linear;
     }
     has_categorical_ = !cat_range.empty();
+    cat_range_count_ = static_cast<int64_t>(cat_range.size() / 2);
     if (cat_range.size() / 2 > std::numeric_limits<uint32_t>::max()) {
       Log::Fatal("CUDA predictor: more than 2^32 categorical splits");
     }
@@ -289,10 +342,112 @@ class CUDAPackedForest {
     }
   }
 
+  // the compact layout (CompactSlot): depth-first slots per tree, leaf values in place. Categorical nodes get the
+  // range indices Pack gave them (the same tree and node order). A model it cannot hold keeps PackedNode only.
   template <typename T>
-  DeviceForestView<T> FillView(const CUDAVector<PackedNode<T>>& nodes) const {
+  void PackCompact(const Boosting::TreeRangeView& view, CUDAVector<CompactSlot<T>>* device_slots) {
+    using P = TreeDevicePacker;
+    if (has_linear_ || leaf_dim_ != 1) {
+      return;
+    }
+    int max_feature = 0;
+    for (const Tree* tree : view.trees) {
+      const auto& feature = P::SplitFeature(*tree);
+      for (int i = 0; i + 1 < P::NumLeaves(*tree); ++i) {
+        max_feature = std::max(max_feature, feature[i]);
+      }
+    }
+    int feature_bits = 1;
+    while ((int64_t(1) << feature_bits) <= max_feature) {
+      ++feature_bits;
+    }
+    if (feature_bits > 20) {
+      return;
+    }
+    const int64_t max_offset = (int64_t(1) << (26 - feature_bits)) - 1;
+    std::vector<CompactSlot<T>> slots;
+    std::vector<int32_t> start;
+    start.reserve(view.trees.size());
+    uint32_t next_range = 0;
+    struct Pending {
+      int child;
+      int64_t parent;   // the slot whose right offset this child sets, or -1
+    };
+    std::vector<Pending> stack;
+    for (const Tree* tree : view.trees) {
+      const Tree& t = *tree;
+      const int num_leaves = P::NumLeaves(t);
+      if (static_cast<int64_t>(slots.size()) + 2 * num_leaves > std::numeric_limits<int32_t>::max()) {
+        return;
+      }
+      if (num_leaves <= 1) {
+        start.push_back(~static_cast<int32_t>(slots.size()));
+        slots.push_back(LeafSlot<T>(P::LeafValue(t, 0, 0)));
+        continue;
+      }
+      const auto& feature = P::SplitFeature(t);
+      const auto& threshold = P::Threshold(t);
+      const auto& decision = P::DecisionType(t);
+      const auto& left = P::LeftChild(t);
+      const auto& right = P::RightChild(t);
+      std::vector<uint32_t> range(num_leaves - 1, 0);
+      for (int i = 0; i < num_leaves - 1; ++i) {
+        if (P::NumCat(t) > 0 && (decision[i] & kCategoricalMask)) {
+          range[i] = next_range++;
+        }
+      }
+      start.push_back(static_cast<int32_t>(slots.size()));
+      stack.assign(1, Pending{0, -1});
+      while (!stack.empty()) {
+        const Pending cur = stack.back();
+        stack.pop_back();
+        const int64_t slot = static_cast<int64_t>(slots.size());
+        if (cur.parent >= 0) {
+          const int64_t offset = slot - cur.parent;
+          if (offset > max_offset) {
+            return;
+          }
+          slots[cur.parent].meta |= static_cast<uint32_t>(offset) << feature_bits;
+        }
+        if (cur.child < 0) {
+          slots.push_back(LeafSlot<T>(P::LeafValue(t, ~cur.child, 0)));
+          continue;
+        }
+        const int i = cur.child;
+        uint32_t meta = static_cast<uint32_t>(feature[i]);
+        if (left[i] < 0) meta |= kSlotLeftLeaf;
+        if (right[i] < 0) meta |= kSlotRightLeaf;
+        CompactSlot<T> node;
+        if (P::NumCat(t) > 0 && (decision[i] & kCategoricalMask)) {
+          meta |= kSlotCategorical;
+          node = InternalSlot<T>(T(0), meta);
+          SetRangeBits<T>(&node, range[i]);
+        } else {
+          meta |= static_cast<uint32_t>((decision[i] >> 2) & 3) << kSlotMissingShift;
+          if (decision[i] & kDefaultLeftMask) meta |= kSlotDefaultLeft;
+          node = InternalSlot<T>(ThresholdFor<T>(threshold[i]), meta);
+        }
+        slots.push_back(node);
+        stack.push_back(Pending{right[i], slot});   // walked second: its offset is known once the left subtree is out
+        stack.push_back(Pending{left[i], -1});      // the next slot
+      }
+    }
+    if (next_range != static_cast<uint32_t>(cat_range_count_)) {
+      Log::Fatal("CUDA predictor: compact layout found %u categorical splits, the node layout %lld", next_range,
+                 static_cast<long long>(cat_range_count_));  // NOLINT(runtime/int)
+    }
+    device_slots->InitFromHostVector(slots);
+    slot_start_.InitFromHostVector(start);
+    feature_bits_ = feature_bits;
+  }
+
+  template <typename T>
+  DeviceForestView<T> FillView(const CUDAVector<PackedNode<T>>& nodes, const CUDAVector<CompactSlot<T>>& slots) const {
     DeviceForestView<T> v;
     v.nodes = nodes.RawData();
+    v.slots = slots.Size() > 0 ? slots.RawData() : nullptr;
+    v.slot_start = slot_start_.RawData();
+    v.feature_bits = feature_bits_;
     v.tree_root = tree_root_.RawData();
     v.tree_leaf_begin = tree_leaf_begin_.RawData();
     v.max_depth = max_depth_;
@@ -321,6 +476,11 @@ class CUDAPackedForest {
   bool has_linear_ = false;
   CUDAVector<PackedNode<float>> nodes_float_;
   CUDAVector<PackedNode<double>> nodes_double_;
+  CUDAVector<CompactSlot<float>> slots_float_;
+  CUDAVector<CompactSlot<double>> slots_double_;
+  CUDAVector<int32_t> slot_start_;
+  int feature_bits_ = 0;
+  int64_t cat_range_count_ = 0;
   CUDAVector<int32_t> tree_root_;
   CUDAVector<int32_t> tree_leaf_begin_;
   CUDAVector<double> leaf_values_;
@@ -337,9 +497,38 @@ class CUDAPackedForest {
 };
 
 template <>
-DeviceForestView<float> CUDAPackedForest::View<float>() const { return FillView(nodes_float_); }
+DeviceForestView<float> CUDAPackedForest::View<float>() const { return FillView(nodes_float_, slots_float_); }
 template <>
-DeviceForestView<double> CUDAPackedForest::View<double>() const { return FillView(nodes_double_); }
+DeviceForestView<double> CUDAPackedForest::View<double>() const { return FillView(nodes_double_, slots_double_); }
+
+class CUDAPredictor::Scratch {
+ public:
+  Scratch(CUDAPredictor* owner, int device) : owner_(owner), device_(device) {}
+  /*!
+   * \brief at least `bytes` of device memory for the work of one stream lane, valid until this object ends (the first
+   *        call takes the lock). A lane's launches are ordered on its stream, so they may reuse its buffer; a buffer
+   *        that has to grow is replaced only after the lane's earlier work is done.
+   */
+  void* Get(size_t bytes, int lane, cudaStream_t stream) {
+    if (!lock_.owns_lock()) {
+      lock_ = std::unique_lock<std::mutex>(owner_->scratch_mutex_);
+    }
+    std::unique_ptr<CUDAVector<char>>& buf = owner_->scratch_[std::make_pair(device_, lane)];
+    if (buf == nullptr) {
+      buf.reset(new CUDAVector<char>());
+    }
+    if (buf->Size() < bytes) {
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
+      buf->ResizeDiscard(bytes);
+    }
+    return buf->RawData();
+  }
+
+ private:
+  CUDAPredictor* owner_;
+  int device_;
+  std::unique_lock<std::mutex> lock_;
+};
 
 CUDAPredictor::CUDAPredictor() {}
 
@@ -349,6 +538,7 @@ void CUDAPredictor::Invalidate() {
   std::lock_guard<std::mutex> lock(mutex_);
   forests_.clear();
 }
+
 
 std::shared_ptr<const CUDAPackedForest> CUDAPredictor::GetForest(const Boosting* boosting, int device_id,
                                                                  bool double_thresholds) {
@@ -362,14 +552,126 @@ std::shared_ptr<const CUDAPackedForest> CUDAPredictor::GetForest(const Boosting*
 
 namespace {
 
-// the kernel for a launch: row-parallel when the rows alone fill the device, else tree-parallel tiles; FALCATA_DEBUG
-// predict_* tokens override (benchmarks; every kernel gives the same result)
+/*! \brief what the planners read of a device, queried once per device */
+struct DeviceLimits {
+  int sms = 1;
+  size_t max_shared = size_t(48) << 10;   // dynamic shared memory a block may opt in to
+};
+
+const DeviceLimits& LimitsOf(int device) {
+  static std::mutex mutex;
+  static std::map<int, DeviceLimits> cache;
+  std::lock_guard<std::mutex> lock(mutex);
+  auto it = cache.find(device);
+  if (it == cache.end()) {
+    DeviceLimits limits;
+    int shared = 0;
+    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&limits.sms, cudaDevAttrMultiProcessorCount, device));
+    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&shared, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
+    limits.max_shared = static_cast<size_t>(shared);
+    it = cache.emplace(device, limits).first;
+  }
+  return it->second;
+}
+
+int CeilPow2(int64_t n) {
+  int p = 1;
+  while (p < n && p < (1 << 30)) {
+    p <<= 1;
+  }
+  return p;
+}
+
+int FloorLog2(int64_t n) {
+  int l = 0;
+  while ((int64_t(2) << l) <= n) {
+    ++l;
+  }
+  return l;
+}
+
+/*!
+ * \brief The default mode's shape for one launch. The grid aims at `target` blocks (four per multiprocessor): row
+ *        tiles first; when the rows alone do not fill it, each row tile's groups are cut into aligned spans. A wave
+ *        holds as many groups as give about 256 tasks. Rows are staged in shared memory (up to 48 KiB) when the walks
+ *        of a block read more features than staging copies, with fewer rows per block for wide rows. FALCATA_DEBUG
+ *        predict_* tokens override (benchmarks; the pairwise sum is one fixed order, so no shape changes a result).
+ */
+PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int num_tree_per_iteration,
+                                int num_iteration, size_t elem, int max_depth) {
+  const FalcataDebugOptions& debug = FalcataDebug();
+  const DeviceLimits& limits = LimitsOf(device);
+  const int K = num_tree_per_iteration;
+  const int num_groups = (num_iteration + kPairwiseGroupIterations - 1) / kPairwiseGroupIterations;
+  const int target = debug.predict_target_blocks > 0 ? debug.predict_target_blocks : 4 * limits.sms;
+  auto build = [&](int tile_rows, bool stage) {
+    PairwisePlan plan;
+    plan.out_chunk = std::min(K, 32);
+    plan.tile_rows = std::max(1, static_cast<int>(std::min<int64_t>(tile_rows, std::max<int64_t>(num_row, 1))));
+    while (plan.tile_rows > 1 && plan.tile_rows * plan.out_chunk > 256) {
+      plan.tile_rows /= 2;
+    }
+    const int pairs = plan.tile_rows * plan.out_chunk;
+    const int group_cap = CeilPow2(std::max(num_groups, 1));
+    plan.wave_groups = 1;
+    while (plan.wave_groups * 2 * pairs <= 256 && plan.wave_groups * 2 <= group_cap) {
+      plan.wave_groups *= 2;
+    }
+    if (debug.predict_wave_groups > 0) {
+      plan.wave_groups = 1 << FloorLog2(std::min(debug.predict_wave_groups, 1024));
+      while (plan.wave_groups > 1 && plan.wave_groups * pairs > 1024) {
+        plan.wave_groups /= 2;
+      }
+    }
+    plan.seg = std::min(plan.wave_groups, 32);
+    plan.block_threads = std::min(1024, std::max(32, (pairs * plan.wave_groups + 31) / 32 * 32));
+    const int64_t row_tiles = (std::max<int64_t>(num_row, 1) + plan.tile_rows - 1) / plan.tile_rows;
+    const int64_t blocks = row_tiles * ((K + plan.out_chunk - 1) / plan.out_chunk);
+    int64_t spans = blocks >= target ? 1 : (target + blocks - 1) / blocks;
+    if (debug.predict_spans > 0) {
+      spans = debug.predict_spans;
+    }
+    const int64_t per_span = (std::max(num_groups, 1) + spans - 1) / spans;
+    plan.span_groups = std::max(plan.wave_groups, CeilPow2(per_span));
+    plan.num_spans = std::max(1, (num_groups + plan.span_groups - 1) / plan.span_groups);
+    plan.levels = FloorLog2(plan.span_groups / plan.seg) + 1;
+    plan.ilp = debug.predict_ilp > 0 ? debug.predict_ilp : 8;
+    plan.stage_rows = stage;
+    plan.compact = debug.predict_compact != 0;
+    return plan;
+  };
+  const int tile_rows = debug.predict_tile_rows > 0 ? std::min(debug.predict_tile_rows, 256) : 8;
+  PairwisePlan plan = build(tile_rows, true);
+  const size_t stage_budget = std::min<size_t>(limits.max_shared, size_t(48) << 10);
+  while (plan.tile_rows > 1 && PairwiseSharedBytes(plan, num_col, elem) > stage_budget) {
+    plan = build(plan.tile_rows / 2, true);
+  }
+  // staging copies every column of a row once; it pays when the block's walks read more features than that
+  const int64_t span_trees = std::min<int64_t>(static_cast<int64_t>(plan.span_groups) * kPairwiseGroupIterations,
+                                               num_iteration) * plan.out_chunk;
+  const bool worth = span_trees * std::max(1, std::min(max_depth, 12)) >= num_col;
+  bool stage = worth && PairwiseSharedBytes(plan, num_col, elem) <= stage_budget;
+  if (debug.predict_stage >= 0) {
+    stage = debug.predict_stage == 1;
+  }
+  if (!stage) {
+    plan = build(tile_rows, false);
+  }
+  if (PairwiseSharedBytes(plan, num_col, elem) > limits.max_shared) {
+    Log::Fatal("CUDA predictor: the pairwise plan needs %zu bytes of shared memory, the device grants %zu",
+               PairwiseSharedBytes(plan, num_col, elem), limits.max_shared);
+  }
+  return plan;
+}
+
+// the deterministic mode's kernel for a launch: row-parallel when the rows alone fill the device, else tree-parallel
+// tiles; FALCATA_DEBUG predict_* tokens override (benchmarks; every kernel gives the same result)
 PredictPlan ChoosePlan(int64_t num_row, int num_col, int num_tree_per_iteration, size_t elem, int num_tree) {
   const int K = num_tree_per_iteration;
   PredictPlan plan;
-  int device = 0, sms = 1;
+  int device = 0;
   CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
-  CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device));
+  const int sms = LimitsOf(device).sms;
   const FalcataDebugOptions& debug = FalcataDebug();
   const std::string& forced = debug.predict_kernel;
   if (forced == "row") {
@@ -399,7 +701,7 @@ PredictPlan ChoosePlan(int64_t num_row, int num_col, int num_tree_per_iteration,
   if (debug.predict_tile_trees > 0) {
     plan.tile_trees = std::min(debug.predict_tile_trees, 4096);
   }
-  const size_t budget = std::min<size_t>(MaxSharedBytesPerBlock(), size_t(96) << 10);
+  const size_t budget = std::min<size_t>(LimitsOf(device).max_shared, size_t(96) << 10);
   plan.stage_rows = true;
   plan.stage_rows = TileWsSharedBytes(plan, num_col, elem, K) <= budget;
   while (TileWsSharedBytes(plan, num_col, elem, K) > budget && plan.tile_trees > 16) {
@@ -418,8 +720,13 @@ PredictPlan ChoosePlan(int64_t num_row, int num_col, int num_tree_per_iteration,
 /*! \brief what a launch needs beyond the rows: the contribution kernel's path buffers and the model's width */
 struct RunContext {
   int num_feature = 0;
+  int device = 0;
+  int max_depth = 0;
+  bool deterministic = false;
   void* contrib_scratch = nullptr;
   int64_t contrib_rows = 0;   // rows the scratch holds path buffers for
+  CUDAPredictor::Scratch* scratch = nullptr;   // the default mode's span sums
+  int lane = 0;                                 // the stream lane of a chunked host input
 };
 
 template <typename T>
@@ -440,11 +747,24 @@ void RunRows(const CUDAPackedForest& forest, const Boosting::TreeRangeView& view
                                        ctx.num_feature, reinterpret_cast<double*>(out) + r0 * width,
                                        ctx.contrib_scratch, stream);
     }
-  } else {
+  } else if (ctx.deterministic || view.vector_leaf) {
+    // vector leaves always add in tree order (one thread per row)
     const PredictPlan plan = ChoosePlan(rows.num_row, rows.num_col, view.num_tree_per_iteration, sizeof(T),
                                         num_iteration * view.num_tree_per_iteration);
     LaunchPredictRawKernel<T, T>(fv, rows, tree_begin, num_iteration, view.num_tree_per_iteration, view.num_output,
                                  view.vector_leaf, plan, reinterpret_cast<double*>(out), stream);
+  } else {
+    const PairwisePlan plan = ChoosePairwisePlan(ctx.device, rows.num_row, rows.num_col,
+                                                 view.num_tree_per_iteration, num_iteration, sizeof(T),
+                                                 ctx.max_depth);
+    double* partials = nullptr;
+    if (plan.num_spans > 1) {
+      partials = reinterpret_cast<double*>(ctx.scratch->Get(static_cast<size_t>(plan.num_spans) * rows.num_row *
+                                                            view.num_tree_per_iteration * sizeof(double),
+                                                            ctx.lane, stream));
+    }
+    LaunchPredictPairwiseKernel<T, T>(fv, rows, tree_begin, num_iteration, view.num_tree_per_iteration, plan,
+                                      reinterpret_cast<double*>(out), partials, stream);
   }
 }
 
@@ -480,7 +800,7 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   }
   DeviceGuard guard(device_id);
   CUDASUCCESS_OR_FATAL(cudaGetDevice(&device_id));
-  const Boosting::TreeRangeView view = boosting->TreesInRange(range);
+  const Boosting::TreeRangeView view = boosting->RangeShape(range);
   const int tree_begin = range.start_iteration * view.num_tree_per_iteration;
   const int num_output = req.predict_type == C_API_PREDICT_LEAF_INDEX
                              ? range.num_iteration * view.num_tree_per_iteration
@@ -495,15 +815,22 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
 
   std::shared_ptr<const CUDAPackedForest> forest = GetForest(boosting, device_id, is_double);
   stats->forest_bytes = forest->Bytes();
-  if (forest->num_trees() < tree_begin + static_cast<int>(view.trees.size())) {
+  const int range_trees = range.num_iteration * view.num_tree_per_iteration;
+  if (forest->num_trees() < tree_begin + range_trees) {
     Log::Fatal("CUDA predictor: the packed model has %d trees, the prediction needs %d", forest->num_trees(),
-               tree_begin + static_cast<int>(view.trees.size()));
+               tree_begin + range_trees);
   }
   if (req.num_row == 0) {
     return;
   }
   RunContext ctx;
   ctx.num_feature = view.num_feature;
+  ctx.device = device_id;
+  ctx.max_depth = forest->max_depth();
+  ctx.deterministic = req.deterministic;
+  // released (with the scratch's lock) when the call returns, after its streams are synchronized
+  Scratch scratch(this, device_id);
+  ctx.scratch = &scratch;
   CUDAVector<char> contrib_scratch;
   if (contrib) {
     // path buffers for the (row, output) threads of one launch, at most a quarter of the free memory (and 1 GiB)
@@ -570,6 +897,7 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   }
   // the second lane's contribution kernels run beside the first's: their own path buffers
   RunContext lane_ctx[2] = {ctx, ctx};
+  lane_ctx[1].lane = 1;
   CUDAVector<char> contrib_scratch_2;
   if (contrib && lanes == 2) {
     contrib_scratch_2.Resize(contrib_scratch.Size());

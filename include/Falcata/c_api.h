@@ -1518,9 +1518,15 @@ FALCATA_C_EXPORT int FLC_BoosterPredictForCSC(BoosterHandle handle,
 /*!
  * \brief Make prediction for a dense matrix with the native CUDA predictor.
  * \note
- * Requires a CUDA build of Falcata. The result equals ``FLC_BoosterPredictForMat``'s on the same rows bit for bit
- * (raw scores, leaf indices and feature contributions; normal predictions are converted from the raw scores by the
- * same host code).
+ * Requires a CUDA build of Falcata. Every row is routed to the same leaves as by ``FLC_BoosterPredictForMat``; leaf
+ * indices and feature contributions equal its result bit for bit. Raw scores (and the normal predictions converted from
+ * them by the same host code) depend on ``deterministic``:
+ *   - 0 (the default mode): each output adds its leaf values in a fixed pairwise order (groups of 8 iterations in tree
+ *     order, then a binary tree over the groups), which lets the device spread one row's trees over many threads. The
+ *     order depends only on the iteration range, so a row gets the same bits in any batch, call and GPU; it differs
+ *     from the CPU predictor's in-order sum by rounding only (see docs/performance.md for measured differences);
+ *   - 1: each output adds its leaf values in tree order, bit-identical to ``FLC_BoosterPredictForMat``.
+ * Vector-leaf models always add in tree order.
  * Host inputs (``data_on_device`` 0) are copied to the device in row chunks; device inputs are read in place.
  * You should pre-allocate ``out_result``, in the same memory as ``data`` (host or device):
  *   - for normal and raw score, ``num_class * nrow`` doubles, row-major;
@@ -1544,6 +1550,8 @@ FALCATA_C_EXPORT int FLC_BoosterPredictForCSC(BoosterHandle handle,
  * \param start_iteration Start index of the iteration to predict
  * \param num_iteration Number of iteration for prediction, <= 0 means no limit
  * \param parameter Other parameters for prediction (``predict_disable_shape_check``, ``gpu_device_id``)
+ * \param deterministic 1 to add each output's leaf values in tree order (bit-identical to the CPU predictor), 0 for the
+ *        default pairwise order (see the note)
  * \param[out] out_len Length of output result
  * \param[out] out_result Pointer to array with predictions
  * \param[out] out_stats Four values: device bytes of the cached packed model, device bytes of this call's buffers,
@@ -1563,6 +1571,7 @@ FALCATA_C_EXPORT int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
                                                     int start_iteration,
                                                     int num_iteration,
                                                     const char* parameter,
+                                                    int deterministic,
                                                     int64_t* out_len,
                                                     void* out_result,
                                                     int64_t* out_stats);

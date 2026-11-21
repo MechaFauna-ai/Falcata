@@ -20,18 +20,22 @@
 namespace Falcata {
 
 /*!
- * \brief The native CUDA predictor: evaluates a model's trees on dense rows on the device, with the same result as the
- *        CPU predictor (Predictor / GBDT::PredictRawInRange).
+ * \brief The native CUDA predictor: evaluates a model's trees on dense rows on the device.
  *
- * Exactness. The raw score of each output is the sum, in tree order and in double precision, of the leaf values the
- * row reaches, exactly as GBDT::PredictRawInRange adds them; the device adds with __dadd_rn (no contraction), so the
- * raw scores are bit-identical to the CPU predictor's. Routing is exact too: a float64 input is compared with the
- * double thresholds; a float32 input x is compared with the largest float not above the threshold t, which decides
- * (double)x <= t exactly for every float x (floats are a subset of doubles). Values with |x| <= kZeroThreshold are
- * zero, NaN and zero go where Tree::NumericalDecision sends them, categorical splits follow
- * Tree::CategoricalDecision. Linear leaves add const + coeff_i * x_i with separate rounding of each product and sum,
- * as the CPU build (-ffp-contract=off) does. The normal (transformed) prediction is the raw score passed through
- * Boosting::ConvertRawToPrediction on the host, the same code PredictInRange runs, so it is bit-identical as well.
+ * Routing is exact in both summation modes: a float64 input is compared with the double thresholds; a float32 input x
+ * is compared with the largest float not above the threshold t, which decides (double)x <= t exactly for every float x
+ * (floats are a subset of doubles). Values with |x| <= kZeroThreshold are zero, NaN and zero go where
+ * Tree::NumericalDecision sends them, categorical splits follow Tree::CategoricalDecision. Linear leaves add
+ * const + coeff_i * x_i with separate rounding of each product and sum, as the CPU build (-ffp-contract=off) does. So
+ * every row reaches the CPU predictor's leaves, and the two modes differ only in how the leaf values are added:
+ *  - deterministic (opt-in, CUDAPredictRequest::deterministic): each output's raw score is the sum in tree order and
+ *    in double precision, exactly as GBDT::PredictRawInRange adds it (__dadd_rn, no contraction), so the raw scores
+ *    are bit-identical to the CPU predictor's;
+ *  - default: the canonical pairwise sum (PairwisePlan), which lets the trees of one row be spread over many
+ *    threads. It is a fixed order that depends only on the iteration range, never on the batch, the plan or the
+ *    device, so a row gets the same result in any batch, run and GPU; it differs from the in-order sum by rounding.
+ * The normal (transformed) prediction is the raw score passed through Boosting::ConvertRawToPrediction on the host, the
+ * same code PredictInRange runs.
  */
 
 /*! \brief flag bits of PackedNode::feature_flags; the feature index uses the bits below kNodeFeatureMask */
@@ -52,6 +56,36 @@ struct PackedNode {
   int32_t right;
 };
 
+/*!
+ * \brief The compact layout the default mode walks (when the model fits it): each tree is a run of slots in depth-first
+ *        order, a node's left child in the next slot and its right child `offset` slots on; a leaf's slot holds its
+ *        value (a double), so a walk ends with the load that reaches the leaf. A slot is 8 bytes for float thresholds
+ *        (CompactSlot<float>: threshold or categorical range index, meta) and 16 for double thresholds. meta holds the
+ *        feature in its low `feature_bits` bits, the right child's offset up to bit 26, then the flags below. Models
+ *        with linear leaves, vector leaves, or a feature index or subtree that does not fit stay on PackedNode only;
+ *        the layout changes no result.
+ */
+constexpr uint32_t kSlotLeftLeaf = 1u << 26;
+constexpr uint32_t kSlotRightLeaf = 1u << 27;
+constexpr int kSlotMissingShift = 28;           // two bits, as kNodeMissingShift
+constexpr uint32_t kSlotDefaultLeft = 1u << 30;
+constexpr uint32_t kSlotCategorical = 1u << 31;
+constexpr uint32_t kSlotLowMask = (1u << 26) - 1;   // feature and offset
+
+template <typename T>
+struct CompactSlot;
+template <>
+struct __align__(8) CompactSlot<float> {
+  uint32_t lo;     // threshold bits / categorical range index, or the leaf value's low word
+  uint32_t meta;   // or the leaf value's high word
+};
+template <>
+struct __align__(16) CompactSlot<double> {
+  double value;    // threshold, categorical range index (low word), or leaf value
+  uint32_t meta;
+  uint32_t pad;
+};
+
 /*! \brief device pointers of one packed forest (every tree of the model) */
 template <typename T>
 struct DeviceForestView {
@@ -69,6 +103,9 @@ struct DeviceForestView {
   const int32_t* node_count = nullptr;        // [total_nodes]: data count of each internal node (TreeSHAP)
   const int32_t* leaf_count = nullptr;        // [total_leaves]: data count of each leaf (TreeSHAP)
   const double* tree_expected = nullptr;      // [num_trees]: Tree::ExpectedValue (TreeSHAP)
+  const CompactSlot<T>* slots = nullptr;      // the compact layout, or nullptr when the model does not fit it
+  const int32_t* slot_start = nullptr;        // [num_trees]: the tree's first slot; ~slot for a single-leaf tree
+  int feature_bits = 0;
   int leaf_dim = 1;
   int max_depth = 0;                          // edges on the longest root-to-leaf path
   bool has_categorical = false;
@@ -94,7 +131,7 @@ struct CUDAPredictStats {
 };
 
 /*!
- * \brief How raw scores are computed; both kernels add each output's leaf values in tree order, so both are exact.
+ * \brief How the deterministic mode computes raw scores; both kernels add each output's leaf values in tree order.
  *  - kTileWs (the plan's choice): a block stages `tile_rows` rows in shared memory; warp 0 keeps their running sums
  *    (lane r adds row r's leaf values in tree order) while the other warps walk the next tile of `tile_trees` trees
  *    for every (row, tree) pair, `ilp` walks in flight per thread; the tiles' leaf values are double-buffered.
@@ -113,11 +150,52 @@ struct PredictPlan {
   int block_threads = 256;  // warp 0 sums, the others walk trees
 };
 
+/*! \brief iterations whose leaf values the default mode adds in tree order before the pairwise tree */
+constexpr int kPairwiseGroupIterations = 8;
+
+/*!
+ * \brief The default (fast) mode. The canonical pairwise sum of one output of one row: the iterations of the range
+ *        are cut into groups of kPairwiseGroupIterations (the last one may be shorter); each group's leaf values are
+ *        added in tree order starting from 0.0; the group sums are then added by the complete binary tree over the
+ *        group index (groups (0,1), (2,3), ..., then pairs of those, and so on), a missing partner counting as 0.0.
+ *        Adding 0.0 changes nothing (no partial sum is ever -0.0, since every sum starts from +0.0), so any
+ *        decomposition into aligned subtrees gives the same bits. The kernel computes such subtrees:
+ *  - a block takes `tile_rows` rows and `out_chunk` outputs, and an aligned span of `span_groups` groups (all of them
+ *    when `num_spans` is 1; otherwise each span's subtree goes to a scratch array and a second kernel adds the spans
+ *    by the same tree);
+ *  - it walks the span in waves of `wave_groups` groups: one task per (row, output, group) walks the group's trees
+ *    (`ilp` at a time) and adds them in order; aligned segments of `seg` group sums are added by warp shuffles; the
+ *    segment sums enter a binary-counter stack (`levels` deep) per (row, output) that keeps the aligned subtree sums.
+ */
+struct PairwisePlan {
+  int tile_rows = 8;
+  int out_chunk = 1;
+  int wave_groups = 32;
+  int seg = 32;
+  int span_groups = 32;
+  int num_spans = 1;
+  int levels = 1;
+  int ilp = 8;
+  bool stage_rows = true;
+  bool compact = true;      // walk the compact layout when the model has it
+  int block_threads = 256;
+};
+
 /*! \brief launchers (cuda_predictor.cu); out is row-major [num_row][num_output] doubles */
 template <typename TIn, typename TThr>
 void LaunchPredictRawKernel(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
                             int num_iteration, int num_tree_per_iteration, int num_output, bool vector_leaf,
                             const PredictPlan& plan, double* out, cudaStream_t stream);
+
+/*!
+ * \brief the default mode's launcher (scalar leaves): out is row-major [num_row][num_tree_per_iteration] doubles;
+ *        `partials` holds plan.num_spans * num_row * num_tree_per_iteration doubles when plan.num_spans > 1
+ */
+template <typename TIn, typename TThr>
+void LaunchPredictPairwiseKernel(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows, int tree_begin,
+                                 int num_iteration, int num_tree_per_iteration, const PairwisePlan& plan, double* out,
+                                 double* partials, cudaStream_t stream);
+size_t PairwiseSharedBytes(const PairwisePlan& plan, int num_col, size_t input_elem);
 
 /*! \brief out is row-major [num_row][num_tree] int32 leaf indices of the trees [tree_begin, tree_begin + num_tree) */
 template <typename TIn, typename TThr>
@@ -153,6 +231,7 @@ struct CUDAPredictRequest {
   int predict_type = 0;         // C_API_PREDICT_NORMAL, _RAW_SCORE or _LEAF_INDEX
   int device_id = -1;           // host inputs: the device to use (-1: the current device)
   cudaStream_t stream = nullptr;  // device inputs: the stream the input was written on
+  bool deterministic = false;   // raw scores: sum in tree order (bit-identical to the CPU), else the pairwise sum
   void* out = nullptr;          // doubles [num_row][num_output], or int32 [num_row][num_tree] for leaf indices
 };
 
@@ -167,11 +246,15 @@ class CUDAPredictor {
   void Predict(const Boosting* boosting, const Boosting::PredictRange& range, const CUDAPredictRequest& request,
                CUDAPredictStats* stats);
   void Invalidate();
+  /*! \brief a call's device scratch (the default mode's span sums): kept per device across calls, one call at a time */
+  class Scratch;
 
  private:
   std::shared_ptr<const CUDAPackedForest> GetForest(const Boosting* boosting, int device_id, bool double_thresholds);
   std::mutex mutex_;
   std::map<std::pair<int, bool>, std::shared_ptr<const CUDAPackedForest>> forests_;
+  std::mutex scratch_mutex_;
+  std::map<std::pair<int, int>, std::unique_ptr<CUDAVector<char>>> scratch_;   // (device, stream lane)
 };
 
 }  // namespace Falcata
