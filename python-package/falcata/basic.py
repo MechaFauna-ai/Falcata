@@ -3998,13 +3998,16 @@ def _cuda_predictor_usable() -> bool:
     return _CUDA_PREDICTOR_USABLE
 
 
-def _cuda_array_parts(data: Any) -> Tuple[Any, int, int, int, int, int, int]:
-    """Read a 2-D ``__cuda_array_interface__`` array: (array, pointer, dtype code, rows, cols, row stride, col stride).
+_EMPTY_C_STR = ctypes.c_char_p(b"")
 
+
+def _cuda_array_parts(data: Any, cai: Dict[str, Any]) -> Tuple[Any, int, int, int, int, int, int, Dict[str, Any]]:
+    """Read a 2-D ``__cuda_array_interface__`` array.
+
+    Returns ``(array, pointer, dtype code, rows, cols, row stride, col stride, cai)``.
     The array is converted to float32 first when it is neither float32 nor float64 (CuPy and PyTorch only; the CPU
     predictor converts such inputs to float32 too). Strides are in elements.
     """
-    cai = data.__cuda_array_interface__
     if len(cai["shape"]) != 2:
         raise ValueError(f"A device array for prediction must be 2-dimensional, got shape {tuple(cai['shape'])}")
     typestr = cai["typestr"]
@@ -4020,7 +4023,7 @@ def _cuda_array_parts(data: Any) -> Tuple[Any, int, int, int, int, int, int]:
         cai = data.__cuda_array_interface__
         typestr = cai["typestr"]
     itemsize = 4 if typestr[1:] == "f4" else 8
-    nrow, ncol = (int(x) for x in cai["shape"])
+    nrow, ncol = map(int, cai["shape"])
     strides = cai.get("strides")
     if strides is None:
         row_stride, col_stride = ncol, 1
@@ -4029,12 +4032,12 @@ def _cuda_array_parts(data: Any) -> Tuple[Any, int, int, int, int, int, int]:
             raise ValueError(f"Device array strides {tuple(strides)} are not multiples of the item size {itemsize}")
         row_stride, col_stride = strides[0] // itemsize, strides[1] // itemsize
     dtype_code = _C_API_DTYPE_FLOAT32 if itemsize == 4 else _C_API_DTYPE_FLOAT64
-    return data, int(cai["data"][0]), dtype_code, nrow, ncol, row_stride, col_stride
+    return data, int(cai["data"][0]), dtype_code, nrow, ncol, row_stride, col_stride, cai
 
 
-def _cuda_array_stream(data: Any) -> int:
+def _cuda_array_stream(data: Any, cai: Dict[str, Any]) -> int:
     """Return the stream a device array was written on: the interface's own, else the producer library's current one."""
-    stream = data.__cuda_array_interface__.get("stream")
+    stream = cai.get("stream")
     if stream is not None:
         return int(stream)
     module = type(data).__module__
@@ -4049,7 +4052,7 @@ def _cuda_array_stream(data: Any) -> int:
     return 0  # the legacy default stream, which waits for every blocking stream
 
 
-def _empty_like_device(data: Any, shape: Tuple[int, ...], dtype: Any) -> Any:
+def _empty_like_device(data: Any, shape: Tuple[int, ...], dtype: Any, data_ptr: Optional[int] = None) -> Any:
     """Allocate an uninitialized device array of the input's library (CuPy for other producers) on its device."""
     if type(data).__module__.startswith("torch"):
         import torch  # noqa: PLC0415
@@ -4057,10 +4060,14 @@ def _empty_like_device(data: Any, shape: Tuple[int, ...], dtype: Any) -> Any:
         return torch.empty(shape, dtype=torch.float64 if dtype == np.float64 else torch.int32, device=data.device)
     import cupy  # noqa: PLC0415
 
-    device = data.device if isinstance(data, cupy.ndarray) else None  # a CuPy array knows its device
-    if device is None:
-        device = cupy.cuda.Device(_cuda_pointer_device(int(data.__cuda_array_interface__["data"][0])))
-    with device:
+    if isinstance(data, cupy.ndarray):
+        device = data.device
+        if device.id == cupy.cuda.runtime.getDevice():
+            return cupy.empty(shape, dtype=dtype)
+        with device:
+            return cupy.empty(shape, dtype=dtype)
+    ptr = data_ptr if data_ptr is not None else int(data.__cuda_array_interface__["data"][0])
+    with cupy.cuda.Device(_cuda_pointer_device(ptr)):
         return cupy.empty(shape, dtype=dtype)
 
 
@@ -5668,14 +5675,13 @@ class Booster:
         devices = {str(params[alias]).lower() for alias in _ConfigAliases.get("device_type") if alias in params}
         return bool(devices & {"cuda", "gpu"})
 
-    def _predict_device(self, data: Any, device: Optional[str], kwargs: Dict[str, Any]) -> str:
+    def _predict_device(self, data: Any, device: Optional[str], kwargs: Dict[str, Any], on_device: bool) -> str:
         """Pick the predictor ("cuda" or "cpu") from the documented rules of ``predict(device=...)``.
 
         The choice never depends on a failure: once the CUDA predictor is chosen, its errors are raised.
         """
         if device is not None and device not in ("cpu", "cuda", "gpu"):
             raise ValueError(f"device must be None, 'cpu' or 'cuda', got {device!r}")
-        on_device = hasattr(data, "__cuda_array_interface__")
         if device == "cpu":
             if on_device:
                 raise ValueError("device='cpu' cannot read a device array: copy it to the host first")
@@ -5702,14 +5708,15 @@ class Booster:
         num_iteration: int,
         predict_type: int,
         kwargs: Dict[str, Any],
+        cai: Optional[Dict[str, Any]],
         deterministic: bool = False,
     ) -> Any:
         """Predict a dense 2-D numpy or device array with the native CUDA predictor; the result is where the input is."""
-        on_device = hasattr(data, "__cuda_array_interface__")
+        on_device = cai is not None
         stream = 0
-        if on_device:
-            data, ptr, dtype_code, nrow, ncol, row_stride, col_stride = _cuda_array_parts(data)
-            stream = _cuda_array_stream(data)
+        if cai is not None:
+            data, ptr, dtype_code, nrow, ncol, row_stride, col_stride, cai = _cuda_array_parts(data, cai)
+            stream = _cuda_array_stream(data, cai)
         else:
             if not isinstance(data, np.ndarray):
                 raise TypeError(
@@ -5729,10 +5736,10 @@ class Booster:
                 row_stride, col_stride = 1, nrow
             ptr = data.ctypes.data
             dtype_code = _C_API_DTYPE_FLOAT32 if data.dtype == np.float32 else _C_API_DTYPE_FLOAT64
-        num_class = self.num_model_per_iteration()
         if predict_type == _C_API_PREDICT_LEAF_INDEX:
             # resolve the range here and pass it explicitly: the C++ side never predicts more iterations than an
             # explicit num_iteration, so the buffer stays large enough if another thread trains meanwhile
+            num_class = self.num_model_per_iteration()
             total = self.current_iteration()
             remaining = total - min(max(start_iteration, 0), total)
             num_iteration = min(num_iteration, remaining) if num_iteration > 0 else remaining
@@ -5740,7 +5747,7 @@ class Booster:
             if num_iteration == 0:
                 out_shape: Tuple[int, ...] = (nrow, 0)
                 if on_device:
-                    return _empty_like_device(data, out_shape, np.int32)
+                    return _empty_like_device(data, out_shape, np.int32, ptr)
                 return np.empty(out_shape, dtype=np.int32)
             out_dtype: Any = np.int32
         else:
@@ -5758,10 +5765,19 @@ class Booster:
             )
             width = per_row.value
         out_shape = (nrow, width) if (width != 1 or predict_type == _C_API_PREDICT_LEAF_INDEX) else (nrow,)
-        out: Any = _empty_like_device(data, out_shape, out_dtype) if on_device else np.empty(out_shape, dtype=out_dtype)
-        out_ptr = int(out.__cuda_array_interface__["data"][0]) if on_device else out.ctypes.data
+        if on_device:
+            out: Any = _empty_like_device(data, out_shape, out_dtype, ptr)
+            out_ptr = (
+                out.data.ptr
+                if type(out).__module__.startswith("cupy")
+                else int(out.__cuda_array_interface__["data"][0])
+            )
+        else:
+            out = np.empty(out_shape, dtype=out_dtype)
+            out_ptr = out.ctypes.data
         out_len = ctypes.c_int64(0)
         stats = (ctypes.c_int64 * 4)()
+        param_cstr = _c_str(_param_dict_to_str(kwargs)) if kwargs else _EMPTY_C_STR
         _safe_call(
             _LIB.FLC_BoosterPredictForMatCUDA(
                 self._handle,
@@ -5776,7 +5792,7 @@ class Booster:
                 ctypes.c_int(predict_type),
                 ctypes.c_int(start_iteration),
                 ctypes.c_int(num_iteration),
-                _c_str(_param_dict_to_str(kwargs)),
+                param_cstr,
                 ctypes.c_int(1 if deterministic else 0),
                 ctypes.byref(out_len),
                 ctypes.c_void_p(out_ptr),
@@ -5903,7 +5919,8 @@ class Booster:
                 num_iteration=num_iteration,
                 raw_score=raw_score,
             )
-        if self._predict_device(data, device, kwargs) == "cuda":
+        cai = getattr(data, "__cuda_array_interface__", None)
+        if self._predict_device(data, device, kwargs, cai is not None) == "cuda":
             predict_type = _C_API_PREDICT_NORMAL
             if raw_score:
                 predict_type = _C_API_PREDICT_RAW_SCORE
@@ -5917,6 +5934,7 @@ class Booster:
                 num_iteration=num_iteration,
                 predict_type=predict_type,
                 kwargs=kwargs,
+                cai=cai,
                 deterministic=deterministic,
             )
         predictor = _InnerPredictor.from_booster(
@@ -6543,19 +6561,22 @@ def predict_many(
             f"predict_many: {n} boosters, {len(inputs)} inputs, {len(starts)} start_iteration and "
             f"{len(nums)} num_iteration values"
         )
-    on_device = hasattr(inputs[0], "__cuda_array_interface__")
+    first_cai = getattr(inputs[0], "__cuda_array_interface__", None)
+    on_device = first_cai is not None
     prepared: Dict[int, Tuple[Any, int, int, int, int, int, int]] = {}
     parts = []
     stream = 0
     for x in inputs:
-        if hasattr(x, "__cuda_array_interface__") != on_device:
-            raise TypeError("predict_many: the inputs must be all numpy arrays or all device arrays")
         key = id(x)
         if key not in prepared:
-            if on_device:
-                prepared[key] = _cuda_array_parts(x)
+            cai = first_cai if x is inputs[0] else getattr(x, "__cuda_array_interface__", None)
+            if (cai is not None) != on_device:
+                raise TypeError("predict_many: the inputs must be all numpy arrays or all device arrays")
+            if cai is not None:
+                device_parts = _cuda_array_parts(x, cai)
+                prepared[key] = device_parts[:7]
                 if not stream:
-                    stream = _cuda_array_stream(prepared[key][0])
+                    stream = _cuda_array_stream(device_parts[0], device_parts[7])
             else:
                 if not isinstance(x, np.ndarray) or x.ndim != 2:
                     raise TypeError("predict_many takes 2-D numpy arrays or 2-D device arrays")
@@ -6592,7 +6613,9 @@ def predict_many(
         )
         width = per_row.value
         shape = (p[3], width) if width != 1 else (p[3],)
-        outs.append(_empty_like_device(p[0], shape, np.float64) if on_device else np.empty(shape, dtype=np.float64))
+        outs.append(
+            _empty_like_device(p[0], shape, np.float64, p[1]) if on_device else np.empty(shape, dtype=np.float64)
+        )
         widths.append(width)
     c_handles = (ctypes.c_void_p * n)(*[b._handle.value for b in boosters])
     c_data = (ctypes.c_void_p * n)(*[p[1] for p in parts])

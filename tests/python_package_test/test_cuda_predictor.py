@@ -605,9 +605,15 @@ print("OK")
         "predict_compact=0,predict_stage=0,predict_spans=4",
         "predict_group_lanes=1",
         "predict_group_lanes=2,predict_compact=0",
+        "predict_group_lanes=2,predict_stage=1,predict_tile_rows=2,predict_out_chunk=3",
         "predict_group_lanes=4,predict_stage=0,predict_spans=3",
+        "predict_group_lanes=4,predict_stage=1,predict_tile_rows=1",
         "predict_group_lanes=8,predict_tile_rows=3",
         "predict_wave_groups=64,predict_threads=64",
+        "predict_group_lanes=1,predict_task_groups=2",
+        "predict_group_lanes=1,predict_task_groups=8,predict_spans=3",
+        "predict_group_lanes=1,predict_task_groups=4,predict_out_chunk=1,predict_compact=0",
+        "predict_out_chunk=3",
     ],
 )
 def test_every_kernel_is_exact(debug, tmp_path):

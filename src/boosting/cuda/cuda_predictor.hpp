@@ -108,10 +108,12 @@ struct DeviceForestView {
   const CompactSlot<T>* slots = nullptr;      // the compact layout, or nullptr when the model does not fit it
   const int32_t* slot_start = nullptr;        // [num_trees]: the tree's first slot; ~slot for a single-leaf tree
   int feature_bits = 0;
+  uint32_t feature_mask = 0;                  // (1u << feature_bits) - 1u
   int leaf_dim = 1;
   int max_depth = 0;                          // edges on the longest root-to-leaf path
   bool has_categorical = false;
   bool has_linear = false;
+  bool fast_nan_missing = false;              // every numerical split uses MissingType::NaN with non-NaN threshold
 };
 
 /*! \brief one dense input matrix on the device: element (r, c) at data[r * row_stride + c * col_stride] */
@@ -165,9 +167,11 @@ constexpr int kPairwiseGroupIterations = 8;
  *  - a block takes `tile_rows` rows and `out_chunk` outputs, and an aligned span of `span_groups` groups (all of them
  *    when `num_spans` is 1; otherwise each span's subtree goes to a scratch array and a second kernel adds the spans
  *    by the same tree);
- *  - it walks the span in waves of `wave_groups` groups: one task per (row, output, group) walks the group's trees
- *    (`ilp` at a time) and adds them in order; aligned segments of `seg` group sums are added by warp shuffles; the
- *    segment sums enter a binary-counter stack (`levels` deep) per (row, output) that keeps the aligned subtree sums.
+ *  - it walks the span in waves of `wave_groups` units of `task_groups` groups: one task per (row, output, unit) walks
+ *    each group's trees (`ilp` at a time), adds them in order, and adds the unit's group sums by the aligned tree in
+ *    registers (with `group_lanes` > 1, small batches, a unit is one group whose trees are spread over that many
+ *    lanes); aligned segments of `seg` unit sums are added by warp shuffles; the segment sums enter a binary-counter
+ *    stack (`levels` deep) per (row, output) that keeps the aligned subtree sums.
  */
 struct PairwisePlan {
   int tile_rows = 8;
@@ -182,6 +186,7 @@ struct PairwisePlan {
   bool compact = true;      // walk the compact layout when the model has it
   int stage_cols = 0;       // a staged row covers max(input columns, stage_cols): the model's features
   int group_lanes = 1;      // lanes that share one group's walks (2, 4 or 8 for small batches)
+  int task_groups = 1;      // consecutive groups one task adds in registers (1, 2, 4 or 8; 1 with group_lanes > 1)
   int block_threads = 256;
 };
 

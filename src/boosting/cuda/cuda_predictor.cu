@@ -40,7 +40,8 @@ struct GlobalRow {
     if (feature >= static_cast<uint32_t>(num_col)) {
       return TIn(0);
     }
-    return SnapZero(base[static_cast<int64_t>(feature) * col_stride]);
+    const TIn v = col_stride == 1 ? __ldg(base + feature) : __ldg(base + static_cast<int64_t>(feature) * col_stride);
+    return SnapZero(v);
   }
 };
 
@@ -389,9 +390,29 @@ __device__ __forceinline__ double SlotValue(const CompactSlot<float>& s) {
 }
 __device__ __forceinline__ double SlotValue(const CompactSlot<double>& s) { return s.value; }
 
+__device__ __forceinline__ CompactSlot<float> LoadSlot(const CompactSlot<float>* slots, uint32_t pos) {
+  const uint2 u = __ldg(reinterpret_cast<const uint2*>(slots + pos));
+  CompactSlot<float> s;
+  s.lo = u.x;
+  s.meta = u.y;
+  return s;
+}
+__device__ __forceinline__ CompactSlot<double> LoadSlot(const CompactSlot<double>* slots, uint32_t pos) {
+  const uint4 u = __ldg(reinterpret_cast<const uint4*>(slots + pos));
+  CompactSlot<double> s;
+  s.value = __hiloint2double(static_cast<int>(u.y), static_cast<int>(u.x));
+  s.meta = u.z;
+  s.pad = u.w;
+  return s;
+}
+
 // Tree::NumericalDecision as a direction (x is zero-snapped)
 template <typename TIn, typename TThr>
-__device__ __forceinline__ bool GoesLeft(TIn x, TThr threshold, uint32_t meta) {
+__device__ __forceinline__ bool GoesLeft(TIn x, TThr threshold, uint32_t meta, bool fast_nan) {
+  if (fast_nan) {
+    // MissingType::NaN with non-NaN threshold: IEEE unordered/ordered compare handles NaN in one instruction
+    return (meta & kSlotDefaultLeft) ? !(x > threshold) : (x <= threshold);
+  }
   const int missing = static_cast<int>((meta >> kSlotMissingShift) & 3u);
   if (isnan(x)) {
     if (missing == kMissingNaN || missing == kMissingZero) {
@@ -424,15 +445,15 @@ __device__ __forceinline__ bool CategoryGoesLeft(uint32_t range, double v, const
 template <typename TIn, typename TThr, bool HAS_CAT, typename Row>
 __device__ __forceinline__ uint32_t SlotStep(const DeviceForestView<TThr>& forest, const Row& row, uint32_t pos,
                                              bool* leaf) {
-  const CompactSlot<TThr> s = forest.slots[pos];
+  const CompactSlot<TThr> s = LoadSlot(forest.slots, pos);
   const uint32_t meta = s.meta;
   const uint32_t low = meta & kSlotLowMask;
-  const TIn x = row(low & ((1u << forest.feature_bits) - 1u));
+  const TIn x = row(low & forest.feature_mask);
   bool left;
   if (HAS_CAT && (meta & kSlotCategorical)) {
     left = CategoryGoesLeft(SlotRange(s), static_cast<double>(x), forest);
   } else {
-    left = GoesLeft<TIn, TThr>(x, SlotThreshold(s), meta);
+    left = GoesLeft<TIn, TThr>(x, SlotThreshold(s), meta, forest.fast_nan_missing);
   }
   *leaf = (meta & (left ? kSlotLeftLeaf : kSlotRightLeaf)) != 0;
   return pos + (low >> forest.feature_bits) + (left ? 0u : 1u);
@@ -450,7 +471,7 @@ __device__ __forceinline__ double SlotGroupSum(const DeviceForestView<TThr>& for
     for (int u = 0; u < ILP; ++u) {
       pos[u] = 0;
       if (j0 + u < count) {
-        const int32_t start = forest.slot_start[tree0 + (j0 + u) * stride];
+        const int32_t start = __ldg(forest.slot_start + tree0 + (j0 + u) * stride);
         pos[u] = static_cast<uint32_t>(start >= 0 ? start : ~start);
         walking |= (start >= 0 ? 1u : 0u) << u;
       }
@@ -470,7 +491,7 @@ __device__ __forceinline__ double SlotGroupSum(const DeviceForestView<TThr>& for
     #pragma unroll
     for (int u = 0; u < ILP; ++u) {
       if (j0 + u < count) {
-        sum = __dadd_rn(sum, SlotValue(forest.slots[pos[u]]));
+        sum = __dadd_rn(sum, SlotValue(LoadSlot(forest.slots, pos[u])));
       }
     }
   }
@@ -488,7 +509,7 @@ __device__ __forceinline__ void WalkValues4(const DeviceForestView<TThr>& forest
     for (int u = 0; u < 4; ++u) {
       pos[u] = 0;
       if (u < count) {
-        const int32_t start = forest.slot_start[tree0 + u * stride];
+        const int32_t start = __ldg(forest.slot_start + tree0 + u * stride);
         pos[u] = static_cast<uint32_t>(start >= 0 ? start : ~start);
         walking |= (start >= 0 ? 1u : 0u) << u;
       }
@@ -507,7 +528,7 @@ __device__ __forceinline__ void WalkValues4(const DeviceForestView<TThr>& forest
     }
     #pragma unroll
     for (int u = 0; u < 4; ++u) {
-      v[u] = u < count ? SlotValue(forest.slots[pos[u]]) : 0.0;
+      v[u] = u < count ? SlotValue(LoadSlot(forest.slots, pos[u])) : 0.0;
     }
   } else {
     int node[4];
@@ -542,8 +563,9 @@ __device__ __forceinline__ double AnyGroupSum(const DeviceForestView<TThr>& fore
   return GroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, ILP>(forest, row, tree0, stride, count);
 }
 
-// one block of the default mode: row tile `tile`, span `span`, output chunk `chunk` of one model's prediction
-template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP>
+// one block of the default mode: row tile `tile`, span `span`, output chunk `chunk` of one model's prediction;
+// TG (1 or 8, compile time so that the one-group kernel keeps its registers) is plan.task_groups
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP, int TG>
 __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows,
                                               int tree_begin, int num_iteration, int num_tree_per_iteration,
                                               const PairwisePlan& plan, double* out, double* partials,
@@ -569,27 +591,70 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   const int64_t row0 = tile * tile_rows;
   const int valid_rows = static_cast<int>(min(static_cast<int64_t>(tile_rows), rows.num_row - row0));
   if (STAGE) {
-    const int64_t total = static_cast<int64_t>(tile_rows) * stage_cols;
-    const bool column_major = rows.row_stride == 1 && rows.col_stride != 1;
-    for (int64_t i = threadIdx.x; i < total; i += blockDim.x) {
-      const int64_t rr = column_major ? i % tile_rows : i / stage_cols;
-      const int f = static_cast<int>(column_major ? i / tile_rows : i - rr * stage_cols);
-      const int64_t r = row0 + rr;
-      xs[rr * x_stride + f] = r < rows.num_row && f < num_col
-          ? SnapZero(rows.data[r * rows.row_stride + static_cast<int64_t>(f) * rows.col_stride]) : TIn(0);
+    if (rows.col_stride == 1 && num_col >= blockDim.x) {
+      for (int rr = 0; rr < tile_rows; ++rr) {
+        const int64_t r = row0 + rr;
+        TIn* dst = xs + static_cast<size_t>(rr) * x_stride;
+        if (r < rows.num_row) {
+          const TIn* src = rows.data + r * rows.row_stride;
+          int f0 = 0;
+          if constexpr (sizeof(TIn) == 4) {
+            const uintptr_t addr = reinterpret_cast<uintptr_t>(src);
+            if ((addr & 3u) == 0u) {
+              const int lead = static_cast<int>((4u - ((addr >> 2) & 3u)) & 3u);
+              const int pre = min(lead, num_col);
+              if (threadIdx.x < pre) {
+                dst[threadIdx.x] = SnapZero(__ldg(src + threadIdx.x));
+              }
+              const int vec_n = (num_col - pre) / 4;
+              const float4* src4 = reinterpret_cast<const float4*>(src + pre);
+              for (int j = threadIdx.x; j < vec_n; j += blockDim.x) {
+                const float4 v = __ldg(src4 + j);
+                const int base = pre + j * 4;
+                dst[base] = SnapZero(v.x);
+                dst[base + 1] = SnapZero(v.y);
+                dst[base + 2] = SnapZero(v.z);
+                dst[base + 3] = SnapZero(v.w);
+              }
+              f0 = pre + vec_n * 4;
+            }
+          }
+          for (int f = f0 + threadIdx.x; f < num_col; f += blockDim.x) {
+            dst[f] = SnapZero(__ldg(src + f));
+          }
+          for (int f = num_col + threadIdx.x; f < stage_cols; f += blockDim.x) {
+            dst[f] = TIn(0);
+          }
+        } else {
+          for (int f = threadIdx.x; f < stage_cols; f += blockDim.x) {
+            dst[f] = TIn(0);
+          }
+        }
+      }
+    } else {
+      const int total = tile_rows * stage_cols;
+      const bool column_major = rows.row_stride == 1 && rows.col_stride != 1;
+      for (int i = threadIdx.x; i < total; i += blockDim.x) {
+        const int rr = column_major ? i % tile_rows : i / stage_cols;
+        const int f = column_major ? i / tile_rows : i - rr * stage_cols;
+        const int64_t r = row0 + rr;
+        xs[static_cast<size_t>(rr) * x_stride + f] = r < rows.num_row && f < num_col
+            ? SnapZero(__ldg(rows.data + r * rows.row_stride + static_cast<int64_t>(f) * rows.col_stride)) : TIn(0);
+      }
     }
     __syncthreads();
   }
   const int num_groups = (num_iteration + kPairwiseGroupIterations - 1) / kPairwiseGroupIterations;
   const int g_span = span * plan.span_groups;
   const int span_end = min(g_span + plan.span_groups, num_groups);
-  const int waves = (span_end - g_span + WG - 1) / WG;
+  // a task's unit is TG consecutive groups (an aligned subtree it adds itself); a wave holds WG units
+  const int waves = (span_end - g_span + WG * TG - 1) / (WG * TG);
   const int tasks = pairs * WG;
   const int lane = threadIdx.x % 32;
   for (int w = 0; w < waves; ++w) {
-    const int gw0 = g_span + w * WG;
+    const int gw0 = g_span + w * WG * TG;
     // 1. one task per (row, output, group); rows vary fastest, so a warp's lanes share trees
-    if (plan.group_lanes > 1) {
+    if (TG == 1 && plan.group_lanes > 1) {
       // small batches: a group's trees are shared by group_lanes adjacent lanes, each walking its consecutive part;
       // the in-order sum is chained through the lanes by shuffles, so it is the same sum
       const int GL = plan.group_lanes;
@@ -641,21 +706,43 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
       const int rest = t / tile_rows;
       const int kk = rest % kb;
       const int gw = rest / kb;
-      const int g = gw0 + gw;
-      double p = 0.0;
-      if (r < valid_rows && g < num_groups) {
-        const int it0 = g * kPairwiseGroupIterations;
-        const int count = min(kPairwiseGroupIterations, num_iteration - it0);
-        const int tree0 = tree_begin + it0 * K + k0 + kk;
-        if (STAGE) {
-          const StagedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride};
-          p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
+      // the unit's groups, added by the aligned tree in registers: l0, l1, l2 hold the pending subtrees of 1, 2 and 4
+      // groups; after the last group (TG is a power of two) x is the unit's subtree
+      double x = 0.0, l0 = 0.0, l1 = 0.0, l2 = 0.0;
+      #pragma unroll
+      for (int q = 0; q < TG; ++q) {
+        const int g = gw0 + gw * TG + q;
+        double p = 0.0;
+        if (r < valid_rows && g < num_groups) {
+          const int it0 = g * kPairwiseGroupIterations;
+          const int count = min(kPairwiseGroupIterations, num_iteration - it0);
+          const int tree0 = tree_begin + it0 * K + k0 + kk;
+          if (STAGE) {
+            const StagedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride};
+            p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
+          } else {
+            const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
+            p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
+          }
+        }
+        x = p;
+        if (q & 1) {
+          x = __dadd_rn(l0, x);
+          if (q & 2) {
+            x = __dadd_rn(l1, x);
+            if (q & 4) {
+              x = __dadd_rn(l2, x);
+            } else {
+              l2 = x;
+            }
+          } else {
+            l1 = x;
+          }
         } else {
-          const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
-          p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
+          l0 = x;
         }
       }
-      part[gw * part_stride + r + tile_rows * kk] = p;
+      part[gw * part_stride + r + tile_rows * kk] = x;
     }
     }
     __syncthreads();
@@ -697,18 +784,18 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   }
 }
 
-template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP>
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP, int TG>
 __global__ void PredictPairwiseKernel(const DeviceForestView<TThr> forest, const DeviceRows<TIn> rows, int tree_begin,
                                       int num_iteration, int num_tree_per_iteration, const PairwisePlan plan,
                                       double* out, double* partials) {
   extern __shared__ __align__(16) unsigned char smem[];
-  PairwiseBlock<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, STAGE, ILP>(
+  PairwiseBlock<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, STAGE, ILP, TG>(
       forest, rows, tree_begin, num_iteration, num_tree_per_iteration, plan, out, partials, blockIdx.x, blockIdx.y,
       blockIdx.z, smem);
 }
 
 // several models' predictions in one launch: the flattened grid is cut into each job's blocks (PairwiseJob)
-template <typename TIn, bool HAS_CAT, bool COMPACT, bool STAGE, int ILP>
+template <typename TIn, bool HAS_CAT, bool COMPACT, bool STAGE, int ILP, int TG>
 __global__ void PredictPairwiseJobsKernel(const PairwiseJob<TIn>* jobs, int num_jobs) {
   extern __shared__ __align__(16) unsigned char smem[];
   const int64_t block = blockIdx.x;
@@ -725,7 +812,7 @@ __global__ void PredictPairwiseJobsKernel(const PairwiseJob<TIn>* jobs, int num_
   const int64_t local = block - job.block_begin;
   const int64_t row_tiles = (job.rows.num_row + job.plan.tile_rows - 1) / job.plan.tile_rows;
   const int64_t rest = local / row_tiles;
-  PairwiseBlock<TIn, TIn, HAS_CAT, false, COMPACT, STAGE, ILP>(
+  PairwiseBlock<TIn, TIn, HAS_CAT, false, COMPACT, STAGE, ILP, TG>(
       job.forest, job.rows, job.tree_begin, job.num_iteration, job.num_tree_per_iteration, job.plan, job.out,
       job.partials, local % row_tiles, static_cast<int>(rest % job.plan.num_spans),
       static_cast<int>(rest / job.plan.num_spans), smem);
@@ -1050,9 +1137,9 @@ void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TI
   const dim3 grid(Blocks(rows.num_row, plan.tile_rows), plan.num_spans,
                   (num_tree_per_iteration + plan.out_chunk - 1) / plan.out_chunk);
   const size_t shared = PairwiseSharedBytes(plan, rows.num_col, sizeof(TIn));
-#define FLC_PW_KERNEL(U)                                                                                       \
+#define FLC_PW_KERNEL(U, G)                                                                                    \
   {                                                                                                            \
-    auto kernel = PredictPairwiseKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, STAGE, U>;                    \
+    auto kernel = PredictPairwiseKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, STAGE, U, G>;                 \
     if (shared > (size_t(48) << 10)) {                                                                         \
       CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,           \
                                                 static_cast<int>(shared)));                                    \
@@ -1060,12 +1147,18 @@ void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TI
     kernel<<<grid, plan.block_threads, shared, stream>>>(forest, rows, tree_begin, num_iteration,             \
                                                          num_tree_per_iteration, plan, out, partials);         \
   }
-  if (plan.ilp >= 8) {
-    FLC_PW_KERNEL(8)
-  } else if (plan.ilp >= 4) {
-    FLC_PW_KERNEL(4)
+  if (plan.task_groups > 1) {
+    if (plan.ilp >= 8) {
+      FLC_PW_KERNEL(8, 8)
+    } else {
+      FLC_PW_KERNEL(4, 8)
+    }
   } else {
-    FLC_PW_KERNEL(2)
+    if (plan.ilp >= 8) {
+      FLC_PW_KERNEL(8, 1)
+    } else {
+      FLC_PW_KERNEL(4, 1)
+    }
   }
 #undef FLC_PW_KERNEL
   if (plan.num_spans > 1) {
@@ -1259,6 +1352,7 @@ void LaunchPredictPairwiseJobs(const std::vector<PairwiseJob<T>>& jobs, const Pa
   if (jobs.empty()) {
     return;
   }
+  const int task_groups = jobs.front().plan.task_groups;   // one value per launch (LaunchJobs groups by it)
   int64_t blocks = 0, cells = 0;
   int threads = 32;
   bool combine = false;
@@ -1276,7 +1370,8 @@ void LaunchPredictPairwiseJobs(const std::vector<PairwiseJob<T>>& jobs, const Pa
   const int num_jobs = static_cast<int>(jobs.size());
 #define FLC_JOBS_KERNEL(CAT, COMPACT, STAGE)                                                                   \
   {                                                                                                            \
-    auto kernel = PredictPairwiseJobsKernel<T, CAT, COMPACT, STAGE, 8>;                                        \
+    auto kernel = task_groups > 1 ? PredictPairwiseJobsKernel<T, CAT, COMPACT, STAGE, 8, 8>                    \
+                                  : PredictPairwiseJobsKernel<T, CAT, COMPACT, STAGE, 8, 1>;                   \
     if (shared_bytes > (size_t(48) << 10)) {                                                                   \
       CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,           \
                                                 static_cast<int>(shared_bytes)));                              \
