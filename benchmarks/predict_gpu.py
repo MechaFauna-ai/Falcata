@@ -6,12 +6,17 @@ grow by splitting leaves (``balanced``: the shallowest leaf, ``leafwise``: a ran
 deepest leaf), and each split's threshold cuts the probability mass that reaches the node, so every leaf is
 reachable by the N(0, 1) inputs. ``--model-file`` adds real models (Falcata/LightGBM text).
 
-Timings are medians of repeated calls after one warm-up call; the warm-up (which packs the model for the device,
-or converts it for FIL) is reported separately as ``first_s``. Throughput is rows per second. Every native result is
-compared with the CPU predictor (raw scores, ``max_abs_diff`` must be 0); FIL's difference is reported.
+The native predictor is timed in both summation modes: the default (pairwise) mode and ``deterministic=True`` (tree
+order, bit-identical to the CPU predictor, which every run checks). FIL runs in its default configuration (no
+``optimize()``) in float32 and float64, each the best of three timings; ``--fil-optimize`` adds its ``optimize()``d
+layout. Timings are medians of repeated calls (at least 5, until ``--min-time`` seconds) after one warm-up call; the
+warm-up (which packs the model for the device, or converts it for FIL) is reported separately as ``first_s``.
+Throughput is rows per second. The default mode's difference from the in-order sum is reported as the largest
+absolute difference, the largest difference relative to the in-order value (over |value| > 1e-300), and the largest
+difference over the spread (standard deviation) of the scores.
 
     python benchmarks/predict_gpu.py --list
-    python benchmarks/predict_gpu.py --cases t1000_l63_f500 --rows 1000,100000 --out results.jsonl
+    python benchmarks/predict_gpu.py --cases t1000_l63_f500 --rows 1,1000,100000 --fil --out results.jsonl
 """
 
 import argparse
@@ -251,8 +256,8 @@ def rows_in_ranges(n, lo, hi, nan_frac, seed=1):
     return X
 
 
-def timed(fn, sync=None, min_time=0.5, max_reps=7):
-    """(first call seconds, median of further calls)."""
+def timed(fn, sync=None, min_time=0.5, max_reps=2000, min_reps=5):
+    """(first call seconds, median of further calls, last output): at least min_reps calls, until min_time seconds."""
     t0 = time.perf_counter()
     out = fn()
     if sync:
@@ -260,7 +265,7 @@ def timed(fn, sync=None, min_time=0.5, max_reps=7):
     first = time.perf_counter() - t0
     times = []
     total = 0.0
-    while len(times) < max_reps and (len(times) < 2 or total < min_time):
+    while len(times) < max_reps and (len(times) < min_reps or total < min_time):
         t0 = time.perf_counter()
         out = fn()
         if sync:
@@ -271,10 +276,28 @@ def timed(fn, sync=None, min_time=0.5, max_reps=7):
     return first, statistics.median(times), out
 
 
-def fil_model(model_text, raw_score, precision, optimize_rows=None):
-    import nvforest  # noqa: PLC0415
+def differences(a, b):
+    """Largest |a - b|, largest |a - b| / |b| (|b| > 1e-300) and largest |a - b| / std(b)."""
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    d = np.abs(a - b)
+    nz = np.abs(b) > 1e-300
+    spread = float(np.std(b)) if b.size > 1 else 0.0
+    return {
+        "max_abs": float(np.nanmax(d)) if d.size else 0.0,
+        "max_rel": float(np.nanmax(d[nz] / np.abs(b[nz]))) if nz.any() else 0.0,
+        "max_over_spread": float(np.nanmax(d) / spread) if spread > 0 else None,
+        "frac_differing": float(np.mean(a != b)) if a.size else 0.0,
+    }
+
+
+def treelite_model(model_text, cache=None):
+    """Load a model text into Treelite; `cache` (a path) keeps its checkpoint, so the parse is paid once."""
+    import treelite  # noqa: PLC0415
     import treelite.frontend  # noqa: PLC0415
 
+    if cache is not None and Path(cache).exists():
+        return treelite.Model.deserialize(str(cache))
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write(model_text)
         path = f.name
@@ -282,6 +305,15 @@ def fil_model(model_text, raw_score, precision, optimize_rows=None):
         tl = treelite.frontend.load_lightgbm_model(path)
     finally:
         os.remove(path)
+    if cache is not None:
+        tl.serialize(str(cache))
+    return tl
+
+
+def fil_model(model_text, raw_score, precision, optimize_rows=None, cache=None):
+    import nvforest  # noqa: PLC0415
+
+    tl = treelite_model(model_text, cache)
     if raw_score:
         tl.get_header_accessor().set_field("postprocessor", "identity")
     model = nvforest.load_from_treelite_model(tl, device="gpu", precision=precision)
@@ -290,7 +322,7 @@ def fil_model(model_text, raw_score, precision, optimize_rows=None):
     return model
 
 
-def run_case(name, model_text, n_features, rows_list, nan_frac, args, out, ranges=None):
+def run_case(name, model_text, n_features, rows_list, nan_frac, args, out, ranges=None, tl_cache=None):
     import falcata as flc  # noqa: PLC0415
 
     t0 = time.perf_counter()
@@ -304,16 +336,14 @@ def run_case(name, model_text, n_features, rows_list, nan_frac, args, out, range
         "nan_frac": nan_frac,
         "load_s": load_s,
     }
-    cupy = None
-    try:
-        import cupy  # noqa: PLC0415
-    except ImportError:
-        pass
+    import cupy  # noqa: PLC0415
+
+    sync = cupy.cuda.get_current_stream().synchronize
     fil_cache = {}
     for n in rows_list:
         X = make_rows(n, n_features, nan_frac) if ranges is None else rows_in_ranges(n, *ranges, nan_frac)
-        rec = dict(info, rows=n)
-        # CPU predictor on a slice sized to take about args.cpu_budget seconds
+        rec = dict(info, rows=n, variant=os.environ.get("FALCATA_DEBUG", ""))
+        # CPU predictor on a slice sized to take about args.cpu_budget seconds (the exactness reference)
         probe = X[: min(n, 1000)]
         t0 = time.perf_counter()
         booster.predict(probe, device="cpu", raw_score=True, num_threads=args.cpu_threads)
@@ -323,59 +353,70 @@ def run_case(name, model_text, n_features, rows_list, nan_frac, args, out, range
         if args.cpu_budget > 0:
             _, cpu_s, ref = timed(
                 lambda Xc=Xc: booster.predict(Xc, device="cpu", raw_score=True, num_threads=args.cpu_threads),
+                min_time=args.min_time,
                 max_reps=3,
+                min_reps=1,
             )
             rec["cpu_rows_per_s"] = cpu_rows / cpu_s
-        else:  # the reference for the exactness check only
+        else:
             ref = booster.predict(Xc, device="cpu", raw_score=True, num_threads=args.cpu_threads)
         rec["cpu_rows"] = cpu_rows
-        rec["variant"] = os.environ.get("FALCATA_DEBUG", "")
-        # native, host in / host out
-        sync = None
-        Xd = None
+        Xd = cupy.asarray(X)
         try:
-            first, native_s, got = timed(lambda X=X: booster.predict(X, device="cuda", raw_score=True))
-            rec["native_host_first_s"] = first
-            rec["native_host_rows_per_s"] = n / native_s
-            rec["native_max_abs_diff"] = float(np.nanmax(np.abs(got[:cpu_rows] - ref))) if cpu_rows else 0.0
-            rec["native_bit_identical"] = bool(np.array_equal(got[:cpu_rows], ref, equal_nan=True))
+            # default mode, device input (the headline) and host input
+            first, s_dev, got = timed(lambda Xd=Xd: booster.predict(Xd, raw_score=True), sync, args.min_time)
+            rec["native_dev_first_s"] = first
+            rec["native_dev_rows_per_s"] = n / s_dev
             rec["native_stats"] = booster.cuda_predict_stats
-            if cupy is not None:
-                Xd = cupy.asarray(X)
-                sync = cupy.cuda.get_current_stream().synchronize
-                first, native_dev_s, got_d = timed(lambda Xd=Xd: booster.predict(Xd, raw_score=True), sync=sync)
-                rec["native_dev_rows_per_s"] = n / native_dev_s
-                rec["native_dev_bit_identical"] = bool(
-                    np.array_equal(cupy.asnumpy(got_d[:cpu_rows]), ref, equal_nan=True)
-                )
-                del got_d
+            fast = cupy.asnumpy(got)
+            del got
+            _, s_host, _ = timed(lambda X=X: booster.predict(X, device="cuda", raw_score=True), None, args.min_time)
+            rec["native_host_rows_per_s"] = n / s_host
+            # deterministic mode: bit-identical to the CPU predictor
+            _, s_det, got = timed(
+                lambda Xd=Xd: booster.predict(Xd, raw_score=True, deterministic=True), sync, args.min_time
+            )
+            rec["native_det_dev_rows_per_s"] = n / s_det
+            exact = cupy.asnumpy(got)
+            del got
+            rec["native_det_bit_identical"] = bool(np.array_equal(exact[:cpu_rows], ref, equal_nan=True))
+            rec["native_det_max_abs_diff"] = float(np.nanmax(np.abs(exact[:cpu_rows] - ref))) if cpu_rows else 0.0
+            rec["default_vs_det"] = differences(fast, exact)
         except Exception as exc:  # recorded, so one failing configuration does not end the run
             rec["native_error"] = f"{type(exc).__name__}: {exc}"
-        if args.fil and Xd is not None:
-            for precision in args.fil_precisions:
-                for optimized in (False, True):
-                    key = (precision, optimized)
-                    try:
-                        if key not in fil_cache or optimized:
-                            t0 = time.perf_counter()
-                            fil_cache[key] = fil_model(
-                                model_text, True, precision, Xd[: min(n, 100000)] if optimized else None
-                            )
-                            rec[f"fil_{precision}{'_opt' if optimized else ''}_build_s"] = time.perf_counter() - t0
-                        fm = fil_cache[key]
-                        tag = f"fil_{precision}{'_opt' if optimized else ''}"
-                        first, fil_s, fp = timed(lambda fm=fm, Xd=Xd: fm.predict(Xd), sync=sync)
-                        rec[f"{tag}_dev_rows_per_s"] = n / fil_s
-                        fp = cupy.asnumpy(fp).reshape(n, -1)[:cpu_rows].reshape(ref.shape)
-                        rec[f"{tag}_max_abs_diff"] = float(np.nanmax(np.abs(fp - ref)))
-                        if not optimized:
-                            first, fil_h, _ = timed(lambda fm=fm, X=X: fm.predict(X))
-                            rec[f"{tag}_host_rows_per_s"] = n / fil_h
-                        rec[f"{tag}_layout"] = getattr(fm, "layout", None)
-                        rec[f"{tag}_chunk"] = getattr(fm, "default_chunk_size", None)
-                    except Exception as exc:  # report and keep going: one failing FIL config is a result
-                        rec[f"fil_{precision}{'_opt' if optimized else ''}_error"] = f"{type(exc).__name__}: {exc}"
+        if args.fil:
+            variants = [(p, False) for p in args.fil_precisions]
+            if args.fil_optimize:
+                variants += [(p, True) for p in args.fil_precisions]
+            for precision, optimized in variants:
+                key = (precision, optimized)
+                tag = f"fil_{precision}{'_opt' if optimized else ''}"
+                try:
+                    if key not in fil_cache or optimized:
+                        t0 = time.perf_counter()
+                        fil_cache[key] = fil_model(
+                            model_text, True, precision, Xd[: min(n, 100000)] if optimized else None, tl_cache
+                        )
+                        rec[f"{tag}_build_s"] = time.perf_counter() - t0
+                    fm = fil_cache[key]
+                    # FIL's call time varies from one timing to the next on some shapes (an order of magnitude at
+                    # small batches): its best of three timings is the reference
+                    fil_runs = [timed(lambda fm=fm, Xd=Xd: fm.predict(Xd), sync, args.min_time) for _ in range(3)]
+                    fil_s = min(t[1] for t in fil_runs)
+                    fp = fil_runs[-1][2]
+                    rec[f"{tag}_dev_rows_per_s"] = n / fil_s
+                    rec[f"{tag}_dev_rows_per_s_runs"] = [n / t[1] for t in fil_runs]
+                    fp = cupy.asnumpy(fp).reshape(n, -1)[:cpu_rows].reshape(ref.shape)
+                    rec[f"{tag}_max_abs_diff"] = float(np.nanmax(np.abs(fp - ref)))
+                    if not optimized and args.fil_host:
+                        _, fil_h, _ = timed(lambda fm=fm, X=X: fm.predict(X), None, args.min_time)
+                        rec[f"{tag}_host_rows_per_s"] = n / fil_h
+                    rec[f"{tag}_layout"] = getattr(fm, "layout", None)
+                    rec[f"{tag}_chunk"] = getattr(fm, "default_chunk_size", None)
+                except Exception as exc:  # report and keep going: one failing FIL config is a result
+                    rec[f"{tag}_error"] = f"{type(exc).__name__}: {exc}"
             cupy.get_default_memory_pool().free_all_blocks()
+        del Xd
         out.write(json.dumps(rec) + "\n")
         out.flush()
         print(json.dumps(rec), flush=True)
@@ -386,7 +427,7 @@ def main():
     p.add_argument("--list", action="store_true")
     p.add_argument("--cases", default="", help="comma-separated case names (default: none)")
     p.add_argument("--model-file", action="append", default=[], help="name=path of a model text file")
-    p.add_argument("--rows", default="1000,100000,1000000")
+    p.add_argument("--rows", default="1,100,1000,100000,1000000")
     p.add_argument("--nan-frac", type=float, default=0.1)
     p.add_argument(
         "--cpu-budget",
@@ -398,8 +439,13 @@ def main():
     p.add_argument("--max-cells", type=float, default=2e9, help="skip row counts above this many matrix cells")
     p.add_argument("--fil", action="store_true")
     p.add_argument("--fil-precisions", default="single,double")
+    p.add_argument("--fil-optimize", action="store_true", help="also time FIL's optimize()d layout")
+    p.add_argument("--fil-host", action="store_true", help="also time FIL on host (numpy) input")
+    p.add_argument("--min-time", type=float, default=0.3, help="seconds of repeated calls per timing")
     p.add_argument("--out", default="-")
     p.add_argument("--cache-dir", default="", help="keep generated model texts here and reuse them")
+    p.add_argument("--treelite-cache", default="", help="keep Treelite checkpoints of the models here (FIL's parse)")
+    p.add_argument("--treelite-only", action="store_true", help="only write the Treelite checkpoints (CPU) and stop")
     args = p.parse_args()
     args.fil_precisions = [x for x in args.fil_precisions.split(",") if x]
     if args.list:
@@ -427,7 +473,11 @@ def main():
                 cached.parent.mkdir(parents=True, exist_ok=True)
                 cached.write_text(text)
         rows = [r for r in rows_list if r * features <= args.max_cells]
-        run_case(name, text, features, rows, args.nan_frac, args, out)
+        tl_cache = Path(args.treelite_cache) / f"{name}.tl" if args.treelite_cache else None
+        if args.treelite_only:
+            treelite_model(text, tl_cache)
+            continue
+        run_case(name, text, features, rows, args.nan_frac, args, out, tl_cache=tl_cache)
     for spec in args.model_file:
         name, path = spec.split("=", 1)
         text = Path(path).read_text()
@@ -435,7 +485,19 @@ def main():
             int(next(line for line in text.splitlines() if line.startswith("max_feature_idx=")).split("=")[1]) + 1
         )
         rows = [r for r in rows_list if r * features <= args.max_cells]
-        run_case(name, text, features, rows, args.nan_frac, args, out, ranges=threshold_ranges(text, features))
+        tl_cache = Path(args.treelite_cache) / f"{name}.tl" if args.treelite_cache else None
+        ranges_cache = Path(args.treelite_cache) / f"{name}.ranges.npz" if args.treelite_cache else None
+        if ranges_cache is not None and ranges_cache.exists():
+            z = np.load(ranges_cache)
+            ranges = (z["lo"], z["hi"])
+        else:
+            ranges = threshold_ranges(text, features)
+            if ranges_cache is not None:
+                np.savez(ranges_cache, lo=ranges[0], hi=ranges[1])
+        if args.treelite_only:
+            treelite_model(text, tl_cache)
+            continue
+        run_case(name, text, features, rows, args.nan_frac, args, out, ranges=ranges, tl_cache=tl_cache)
 
 
 if __name__ == "__main__":
