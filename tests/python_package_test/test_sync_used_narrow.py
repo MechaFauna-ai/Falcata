@@ -39,7 +39,13 @@ SHAPES = {
     "multiclass": (30_001, 20, {"objective": "multiclass", "num_class": 4, "quant_mode": "fixedpoint"}),
     "bagged": (40_001, 12, {"bagging_fraction": 0.6, "bagging_freq": 1}),
     "feature_fraction": (40_001, 30, {"feature_fraction": 0.5}),
-    "not_quantized": (30_001, 10, {"use_quantized_grad": False}),
+    # quant_mode=none: BASE's explicit quant_mode wins over use_quantized_grad; the deterministic histograms
+    # (opt-in since 1.2) because the two models are compared bit for bit
+    "not_quantized": (
+        30_001,
+        10,
+        {"quant_mode": "none", "use_quantized_grad": False, "cuda_plan": "auto,nonquant_deterministic:on"},
+    ),
     "one_block_limit": (2_001, 1_024, {"max_bin": 15, "num_leaves": 7, "min_data_in_leaf": 1}),
     "more_tasks_than_one_block": (3_001, 1_200, {"max_bin": 15, "num_leaves": 15, "min_data_in_leaf": 1}),
 }

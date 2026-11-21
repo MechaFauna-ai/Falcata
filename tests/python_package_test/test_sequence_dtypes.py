@@ -19,7 +19,15 @@ def test_sequence_numeric_dtype(dtype):
         def __getitem__(self, index):
             return data[index]
 
-    params = {"min_data_in_bin": 1, "min_data_in_leaf": 1, "num_threads": 2, "verbosity": -1}
+    # the two trainings are compared bit for bit: on CUDA (unset device_type with a usable GPU) non-quantized training
+    # repeats only with the deterministic histograms (opt-in since 1.2; CPU ignores the key)
+    params = {
+        "min_data_in_bin": 1,
+        "min_data_in_leaf": 1,
+        "num_threads": 2,
+        "verbosity": -1,
+        "cuda_plan": "auto,nonquant_deterministic:on",
+    }
     dataset = flc.Dataset(ArraySequence(), label=np.arange(40), params=params).construct()
     booster = flc.train(params, dataset, num_boost_round=2)
     dense = flc.train(params, flc.Dataset(data, label=np.arange(40)), num_boost_round=2)

@@ -12,8 +12,11 @@ pd = pytest.importorskip("pandas")
 def test_scalar_sample_weight_is_broadcast(dataframe):
     data = np.arange(80, dtype=np.float64).reshape(40, 2)
     X = pd.DataFrame(data) if dataframe else data
-    model = flc.FalcataRegressor(n_estimators=2, n_jobs=2, verbosity=-1).fit(X, np.arange(40), sample_weight=2.0)
-    vector = flc.FalcataRegressor(n_estimators=2, n_jobs=2, verbosity=-1).fit(
+    # two trainings are compared bit for bit: on CUDA (unset device_type with a usable GPU) non-quantized training
+    # repeats only with the deterministic histograms (opt-in since 1.2; CPU ignores the key)
+    det = {"cuda_plan": "auto,nonquant_deterministic:on"}
+    model = flc.FalcataRegressor(n_estimators=2, n_jobs=2, verbosity=-1, **det).fit(X, np.arange(40), sample_weight=2.0)
+    vector = flc.FalcataRegressor(n_estimators=2, n_jobs=2, verbosity=-1, **det).fit(
         X, np.arange(40), sample_weight=np.full(40, 2.0)
     )
     np.testing.assert_array_equal(model.predict(X), vector.predict(X))

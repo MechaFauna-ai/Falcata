@@ -57,7 +57,9 @@ def _data(rows=8000, cols=12, seed=5):
         (5, 32, "auto,device_tree:off", {}),  # the device_levels prefix
         (5, 32, "auto,device_levels:off", {}),  # the host flow
         (7, 100, "auto", {}),  # outside the device tree's bound: prefix / host flow
-        (5, 32, "auto", {"use_quantized_grad": False}),  # non-quantized
+        # non-quantized: the explicit quant_mode below would otherwise win over use_quantized_grad; the deterministic
+        # histograms (opt-in since 1.2) because the two models are compared bit for bit
+        (5, 32, "auto,nonquant_deterministic:on", {"use_quantized_grad": False, "quant_mode": "none"}),
     ],
 )
 def test_index_parity_canonical_same_model_cuda(depth, leaves, plan, extra):

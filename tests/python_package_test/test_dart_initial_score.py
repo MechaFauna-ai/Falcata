@@ -64,6 +64,9 @@ def test_dart_custom_objective_before_first_iteration():
                 "min_data_in_leaf": 2,
                 "verbosity": -1,
                 "drop_seed": 7,
+                # two trainings are compared bit for bit: on CUDA (unset device_type with a usable GPU) non-quantized
+                # training repeats only with the deterministic histograms (opt-in since 1.2; CPU ignores the key)
+                "cuda_plan": "auto,nonquant_deterministic:on",
             },
             flc.Dataset(x, label=y),
             num_boost_round=5,
