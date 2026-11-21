@@ -17,6 +17,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <map>
 #include <type_traits>
 #include <memory>
 #include <string>
@@ -352,7 +353,7 @@ class CUDAPackedForest {
     }
   }
 
-  // the compact layout (CompactSlot): depth-first slots per tree, leaf values in place, categorical bitsets as in
+  // the compact layout (CompactSlot): breadth-first slots per tree, leaf values in place, categorical bitsets as in
   // Pack; false (nothing uploaded) for a model it cannot hold
   template <typename T>
   bool PackCompact(const Boosting::TreeRangeView& view, CUDAVector<CompactSlot<T>>* device_slots) {
@@ -371,13 +372,13 @@ class CUDAPackedForest {
       }
     }
     int feature_bits = 1;
-    while ((int64_t(1) << feature_bits) <= max_feature) {
+    while ((static_cast<int64_t>(1) << feature_bits) <= max_feature) {
       ++feature_bits;
     }
     if (feature_bits > 20) {
       return false;
     }
-    const int64_t max_offset = (int64_t(1) << (26 - feature_bits)) - 1;
+    const int64_t max_offset = (static_cast<int64_t>(1) << (26 - feature_bits)) - 1;
     std::vector<CompactSlot<T>> slots;
     std::vector<int32_t> start;
     std::vector<uint32_t> cat_words;
@@ -385,10 +386,9 @@ class CUDAPackedForest {
     start.reserve(view.trees.size());
     struct Pending {
       int child;
-      int64_t parent;   // the slot whose right offset this child sets, or -1
       int depth;
     };
-    std::vector<Pending> stack;
+    std::vector<Pending> queue;
     for (const Tree* tree : view.trees) {
       const Tree& t = *tree;
       const int num_leaves = P::NumLeaves(t);
@@ -405,26 +405,22 @@ class CUDAPackedForest {
       const auto& decision = P::DecisionType(t);
       const auto& left = P::LeftChild(t);
       const auto& right = P::RightChild(t);
+      // breadth first: the top levels of a tree share its first cache lines, and a node's two children are adjacent
       start.push_back(static_cast<int32_t>(slots.size()));
-      stack.assign(1, Pending{0, -1, 0});
-      while (!stack.empty()) {
-        const Pending cur = stack.back();
-        stack.pop_back();
-        const int64_t slot = static_cast<int64_t>(slots.size());
-        if (cur.parent >= 0) {
-          const int64_t offset = slot - cur.parent;
-          if (offset > max_offset) {
-            return false;
-          }
-          slots[cur.parent].meta |= static_cast<uint32_t>(offset) << feature_bits;
-        }
+      queue.assign(1, Pending{0, 0});
+      for (size_t head = 0; head < queue.size(); ++head) {
+        const Pending cur = queue[head];
         if (cur.child < 0) {
           slots.push_back(LeafSlot<T>(P::LeafValue(t, ~cur.child, 0)));
           max_depth_ = std::max(max_depth_, cur.depth);
           continue;
         }
         const int i = cur.child;
-        uint32_t meta = static_cast<uint32_t>(feature[i]);
+        const int64_t offset = static_cast<int64_t>(queue.size()) - static_cast<int64_t>(head);
+        if (offset > max_offset) {
+          return false;
+        }
+        uint32_t meta = static_cast<uint32_t>(feature[i]) | (static_cast<uint32_t>(offset) << feature_bits);
         if (left[i] < 0) meta |= kSlotLeftLeaf;
         if (right[i] < 0) meta |= kSlotRightLeaf;
         CompactSlot<T> node;
@@ -446,9 +442,8 @@ class CUDAPackedForest {
           node = InternalSlot<T>(ThresholdFor<T>(threshold[i]), meta);
         }
         slots.push_back(node);
-        // the right child is walked second: its offset is known once the left subtree is out
-        stack.push_back(Pending{right[i], slot, cur.depth + 1});
-        stack.push_back(Pending{left[i], -1, cur.depth + 1});   // the next slot
+        queue.push_back(Pending{left[i], cur.depth + 1});
+        queue.push_back(Pending{right[i], cur.depth + 1});
       }
     }
     if (cat_range.size() / 2 > std::numeric_limits<uint32_t>::max()) {
@@ -609,7 +604,7 @@ int CeilPow2(int64_t n) {
 
 int FloorLog2(int64_t n) {
   int l = 0;
-  while ((int64_t(2) << l) <= n) {
+  while ((static_cast<int64_t>(2) << l) <= n) {
     ++l;
   }
   return l;
@@ -622,25 +617,38 @@ int FloorLog2(int64_t n) {
  *        of a block read more features than staging copies, with fewer rows per block for wide rows. FALCATA_DEBUG
  *        predict_* tokens override (benchmarks; the pairwise sum is one fixed order, so no shape changes a result).
  */
-PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int num_tree_per_iteration,
-                                int num_iteration, size_t elem, int max_depth, int64_t target_blocks = 0) {
+PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int num_feature,
+                                int num_tree_per_iteration, int num_iteration, size_t elem, int max_depth,
+                                int64_t target_blocks = 0) {
   const FalcataDebugOptions& debug = FalcataDebug();
   const DeviceLimits& limits = LimitsOf(device);
   const int K = num_tree_per_iteration;
   const int num_groups = (num_iteration + kPairwiseGroupIterations - 1) / kPairwiseGroupIterations;
+  // about two full waves of 256-thread blocks
   const int64_t target = debug.predict_target_blocks > 0 ? debug.predict_target_blocks
-                         : target_blocks > 0 ? target_blocks : 4 * limits.sms;
+                         : target_blocks > 0 ? target_blocks : 16 * limits.sms;
+  // lanes per group: when (row, output, group) tasks alone would leave the device's lanes idle (small batches), up to
+  // 8 lanes share a group's walks
+  int group_lanes = 1;
+  const int64_t group_tasks = std::max<int64_t>(num_row, 1) * K * std::max(num_groups, 1);
+  while (group_lanes < 8 && group_tasks * group_lanes * 2 <= static_cast<int64_t>(2048) * limits.sms) {
+    group_lanes *= 2;
+  }
+  if (debug.predict_group_lanes > 0) {
+    group_lanes = 1 << FloorLog2(std::min(debug.predict_group_lanes, 8));
+  }
   auto build = [&](int tile_rows, bool stage) {
     PairwisePlan plan;
     plan.out_chunk = std::min(K, 32);
+    plan.group_lanes = group_lanes;
     plan.tile_rows = std::max(1, static_cast<int>(std::min<int64_t>(tile_rows, std::max<int64_t>(num_row, 1))));
-    while (plan.tile_rows > 1 && plan.tile_rows * plan.out_chunk > 256) {
+    while (plan.tile_rows > 1 && plan.tile_rows * plan.out_chunk * group_lanes > 256) {
       plan.tile_rows /= 2;
     }
     const int pairs = plan.tile_rows * plan.out_chunk;
     const int group_cap = CeilPow2(std::max(num_groups, 1));
     plan.wave_groups = 1;
-    while (plan.wave_groups * 2 * pairs <= 256 && plan.wave_groups * 2 <= group_cap) {
+    while (plan.wave_groups * 2 * pairs * group_lanes <= 256 && plan.wave_groups * 2 <= group_cap) {
       plan.wave_groups *= 2;
     }
     if (debug.predict_wave_groups > 0) {
@@ -650,7 +658,9 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
       }
     }
     plan.seg = std::min(plan.wave_groups, 32);
-    plan.block_threads = std::min(1024, std::max(32, (pairs * plan.wave_groups + 31) / 32 * 32));
+    const int thread_cap = debug.predict_threads > 0 ? std::min(1024, (debug.predict_threads + 31) / 32 * 32) : 1024;
+    plan.block_threads = std::min(thread_cap,
+                                  std::max(32, (pairs * plan.wave_groups * group_lanes + 31) / 32 * 32));
     const int64_t row_tiles = (std::max<int64_t>(num_row, 1) + plan.tile_rows - 1) / plan.tile_rows;
     const int64_t blocks = row_tiles * ((K + plan.out_chunk - 1) / plan.out_chunk);
     int64_t spans = blocks >= target ? 1 : (target + blocks - 1) / blocks;
@@ -663,9 +673,20 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     plan.levels = FloorLog2(plan.span_groups / plan.seg) + 1;
     plan.ilp = debug.predict_ilp > 0 ? debug.predict_ilp : 8;
     plan.stage_rows = stage;
+    plan.stage_cols = num_feature;
     return plan;
   };
-  const int tile_rows = debug.predict_tile_rows > 0 ? std::min(debug.predict_tile_rows, 256) : 8;
+  // 8 rows per block; up to 32 when the rows alone fill the grid and 32 staged rows take at most 16 KiB (more rows
+  // share each tree's nodes in a block; wider rows would cost occupancy)
+  int tile_rows = 8;
+  const size_t row_bytes = static_cast<size_t>(std::max(num_col, num_feature) | 1) * elem;
+  while (tile_rows < 32 && 2 * tile_rows * row_bytes <= (size_t(16) << 10) &&
+         std::max<int64_t>(num_row, 1) / (2 * tile_rows) >= target) {
+    tile_rows *= 2;
+  }
+  if (debug.predict_tile_rows > 0) {
+    tile_rows = std::min(debug.predict_tile_rows, 256);
+  }
   PairwisePlan plan = build(tile_rows, true);
   const size_t stage_budget = std::min<size_t>(limits.max_shared, size_t(48) << 10);
   while (plan.tile_rows > 1 && PairwiseSharedBytes(plan, num_col, elem) > stage_budget) {
@@ -674,7 +695,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
   // staging copies every column of a row once; it pays when the block's walks read more features than that
   const int64_t span_trees = std::min<int64_t>(static_cast<int64_t>(plan.span_groups) * kPairwiseGroupIterations,
                                                num_iteration) * plan.out_chunk;
-  const bool worth = span_trees * std::max(1, std::min(max_depth, 12)) >= num_col;
+  const bool worth = span_trees * std::max(1, std::min(max_depth, 12)) >= std::max(num_col, num_feature);
   bool stage = worth && PairwiseSharedBytes(plan, num_col, elem) <= stage_budget;
   if (debug.predict_stage >= 0) {
     stage = debug.predict_stage == 1;
@@ -779,8 +800,8 @@ void RunRows(const CUDAPackedForest& forest, const Boosting::TreeRangeView& view
     LaunchPredictRawKernel<T, T>(fv, rows, tree_begin, num_iteration, view.num_tree_per_iteration, view.num_output,
                                  view.vector_leaf, plan, reinterpret_cast<double*>(out), stream);
   } else {
-    PairwisePlan plan = ChoosePairwisePlan(ctx.device, rows.num_row, rows.num_col, view.num_tree_per_iteration,
-                                           num_iteration, sizeof(T), ctx.max_depth);
+    PairwisePlan plan = ChoosePairwisePlan(ctx.device, rows.num_row, rows.num_col, view.num_feature,
+                                           view.num_tree_per_iteration, num_iteration, sizeof(T), ctx.max_depth);
     plan.compact = forest.compact();
     double* partials = nullptr;
     if (plan.num_spans > 1) {
@@ -1006,6 +1027,7 @@ struct PreparedJob {
   int tree_begin = 0;
   int num_tree_per_iteration = 1;
   int num_output = 1;
+  int num_feature = 0;
   int64_t work = 0;           // rows x trees
   int64_t base_blocks = 0;    // row tiles x output chunks of an 8-row tile
   PairwisePlan plan;
@@ -1149,6 +1171,7 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
     p.forest = forest;
     p.num_tree_per_iteration = view.num_tree_per_iteration;
     p.num_output = view.num_output;
+    p.num_feature = view.num_feature;
     p.tree_begin = job.range.start_iteration * view.num_tree_per_iteration;
     if (forest->num_trees() < p.tree_begin + job.range.num_iteration * view.num_tree_per_iteration) {
       Log::Fatal("CUDA predictor: the packed model has %d trees, the prediction needs %d", forest->num_trees(),
@@ -1160,19 +1183,19 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
     stats->forest_bytes += forest->Bytes();
     prepared.push_back(p);
   }
-  // spans: every block about the same work, the whole batch at least eight blocks per multiprocessor
+  // spans: every block about the same work, the whole batch at least sixteen blocks per multiprocessor
   int64_t total_work = 0, total_base = 0;
   for (const PreparedJob& p : prepared) {
     total_work += p.work;
     total_base += p.base_blocks;
   }
   const double block_work = static_cast<double>(total_work) /
-                            static_cast<double>(std::max<int64_t>(8 * limits.sms, total_base));
+                            static_cast<double>(std::max<int64_t>(16 * limits.sms, total_base));
   for (PreparedJob& p : prepared) {
     const CUDAPredictJob& job = jobs[p.index];
     const int64_t target = std::max<int64_t>(
         p.base_blocks, static_cast<int64_t>(std::ceil(static_cast<double>(p.work) / std::max(block_work, 1.0))));
-    p.plan = ChoosePairwisePlan(device_id, job.num_row, job.num_col, p.num_tree_per_iteration,
+    p.plan = ChoosePairwisePlan(device_id, job.num_row, job.num_col, p.num_feature, p.num_tree_per_iteration,
                                 job.range.num_iteration, elem, p.forest->max_depth(), target);
     p.plan.compact = p.forest->compact();
     p.plan.ilp = 8;   // the batched kernel is built for 8 walks in flight

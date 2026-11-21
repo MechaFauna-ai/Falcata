@@ -58,11 +58,12 @@ struct PackedNode {
 };
 
 /*!
- * \brief The compact layout the default mode walks (when the model fits it): each tree is a run of slots in depth-first
- *        order, a node's left child in the next slot and its right child `offset` slots on; a leaf's slot holds its
- *        value (a double), so a walk ends with the load that reaches the leaf. A slot is 8 bytes for float thresholds
+ * \brief The compact layout the default mode walks (when the model fits it): each tree is a run of slots in
+ *        breadth-first order (its top levels share the first cache lines), a node's two children in adjacent slots
+ *        `offset` slots on (left, then right); a leaf's slot holds its value (a double), so a walk ends with the load
+ *        that reaches the leaf. A slot is 8 bytes for float thresholds
  *        (CompactSlot<float>: threshold or categorical range index, meta) and 16 for double thresholds. meta holds the
- *        feature in its low `feature_bits` bits, the right child's offset up to bit 26, then the flags below. Models
+ *        feature in its low `feature_bits` bits, the children's offset up to bit 26, then the flags below. Models
  *        with linear leaves, vector leaves, or a feature index or subtree that does not fit stay on PackedNode only;
  *        the layout changes no result.
  */
@@ -179,6 +180,8 @@ struct PairwisePlan {
   int ilp = 8;
   bool stage_rows = true;
   bool compact = true;      // walk the compact layout when the model has it
+  int stage_cols = 0;       // a staged row covers max(input columns, stage_cols): the model's features
+  int group_lanes = 1;      // lanes that share one group's walks (2, 4 or 8 for small batches)
   int block_threads = 256;
 };
 

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace Falcata {
@@ -41,6 +42,13 @@ struct GlobalRow {
     }
     return SnapZero(base[static_cast<int64_t>(feature) * col_stride]);
   }
+};
+
+/*! \brief reads features of one row staged in shared memory over at least the model's features (no bounds check) */
+template <typename TIn>
+struct StagedRow {
+  const TIn* base;
+  __device__ __forceinline__ TIn operator()(uint32_t feature) const { return base[feature]; }
 };
 
 /*! \brief reads features of one row staged (already zero-snapped, zero past the input's columns) in shared memory */
@@ -412,10 +420,11 @@ __device__ __forceinline__ bool CategoryGoesLeft(uint32_t range, double v, const
   return word < word_count && ((forest.cat_words[word_begin + word] >> (iv % 32)) & 1u);
 }
 
-// one level: moves p to the child and loads it into s; true when that child is a leaf (s then holds its value)
+// one level from slot `pos` (an internal node): returns the child's slot; *leaf tells whether that child is a leaf
 template <typename TIn, typename TThr, bool HAS_CAT, typename Row>
-__device__ __forceinline__ bool SlotStep(const DeviceForestView<TThr>& forest, const Row& row,
-                                         const CompactSlot<TThr>*& p, CompactSlot<TThr>& s) {
+__device__ __forceinline__ uint32_t SlotStep(const DeviceForestView<TThr>& forest, const Row& row, uint32_t pos,
+                                             bool* leaf) {
+  const CompactSlot<TThr> s = forest.slots[pos];
   const uint32_t meta = s.meta;
   const uint32_t low = meta & kSlotLowMask;
   const TIn x = row(low & ((1u << forest.feature_bits) - 1u));
@@ -425,52 +434,103 @@ __device__ __forceinline__ bool SlotStep(const DeviceForestView<TThr>& forest, c
   } else {
     left = GoesLeft<TIn, TThr>(x, SlotThreshold(s), meta);
   }
-  p += left ? 1u : (low >> forest.feature_bits);
-  s = *p;
-  return (meta & (left ? kSlotLeftLeaf : kSlotRightLeaf)) != 0;
+  *leaf = (meta & (left ? kSlotLeftLeaf : kSlotRightLeaf)) != 0;
+  return pos + (low >> forest.feature_bits) + (left ? 0u : 1u);
 }
 
-// GroupSum on the compact layout
+// GroupSum on the compact layout: a walk in flight is one slot index (the slot is read at each step)
 template <typename TIn, typename TThr, bool HAS_CAT, int ILP, typename Row>
 __device__ __forceinline__ double SlotGroupSum(const DeviceForestView<TThr>& forest, const Row& row, int tree0,
                                                int stride, int count) {
   double sum = 0.0;
   for (int j0 = 0; j0 < count; j0 += ILP) {
-    const CompactSlot<TThr>* p[ILP];
-    CompactSlot<TThr> s[ILP];
-    bool done[ILP];
+    uint32_t pos[ILP];
+    unsigned walking = 0;   // bit u: walk u is at an internal node
     #pragma unroll
     for (int u = 0; u < ILP; ++u) {
+      pos[u] = 0;
       if (j0 + u < count) {
         const int32_t start = forest.slot_start[tree0 + (j0 + u) * stride];
-        p[u] = forest.slots + (start >= 0 ? start : ~start);
-        done[u] = start < 0;
-        s[u] = *p[u];
-      } else {
-        p[u] = forest.slots;
-        done[u] = true;
-        s[u] = CompactSlot<TThr>();
+        pos[u] = static_cast<uint32_t>(start >= 0 ? start : ~start);
+        walking |= (start >= 0 ? 1u : 0u) << u;
       }
     }
-    bool active = true;
-    while (active) {
-      active = false;
+    while (walking != 0u) {
       #pragma unroll
       for (int u = 0; u < ILP; ++u) {
-        if (!done[u]) {
-          done[u] = SlotStep<TIn, TThr, HAS_CAT>(forest, row, p[u], s[u]);
-          active |= !done[u];
+        if (walking & (1u << u)) {
+          bool leaf;
+          pos[u] = SlotStep<TIn, TThr, HAS_CAT>(forest, row, pos[u], &leaf);
+          if (leaf) {
+            walking &= ~(1u << u);
+          }
         }
       }
     }
     #pragma unroll
     for (int u = 0; u < ILP; ++u) {
       if (j0 + u < count) {
-        sum = __dadd_rn(sum, SlotValue(s[u]));
+        sum = __dadd_rn(sum, SlotValue(forest.slots[pos[u]]));
       }
     }
   }
   return sum;
+}
+
+// the leaf values (not their sum) of `count` <= 4 trees tree0, tree0 + stride, ..., walked together
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, typename Row>
+__device__ __forceinline__ void WalkValues4(const DeviceForestView<TThr>& forest, const Row& row, int tree0,
+                                            int stride, int count, double (&v)[4]) {
+  if (COMPACT) {
+    uint32_t pos[4];
+    unsigned walking = 0;
+    #pragma unroll
+    for (int u = 0; u < 4; ++u) {
+      pos[u] = 0;
+      if (u < count) {
+        const int32_t start = forest.slot_start[tree0 + u * stride];
+        pos[u] = static_cast<uint32_t>(start >= 0 ? start : ~start);
+        walking |= (start >= 0 ? 1u : 0u) << u;
+      }
+    }
+    while (walking != 0u) {
+      #pragma unroll
+      for (int u = 0; u < 4; ++u) {
+        if (walking & (1u << u)) {
+          bool leaf;
+          pos[u] = SlotStep<TIn, TThr, HAS_CAT>(forest, row, pos[u], &leaf);
+          if (leaf) {
+            walking &= ~(1u << u);
+          }
+        }
+      }
+    }
+    #pragma unroll
+    for (int u = 0; u < 4; ++u) {
+      v[u] = u < count ? SlotValue(forest.slots[pos[u]]) : 0.0;
+    }
+  } else {
+    int node[4];
+    #pragma unroll
+    for (int u = 0; u < 4; ++u) {
+      node[u] = u < count ? forest.tree_root[tree0 + u * stride] : -1;
+    }
+    bool active = true;
+    while (active) {
+      active = false;
+      #pragma unroll
+      for (int u = 0; u < 4; ++u) {
+        if (node[u] >= 0) {
+          node[u] = Step<TIn, TThr, HAS_CAT>(forest, row, node[u]);
+          active |= node[u] >= 0;
+        }
+      }
+    }
+    #pragma unroll
+    for (int u = 0; u < 4; ++u) {
+      v[u] = u < count ? LeafValue<TIn, TThr, HAS_LINEAR>(forest, row, tree0 + u * stride, ~node[u]) : 0.0;
+    }
+  }
 }
 
 template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, int ILP, typename Row>
@@ -503,17 +563,19 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   double* stack = segsum + static_cast<size_t>(segs) * pair_cap;            // [levels][pairs]
   TIn* xs = reinterpret_cast<TIn*>(stack + static_cast<size_t>(plan.levels) * pair_cap);
   const int num_col = rows.num_col;
-  const int x_stride = num_col | 1;
+  // staged rows cover the model's features too (zeros past the input's columns), so reads need no bounds check
+  const int stage_cols = max(num_col, plan.stage_cols);
+  const int x_stride = stage_cols | 1;
   const int64_t row0 = tile * tile_rows;
   const int valid_rows = static_cast<int>(min(static_cast<int64_t>(tile_rows), rows.num_row - row0));
   if (STAGE) {
-    const int64_t total = static_cast<int64_t>(tile_rows) * num_col;
+    const int64_t total = static_cast<int64_t>(tile_rows) * stage_cols;
     const bool column_major = rows.row_stride == 1 && rows.col_stride != 1;
     for (int64_t i = threadIdx.x; i < total; i += blockDim.x) {
-      const int64_t rr = column_major ? i % tile_rows : i / num_col;
-      const int f = static_cast<int>(column_major ? i / tile_rows : i - rr * num_col);
+      const int64_t rr = column_major ? i % tile_rows : i / stage_cols;
+      const int f = static_cast<int>(column_major ? i / tile_rows : i - rr * stage_cols);
       const int64_t r = row0 + rr;
-      xs[rr * x_stride + f] = r < rows.num_row
+      xs[rr * x_stride + f] = r < rows.num_row && f < num_col
           ? SnapZero(rows.data[r * rows.row_stride + static_cast<int64_t>(f) * rows.col_stride]) : TIn(0);
     }
     __syncthreads();
@@ -527,6 +589,53 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   for (int w = 0; w < waves; ++w) {
     const int gw0 = g_span + w * WG;
     // 1. one task per (row, output, group); rows vary fastest, so a warp's lanes share trees
+    if (plan.group_lanes > 1) {
+      // small batches: a group's trees are shared by group_lanes adjacent lanes, each walking its consecutive part;
+      // the in-order sum is chained through the lanes by shuffles, so it is the same sum
+      const int GL = plan.group_lanes;
+      const int per_lane = kPairwiseGroupIterations / GL;
+      const int lane_tasks = tasks * GL;
+      const int rounded_lanes = (lane_tasks + 31) / 32 * 32;
+      for (int base = threadIdx.x - lane; base < rounded_lanes; base += blockDim.x) {
+        const int t = base + lane;
+        const int j = t % GL;
+        const int task = t / GL;
+        const int r = task % tile_rows;
+        const int rest = task / tile_rows;
+        const int kk = rest % kb;
+        const int gw = rest / kb;
+        const int g = gw0 + gw;
+        double v[4];
+        int count = 0;
+        if (t < lane_tasks && r < valid_rows && g < num_groups) {
+          const int it0 = g * kPairwiseGroupIterations + j * per_lane;
+          count = max(0, min(per_lane, num_iteration - it0));
+          const int tree0 = tree_begin + it0 * K + k0 + kk;
+          if (STAGE) {
+            const StagedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride};
+            WalkValues4<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT>(forest, row, tree0, K, count, v);
+          } else {
+            const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
+            WalkValues4<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT>(forest, row, tree0, K, count, v);
+          }
+        }
+        double acc = 0.0;
+        for (int l = 0; l < GL; ++l) {
+          if (j == l) {
+            #pragma unroll
+            for (int u = 0; u < 4; ++u) {
+              if (u < count) {
+                acc = __dadd_rn(acc, v[u]);
+              }
+            }
+          }
+          acc = __shfl_sync(0xffffffffu, acc, (lane & ~(GL - 1)) + l);
+        }
+        if (t < lane_tasks && j == 0) {
+          part[gw * part_stride + r + tile_rows * kk] = acc;
+        }
+      }
+    } else {
     for (int t = threadIdx.x; t < tasks; t += blockDim.x) {
       const int r = t % tile_rows;
       const int rest = t / tile_rows;
@@ -539,7 +648,7 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
         const int count = min(kPairwiseGroupIterations, num_iteration - it0);
         const int tree0 = tree_begin + it0 * K + k0 + kk;
         if (STAGE) {
-          const SharedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride, num_col};
+          const StagedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride};
           p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
         } else {
           const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
@@ -547,6 +656,7 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
         }
       }
       part[gw * part_stride + r + tile_rows * kk] = p;
+    }
     }
     __syncthreads();
     // 2. aligned segments of `seg` group sums by warp shuffles; lanes hold consecutive groups of one pair
@@ -1056,7 +1166,7 @@ size_t PairwiseSharedBytes(const PairwisePlan& plan, int num_col, size_t input_e
                   static_cast<size_t>(plan.wave_groups / plan.seg) * pair_cap +
                   static_cast<size_t>(plan.levels) * pair_cap) * sizeof(double);
   if (plan.stage_rows) {
-    bytes += static_cast<size_t>(plan.tile_rows) * (num_col | 1) * input_elem;
+    bytes += static_cast<size_t>(plan.tile_rows) * (std::max(num_col, plan.stage_cols) | 1) * input_elem;
   }
   return bytes;
 }

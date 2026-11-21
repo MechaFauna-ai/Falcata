@@ -1398,9 +1398,10 @@ inline bool FalcataVerifyEnabled() {
  *    block) and ``predict_tile_trees=N`` (trees per tile) set its shape: for benchmarks; both kernels are exact, so
  *    none changes any result
  *  - ``predict_wave_groups=N``, ``predict_spans=N``, ``predict_target_blocks=N``, ``predict_stage=0|1`` and
- *    ``predict_compact=0|1`` set the shape of the default (pairwise) mode's kernel: groups per wave, tree spans per
- *    row tile, the grid the span count aims for, whether rows are staged in shared memory, and which tree layout it
- *    walks; ``predict_tile_rows`` and ``predict_ilp`` apply to it too. The pairwise sum is one fixed order, so none
+ *    ``predict_compact=0|1``, ``predict_threads=N`` and ``predict_group_lanes=1|2|4|8`` set the shape of the default (pairwise) mode's kernel: groups
+ *    per wave, tree spans per row tile, the grid the span count aims for, whether rows are staged in shared memory,
+ *    which tree layout it walks, threads per block (a wave's tasks beyond them loop), and the lanes sharing one
+ *    group's walks; ``predict_tile_rows`` and ``predict_ilp`` apply to it too. The pairwise sum is one fixed order, so none
  *    of them changes a result
  *  - ``predict_chunk_rows=N`` the CUDA predictor copies a host input to the device N rows at a time (tests the
  *    chunked path on small inputs); does not change any result
@@ -1432,6 +1433,8 @@ struct FalcataDebugOptions {
   int predict_target_blocks = 0;    // 0 = the plan's
   int predict_stage = -1;           // -1 = the plan's, 0 = rows from global memory, 1 = staged
   int predict_compact = -1;         // -1 = the plan's, 0 = the node layout, 1 = the compact layout where it exists
+  int predict_threads = 0;          // 0 = the plan's: threads per block of the default mode (tasks beyond loop)
+  int predict_group_lanes = 0;      // 0 = the plan's: lanes sharing one group's walks (1, 2, 4 or 8)
 };
 
 inline const FalcataDebugOptions& FalcataDebug() {
@@ -1504,6 +1507,10 @@ inline const FalcataDebugOptions& FalcataDebug() {
         o.predict_target_blocks = std::atoi(token.c_str() + 22);
       } else if (token.rfind("predict_stage=", 0) == 0) {
         o.predict_stage = std::atoi(token.c_str() + 14) != 0 ? 1 : 0;
+      } else if (token.rfind("predict_group_lanes=", 0) == 0) {
+        o.predict_group_lanes = std::atoi(token.c_str() + 20);
+      } else if (token.rfind("predict_threads=", 0) == 0) {
+        o.predict_threads = std::atoi(token.c_str() + 16);
       } else if (token.rfind("predict_compact=", 0) == 0) {
         o.predict_compact = std::atoi(token.c_str() + 16) != 0 ? 1 : 0;
       } else if (token.rfind("predict_chunk_rows=", 0) == 0) {
