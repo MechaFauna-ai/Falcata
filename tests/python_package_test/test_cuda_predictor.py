@@ -400,11 +400,12 @@ print("OK")
     "debug",
     [
         "predict_kernel=row",
-        "predict_kernel=ilp,predict_ilp=2",
-        "predict_kernel=ilp,predict_ilp=8",
+        "predict_kernel=row,predict_ilp=1",
+        "predict_kernel=row,predict_ilp=8",
         "predict_kernel=tile",
-        "predict_kernel=tile,predict_tile_rows=3",
-        "predict_kernel=tile,predict_tile_rows=64",
+        "predict_kernel=tile,predict_ilp=1,predict_tile_rows=5,predict_tile_trees=7",
+        "predict_kernel=tile,predict_ilp=4,predict_tile_rows=40",
+        "predict_kernel=tile,predict_tile_rows=3,predict_tile_trees=1",
         "predict_chunk_rows=37",
     ],
 )

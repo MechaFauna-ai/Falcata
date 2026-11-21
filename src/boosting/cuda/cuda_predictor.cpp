@@ -15,7 +15,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
+#include <type_traits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -105,11 +107,14 @@ class OwnedStream {
     cudaStreamSynchronize(stream_);
     cudaStreamDestroy(stream_);
   }
+  OwnedStream(const OwnedStream&) = delete;
+  OwnedStream& operator=(const OwnedStream&) = delete;
   cudaStream_t get() const { return stream_; }
 
  private:
   cudaStream_t stream_ = nullptr;
 };
+
 
 }  // namespace
 
@@ -359,23 +364,31 @@ namespace {
 
 // the kernel for a launch: row-parallel when the rows alone fill the device, else tree-parallel tiles; FALCATA_DEBUG
 // predict_* tokens override (benchmarks; every kernel gives the same result)
-PredictPlan ChoosePlan(int64_t num_row, int num_col, int num_tree_per_iteration, size_t elem) {
+PredictPlan ChoosePlan(int64_t num_row, int num_col, int num_tree_per_iteration, size_t elem, int num_tree) {
+  const int K = num_tree_per_iteration;
   PredictPlan plan;
   int device = 0, sms = 1;
   CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
   CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device));
-  const int64_t row_threads = num_row * num_tree_per_iteration;
-  plan.kernel = row_threads >= static_cast<int64_t>(sms) * 1024 ? PredictPlan::kRow : PredictPlan::kTile;
   const FalcataDebugOptions& debug = FalcataDebug();
-  if (debug.predict_kernel == "row" || debug.predict_kernel == "ilp") {
+  const std::string& forced = debug.predict_kernel;
+  if (forced == "row") {
     plan.kernel = PredictPlan::kRow;
-  } else if (debug.predict_kernel == "tile") {
-    plan.kernel = PredictPlan::kTile;
-  } else if (!debug.predict_kernel.empty()) {
-    Log::Fatal("FALCATA_DEBUG predict_kernel=%s: expected row, ilp or tile", debug.predict_kernel.c_str());
+  } else if (forced.empty() || forced == "tile") {
+    plan.kernel = PredictPlan::kTileWs;
+  } else {
+    Log::Fatal("FALCATA_DEBUG predict_kernel=%s: expected row or tile", forced.c_str());
   }
-  if (debug.predict_kernel == "row") {
-    plan.ilp = 1;
+  // tiles of 8 rows; 4 when 8 would leave fewer than two blocks per multiprocessor (small batches)
+  plan.tile_rows = (num_row + 7) / 8 < 2 * sms ? 4 : 8;
+  // wide rows: staging copies every column of a row once, and pays when the walks read more features than that
+  // (about eight per tree); then as many rows (8, 4, 2 or 1) as fit in 48 KiB, two blocks per multiprocessor
+  // (5000 columns: 2.4x the 8-row tile read from global memory; a 559-tree model on 6287 columns gains nothing)
+  if (TileWsSharedBytes(plan, num_col, elem, K) > (size_t(48) << 10) &&
+      static_cast<int64_t>(num_tree) * 8 >= num_col) {
+    while (plan.tile_rows > 1 && TileWsSharedBytes(plan, num_col, elem, K) > (size_t(48) << 10)) {
+      plan.tile_rows /= 2;
+    }
   }
   if (debug.predict_ilp > 0) {
     plan.ilp = debug.predict_ilp;
@@ -383,10 +396,21 @@ PredictPlan ChoosePlan(int64_t num_row, int num_col, int num_tree_per_iteration,
   if (debug.predict_tile_rows > 0) {
     plan.tile_rows = std::min(debug.predict_tile_rows, 256);
   }
+  if (debug.predict_tile_trees > 0) {
+    plan.tile_trees = std::min(debug.predict_tile_trees, 4096);
+  }
   const size_t budget = std::min<size_t>(MaxSharedBytesPerBlock(), size_t(96) << 10);
-  plan.stage_rows = TileSharedBytes(plan, num_col, elem) <= budget;
-  while (TileSharedBytes(plan, num_col, elem) > budget && plan.tile_trees > 32) {
+  plan.stage_rows = true;
+  plan.stage_rows = TileWsSharedBytes(plan, num_col, elem, K) <= budget;
+  while (TileWsSharedBytes(plan, num_col, elem, K) > budget && plan.tile_trees > 16) {
     plan.tile_trees /= 2;
+  }
+  if (plan.kernel == PredictPlan::kTileWs && TileWsSharedBytes(plan, num_col, elem, K) > budget) {
+    // so many outputs that one block cannot hold its rows' running sums: the row kernel needs no shared memory
+    if (!forced.empty()) {
+      Log::Fatal("FALCATA_DEBUG predict_kernel=tile: %d outputs per row do not fit in a block's shared memory", K);
+    }
+    plan.kernel = PredictPlan::kRow;
   }
   return plan;
 }
@@ -417,7 +441,8 @@ void RunRows(const CUDAPackedForest& forest, const Boosting::TreeRangeView& view
                                        ctx.contrib_scratch, stream);
     }
   } else {
-    const PredictPlan plan = ChoosePlan(rows.num_row, rows.num_col, view.num_tree_per_iteration, sizeof(T));
+    const PredictPlan plan = ChoosePlan(rows.num_row, rows.num_col, view.num_tree_per_iteration, sizeof(T),
+                                        num_iteration * view.num_tree_per_iteration);
     LaunchPredictRawKernel<T, T>(fv, rows, tree_begin, num_iteration, view.num_tree_per_iteration, view.num_output,
                                  view.vector_leaf, plan, reinterpret_cast<double*>(out), stream);
   }
@@ -528,31 +553,55 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   size_t free_bytes = 0, total_bytes = 0;
   CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &total_bytes));
   const size_t row_bytes = std::max<size_t>(1, static_cast<size_t>(req.num_col)) * elem + num_output * out_elem;
-  const size_t budget = std::min<size_t>(std::max<size_t>(free_bytes / 4, size_t(64) << 20), size_t(1) << 30);
+  // two chunks in flight: the next chunk is copied while the kernel runs on the current one
+  const size_t budget = std::min<size_t>(std::max<size_t>(free_bytes / 8, size_t(32) << 20), size_t(512) << 20);
   int64_t chunk_rows = std::max<int64_t>(1, std::min<int64_t>(req.num_row, budget / row_bytes));
   if (FalcataDebug().predict_chunk_rows > 0) {
     chunk_rows = std::min<int64_t>(req.num_row, FalcataDebug().predict_chunk_rows);
   }
   const int64_t num_chunks = (req.num_row + chunk_rows - 1) / chunk_rows;
-  CUDAVector<char> in_buf(static_cast<size_t>(chunk_rows) * req.num_col * elem + 1);
-  CUDAVector<char> out_buf(static_cast<size_t>(chunk_rows) * num_output * out_elem + 1);
-  stats->scratch_bytes += VectorBytes(in_buf) + VectorBytes(out_buf);
+  const int lanes = num_chunks > 1 ? 2 : 1;
+  std::vector<CUDAVector<char>> in_buf(lanes), out_buf(lanes);
+  std::vector<OwnedStream> streams(lanes);
+  for (int l = 0; l < lanes; ++l) {
+    in_buf[l].Resize(static_cast<size_t>(chunk_rows) * req.num_col * elem + 1);
+    out_buf[l].Resize(static_cast<size_t>(chunk_rows) * num_output * out_elem + 1);
+    stats->scratch_bytes += VectorBytes(in_buf[l]) + VectorBytes(out_buf[l]);
+  }
+  // the second lane's contribution kernels run beside the first's: their own path buffers
+  RunContext lane_ctx[2] = {ctx, ctx};
+  CUDAVector<char> contrib_scratch_2;
+  if (contrib && lanes == 2) {
+    contrib_scratch_2.Resize(contrib_scratch.Size());
+    lane_ctx[1].contrib_scratch = contrib_scratch_2.RawData();
+    stats->scratch_bytes += VectorBytes(contrib_scratch_2);
+  }
   stats->num_chunks = num_chunks;
   stats->chunk_rows = chunk_rows;
-  OwnedStream owned_stream;
-  cudaStream_t stream = owned_stream.get();
   const char* src = reinterpret_cast<const char*>(req.data);
   char* dst = reinterpret_cast<char*>(req.out);
+  auto copy_out = [&](int64_t c) {
+    const int l = static_cast<int>(c % lanes);
+    const int64_t r0 = c * chunk_rows;
+    const int64_t nr = std::min<int64_t>(chunk_rows, req.num_row - r0);
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(dst + r0 * num_output * out_elem, out_buf[l].RawData(),
+                                         static_cast<size_t>(nr) * num_output * out_elem, cudaMemcpyDeviceToHost,
+                                         streams[l].get()));
+  };
   for (int64_t c = 0; c < num_chunks; ++c) {
+    const int l = static_cast<int>(c % lanes);
+    cudaStream_t stream = streams[l].get();
     const int64_t r0 = c * chunk_rows;
     const int64_t nr = std::min<int64_t>(chunk_rows, req.num_row - r0);
     if (req.num_col > 0) {
+      // the chunk's rows as one contiguous device block, in the input's layout
+      // pageable copies (a pinned staging copy measured slower: the host memcpy into it costs more than it saves)
       if (row_major) {
-        CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(in_buf.RawData(), src + r0 * req.num_col * elem,
+        CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(in_buf[l].RawData(), src + r0 * req.num_col * elem,
                                              static_cast<size_t>(nr) * req.num_col * elem, cudaMemcpyHostToDevice,
                                              stream));
       } else {
-        CUDASUCCESS_OR_FATAL(cudaMemcpy2DAsync(in_buf.RawData(), static_cast<size_t>(nr) * elem, src + r0 * elem,
+        CUDASUCCESS_OR_FATAL(cudaMemcpy2DAsync(in_buf[l].RawData(), static_cast<size_t>(nr) * elem, src + r0 * elem,
                                                static_cast<size_t>(req.num_row) * elem,
                                                static_cast<size_t>(nr) * elem, req.num_col, cudaMemcpyHostToDevice,
                                                stream));
@@ -561,17 +610,23 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
     const int64_t rs = row_major ? req.num_col : 1;
     const int64_t cs = row_major ? 1 : nr;
     if (is_double) {
-      DeviceRows<double> rows{reinterpret_cast<const double*>(in_buf.RawData()), nr, req.num_col, rs, cs};
-      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf.RawData(), stream, ctx);
+      DeviceRows<double> rows{reinterpret_cast<const double*>(in_buf[l].RawData()), nr, req.num_col, rs, cs};
+      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf[l].RawData(), stream,
+              lane_ctx[l]);
     } else {
-      DeviceRows<float> rows{reinterpret_cast<const float*>(in_buf.RawData()), nr, req.num_col, rs, cs};
-      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf.RawData(), stream, ctx);
+      DeviceRows<float> rows{reinterpret_cast<const float*>(in_buf[l].RawData()), nr, req.num_col, rs, cs};
+      RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf[l].RawData(), stream,
+              lane_ctx[l]);
     }
-    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(dst + r0 * num_output * out_elem, out_buf.RawData(),
-                                         static_cast<size_t>(nr) * num_output * out_elem, cudaMemcpyDeviceToHost,
-                                         stream));
+    // the previous chunk's result is read back only now, so its kernel overlapped this chunk's copy
+    if (c > 0) {
+      copy_out(c - 1);
+    }
   }
-  CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
+  copy_out(num_chunks - 1);
+  for (auto& st : streams) {
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(st.get()));
+  }
   if (convert) {
     ConvertOnHost(boosting, range, reinterpret_cast<double*>(req.out), req.num_row, num_output);
   }

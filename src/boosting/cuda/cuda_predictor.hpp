@@ -94,18 +94,23 @@ struct CUDAPredictStats {
 };
 
 /*!
- * \brief How raw scores are computed; every kernel adds each output's leaf values in tree order, so all are exact.
- *  - kRow: a thread per row walks the trees, `ilp` of them at a time (independent walks hide memory latency);
- *  - kTile: a block stages `tile_rows` rows in shared memory and its threads walk different trees of them, each
- *    tile's leaf values summed in tree order by one thread per row; for few rows (the GPU needs tree parallelism)
- *    and for wide rows (one coalesced read of each row instead of a gather per split).
+ * \brief How raw scores are computed; both kernels add each output's leaf values in tree order, so both are exact.
+ *  - kTileWs (the plan's choice): a block stages `tile_rows` rows in shared memory; warp 0 keeps their running sums
+ *    (lane r adds row r's leaf values in tree order) while the other warps walk the next tile of `tile_trees` trees
+ *    for every (row, tree) pair, `ilp` walks in flight per thread; the tiles' leaf values are double-buffered.
+ *  - kRow: a thread per row walks the trees, `ilp` of them at a time; for models with so many outputs per row that
+ *    a block cannot hold its rows' sums.
+ * Measured alternatives that lost (benchmarks/predict_gpu.py rounds, docs/performance.md): a thread per row for
+ * every shape, tiles summed by one thread per row after a barrier, an 8-byte depth-first node layout, tree nodes
+ * staged in shared memory, and two passes (all leaf values, then the sums) for small batches.
  */
 struct PredictPlan {
-  enum Kernel { kRow, kTile } kernel = kRow;
-  int ilp = 4;
+  enum Kernel { kRow, kTileWs } kernel = kTileWs;
+  int ilp = 2;
   int tile_rows = 8;
-  int tile_trees = 256;
-  bool stage_rows = true;   // kTile: rows in shared memory (else read from global memory)
+  int tile_trees = 64;
+  bool stage_rows = true;   // rows in shared memory (else read from global memory)
+  int block_threads = 256;  // warp 0 sums, the others walk trees
 };
 
 /*! \brief launchers (cuda_predictor.cu); out is row-major [num_row][num_output] doubles */
@@ -130,8 +135,8 @@ void LaunchPredictContribKernel(const DeviceForestView<TThr>& forest, const Devi
                                 void* scratch, cudaStream_t stream);
 size_t ContribScratchBytes(int max_depth);
 
-/*! \brief shared memory a kTile launch needs, and the most the device grants a block */
-size_t TileSharedBytes(const PredictPlan& plan, int num_col, size_t input_elem);
+/*! \brief shared memory a kTileWs launch needs, and the most the device grants a block */
+size_t TileWsSharedBytes(const PredictPlan& plan, int num_col, size_t input_elem, int num_tree_per_iteration);
 size_t MaxSharedBytesPerBlock();
 
 class CUDAPackedForest;

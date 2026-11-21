@@ -47,7 +47,8 @@ def _train(device, group, extra):
         **extra,
     }
     booster = flc.train(params, flc.Dataset(X, label=y, group=group, params=params), num_boost_round=5)
-    return booster.predict(X)
+    # tree-order sums on both devices, so the comparison sees the models only
+    return booster.predict(X, deterministic=True)
 
 
 _GROUPS = {"up_to_1024": [200] * 40, "up_to_2048": [1500, 1300, 1700], "sorted": [2600, 3100]}
@@ -80,7 +81,7 @@ _LEARNER_COUNT_ESTIMATE = pytest.mark.xfail(
     ],
 )
 def test_lambdarank_matches_cpu_cuda(group, extra):
-    # the same trees: identical predictions up to the order of the float additions in prediction itself
+    # the same trees: the same predictions (both predictors add in tree order); atol covers ulp-level leaf values
     np.testing.assert_allclose(_train("cuda", group, extra), _train("cpu", group, extra), rtol=0, atol=1e-12)
 
 
