@@ -6480,3 +6480,156 @@ class Booster:
                 self.__higher_better_inner_eval = [
                     name.startswith(("auc", "ndcg@", "map@", "average_precision")) for name in self.__name_inner_eval
                 ]
+
+
+def predict_many(
+    boosters: List["Booster"],
+    data: Any,
+    start_iteration: Any = 0,
+    num_iteration: Any = None,
+    raw_score: bool = False,
+    deterministic: bool = False,
+    **kwargs: Any,
+) -> List[Any]:
+    """Predict with several boosters on the GPU, in as few launches as possible.
+
+    Each job is one booster on one input, and gets exactly what
+    ``booster.predict(data, device="cuda", start_iteration=..., num_iteration=..., raw_score=..., deterministic=...)``
+    returns for it; in the default summation mode the jobs share kernel launches, which is what makes many small
+    predictions fast. Needs a CUDA build and a GPU (an error otherwise).
+
+    Parameters
+    ----------
+    boosters : list of Booster
+        The booster of each job; one booster may appear in several jobs (e.g. at several ``num_iteration``).
+    data : 2-D array, or list of 2-D arrays
+        One input for every job, or one per job: all numpy arrays (the results are numpy arrays), or all device
+        arrays (CuPy, PyTorch, any ``__cuda_array_interface__``) on one GPU (the results are device arrays of the
+        same library). The inputs of one call are all float32 or all float64; other dtypes are read as float32.
+        An input given to several jobs is copied to the device once.
+    start_iteration : int or list of int, optional (default=0)
+        For every job, or per job, as in ``Booster.predict``.
+    num_iteration : int, None, or list of them, optional (default=None)
+        For every job, or per job, as in ``Booster.predict`` (None: the best iteration if there is one and
+        ``start_iteration <= 0``, else every iteration from ``start_iteration``).
+    raw_score : bool, optional (default=False)
+        Whether to predict raw scores.
+    deterministic : bool, optional (default=False)
+        As in ``Booster.predict``: True adds each output's leaf values in tree order (bit-identical to the CPU
+        predictor); its jobs then run one after the other.
+    **kwargs
+        Other parameters for the prediction, shared by every job (``predict_disable_shape_check``,
+        ``gpu_device_id``).
+
+    Returns
+    -------
+    results : list
+        One prediction per job, in the order of ``boosters``.
+    """
+    boosters = list(boosters)
+    n = len(boosters)
+    if n == 0:
+        return []
+    if not _cuda_predictor_usable():
+        raise FalcataError("predict_many needs the CUDA predictor: a CUDA build of Falcata and a usable GPU")
+    inputs = list(data) if isinstance(data, (list, tuple)) else [data] * n
+    starts = list(start_iteration) if isinstance(start_iteration, (list, tuple)) else [start_iteration] * n
+    nums = list(num_iteration) if isinstance(num_iteration, (list, tuple)) else [num_iteration] * n
+    if not (len(inputs) == len(starts) == len(nums) == n):
+        raise ValueError(
+            f"predict_many: {n} boosters, {len(inputs)} inputs, {len(starts)} start_iteration and "
+            f"{len(nums)} num_iteration values"
+        )
+    on_device = hasattr(inputs[0], "__cuda_array_interface__")
+    prepared: Dict[int, Tuple[Any, int, int, int, int, int, int]] = {}
+    parts = []
+    stream = 0
+    for x in inputs:
+        if hasattr(x, "__cuda_array_interface__") != on_device:
+            raise TypeError("predict_many: the inputs must be all numpy arrays or all device arrays")
+        key = id(x)
+        if key not in prepared:
+            if on_device:
+                prepared[key] = _cuda_array_parts(x)
+                if not stream:
+                    stream = _cuda_array_stream(prepared[key][0])
+            else:
+                if not isinstance(x, np.ndarray) or x.ndim != 2:
+                    raise TypeError("predict_many takes 2-D numpy arrays or 2-D device arrays")
+                if x.dtype not in (np.float32, np.float64):
+                    x = x.astype(np.float32)  # as the CPU predictor reads every other dtype (exactly)
+                if not (x.flags["C_CONTIGUOUS"] or x.flags["F_CONTIGUOUS"]):
+                    x = np.ascontiguousarray(x)
+                nrow, ncol = x.shape
+                rs, cs = (ncol, 1) if x.flags["C_CONTIGUOUS"] else (1, nrow)
+                code = _C_API_DTYPE_FLOAT32 if x.dtype == np.float32 else _C_API_DTYPE_FLOAT64
+                prepared[key] = (x, x.ctypes.data, code, nrow, ncol, rs, cs)
+        parts.append(prepared[key])
+    codes = {p[2] for p in parts}
+    if len(codes) != 1:
+        raise TypeError("predict_many: the inputs of one call must be all float32 or all float64")
+    predict_type = _C_API_PREDICT_RAW_SCORE if raw_score else _C_API_PREDICT_NORMAL
+    outs: List[Any] = []
+    widths = []
+    resolved = []
+    for b, p, start, num in zip(boosters, parts, starts, nums, strict=True):
+        if num is None:
+            num = b.best_iteration if start <= 0 else -1
+        resolved.append((int(start), int(num)))
+        per_row = ctypes.c_int64(0)
+        _safe_call(
+            _LIB.FLC_BoosterCalcNumPredict(
+                b._handle,
+                ctypes.c_int(1),
+                ctypes.c_int(predict_type),
+                ctypes.c_int(int(start)),
+                ctypes.c_int(int(num)),
+                ctypes.byref(per_row),
+            )
+        )
+        width = per_row.value
+        shape = (p[3], width) if width != 1 else (p[3],)
+        outs.append(_empty_like_device(p[0], shape, np.float64) if on_device else np.empty(shape, dtype=np.float64))
+        widths.append(width)
+    c_handles = (ctypes.c_void_p * n)(*[b._handle.value for b in boosters])
+    c_data = (ctypes.c_void_p * n)(*[p[1] for p in parts])
+    for p in parts:
+        if max(p[3], abs(p[5]), abs(p[6])) > _MAX_INT32:
+            raise ValueError(
+                "predict_many: rows and strides of a job must fit in 32 bits; predict a larger matrix with "
+                "Booster.predict"
+            )
+    c_nrow = (ctypes.c_int32 * n)(*[p[3] for p in parts])
+    c_ncol = (ctypes.c_int32 * n)(*[p[4] for p in parts])
+    c_rs = (ctypes.c_int32 * n)(*[p[5] for p in parts])
+    c_cs = (ctypes.c_int32 * n)(*[p[6] for p in parts])
+    c_start = (ctypes.c_int * n)(*[r[0] for r in resolved])
+    c_num = (ctypes.c_int * n)(*[r[1] for r in resolved])
+    ptrs = [int(o.__cuda_array_interface__["data"][0]) if on_device else o.ctypes.data for o in outs]
+    c_out = (ctypes.c_void_p * n)(*ptrs)
+    c_len = (ctypes.c_int64 * n)()
+    _safe_call(
+        _LIB.FLC_BoostersPredictForMatCUDA(
+            ctypes.c_int(n),
+            c_handles,
+            c_data,
+            ctypes.c_int(codes.pop()),
+            c_nrow,
+            c_ncol,
+            c_rs,
+            c_cs,
+            ctypes.c_int(1 if on_device else 0),
+            ctypes.c_void_p(stream),
+            ctypes.c_int(predict_type),
+            c_start,
+            c_num,
+            _c_str(_param_dict_to_str(kwargs)),
+            ctypes.c_int(1 if deterministic else 0),
+            c_out,
+            c_len,
+        )
+    )
+    for i in range(n):
+        if c_len[i] != parts[i][3] * widths[i]:
+            raise FalcataError(f"predict_many: job {i} wrote {c_len[i]} values, expected {parts[i][3] * widths[i]}")
+    return outs

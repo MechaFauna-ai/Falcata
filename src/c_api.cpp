@@ -1261,6 +1261,41 @@ class Booster {
     cuda_predictor_.Predict(boosting_.get(), range, request, stats);
     *out_len = per_row * request.num_row;
   }
+
+  /*!
+  * \brief This booster's part of a batched CUDA prediction (FLC_BoostersPredictForMatCUDA), with PredictCUDA's checks;
+  *        the caller holds SharedLock() until the batch is done
+  */
+  CUDAPredictJob CUDAJob(int start_iteration, int num_iteration, const Config& config, int predict_type,
+                         const void* data, int64_t nrow, int32_t ncol, int64_t row_stride, int64_t col_stride,
+                         void* out, int64_t* out_len) const {
+    CheckPredictType(predict_type);
+    if (config.pred_early_stop) {
+      Log::Fatal("pred_early_stop is not implemented by the CUDA predictor; predict with device='cpu' to use it");
+    }
+    if (!config.predict_disable_shape_check && ncol != boosting_->MaxFeatureIdx() + 1) {
+      Log::Fatal("The number of features in data (%d) is not the same as it was in training data (%d).\n" \
+                 "You can set ``predict_disable_shape_check=true`` to discard this error, but please be aware what you are doing.",
+                 ncol, boosting_->MaxFeatureIdx() + 1);
+    }
+    CUDAPredictJob job;
+    job.boosting = boosting_.get();
+    job.predictor = &cuda_predictor_;
+    job.range = boosting_->ResolvePredictRange(start_iteration, num_iteration, false);
+    job.data = data;
+    job.num_row = nrow;
+    job.num_col = ncol;
+    job.row_stride = row_stride;
+    job.col_stride = col_stride;
+    job.out = out;
+    *out_len = boosting_->NumPredictOneRow(start_iteration, num_iteration, false, false) * nrow;
+    return job;
+  }
+
+  std::unique_ptr<yamc::shared_lock<yamc::alternate::shared_mutex>> SharedLock() const {
+    return std::unique_ptr<yamc::shared_lock<yamc::alternate::shared_mutex>>(
+        new yamc::shared_lock<yamc::alternate::shared_mutex>(&mutex_));
+  }
 #endif  // USE_CUDA
 
  private:
@@ -4353,6 +4388,95 @@ int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
     out_stats[2] = stats.num_chunks;
     out_stats[3] = stats.chunk_rows;
   }
+#endif  // USE_CUDA
+  API_END();
+}
+
+int FLC_BoostersPredictForMatCUDA(int num_jobs,
+                                   const BoosterHandle* handles,
+                                   const void* const* data,
+                                   int data_type,
+                                   const int32_t* nrow,
+                                   const int32_t* ncol,
+                                   const int32_t* row_stride,
+                                   const int32_t* col_stride,
+                                   int data_on_device,
+                                   void* stream,
+                                   int predict_type,
+                                   const int* start_iteration,
+                                   const int* num_iteration,
+                                   const char* parameter,
+                                   int deterministic,
+                                   void* const* out_result,
+                                   int64_t* out_len) {
+  API_BEGIN();
+#ifndef USE_CUDA
+  (void)num_jobs;
+  (void)handles;
+  (void)data;
+  (void)data_type;
+  (void)nrow;
+  (void)ncol;
+  (void)row_stride;
+  (void)col_stride;
+  (void)data_on_device;
+  (void)stream;
+  (void)predict_type;
+  (void)start_iteration;
+  (void)num_iteration;
+  (void)parameter;
+  (void)deterministic;
+  (void)out_result;
+  (void)out_len;
+  Log::Fatal("The CUDA predictor requires a CUDA build of Falcata");
+#else
+  if (num_jobs < 0) {
+    Log::Fatal("FLC_BoostersPredictForMatCUDA: negative number of jobs (%d)", num_jobs);
+  }
+  if (predict_type != C_API_PREDICT_NORMAL && predict_type != C_API_PREDICT_RAW_SCORE) {
+    Log::Fatal("FLC_BoostersPredictForMatCUDA: predicts normal or raw scores (C_API_PREDICT_NORMAL or "
+               "C_API_PREDICT_RAW_SCORE), got predict_type %d", predict_type);
+  }
+  std::unique_ptr<Config> parsed;
+  Config defaults;
+  if (parameter != nullptr && parameter[0] != '\0') {
+    parsed.reset(new Config());
+    parsed->Set(Config::Str2Map(parameter));
+  }
+  const Config& config = parsed != nullptr ? *parsed : defaults;
+  OMP_SET_NUM_THREADS(config.num_threads);
+  // each distinct booster is locked once, in address order (two batches never wait on each other's locks)
+  std::vector<const Booster*> boosters;
+  for (int i = 0; i < num_jobs; ++i) {
+    if (handles[i] == nullptr) {
+      Log::Fatal("FLC_BoostersPredictForMatCUDA: booster handle %d is null", i);
+    }
+    if (nrow[i] < 0 || ncol[i] < 0) {
+      Log::Fatal("FLC_BoostersPredictForMatCUDA: job %d has a negative shape", i);
+    }
+    boosters.push_back(reinterpret_cast<const Booster*>(handles[i]));
+  }
+  std::sort(boosters.begin(), boosters.end());
+  boosters.erase(std::unique(boosters.begin(), boosters.end()), boosters.end());
+  std::vector<std::unique_ptr<yamc::shared_lock<yamc::alternate::shared_mutex>>> locks;
+  for (const Booster* b : boosters) {
+    locks.push_back(b->SharedLock());
+  }
+  std::vector<Falcata::CUDAPredictJob> jobs(num_jobs);
+  for (int i = 0; i < num_jobs; ++i) {
+    jobs[i] = reinterpret_cast<const Booster*>(handles[i])->CUDAJob(
+        start_iteration[i], num_iteration[i], config, predict_type, data[i], nrow[i], ncol[i], row_stride[i],
+        col_stride[i], out_result[i], &out_len[i]);
+  }
+  Falcata::CUDAPredictRequest common;
+  common.data_type = data_type;
+  common.on_device = data_on_device != 0;
+  common.stream = reinterpret_cast<cudaStream_t>(stream);
+  common.predict_type = predict_type;
+  common.device_id = config.gpu_device_id;
+  common.deterministic = deterministic != 0;
+  Falcata::CUDAPredictStats stats;
+  Falcata::CUDAPredictor::PredictMany(jobs, common, &stats);
 #endif  // USE_CUDA
   API_END();
 }

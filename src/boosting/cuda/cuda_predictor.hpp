@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -188,6 +189,35 @@ void LaunchPredictRawKernel(const DeviceForestView<TThr>& forest, const DeviceRo
                             const PredictPlan& plan, double* out, cudaStream_t stream);
 
 /*!
+ * \brief One model's prediction in a batched launch (LaunchPredictPairwiseJobs): the default mode on rows of its own,
+ *        over its own iteration range, with its own plan; the job's blocks start at `block_begin` of the flattened grid
+ *        and its (row, output) cells at `cell_begin` of the combine pass.
+ */
+template <typename T>
+struct PairwiseJob {
+  DeviceForestView<T> forest;
+  DeviceRows<T> rows;
+  int tree_begin = 0;
+  int num_iteration = 0;
+  int num_tree_per_iteration = 1;
+  PairwisePlan plan;
+  double* out = nullptr;
+  double* partials = nullptr;
+  int64_t block_begin = 0;
+  int64_t cell_begin = 0;
+};
+
+/*!
+ * \brief Launches a batch of jobs that share the input type, the layout (compact when `compact`) and whether rows
+ *        are staged; `device_jobs` is the jobs' table in device memory (block_begin and cell_begin filled, ascending),
+ *        `jobs` the same table on the host. Each job's result equals its own LaunchPredictPairwiseKernel's.
+ */
+template <typename T>
+void LaunchPredictPairwiseJobs(const std::vector<PairwiseJob<T>>& jobs, const PairwiseJob<T>* device_jobs,
+                               bool has_categorical, bool compact, bool stage, size_t shared_bytes,
+                               cudaStream_t stream);
+
+/*!
  * \brief the default mode's launcher (scalar leaves): out is row-major [num_row][num_tree_per_iteration] doubles;
  *        `partials` holds plan.num_spans * num_row * num_tree_per_iteration doubles when plan.num_spans > 1
  */
@@ -218,6 +248,20 @@ size_t TileWsSharedBytes(const PredictPlan& plan, int num_col, size_t input_elem
 size_t MaxSharedBytesPerBlock();
 
 class CUDAPackedForest;
+class CUDAPredictor;
+
+/*! \brief One model's part of a CUDAPredictor::PredictMany request: its rows, its iteration range, its output */
+struct CUDAPredictJob {
+  const Boosting* boosting = nullptr;
+  CUDAPredictor* predictor = nullptr;   // the booster's predictor, which keeps its packed forests
+  Boosting::PredictRange range;
+  const void* data = nullptr;
+  int64_t num_row = 0;
+  int32_t num_col = 0;
+  int64_t row_stride = 0;
+  int64_t col_stride = 0;
+  void* out = nullptr;                  // doubles [num_row][num_output], where the input is (host or device)
+};
 
 /*! \brief A request to CUDAPredictor::Predict */
 struct CUDAPredictRequest {
@@ -246,13 +290,24 @@ class CUDAPredictor {
   void Predict(const Boosting* boosting, const Boosting::PredictRange& range, const CUDAPredictRequest& request,
                CUDAPredictStats* stats);
   void Invalidate();
+  /*!
+   * \brief Several models' normal or raw-score predictions in a few launches. `common` gives what every job shares:
+   *        data_type, on_device (device inputs on one device), stream, predict_type, device_id and deterministic.
+   *        The default mode batches every job whose model has scalar leaves and no linear leaves into launches of the
+   *        pairwise kernel (each job keeps its own plan, so its result equals its own Predict's); every other job,
+   *        and every job of the deterministic mode, runs through Predict one after the other.
+   */
+  static void PredictMany(const std::vector<CUDAPredictJob>& jobs, const CUDAPredictRequest& common,
+                          CUDAPredictStats* stats);
   /*! \brief a call's device scratch (the default mode's span sums): kept per device across calls, one call at a time */
   class Scratch;
 
  private:
-  std::shared_ptr<const CUDAPackedForest> GetForest(const Boosting* boosting, int device_id, bool double_thresholds);
+  std::shared_ptr<const CUDAPackedForest> GetForest(const Boosting* boosting, int device_id, bool double_thresholds,
+                                                    bool compact);
   std::mutex mutex_;
-  std::map<std::pair<int, bool>, std::shared_ptr<const CUDAPackedForest>> forests_;
+  // (device, double thresholds, compact layout)
+  std::map<std::tuple<int, bool, bool>, std::shared_ptr<const CUDAPackedForest>> forests_;
   std::mutex scratch_mutex_;
   std::map<std::pair<int, int>, std::unique_ptr<CUDAVector<char>>> scratch_;   // (device, stream lane)
 };

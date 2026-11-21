@@ -1577,6 +1577,56 @@ FALCATA_C_EXPORT int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
                                                     int64_t* out_stats);
 
 /*!
+ * \brief Make predictions of several boosters, each on its own dense matrix, with the native CUDA predictor, in as
+ *        few launches as the jobs allow.
+ * \note
+ * Job ``i`` predicts ``data[i]`` (``nrow[i]`` rows, ``ncol[i]`` columns, strides in elements) with ``handles[i]`` over
+ * ``num_iteration[i]`` iterations from ``start_iteration[i]``, into ``out_result[i]`` (``num_class * nrow[i]`` doubles,
+ * row-major, pre-allocated in the same memory as the data). The same booster, or the same data, may appear in several
+ * jobs (e.g. one model at several iteration counts); host data shared by jobs is copied to the device once. Every job
+ * gets exactly the result ``FLC_BoosterPredictForMatCUDA`` gives it alone; in the default mode jobs whose models have
+ * scalar, non-linear leaves share launches, other jobs (and every job with ``deterministic`` 1) run one after the
+ * other. The call returns when every result is written.
+ * \param num_jobs Number of jobs
+ * \param handles Booster of each job
+ * \param data Data pointer of each job: all in host memory, or all in the memory of one device
+ * \param data_type ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``, for every job
+ * \param nrow Rows of each job (32-bit, as ``FLC_DatasetCreateFromMats``; one larger matrix goes through
+ *        ``FLC_BoosterPredictForMatCUDA``)
+ * \param ncol Columns of each job
+ * \param row_stride Distance in elements between consecutive rows, per job (host data must be C- or F-contiguous)
+ * \param col_stride Distance in elements between consecutive columns, per job
+ * \param data_on_device 1 when every ``data`` and ``out_result`` is a device pointer, 0 for host memory
+ * \param stream ``cudaStream_t`` the device inputs were produced on (the prediction runs on it); ignored for host data
+ * \param predict_type ``C_API_PREDICT_NORMAL`` or ``C_API_PREDICT_RAW_SCORE``
+ * \param start_iteration Start iteration of each job
+ * \param num_iteration Number of iterations of each job, <= 0 means no limit
+ * \param parameter Other parameters for prediction, shared by the jobs (``predict_disable_shape_check``,
+ *        ``gpu_device_id``)
+ * \param deterministic 1 to add each output's leaf values in tree order (see ``FLC_BoosterPredictForMatCUDA``)
+ * \param out_result Output pointer of each job
+ * \param[out] out_len Length of each job's result
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_BoostersPredictForMatCUDA(int num_jobs,
+                                                     const BoosterHandle* handles,
+                                                     const void* const* data,
+                                                     int data_type,
+                                                     const int32_t* nrow,
+                                                     const int32_t* ncol,
+                                                     const int32_t* row_stride,
+                                                     const int32_t* col_stride,
+                                                     int data_on_device,
+                                                     void* stream,
+                                                     int predict_type,
+                                                     const int* start_iteration,
+                                                     const int* num_iteration,
+                                                     const char* parameter,
+                                                     int deterministic,
+                                                     void* const* out_result,
+                                                     int64_t* out_len);
+
+/*!
  * \brief Whether the native CUDA predictor can run here.
  * \param[out] out 1 for a CUDA build on a machine with the NVIDIA driver and at least one CUDA device, else 0
  * \return 0 when succeed, -1 when failure happens

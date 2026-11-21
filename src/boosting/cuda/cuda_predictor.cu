@@ -7,6 +7,8 @@
 #ifdef USE_CUDA
 
 #include <algorithm>
+#include <limits>
+#include <vector>
 
 namespace Falcata {
 
@@ -480,14 +482,15 @@ __device__ __forceinline__ double AnyGroupSum(const DeviceForestView<TThr>& fore
   return GroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, ILP>(forest, row, tree0, stride, count);
 }
 
+// one block of the default mode: row tile `tile`, span `span`, output chunk `chunk` of one model's prediction
 template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP>
-__global__ void PredictPairwiseKernel(const DeviceForestView<TThr> forest, const DeviceRows<TIn> rows, int tree_begin,
-                                      int num_iteration, int num_tree_per_iteration, const PairwisePlan plan,
-                                      double* out, double* partials) {
-  extern __shared__ __align__(16) unsigned char smem[];
+__device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows,
+                                              int tree_begin, int num_iteration, int num_tree_per_iteration,
+                                              const PairwisePlan& plan, double* out, double* partials,
+                                              int64_t tile, int span, int chunk, unsigned char* smem) {
   const int K = num_tree_per_iteration;
   const int tile_rows = plan.tile_rows;
-  const int k0 = blockIdx.z * plan.out_chunk;
+  const int k0 = chunk * plan.out_chunk;
   const int kb = min(plan.out_chunk, K - k0);
   const int pairs = tile_rows * kb;            // (row, output) pairs of the block; pair = r + tile_rows * kk
   const int WG = plan.wave_groups;
@@ -501,7 +504,7 @@ __global__ void PredictPairwiseKernel(const DeviceForestView<TThr> forest, const
   TIn* xs = reinterpret_cast<TIn*>(stack + static_cast<size_t>(plan.levels) * pair_cap);
   const int num_col = rows.num_col;
   const int x_stride = num_col | 1;
-  const int64_t row0 = static_cast<int64_t>(blockIdx.x) * tile_rows;
+  const int64_t row0 = tile * tile_rows;
   const int valid_rows = static_cast<int>(min(static_cast<int64_t>(tile_rows), rows.num_row - row0));
   if (STAGE) {
     const int64_t total = static_cast<int64_t>(tile_rows) * num_col;
@@ -516,7 +519,7 @@ __global__ void PredictPairwiseKernel(const DeviceForestView<TThr> forest, const
     __syncthreads();
   }
   const int num_groups = (num_iteration + kPairwiseGroupIterations - 1) / kPairwiseGroupIterations;
-  const int g_span = blockIdx.y * plan.span_groups;
+  const int g_span = span * plan.span_groups;
   const int span_end = min(g_span + plan.span_groups, num_groups);
   const int waves = (span_end - g_span + WG - 1) / WG;
   const int tasks = pairs * WG;
@@ -578,10 +581,73 @@ __global__ void PredictPairwiseKernel(const DeviceForestView<TThr> forest, const
       if (plan.num_spans == 1) {
         out[(row0 + r) * K + k] = v;
       } else {
-        partials[(static_cast<int64_t>(blockIdx.y) * rows.num_row + row0 + r) * K + k] = v;
+        partials[(static_cast<int64_t>(span) * rows.num_row + row0 + r) * K + k] = v;
       }
     }
   }
+}
+
+template <typename TIn, typename TThr, bool HAS_CAT, bool HAS_LINEAR, bool COMPACT, bool STAGE, int ILP>
+__global__ void PredictPairwiseKernel(const DeviceForestView<TThr> forest, const DeviceRows<TIn> rows, int tree_begin,
+                                      int num_iteration, int num_tree_per_iteration, const PairwisePlan plan,
+                                      double* out, double* partials) {
+  extern __shared__ __align__(16) unsigned char smem[];
+  PairwiseBlock<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, STAGE, ILP>(
+      forest, rows, tree_begin, num_iteration, num_tree_per_iteration, plan, out, partials, blockIdx.x, blockIdx.y,
+      blockIdx.z, smem);
+}
+
+// several models' predictions in one launch: the flattened grid is cut into each job's blocks (PairwiseJob)
+template <typename TIn, bool HAS_CAT, bool COMPACT, bool STAGE, int ILP>
+__global__ void PredictPairwiseJobsKernel(const PairwiseJob<TIn>* jobs, int num_jobs) {
+  extern __shared__ __align__(16) unsigned char smem[];
+  const int64_t block = blockIdx.x;
+  int lo = 0, hi = num_jobs - 1;
+  while (lo < hi) {   // the last job whose first block is not after this one
+    const int mid = (lo + hi + 1) / 2;
+    if (jobs[mid].block_begin <= block) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const PairwiseJob<TIn>& job = jobs[lo];
+  const int64_t local = block - job.block_begin;
+  const int64_t row_tiles = (job.rows.num_row + job.plan.tile_rows - 1) / job.plan.tile_rows;
+  const int64_t rest = local / row_tiles;
+  PairwiseBlock<TIn, TIn, HAS_CAT, false, COMPACT, STAGE, ILP>(
+      job.forest, job.rows, job.tree_begin, job.num_iteration, job.num_tree_per_iteration, job.plan, job.out,
+      job.partials, local % row_tiles, static_cast<int>(rest % job.plan.num_spans),
+      static_cast<int>(rest / job.plan.num_spans), smem);
+}
+
+// the jobs' span sums, added by the aligned tree: one thread per (job, row, output) cell
+template <typename TIn>
+__global__ void PairwiseJobsCombineKernel(const PairwiseJob<TIn>* jobs, int num_jobs, int64_t total_cells) {
+  const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= total_cells) {
+    return;
+  }
+  int lo = 0, hi = num_jobs - 1;
+  while (lo < hi) {
+    const int mid = (lo + hi + 1) / 2;
+    if (jobs[mid].cell_begin <= i) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const PairwiseJob<TIn>& job = jobs[lo];
+  if (job.plan.num_spans <= 1) {
+    return;
+  }
+  const int64_t cells = job.rows.num_row * job.num_tree_per_iteration;
+  const int64_t c = i - job.cell_begin;
+  double stack[32];
+  for (int s = 0; s < job.plan.num_spans; ++s) {
+    PairwisePush(stack, 1, static_cast<unsigned>(s), job.partials[static_cast<int64_t>(s) * cells + c]);
+  }
+  job.out[c] = PairwiseFinish(stack, 1, static_cast<unsigned>(job.plan.num_spans));
 }
 
 // the spans' subtree sums of one (row, output), added by the same aligned tree
@@ -1076,6 +1142,61 @@ template void LaunchPredictRawKernel<float, float>(const DeviceForestView<float>
                                                    int, int, bool, const PredictPlan&, double*, cudaStream_t);
 template void LaunchPredictRawKernel<double, double>(const DeviceForestView<double>&, const DeviceRows<double>&, int,
                                                      int, int, int, bool, const PredictPlan&, double*, cudaStream_t);
+template <typename T>
+void LaunchPredictPairwiseJobs(const std::vector<PairwiseJob<T>>& jobs, const PairwiseJob<T>* device_jobs,
+                               bool has_categorical, bool compact, bool stage, size_t shared_bytes,
+                               cudaStream_t stream) {
+  if (jobs.empty()) {
+    return;
+  }
+  int64_t blocks = 0, cells = 0;
+  int threads = 32;
+  bool combine = false;
+  for (const PairwiseJob<T>& job : jobs) {
+    blocks = job.block_begin + ((job.rows.num_row + job.plan.tile_rows - 1) / job.plan.tile_rows) *
+             job.plan.num_spans * ((job.num_tree_per_iteration + job.plan.out_chunk - 1) / job.plan.out_chunk);
+    cells = job.cell_begin + job.rows.num_row * job.num_tree_per_iteration;
+    threads = std::max(threads, job.plan.block_threads);
+    combine = combine || job.plan.num_spans > 1;
+  }
+  if (blocks > std::numeric_limits<int32_t>::max()) {
+    Log::Fatal("CUDA predictor: a batch of %lld blocks is too large for one launch",
+               static_cast<long long>(blocks));  // NOLINT(runtime/int)
+  }
+  const int num_jobs = static_cast<int>(jobs.size());
+#define FLC_JOBS_KERNEL(CAT, COMPACT, STAGE)                                                                   \
+  {                                                                                                            \
+    auto kernel = PredictPairwiseJobsKernel<T, CAT, COMPACT, STAGE, 8>;                                        \
+    if (shared_bytes > (size_t(48) << 10)) {                                                                   \
+      CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,           \
+                                                static_cast<int>(shared_bytes)));                              \
+    }                                                                                                          \
+    kernel<<<static_cast<unsigned int>(blocks), threads, shared_bytes, stream>>>(device_jobs, num_jobs);       \
+  }
+  if (has_categorical) {
+    if (compact) {
+      if (stage) FLC_JOBS_KERNEL(true, true, true) else FLC_JOBS_KERNEL(true, true, false)
+    } else {
+      if (stage) FLC_JOBS_KERNEL(true, false, true) else FLC_JOBS_KERNEL(true, false, false)
+    }
+  } else {
+    if (compact) {
+      if (stage) FLC_JOBS_KERNEL(false, true, true) else FLC_JOBS_KERNEL(false, true, false)
+    } else {
+      if (stage) FLC_JOBS_KERNEL(false, false, true) else FLC_JOBS_KERNEL(false, false, false)
+    }
+  }
+#undef FLC_JOBS_KERNEL
+  if (combine) {
+    PairwiseJobsCombineKernel<T><<<Blocks(cells, 128), 128, 0, stream>>>(device_jobs, num_jobs, cells);
+  }
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
+template void LaunchPredictPairwiseJobs<float>(const std::vector<PairwiseJob<float>>&, const PairwiseJob<float>*,
+                                               bool, bool, bool, size_t, cudaStream_t);
+template void LaunchPredictPairwiseJobs<double>(const std::vector<PairwiseJob<double>>&, const PairwiseJob<double>*,
+                                                bool, bool, bool, size_t, cudaStream_t);
 template void LaunchPredictPairwiseKernel<float, float>(const DeviceForestView<float>&, const DeviceRows<float>&, int,
                                                         int, int, const PairwisePlan&, double*, double*,
                                                         cudaStream_t);
