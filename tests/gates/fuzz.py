@@ -9,8 +9,9 @@ and checks each one for:
      tree count matches the emission contract (via the same worker asserts
      as the lattice): every requested iteration, unless boosting saturated
      and stopped early -- which truncates WHOLE iterations only;
-  2. CUDA determinism (quant modes): the identical spec trained twice must be
-     bit-identical;
+  2. CUDA determinism (quant modes, and non-quantized specs that ask for the
+     opt-in cuda_plan key nonquant_deterministic:on): the identical spec
+     trained twice must be bit-identical;
   3. CPU quality reference (tolerant): the CUDA held-out metric must not fall
      behind a full-precision CPU model on the same data and model shape beyond
      tolerance, subject to the existing low-bin and bagging confirmation
@@ -119,6 +120,13 @@ def sample_spec(rng):
     }
     if spec["bagging_fraction"] < 1.0:
         spec["bagging_freq"] = 1
+    # Half of the non-quantized specs ask for the opt-in deterministic histograms
+    # (cuda_plan key nonquant_deterministic:on, which deterministic=true selects),
+    # so the determinism rerun below fuzzes that mode; the other half run the
+    # default plan's float-atomic kernels. The coin is the parity of data_seed,
+    # already drawn, so a --seed samples the same specs as before.
+    if quant_mode == "none" and spec["data_seed"] % 2 == 0:
+        spec["cuda_plan"] += ",nonquant_deterministic:on"
 
     # CPU-reference cost guard: the parity arm runs on 8 CPU threads under a
     # bounded timeout, and an unlucky joint draw (40k rows x 800 cols x 150
@@ -381,13 +389,17 @@ def check_spec(spec):
             f"saturation stop: cuda emitted {a['trees'] // (spec['num_class'] or 1)}/{spec['rounds']} iterations"
         )
     # Determinism rerun. Quantized training is bit-deterministic everywhere
-    # (integer atomics); non-quantized training too since the cuda_plan key
-    # nonquant_deterministic (default on: the float-atomic batched levels
-    # accumulate in 64-bit fixed point, the rest were deterministic already).
-    # Every spec is md5-checked except one that turns the key off. (Linear
-    # trees, ranking objectives and multi-plane vector-leaf trees stay
-    # nondeterministic; the fuzzer draws none of them.)
-    md5_checked = spec["quant_mode"] != "none" or "nonquant_deterministic:off" not in spec.get("cuda_plan", "")
+    # (integer atomics); non-quantized training only in its opt-in mode, the
+    # cuda_plan key nonquant_deterministic:on (the float-atomic batched levels
+    # then accumulate in 64-bit fixed point, the rest were deterministic
+    # already). sample_spec names the key on half of the non-quantized specs,
+    # and the corpus ends with key-on copies of six non-quantized specs: those
+    # are md5-checked. The others run the default plan's float-atomic kernels,
+    # whose models may differ run to run, and are checked for validity and CPU
+    # quality only. (Linear trees, ranking
+    # objectives and multi-plane vector-leaf trees stay nondeterministic; the
+    # fuzzer draws none of them.)
+    md5_checked = spec["quant_mode"] != "none" or "nonquant_deterministic:on" in spec.get("cuda_plan", "")
     if md5_checked:
         b = cuda_run(spec, "CUDA determinism rerun", "both pairs; CPU reference not run")
         if "error" in b:

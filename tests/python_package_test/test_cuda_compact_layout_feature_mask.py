@@ -70,7 +70,9 @@ def test_feature_sample_selects_bundled_columns_cuda():
     cpu_roots, _, cpu_pred = _train("cpu")
     # the CPU learner reaches the bundled one-hot signal (features 23 and 29) in the trees that sample it
     assert {23, 29} <= set(cpu_roots)
-    runs = {name: _train("cuda", plan) for name, plan in _PLANS.items()}
+    # the CUDA flows are compared bit for bit below: non-quantized, the deterministic histograms (cuda_plan key
+    # nonquant_deterministic, opt-in since 1.2)
+    runs = {name: _train("cuda", plan + ",nonquant_deterministic:on") for name, plan in _PLANS.items()}
     for name, (roots, _, pred) in runs.items():
         assert roots == cpu_roots, f"{name}: root split features differ from the CPU learner's"
         np.testing.assert_allclose(pred, cpu_pred, rtol=1e-4, atol=1e-4, err_msg=name)

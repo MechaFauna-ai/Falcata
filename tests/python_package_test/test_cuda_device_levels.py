@@ -292,11 +292,14 @@ def test_device_levels_nonquant_cuda(graph):
     # loop's model); device_levels:off and device_tree:off both keep the one-sync host loop with the double-slot
     # deterministic construct, the same model by construction, and on this fixture the device tree's too (both
     # constructs' sums are exact here: empirical, not guaranteed in general)
+    # (all with the deterministic histograms, cuda_plan key nonquant_deterministic, opt-in since 1.2: the models are
+    # compared bit for bit)
     X, y = _data(12000, 16, "binary", 67)
     p = _params("binary", 63, 6, "none", num_threads=1)
-    off = _model_md5({**p, "cuda_plan": "auto,device_levels:off"}, X, y, 6)
-    assert _model_md5({**p, "cuda_plan": "auto,device_tree:off,device_level_graph:" + graph}, X, y, 6) == off
-    assert _model_md5({**p, "cuda_plan": "auto,device_level_graph:" + graph}, X, y, 6) == off
+    det = ",nonquant_deterministic:on"
+    off = _model_md5({**p, "cuda_plan": "auto,device_levels:off" + det}, X, y, 6)
+    assert _model_md5({**p, "cuda_plan": "auto,device_tree:off,device_level_graph:" + graph + det}, X, y, 6) == off
+    assert _model_md5({**p, "cuda_plan": "auto,device_level_graph:" + graph + det}, X, y, 6) == off
 
 
 @_REQUIRES_CUDA

@@ -123,9 +123,12 @@ def test_dense_rowdata_nonquantized_untouched(shape):
     rows, cols, sparse_cols, zero_frac, nan_frac, levels, extra = SHAPES[shape]
     X, z = _data(rows, cols, sparse_cols, zero_frac, nan_frac, levels)
     params = {**BASE, **extra, "quant_mode": "none"}
-    first = _train(X, z, params, "")
-    assert first == _train(X, z, params, "")
-    assert first == _train(X, z, params, "dense_rowdata:off")
+    # three trainings compared bit for bit: the deterministic histograms (cuda_plan key nonquant_deterministic, opt-in
+    # since 1.2)
+    det = "auto,nonquant_deterministic:on"
+    first = _train(X, z, params, det)
+    assert first == _train(X, z, params, det)
+    assert first == _train(X, z, params, det + ",dense_rowdata:off")
 
 
 @_REQUIRES_CUDA

@@ -1,16 +1,19 @@
 # coding: utf-8
-"""Non-quantized CUDA training (quant_mode=none) trains the same model on every run (cuda_plan key
-nonquant_deterministic, default on).
+"""Non-quantized CUDA training (quant_mode=none) trains the same model on every run when it asks for it: the cuda_plan
+key nonquant_deterministic (off by default since 1.2, so the default takes the fastest float-atomic kernels), which
+deterministic=true turns on.
 
-The batched level construct accumulates in 64-bit fixed point there (integer atomics, order-free) where the float
-atomics used to run (the graph level loop, compact column views, levels wider than the deterministic slot slab); the
-per-leaf and the host batched deterministic constructs keep running where they ran. The sweep trains each shape
-three times in one process and requires one model: dense depth-limited (graph loop) regression, binary and
+With the key on, the batched level construct accumulates in 64-bit fixed point (integer atomics, order-free) where the
+float atomics run (the complete device tree's levels, compact column views, levels wider than the deterministic slot
+slab); the per-leaf and the host batched deterministic constructs keep running where they ran. The sweep trains each
+shape three times in one process with the key and three times with deterministic=true, and requires one model for
+each way of asking: dense depth-limited (complete device tree) regression, binary and
 multiclass, feature sampling (compact view), bagging, sparse input, a leaf-wise tree (per-leaf construct),
 cuda_precision=fp32, a wide shape on the host level loop whose deep levels outgrow the deterministic slab, and the
 requests deterministic=true keeps on the non-quantized path (monotone and interaction constraints), and random
 forests (their count construct, forest_count_hist, takes the levels it serves). The
-key must not touch quantized training: key on and off train the same quantized model.
+key must not touch quantized training: key on and off train the same quantized model. The default (key off) is
+checked for training and quality only: its models may differ in the last bits from run to run.
 """
 
 import hashlib
@@ -26,6 +29,14 @@ _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
     reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
+
+
+_DET = "nonquant_deterministic:on"
+
+
+def _with_det(params):
+    """params asking for the deterministic histograms by the plan key, appended to the cell's own plan"""
+    return {**params, "cuda_plan": f"{params.get('cuda_plan', 'auto')},{_DET}"}
 
 
 def _model_md5(params, X, y, rounds):
@@ -131,8 +142,14 @@ def test_nonquant_training_is_run_to_run_deterministic_cuda(name, objective, row
         "seed": 7,
         **extra,
     }
-    md5s = {_model_md5(params, X, y, 12) for _ in range(3)}
+    md5s = {_model_md5(_with_det(params), X, y, 12) for _ in range(3)}
     assert len(md5s) == 1, f"{name}: {len(md5s)} different models in 3 trainings"
+    # deterministic=true with quant_mode=none set explicitly keeps the non-quantized path and turns the key on
+    # (FalcataPlan::FromConfig): one model, the one deterministic=true trains with the key named. (Not compared with
+    # the key-only model: deterministic=true also serialises host-side reductions such as the init score's.)
+    by_flag = {_model_md5({**params, "deterministic": True}, X, y, 12) for _ in range(3)}
+    with_key = _model_md5({**_with_det(params), "deterministic": True}, X, y, 12)
+    assert by_flag == {with_key}, f"{name}: deterministic=true trains {by_flag}, with the key named {with_key}"
 
 
 @_REQUIRES_CUDA
@@ -158,7 +175,8 @@ def test_nonquant_4bit_matches_unpacked_and_det_cuda(extra):
         "cuda_plan": "auto",
         **extra,
     }
-    plan = params["cuda_plan"]
+    # bit identity across plan flips is a property of the deterministic mode only
+    plan = _with_det(params)["cuda_plan"]
     models = {
         arm: _model_md5({**params, "cuda_plan": plan + suffix}, X, y, 30)
         for arm, suffix in [
@@ -190,8 +208,10 @@ def test_nonquant_forced_64k_uses_deterministic_classic_cuda(layout, monkeypatch
         "seed": 7,
         "num_threads": 4,
     }
-    default = [_model_md5({**params, "cuda_plan": "auto"}, X, y, 12) for _ in range(3)]
-    reference = _model_md5({**params, "cuda_plan": "auto,hybrid:off"}, X, y, 12)
+    # the fixed-point table, whose fault this injects, exists only in the deterministic mode
+    params = _with_det(params)
+    default = [_model_md5(params, X, y, 12) for _ in range(3)]
+    reference = _model_md5({**params, "cuda_plan": f"auto,hybrid:off,{_DET}"}, X, y, 12)
     assert default == [reference] * 3
     log = capfd.readouterr()
     assert "TEST ONLY: nonquant shared limit 65536 bytes, classic fallback=1" in log.out + log.err
@@ -201,7 +221,10 @@ def test_nonquant_forced_64k_uses_deterministic_classic_cuda(layout, monkeypatch
 
 
 @_REQUIRES_CUDA
-def test_nonquant_deterministic_off_still_trains_cuda():
+@pytest.mark.parametrize("plan", ["auto", "auto,nonquant_deterministic:off"])
+@pytest.mark.parametrize("precision", ["fp64", "fp32"])
+def test_nonquant_default_float_atomics_train_cuda(plan, precision):
+    # the default plan and the key named off are the float-atomic kernels (and under fp32 the fp32 histogram layout)
     X, y = _data("regression", 20000, 20, seed=5)
     params = {
         "device_type": "cuda",
@@ -211,12 +234,48 @@ def test_nonquant_deterministic_off_still_trains_cuda():
         "max_depth": 6,
         "verbose": -1,
         "seed": 7,
-        "cuda_plan": "auto,nonquant_deterministic:off",
+        "cuda_plan": plan,
+        "cuda_precision": precision,
     }
     booster = flc.train(params, flc.Dataset(X, label=y, params=params), num_boost_round=10)
     pred = booster.predict(X)
     assert np.all(np.isfinite(pred))
     assert np.corrcoef(pred, y)[0, 1] > 0.5
+    # the deterministic mode's model is no better: the two predict alike, and fit equally well (summation order moves
+    # the last bits of a histogram, so at most a near-tie split; the bounds are loose against that)
+    det = flc.train(_with_det(params), flc.Dataset(X, label=y, params=params), num_boost_round=10)
+    pred_det = det.predict(X)
+    rank = np.corrcoef(np.argsort(np.argsort(pred)), np.argsort(np.argsort(pred_det)))[0, 1]
+    fit, fit_det = np.corrcoef(pred, y)[0, 1], np.corrcoef(pred_det, y)[0, 1]
+    assert rank > 0.99, (rank, fit, fit_det)
+    assert abs(fit - fit_det) < 0.01, (rank, fit, fit_det)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    "request_",
+    [{"monotone_constraints": [1, -1] + [0] * 18}, {"interaction_constraints": [[0, 1, 2], [3, 4, 5, 6, 7]]}],
+)
+def test_deterministic_true_keeps_quant_incompatible_requests_deterministic_cuda(request_):
+    # deterministic=true without quant_mode maps to fixedpoint, except for requests the quantized mode does not serve
+    # (Config::CheckParamConflict); those stay non-quantized, and deterministic=true turns the key on for them: the
+    # model repeats and is the one quant_mode=none trains with the key named
+    X, y = _data("regression", 30000, 20, seed=17)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "num_leaves": 63,
+        "max_depth": 6,
+        "learning_rate": 0.1,
+        "min_data_in_leaf": 5,
+        "verbose": -1,
+        "seed": 7,
+        "deterministic": True,
+        **request_,
+    }
+    md5s = {_model_md5(params, X, y, 12) for _ in range(3)}
+    named = _model_md5(_with_det({**params, "quant_mode": "none"}), X, y, 12)
+    assert md5s == {named}, (md5s, named)
 
 
 @_REQUIRES_CUDA
@@ -243,9 +302,10 @@ def test_nonquant_deterministic_key_does_not_touch_quantized_cuda(objective, qua
         "seed": 7,
         **extra,
     }
-    on = _model_md5({**params, "cuda_plan": "auto"}, X, y, 12)
+    on = _model_md5(_with_det(params), X, y, 12)
     off = _model_md5({**params, "cuda_plan": "auto,nonquant_deterministic:off"}, X, y, 12)
-    assert on == off
+    default = _model_md5(params, X, y, 12)
+    assert on == off == default
 
 
 @_REQUIRES_CUDA
@@ -275,6 +335,8 @@ def test_nonquant_sparse_tile_budget_keeps_the_model_cuda(rows, cols, extra, bud
         "seed": 7,
         **extra,
     }
+    # two runs compared bit for bit: the deterministic mode
+    params = _with_det(params)
     default = _model_md5(params, X, y, 12)
     capfd.readouterr()
     monkeypatch.setenv("FALCATA_TEST_DET_TILE_BUDGET_MB", budget_mb)
@@ -282,3 +344,44 @@ def test_nonquant_sparse_tile_budget_keeps_the_model_cuda(rows, cols, extra, bud
     log = capfd.readouterr()
     assert "Deterministic sparse histogram construct:" in log.out + log.err, "the budget did not cap the tiles"
     assert capped == default
+
+
+def _decision(capfd, params, X, y):
+    """the non-quantized histogram decision logged at Init (verbose 1), and the trees' md5"""
+    capfd.readouterr()
+    md5 = _model_md5({**params, "verbose": 1}, X, y, 6)
+    out = capfd.readouterr()
+    lines = [line for line in (out.out + out.err).splitlines() if "non-quantized histograms:" in line]
+    assert lines, (out.out + out.err)[-3000:]
+    return lines[-1], md5
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("precision", ["fp64", "fp32"])
+def test_nonquant_hist_cost_takes_the_cheaper_construct_cuda(precision, capfd):
+    """cuda_plan key nonquant_hist_cost (default on): without nonquant_deterministic, a training whose histogram work
+    is small against its row work takes the fixed-point construct, the same kernels
+    and model as the key; one whose histogram work dominates takes the float-atomic kernels. nonquant_hist_cost:off
+    takes the float atomics everywhere."""
+    base = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "quant_mode": "none",
+        "cuda_precision": precision,
+        "learning_rate": 0.1,
+        "seed": 7,
+    }
+    # many rows over few bins: rho = 63 * 15 / (100000 * 6), far below the thresholds
+    X, y = _data("regression", 100000, 10, seed=31)
+    small = {**base, "num_leaves": 63, "max_depth": 6, "max_bin": 15}
+    line, md5 = _decision(capfd, small, X, y)
+    assert "fixed-point construct (nonquant_hist_cost: cheaper here)" in line, line
+    assert md5 == _model_md5(_with_det(small), X, y, 6)
+    line, _ = _decision(capfd, {**small, "cuda_plan": "auto,nonquant_hist_cost:off"}, X, y)
+    assert "float-atomic kernels (nonquant_hist_cost:off)" in line, line
+    line, _ = _decision(capfd, _with_det(small), X, y)
+    assert "deterministic constructs (nonquant_deterministic)" in line, line
+    # few rows over many bins and leaves: rho = 255 * 255 / (8000 * 8), far above
+    X, y = _data("regression", 8000, 40, seed=37)
+    line, _ = _decision(capfd, {**base, "num_leaves": 255, "max_depth": 8, "min_data_in_leaf": 5}, X, y)
+    assert "float-atomic kernels (nonquant_hist_cost: cheaper here)" in line, line

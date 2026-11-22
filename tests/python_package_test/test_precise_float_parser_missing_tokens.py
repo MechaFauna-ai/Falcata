@@ -19,7 +19,15 @@ def test_precise_parser_reads_missing_tokens_like_default(tmp_path, sep):
     path = tmp_path / "data.txt"
     rows = _ROWS + (["0,4.5,"] if sep == "," else [])  # an empty last field (TSV sniffing trims it: separate issue)
     path.write_text("\n".join(row.replace(",", sep) for row in rows * 20) + "\n")
-    params = {"verbose": -1, "min_data_in_bin": 1, "min_data_in_leaf": 2, "num_leaves": 4}
+    # two trainings are compared bit for bit: on CUDA (unset device_type with a usable GPU) non-quantized training
+    # repeats only with the deterministic histograms (opt-in since 1.2; CPU ignores the key)
+    params = {
+        "verbose": -1,
+        "min_data_in_bin": 1,
+        "min_data_in_leaf": 2,
+        "num_leaves": 4,
+        "cuda_plan": "auto,nonquant_deterministic:on",
+    }
     datasets = {}
     for precise in (False, True):
         ds = flc.Dataset(str(path), params={**params, "precise_float_parser": precise}).construct()

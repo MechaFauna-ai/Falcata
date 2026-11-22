@@ -127,6 +127,8 @@ WARNING | More than one metric available, picking one to plot.
         "INFO | [Falcata] [Warning] Metric binary_error is not implemented in cuda version. Fall back to evaluation on CPU.",
         # emitted on any machine with a usable GPU when device_type is unset
         "INFO | [Falcata] [Info] device_type is unset and a usable GPU is present:",
+        # the CUDA learner's histogram construct for non-quantized training (cuda_plan key nonquant_hist_cost)
+        "INFO | [Falcata] [Info] non-quantized histograms:",
     ]
     with open(log_filename, "rt", encoding="utf-8") as f:
         actual_log = f.read().strip()

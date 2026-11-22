@@ -551,6 +551,10 @@ def test_cegb_scaling_equalities(tmp_path, rng):
             ),
         )
     for p1, p2 in pairs:
+        # the two models are compared bit for bit: unset device_type trains on CUDA when a GPU is usable, where
+        # non-quantized training repeats only with the deterministic histograms (opt-in since 1.2; CPU ignores the key)
+        p1 = {**p1, "cuda_plan": "auto,nonquant_deterministic:on"}
+        p2 = {**p2, "cuda_plan": "auto,nonquant_deterministic:on"}
         booster1 = lgb.Booster(train_set=ds, params=p1)
         booster2 = lgb.Booster(train_set=ds, params=p2)
         for _ in range(10):

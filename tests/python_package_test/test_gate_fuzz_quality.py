@@ -55,7 +55,8 @@ def spec():
         "bagging_freq": 1,
         "max_bin": 511,
         "learning_rate": 0.1,
-        "cuda_plan": "auto",
+        # the deterministic histograms: a non-quantized spec is md5-checked (trained twice) only with the key on
+        "cuda_plan": "auto,nonquant_deterministic:on",
         "rounds": 3,
         "data_seed": 910229978,
     }
@@ -281,6 +282,35 @@ def test_inactive_bagging_never_confirms_or_resamples(fuzz, monkeypatch, spec, i
 def test_initial_quality_within_tolerance_does_not_confirm(fuzz, monkeypatch, spec):
     script = WorkerScript(fuzz, monkeypatch, spec, pairs=None, initial=1.0)
     assert script.check(spec) == ([], [])
+
+
+def test_sampler_fuzzes_the_opt_in_deterministic_mode(fuzz):
+    # half of the drawn non-quantized specs name nonquant_deterministic:on (md5-checked), decided by data_seed's
+    # parity so the draw sequence of a --seed is unchanged; quantized specs never name it
+    rng = np.random.default_rng(20261121)
+    specs = [fuzz.sample_spec(rng) for _ in range(400)]
+    nonquant = [s for s in specs if s["quant_mode"] == "none"]
+    for s in specs:
+        keyed = "nonquant_deterministic:on" in s["cuda_plan"]
+        assert keyed == (s["quant_mode"] == "none" and s["data_seed"] % 2 == 0)
+    keyed = sum("nonquant_deterministic:on" in s["cuda_plan"] for s in nonquant)
+    assert 0.3 * len(nonquant) < keyed < 0.7 * len(nonquant)
+
+
+def test_corpus_md5_checks_the_opt_in_deterministic_mode(fuzz):
+    corpus = json.loads(fuzz.CORPUS_FILE.read_text())
+    keyed = [s for s in corpus if s["quant_mode"] == "none" and "nonquant_deterministic:on" in s["cuda_plan"]]
+    assert len(keyed) >= 6
+
+
+@pytest.mark.parametrize("plan", ["auto", "auto,nonquant_deterministic:off"])
+def test_nonquant_default_plan_is_not_md5_checked(fuzz, monkeypatch, spec, plan):
+    # the default plan's float-atomic histograms may give another model on every run: one CUDA run, no rerun
+    spec["cuda_plan"] = plan
+    script = WorkerScript(fuzz, monkeypatch, spec, pairs=None, initial=1.0)
+    script.expected = [script.expected[0], script.expected[2]]
+    assert script.check(spec) == ([], [])
+    assert [device for _, device, _ in script.calls] == ["cuda", "cpu"]
 
 
 @pytest.mark.parametrize(
@@ -575,7 +605,7 @@ def test_worker_preserves_defaults_data_and_split_and_applies_only_explicit_bag_
         "learning_rate": 0.1,
         "quant_mode": mode,
         "quant_bins": spec["quant_bins"],
-        "cuda_plan": "auto",
+        "cuda_plan": spec["cuda_plan"],
         "device_type": device,
         "seed": 42,
         "verbose": -1,

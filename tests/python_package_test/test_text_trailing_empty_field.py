@@ -11,7 +11,9 @@ import pytest
 
 import falcata as flc
 
-_PARAMS = {"verbose": -1, "num_leaves": 4, "min_data_in_leaf": 5}
+# test_empty_last_field_trains_as_missing compares two trainings bit for bit: on CUDA (unset device_type with a usable
+# GPU) non-quantized training repeats only with the deterministic histograms (opt-in since 1.2; CPU ignores the key)
+_PARAMS = {"verbose": -1, "num_leaves": 4, "min_data_in_leaf": 5, "cuda_plan": "auto,nonquant_deterministic:on"}
 
 
 @pytest.fixture(scope="module")
