@@ -1163,8 +1163,6 @@ struct PreparedJob {
   int num_tree_per_iteration = 1;
   int num_output = 1;
   int num_feature = 0;
-  int64_t work = 0;           // rows x trees
-  int64_t base_blocks = 0;    // row tiles x output chunks of an 8-row tile
   PairwisePlan plan;
   size_t shared = 0;
   bool categorical = false;
@@ -1341,7 +1339,6 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
   }
   DeviceGuard guard(device_id);
   device_id = guard.device();
-  const DeviceLimits& limits = LimitsOf(device_id);
   BatchScratch& scratch = BatchScratchOf(device_id);
   std::lock_guard<std::mutex> scratch_lock(scratch.mutex);
   // which jobs batch: the default mode, scalar leaves, no linear leaves; the others go through Predict one by one
@@ -1389,26 +1386,18 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
       Log::Fatal("CUDA predictor: the packed model has %d trees, the prediction needs %d", forest->num_trees(),
                  p.tree_begin + job.range.num_iteration * view.num_tree_per_iteration);
     }
-    p.work = job.num_row * static_cast<int64_t>(job.range.num_iteration) * view.num_tree_per_iteration;
-    p.base_blocks = ((job.num_row + 7) / 8) * ((view.num_tree_per_iteration + 31) / 32);
     p.categorical = forest->has_categorical();
     stats->forest_bytes += forest->Bytes();
     prepared.push_back(p);
   }
-  // spans: every block about the same work, the whole batch at least sixteen blocks per multiprocessor
-  int64_t total_work = 0, total_base = 0;
-  for (const PreparedJob& p : prepared) {
-    total_work += p.work;
-    total_base += p.base_blocks;
-  }
-  const double block_work = static_cast<double>(total_work) /
-                            static_cast<double>(std::max<int64_t>(16 * limits.sms, total_base));
+  // each job's plan is its own predict's: spans sized for the device as if the job ran alone. A batch-wide target
+  // (spans sized so that every block of the batch did about the same rows x trees) gave each job 1-2 spans, and the
+  // jobs whose trees are deep or wide left a tail: predict_many ran 1.07-1.45x slower than a loop of predict calls
+  // on 500-row jobs of 32-99 real models, and 0.85-1.06x of the loop with each job's own plan.
   for (PreparedJob& p : prepared) {
     const CUDAPredictJob& job = jobs[p.index];
-    const int64_t target = std::max<int64_t>(
-        p.base_blocks, static_cast<int64_t>(std::ceil(static_cast<double>(p.work) / std::max(block_work, 1.0))));
     p.plan = ChoosePairwisePlan(device_id, job.num_row, job.num_col, p.num_feature, p.num_tree_per_iteration,
-                                job.range.num_iteration, elem, p.forest->max_depth(), target);
+                                job.range.num_iteration, elem, p.forest->max_depth());
     p.plan.compact = p.forest->compact();
     p.plan.ilp = 8;   // the batched kernel is built for 8 walks in flight
     p.shared = PairwiseSharedBytes(p.plan, job.num_col, elem);
