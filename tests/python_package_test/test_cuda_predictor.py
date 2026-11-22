@@ -18,13 +18,23 @@ import pytest
 import falcata as lgb
 from falcata import basic
 
-CUDA_PREDICTOR = basic._cuda_predictor_usable()
-requires_cuda = pytest.mark.skipif(not CUDA_PREDICTOR, reason="the CUDA predictor needs a CUDA build and a GPU")
+# The device probe initializes CUDA, so it runs inside a test (in the child under pytest --forked), never at import:
+# a pytest parent that initialized CUDA while collecting leaves every forked child unable to use the GPU.
+_NO_CUDA_PREDICTOR = "the CUDA predictor needs a CUDA build and a GPU"
+
+
+@pytest.fixture
+def cuda_predictor():
+    if not basic._cuda_predictor_usable():
+        pytest.skip(_NO_CUDA_PREDICTOR)
+
+
+requires_cuda = pytest.mark.usefixtures("cuda_predictor")
 
 
 def test_cpu_build_refuses_cuda_device():
     """Without a usable CUDA predictor, device='cuda' is an error and device=None predicts on the CPU."""
-    if CUDA_PREDICTOR:
+    if basic._cuda_predictor_usable():
         pytest.skip("this build and machine can run the CUDA predictor")
     rng = np.random.default_rng(0)
     X = rng.normal(size=(200, 4))
@@ -118,8 +128,8 @@ def _zoo():
 
 @pytest.fixture(scope="module")
 def zoo():
-    if not CUDA_PREDICTOR:
-        pytest.skip("the CUDA predictor needs a CUDA build and a GPU")
+    if not basic._cuda_predictor_usable():
+        pytest.skip(_NO_CUDA_PREDICTOR)
     return _zoo()
 
 
