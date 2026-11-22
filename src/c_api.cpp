@@ -1233,6 +1233,29 @@ class Booster {
 
   const Boosting* GetBoosting() const { return boosting_.get(); }
 
+  /*! \brief what FLC_BoosterCUDAPredictCostInputs reports */
+  void CUDAPredictCostInputs(int start_iteration, int num_iteration, const Config& config, double* out) const {
+    SHARED_LOCK(mutex_);
+    const Boosting::PredictRange range = boosting_->ResolvePredictRange(start_iteration, num_iteration, false);
+    double splits = 0.0;
+    for (const Tree* tree : boosting_->TreesInRange(range).trees) {
+      splits += tree->MeanSplitsPerRow();
+    }
+    out[0] = splits;
+    out[1] = -1.0;
+    out[2] = 0.0;
+#ifdef USE_CUDA
+    int usable = 0;
+    FLC_HasCUDAPredictor(&usable);
+    if (usable) {
+      out[1] = static_cast<double>(CUDAPredictor::FreeDeviceBytes(config.gpu_device_id));
+      out[2] = cuda_predictor_.HasForest(config.gpu_device_id) ? 1.0 : 0.0;
+    }
+#else
+    (void)config;
+#endif  // USE_CUDA
+  }
+
 #ifdef USE_CUDA
   /*!
   * \brief Predict dense rows with the native CUDA predictor (normal, raw score or leaf index); the result equals
@@ -1261,29 +1284,6 @@ class Booster {
     const int64_t per_row = boosting_->NumPredictOneRow(start_iteration, num_iteration, is_leaf, is_contrib);
     cuda_predictor_.Predict(boosting_.get(), range, request, stats);
     *out_len = per_row * request.num_row;
-  }
-
-  /*! \brief what FLC_BoosterCUDAPredictCostInputs reports */
-  void CUDAPredictCostInputs(int start_iteration, int num_iteration, const Config& config, double* out) const {
-    SHARED_LOCK(mutex_);
-    const Boosting::PredictRange range = boosting_->ResolvePredictRange(start_iteration, num_iteration, false);
-    double splits = 0.0;
-    for (const Tree* tree : boosting_->TreesInRange(range).trees) {
-      splits += tree->MeanSplitsPerRow();
-    }
-    out[0] = splits;
-    out[1] = -1.0;
-    out[2] = 0.0;
-#ifdef USE_CUDA
-    int usable = 0;
-    FLC_HasCUDAPredictor(&usable);
-    if (usable) {
-      out[1] = static_cast<double>(CUDAPredictor::FreeDeviceBytes(config.gpu_device_id));
-      out[2] = cuda_predictor_.HasForest(config.gpu_device_id) ? 1.0 : 0.0;
-    }
-#else
-    (void)config;
-#endif  // USE_CUDA
   }
 
   /*!
