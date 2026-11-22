@@ -553,6 +553,7 @@ def test_auto_rule_touches_the_device_last(monkeypatch):
 
 
 _CPU_ROUTED_PREDICT = r"""
+import ctypes
 import json
 import os
 import sys
@@ -588,6 +589,31 @@ loaded.predict(X, pred_early_stop=True)
 loaded.predict(X[:20].tolist())
 # the CPU predictor itself, explicitly and for a CPU-configured model: no GPU probe of an unset device_type
 ok["cpu"] = bool(np.array_equal(loaded.predict(X, device="cpu"), ref)) and bool(np.array_equal(trained.predict(X), ref))
+# a gpu_device_id on a CPU-routed request: the cost query reads it only for a request headed for the GPU
+basic._AUTO_CUDA_COST["margin"] = float("inf")
+ok["gpu_device_id"] = bool(np.array_equal(loaded.predict(X, gpu_device_id=0), ref))
+# the C API's CPU predictor called directly, with no parameters (device_type unset) and with training parameters
+out = np.empty(X.shape[0], dtype=np.float64)
+out_len = ctypes.c_int64(0)
+data = np.ascontiguousarray(X, dtype=np.float64)
+for params in (b"", b"quant_mode=fixedpoint use_quantized_grad=true device_type=cuda"):
+    basic._safe_call(
+        basic._LIB.FLC_BoosterPredictForMat(
+            loaded._handle,
+            data.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(basic._C_API_DTYPE_FLOAT64),
+            ctypes.c_int32(X.shape[0]),
+            ctypes.c_int32(X.shape[1]),
+            ctypes.c_int(1),
+            ctypes.c_int(basic._C_API_PREDICT_NORMAL),
+            ctypes.c_int(0),
+            ctypes.c_int(-1),
+            ctypes.c_char_p(params),
+            ctypes.byref(out_len),
+            out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        )
+    )
+    ok["c_api_" + ("plain" if not params else "training_params")] = bool(np.array_equal(out, ref))
 state = {"ok": ok, "probed": basic._CUDA_PREDICTOR_USABLE is not None, "libcuda": [], "nvidia_fds": []}
 if sys.platform.startswith("linux"):
     with open("/proc/self/maps") as maps:
@@ -605,8 +631,9 @@ print("PREDICT_STATE " + json.dumps(state))
 
 def test_cpu_routed_auto_predict_does_not_initialize_cuda():
     """predict(device=None) of a CUDA-configured model that ends on the CPU never initializes CUDA, and neither does
-    the CPU predictor itself (device="cpu", a CPU-configured model): a process that forks children which use the GPU
-    must stay CUDA-free (a fresh interpreter; on Linux libcuda must not be mapped and no /dev/nvidia* device open)."""
+    the CPU predictor itself (device="cpu", a CPU-configured model, a gpu_device_id, the C API called directly with
+    and without training parameters): a process that forks children which use the GPU must stay CUDA-free (a fresh
+    interpreter; on Linux libcuda must not be mapped and no /dev/nvidia* device open)."""
     result = subprocess.run(
         [sys.executable, "-c", _CPU_ROUTED_PREDICT],
         capture_output=True,
@@ -617,10 +644,73 @@ def test_cpu_routed_auto_predict_does_not_initialize_cuda():
     lines = [line for line in result.stdout.splitlines() if line.startswith("PREDICT_STATE ")]
     assert lines, result.stdout[-4000:] + result.stderr[-4000:]
     state = json.loads(lines[-1].removeprefix("PREDICT_STATE "))
-    assert state["ok"] == {"small": True, "cap": True, "cpu": True}
+    assert state["ok"] == {
+        "small": True,
+        "cap": True,
+        "cpu": True,
+        "gpu_device_id": True,
+        "c_api_plain": True,
+        "c_api_training_params": True,
+    }
     assert not state["probed"], "a CPU-routed predict(device=None) probed the CUDA predictor"
     assert not state["libcuda"], f"a CPU-routed predict(device=None) loaded the CUDA driver: {state['libcuda']}"
     assert not state["nvidia_fds"], f"a CPU-routed predict(device=None) opened NVIDIA devices: {state['nvidia_fds']}"
+
+
+# parameters a prediction may carry from training (the scikit-learn wrappers forward every estimator parameter):
+# the CPU predictor parses them for prediction only, without the training checks that would refuse them on the CPU
+_TRAINING_ONLY_PARAMS = (
+    {"quant_mode": "fixedpoint"},
+    {"use_quantized_grad": True},
+    {"tree_mode": "vector_leaf"},
+    {"device_type": "cuda"},
+    {"quant_mode": "fixedpoint", "use_quantized_grad": True, "device_type": "cuda", "cuda_precision": "fp32"},
+)
+
+
+@pytest.mark.parametrize("objective", ["regression", "binary", "multiclass", "lambdarank", "poisson"])
+def test_cpu_predict_ignores_training_only_params(objective):
+    """CPU predictions with training-only (CUDA-only) parameters run, and give the same bits as without them."""
+    rng = np.random.default_rng(8)
+    X = rng.normal(size=(600, 6))
+    X[rng.random(X.shape) < 0.05] = np.nan
+    y = np.nansum(X[:, :3], axis=1)
+    extra = {}
+    kwargs = {}
+    if objective in ("binary", "poisson"):
+        y = (y > 0).astype(float) if objective == "binary" else np.abs(y)
+    elif objective == "multiclass":
+        y = np.digitize(y, [-1.0, 0.0, 1.0]).astype(float)
+        extra = {"num_class": 4}
+    elif objective == "lambdarank":
+        y = np.clip(np.digitize(y, [-1.0, 0.0, 1.0]), 0, 3).astype(float)
+        kwargs = {"group": [100] * 6}
+    booster = lgb.train(_base(objective=objective, **extra), lgb.Dataset(X, y, **kwargs), num_boost_round=8)
+    for predict_kwargs in ({}, {"raw_score": True}, {"pred_leaf": True}, {"pred_contrib": True}):
+        ref = booster.predict(X, device="cpu", **predict_kwargs)
+        for params in _TRAINING_ONLY_PARAMS:
+            np.testing.assert_array_equal(booster.predict(X, device="cpu", **predict_kwargs, **params), ref)
+            np.testing.assert_array_equal(booster.predict(X, **predict_kwargs, **params), ref)
+
+
+def test_sklearn_predict_forwards_training_only_params():
+    """The scikit-learn wrappers pass every estimator parameter to Booster.predict: CUDA-only training parameters
+    set on the estimator must not break, or change, its CPU predictions."""
+    rng = np.random.default_rng(9)
+    X = rng.normal(size=(500, 5))
+    y = X[:, 0] - 2 * X[:, 1]
+    reg = lgb.FalcataRegressor(n_estimators=6, num_leaves=7, device_type="cpu", verbose=-1).fit(X, y)
+    ref = reg.booster_.predict(X, device="cpu")
+    for params in _TRAINING_ONLY_PARAMS:
+        reg.set_params(**params)
+        np.testing.assert_array_equal(reg.predict(X), ref)
+        np.testing.assert_array_equal(reg.predict(X, device="cpu"), ref)
+        reg.set_params(device_type="cpu", quant_mode="auto", use_quantized_grad=False, tree_mode="scalar")
+    yc = (y > 0).astype(int)
+    clf = lgb.FalcataClassifier(n_estimators=6, num_leaves=7, device_type="cpu", verbose=-1).fit(X, yc)
+    ref = clf.predict_proba(X)
+    clf.set_params(quant_mode="fixedpoint", use_quantized_grad=True, device_type="cuda")
+    np.testing.assert_array_equal(clf.predict_proba(X, device="cpu"), ref)
 
 
 def test_auto_rule_unreadable_device_means_cpu(monkeypatch):
@@ -788,6 +878,23 @@ def test_auto_estimate_matches_the_allocation(monkeypatch):
     assert vector._predict_output_width(basic._C_API_PREDICT_NORMAL, 0, -1) == 16
     contrib = multi.predict(X[:50], device="cuda", pred_contrib=True)
     assert multi._predict_output_width(basic._C_API_PREDICT_CONTRIB, 0, -1) * 50 == contrib.size
+
+
+@requires_cuda
+def test_sklearn_cuda_quantized_model_predicts_on_both_devices(monkeypatch):
+    """A CUDA-trained quantized estimator (its parameters forwarded to every predict) predicts on the CPU and, when the
+    rule picks it, on the GPU, with the CPU predictor's bits either way."""
+    rng = np.random.default_rng(10)
+    X = rng.normal(size=(2000, 6)).astype(np.float32)
+    y = X[:, 0] - X[:, 3]
+    for extra in ({}, {"device_type": "cuda"}):
+        reg = lgb.FalcataRegressor(n_estimators=8, quant_mode="fixedpoint", verbose=-1, **extra).fit(X, y)
+        ref = reg.booster_.predict(X, device="cpu")
+        np.testing.assert_array_equal(reg.predict(X, device="cpu"), ref)
+        np.testing.assert_array_equal(reg.predict(X), ref)
+        monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+        np.testing.assert_array_equal(reg.predict(X), ref)
+        monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 1.3)
 
 
 @requires_cuda

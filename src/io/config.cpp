@@ -491,6 +491,18 @@ bool CheckMultiClassObjective(const std::string& objective) {
           || objective == std::string("multi_regression"));
 }
 
+Config Config::ForPrediction(const char* parameters) {
+  Config config;
+  config.SetForPrediction(Str2Map(parameters != nullptr ? parameters : ""));
+  return config;
+}
+
+void Config::SetForPrediction(const std::unordered_map<std::string, std::string>& params) {
+  // device_type keeps the caller's value (cpu when unset): a prediction never probes for a training device
+  GetDeviceType(params, &device_type);
+  GetMembersFromString(params);
+}
+
 void Config::CheckParamConflict(const std::unordered_map<std::string, std::string>& params) {
   // monotone_constraints takes -1, 0 or 1. Other values were accepted, and the learners disagree on them: most code
   // tests the sign, but the advanced method's constraint propagation tests == 1 / == -1, so 2 trained a model that

@@ -1121,10 +1121,6 @@ class _InnerPredictor:
         self._handle = booster_handle
         self.__is_manage_handle = manage_handle
         self.pandas_categorical = pandas_categorical
-        if not any(alias in pred_parameter for alias in _ConfigAliases.get("device_type")):
-            # the CPU predictor needs no device: with device_type unset, every prediction's Config would probe for a
-            # GPU (the auto-selection of a training device), which initializes CUDA in a process that never uses it
-            pred_parameter = {**pred_parameter, "device_type": "cpu"}
         self.pred_parameter = _param_dict_to_str(pred_parameter)
 
         out_num_class = ctypes.c_int(0)

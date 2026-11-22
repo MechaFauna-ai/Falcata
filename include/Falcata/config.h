@@ -58,6 +58,11 @@ struct Config {
   explicit Config(std::unordered_map<std::string, std::string> parameters_map) {
     Set(parameters_map);
   }
+  /*!
+  * \brief A prediction's parameters (see SetForPrediction)
+  * \param parameters The prediction's parameter string, as the C API's predict functions take it (may be nullptr)
+  */
+  FALCATA_EXPORT static Config ForPrediction(const char* parameters);
   std::string ToString() const;
   /*!
   * \brief Get string value by specific name of key
@@ -1258,6 +1263,14 @@ struct Config {
 
   bool is_parallel = false;
   bool is_data_based_parallel = false;
+  /*!
+  * \brief Parse a prediction's parameters: every member as Set parses it, but never the choice of a training device
+  *        (no GPU probe, so a CPU prediction does not initialize CUDA) and none of the training checks (a prediction
+  *        may carry the parameters the model was trained with -- the scikit-learn wrappers pass them all -- and reads
+  *        only what predicts: num_threads, early stopping, the shape check, gpu_device_id, file and output options)
+  */
+  FALCATA_EXPORT void SetForPrediction(const std::unordered_map<std::string, std::string>& params);
+
   FALCATA_EXPORT void Set(const std::unordered_map<std::string, std::string>& params);
   static const std::unordered_map<std::string, std::string>& alias_table();
   static const std::unordered_map<std::string, std::vector<std::string>>& parameter2aliases();
