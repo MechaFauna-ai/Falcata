@@ -1293,6 +1293,8 @@ struct Config {
 
  private:
   void CheckParamConflict(const std::unordered_map<std::string, std::string>& params);
+  /*! \brief the checks Set and SetForPrediction share: what guards a value the predictor reads too (num_threads) */
+  void CheckSharedParams() const;
   void ResolveFalcataParams();
   void GetMembersFromString(const std::unordered_map<std::string, std::string>& params);
   std::string SaveMembersToString() const;
