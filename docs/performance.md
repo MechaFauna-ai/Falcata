@@ -1599,7 +1599,25 @@ removed the regressions, with no estimate at all, but it gives up 2-11x on the d
 cells of the table, and -45% to -94% in the 1.2.0 matrix), which users of `device_type="cuda"` models get without
 changing their code.
 
-<!-- VERIFY -->
+**Checked against 1.1.0** (RTX 5090, 6 repetitions, each run a fresh process that trains the cell and times its
+first `predict` on host rows, the arms interleaved: this change, 1.1.0, and the first 1.2.0 candidate; medians, and
+the paired ratio to 1.1.0 with its 95% interval):
+
+| cell | this change | 1.1.0 | first 1.2.0 candidate | change / 1.1.0 | device memory peak (change / 1.1.0 / candidate) |
+|---|---:|---:|---:|---|---:|
+| year-shallow fp32 | 0.026 s | 0.033 s | 0.053 s | -15% (-34% to +9%) | 1.01 / 1.19 / 1.03 GB |
+| Numerai nonquant fp32 | 0.187 s | 0.245 s | 0.397 s | -16% (-40% to +17%) | 10.98 / 11.13 / 11.98 GB |
+| synthetic, 5 classes, 2,568 columns | 0.085 s | 0.087 s | 0.146 s | +1% (-15% to +20%) | 4.91 / 9.45 / 5.91 GB |
+| Numerai example quant | 0.158 s | 0.227 s | 0.439 s | -16% (-63% to +91%) | 10.69 / 10.82 / 11.69 GB |
+| covtype-deep quant | 0.064 s | 0.780 s | 0.059 s | -92% (-93% to -91%) | 0.69 / 0.68 / 0.69 GB |
+| higgs-deep quant | 0.130 s | 0.550 s | 0.123 s | -78% (-84% to -70%) | 1.91 / 1.90 / 1.90 GB |
+| synthetic, 16 classes, 222 columns | 0.063 s | 0.226 s | 0.066 s | -71% (-75% to -65%) | 1.74 / 1.74 / 1.74 GB |
+| downstream fit, 16 classes, 4,800 trees | 0.102 s | 1.674 s | 0.066 s | -94% (-95% to -92%) | 0.82 / 0.83 / 0.82 GB |
+
+No cell is slower than 1.1.0 (no interval lies above zero), and no device-memory peak is above 1.1.0's. On the GPU
+cells the change is within noise of the first candidate except the 4,800-tree fit, 36 ms slower in the median (+41%,
+interval -2% to +102%): the price of the in-order sum on its first call. The desktop was in use during the run, so
+these intervals are wider than the release matrix's.
 
 ## 8b. Model size: the FALB binary format
 
