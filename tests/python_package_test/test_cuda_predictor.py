@@ -11,6 +11,9 @@ Every comparison below is exact unless it says otherwise.
 """
 
 import itertools
+import json
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -493,7 +496,7 @@ def test_cost_inputs_report_the_split_nodes_per_row(tmp_path):
             np.testing.assert_allclose(values[0], _split_count_reference(booster, start, num), rtol=1e-12)
             if leaves == 2:
                 assert values[0] == (12 - start if num <= 0 else num)
-            if CUDA_PREDICTOR:
+            if basic._cuda_predictor_usable():
                 assert values[1] > 0
             else:
                 assert values[1] == -1.0
@@ -544,8 +547,80 @@ def test_auto_rule_touches_the_device_last(monkeypatch):
     calls.clear()
     monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
     on_cuda = booster._auto_predict_on_cuda(X, 0, -1, basic._C_API_PREDICT_NORMAL, {})
-    assert calls == [1, 2]
-    assert on_cuda == CUDA_PREDICTOR  # a CPU build reads -1 free bytes: the CPU
+    usable = basic._cuda_predictor_usable()
+    assert calls == ([1, 2] if usable else [1])  # without a usable CUDA predictor, no device query
+    assert on_cuda == usable
+
+
+_CPU_ROUTED_PREDICT = r"""
+import json
+import os
+import sys
+
+import numpy as np
+
+import falcata as lgb
+from falcata import basic
+
+rng = np.random.default_rng(0)
+X = rng.normal(size=(500, 5))
+trained = lgb.train(
+    {"objective": "regression", "device_type": "cpu", "verbose": -1, "num_threads": 2},
+    lgb.Dataset(X, np.ascontiguousarray(X[:, 0])),
+    5,
+)
+text = trained.model_to_string().replace("[device_type: cpu]", "[device_type: cuda]")
+assert "[device_type: cuda]" in text
+loaded = lgb.Booster(model_str=text)
+assert loaded._trained_on_cuda()
+ref = trained.predict(X, device="cpu")
+ok = {}
+# a small request: the CPU wins even against a warm GPU with the model packed
+ok["small"] = bool(np.array_equal(loaded.predict(X), ref)) and loaded._last_auto_predict["device"] == "cpu"
+# over the buffer cap, with a margin that would otherwise always choose the GPU
+basic._AUTO_CUDA_COST["margin"] = 0.0
+basic._AUTO_CUDA_COST["max_buffer_bytes"] = 1000
+ok["cap"] = bool(np.array_equal(loaded.predict(X), ref)) and not loaded._last_auto_predict["fits"]
+basic._AUTO_CUDA_COST["max_buffer_bytes"] = 256 << 20
+# contributions, early stopping and non-numpy inputs never reach the estimate
+loaded.predict(X[:20], pred_contrib=True)
+loaded.predict(X, pred_early_stop=True)
+loaded.predict(X[:20].tolist())
+# the CPU predictor itself, explicitly and for a CPU-configured model: no GPU probe of an unset device_type
+ok["cpu"] = bool(np.array_equal(loaded.predict(X, device="cpu"), ref)) and bool(np.array_equal(trained.predict(X), ref))
+state = {"ok": ok, "probed": basic._CUDA_PREDICTOR_USABLE is not None, "libcuda": [], "nvidia_fds": []}
+if sys.platform.startswith("linux"):
+    with open("/proc/self/maps") as maps:
+        state["libcuda"] = sorted({line.split()[-1] for line in maps if "libcuda.so" in line})
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            continue
+        if target.startswith("/dev/nvidia"):
+            state["nvidia_fds"].append(target)
+print("PREDICT_STATE " + json.dumps(state))
+"""
+
+
+def test_cpu_routed_auto_predict_does_not_initialize_cuda():
+    """predict(device=None) of a CUDA-configured model that ends on the CPU never initializes CUDA, and neither does
+    the CPU predictor itself (device="cpu", a CPU-configured model): a process that forks children which use the GPU
+    must stay CUDA-free (a fresh interpreter; on Linux libcuda must not be mapped and no /dev/nvidia* device open)."""
+    result = subprocess.run(
+        [sys.executable, "-c", _CPU_ROUTED_PREDICT],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    lines = [line for line in result.stdout.splitlines() if line.startswith("PREDICT_STATE ")]
+    assert lines, result.stdout[-4000:] + result.stderr[-4000:]
+    state = json.loads(lines[-1].removeprefix("PREDICT_STATE "))
+    assert state["ok"] == {"small": True, "cap": True, "cpu": True}
+    assert not state["probed"], "a CPU-routed predict(device=None) probed the CUDA predictor"
+    assert not state["libcuda"], f"a CPU-routed predict(device=None) loaded the CUDA driver: {state['libcuda']}"
+    assert not state["nvidia_fds"], f"a CPU-routed predict(device=None) opened NVIDIA devices: {state['nvidia_fds']}"
 
 
 def test_auto_rule_unreadable_device_means_cpu(monkeypatch):

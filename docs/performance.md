@@ -1552,8 +1552,10 @@ round: 0.05-0.13 s on the GPU against 0.2-1.4 s on the CPU, even on the first ca
 time and picks the GPU only when its estimate times 1.3 is below the CPU's and the call's device buffers (its rows and
 result, one chunk) are at most 256 MiB and at most a tenth of the free device memory (`basic._auto_cuda_estimate`,
 constants in `basic._AUTO_CUDA_COST`). A tenth rather than the predictor's own single-chunk limit of an eighth leaves
-room for the model it packs before it sizes the chunk. The device is touched last: a request over 256 MiB, or one the
-CPU wins even against a warm GPU with the model packed, is decided without any CUDA call, and a device whose free
+room for the model it packs before it sizes the chunk. CUDA is touched last: a request over 256 MiB, or one the
+CPU wins even against a warm GPU with the model packed, is decided from the model and the array without any CUDA call
+(not even the probe for a usable device), so a process that predicts on the CPU never initializes CUDA and can still
+fork children that use the GPU; a request headed for the GPU initializes it, as `device="cuda"` does. A device whose free
 memory cannot be read (an invalid `gpu_device_id`, an exclusive-mode device in use, no memory for a context) means the
 CPU, with no CUDA error left behind. Feature contributions (`pred_contrib`) stay on the CPU under `device=None`:
 TreeSHAP's cost is not the split count, and its device scratch (up to 1 GiB) is outside the buffer cap.

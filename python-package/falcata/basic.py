@@ -1121,6 +1121,10 @@ class _InnerPredictor:
         self._handle = booster_handle
         self.__is_manage_handle = manage_handle
         self.pandas_categorical = pandas_categorical
+        if not any(alias in pred_parameter for alias in _ConfigAliases.get("device_type")):
+            # the CPU predictor needs no device: with device_type unset, every prediction's Config would probe for a
+            # GPU (the auto-selection of a training device), which initializes CUDA in a process that never uses it
+            pred_parameter = {**pred_parameter, "device_type": "cpu"}
         self.pred_parameter = _param_dict_to_str(pred_parameter)
 
         out_num_class = ctypes.c_int(0)
@@ -5606,8 +5610,10 @@ class Booster:
             return "cpu"
         if on_device or device in ("cuda", "gpu"):
             return "cuda"
-        # device=None, a host input: a dense 2-D numpy request of a CUDA-configured model goes to the GPU when this
-        # machine can run it AND the cost model expects the GPU to finish first with buffers that fit (see predict)
+        # device=None, a host input: a dense 2-D numpy request of a CUDA-configured model goes to the GPU when the cost
+        # model expects the GPU to finish first with buffers that fit AND this machine can run it (see predict). Every
+        # check that can say "CPU" runs on the host first: only a request headed for the GPU touches CUDA
+        # (_auto_predict_on_cuda), so a process that predicts on the CPU never initializes it
         self._last_auto_predict: Optional[Dict[str, Any]] = None
         early_stop = any(alias in kwargs and kwargs[alias] for alias in ("pred_early_stop",))
         if (
@@ -5617,7 +5623,6 @@ class Booster:
             and not early_stop
             and predict_type != _C_API_PREDICT_CONTRIB
             and self._trained_on_cuda()
-            and _cuda_predictor_usable()
             and self._auto_predict_on_cuda(data, start_iteration, num_iteration, predict_type, kwargs)
         ):
             return "cuda"
@@ -5663,10 +5668,12 @@ class Booster:
         """Apply the cost rule of ``predict(device=None)`` to a host array (constants: ``_AUTO_CUDA_COST``).
 
         Estimates both predictors' time for this call and the CUDA predictor's device buffers, and picks the GPU only
-        when it is faster by the margin and its buffers fit. The device is touched last: a request over the fixed
-        buffer cap, or one the CPU wins even against a warm GPU, is decided without any CUDA call; a device whose free
-        memory cannot be read (an invalid ``gpu_device_id``, an exclusive-mode device in use) means the CPU. The
-        estimate is kept in ``self._last_auto_predict``.
+        when it is faster by the margin and its buffers fit. CUDA is touched last: a request over the fixed buffer cap,
+        or one the CPU wins even against a warm GPU with the model packed, is decided from the model and the array alone,
+        without any CUDA call (not even the device probe of ``_cuda_predictor_usable``); only then are the build and
+        device probed and the free memory read. A device whose free memory cannot be read (an invalid
+        ``gpu_device_id``, an exclusive-mode device in use) means the CPU. The estimate is kept in
+        ``self._last_auto_predict``.
         """
         nrow, ncol = data.shape
         out_itemsize = 4 if predict_type == _C_API_PREDICT_LEAF_INDEX else 8
@@ -5687,7 +5694,9 @@ class Booster:
             splits = self._cost_inputs(start_iteration, num_iteration, 1, kwargs)[0]
             # the best case for the GPU (enough memory, the model packed): when the CPU still wins, no CUDA call
             estimate = _auto_cuda_estimate(splits_per_row=splits, free_device_bytes=float("inf"), packed=True, **common)
-            if estimate["device"] == "cuda":
+            if estimate["device"] == "cuda" and not _cuda_predictor_usable():
+                estimate = _auto_cuda_estimate(splits_per_row=splits, free_device_bytes=-1.0, packed=False, **common)
+            elif estimate["device"] == "cuda":
                 _, free, packed = self._cost_inputs(start_iteration, num_iteration, 2, kwargs)
                 estimate = _auto_cuda_estimate(
                     splits_per_row=splits, free_device_bytes=free, packed=packed != 0, **common
@@ -5870,7 +5879,11 @@ class Booster:
               predictor yet and this model is already on the device. Its constants were measured on one machine
               (an RTX 5090 with a 16-core CPU; docs/performance.md, section 8), so on other hardware it can miss
               a speedup; pass ``device="cuda"`` or ``device="cpu"`` to choose. Whichever predictor it picks, the
-              result is the CPU predictor's bit for bit (see ``deterministic``) and a numpy array;
+              result is the CPU predictor's bit for bit (see ``deterministic``) and a numpy array. Every check
+              that can choose the CPU runs on the host first, so a call that ends on the CPU never initializes
+              CUDA; a call the estimate sends to the GPU initializes CUDA in this process, like ``device="cuda"``.
+              A process that forks children which use the GPU should predict with ``device="cpu"`` before
+              forking;
             - everything else (other inputs, ``pred_early_stop``, ``pred_contrib`` on a host array) uses the CPU
               predictor.
 
