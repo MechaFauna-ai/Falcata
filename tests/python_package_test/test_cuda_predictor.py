@@ -1,9 +1,13 @@
-"""The native CUDA predictor equals the CPU predictor on every model kind and input layout.
+"""The native CUDA predictor against the CPU predictor on every model kind and input layout.
 
-Raw scores and leaf indices must be bit-identical: both predictors add the leaf values of each output in tree order
-in double precision, route a float32 input with thresholds rounded down to float (exact for every float), and see
-values with |x| <= 1e-35 as zero. Normal predictions are converted from the raw scores by the same host code
-(Boosting::ConvertRawToPrediction), so they are bit-identical too. Every comparison below is exact.
+Both predictors route a float32 input with thresholds rounded down to float (exact for every float) and see values
+with |x| <= 1e-35 as zero, so leaf indices and feature contributions are bit-identical. Raw scores:
+- ``deterministic=True`` adds each output's leaf values in tree order in double precision, as the CPU predictor does:
+  bit-identical, and normal predictions (converted by the same host code, Boosting::ConvertRawToPrediction) too;
+- the default mode adds them in the canonical pairwise order (groups of 8 iterations in order from 0.0, then the
+  complete binary tree over the groups). ``_pairwise_reference`` builds that sum from the CPU predictor's per-iteration
+  scores, and the default mode must equal it bit for bit, in every batch, layout and kernel shape.
+Every comparison below is exact unless it says otherwise.
 """
 
 import itertools
@@ -141,12 +145,58 @@ def _probe_rows(booster, X, rng):
 
 
 def _assert_same(booster, X, **kwargs):
+    """The deterministic mode equals the CPU predictor bit for bit."""
     cpu = booster.predict(X, device="cpu", **kwargs)
-    gpu = booster.predict(X, device="cuda", **kwargs)
+    gpu = booster.predict(X, device="cuda", deterministic=True, **kwargs)
     assert type(gpu) is type(cpu)
     assert gpu.shape == cpu.shape, (gpu.shape, cpu.shape)
     assert gpu.dtype == cpu.dtype, (gpu.dtype, cpu.dtype)
     np.testing.assert_array_equal(gpu, cpu)
+
+
+def _pairwise_reference(booster, X, start_iteration=0, num_iteration=-1):
+    """The default mode's raw scores, from the CPU predictor's score of each iteration alone (0.0 + v = v exactly).
+
+    Each output: groups of 8 consecutive iterations of the range added in order from 0.0, then pairs of group sums
+    (0, 1), (2, 3), ..., pairs of those, and so on; an odd last element is paired with 0.0, which changes nothing.
+    """
+    total = booster.current_iteration()
+    start = min(max(start_iteration, 0), total)
+    end = total if num_iteration is None or num_iteration <= 0 else min(total, start + num_iteration)
+    n = X.shape[0]
+    k = booster.num_model_per_iteration()
+    per_iteration = [
+        np.asarray(booster.predict(X, device="cpu", raw_score=True, start_iteration=it, num_iteration=1)).reshape(n, k)
+        for it in range(start, end)
+    ]
+    sums = []
+    for g in range(0, len(per_iteration), 8):
+        acc = np.zeros((n, k))
+        for v in per_iteration[g : g + 8]:
+            acc = acc + v
+        sums.append(acc)
+    if not sums:
+        sums = [np.zeros((n, k))]
+    while len(sums) > 1:
+        if len(sums) % 2:
+            sums.append(np.zeros((n, k)))
+        sums = [sums[i] + sums[i + 1] for i in range(0, len(sums), 2)]
+    return sums[0].reshape(n) if k == 1 else sums[0]
+
+
+def _assert_pairwise(booster, X, start_iteration=0, num_iteration=-1, **kwargs):
+    """The default mode equals the canonical pairwise sum bit for bit, and the in-order sum up to rounding."""
+    gpu = booster.predict(
+        X, device="cuda", raw_score=True, start_iteration=start_iteration, num_iteration=num_iteration, **kwargs
+    )
+    ref = _pairwise_reference(booster, X, start_iteration, num_iteration)
+    assert gpu.shape == ref.shape, (gpu.shape, ref.shape)
+    np.testing.assert_array_equal(gpu, ref)
+    cpu = booster.predict(
+        X, device="cpu", raw_score=True, start_iteration=start_iteration, num_iteration=num_iteration, **kwargs
+    )
+    np.testing.assert_allclose(gpu, cpu, rtol=1e-12, atol=1e-12 * (1.0 + float(np.max(np.abs(cpu), initial=0.0))))
+    return gpu
 
 
 @requires_cuda
@@ -188,6 +238,65 @@ def test_bit_identical_to_cpu(zoo, name):
             _assert_same(booster, data, pred_leaf=True, start_iteration=start, num_iteration=num)
     # every other dtype is read as float32, as the CPU predictor reads it
     _assert_same(booster, np.nan_to_num(rows[:200], posinf=100, neginf=-100).astype(np.int16), raw_score=True)
+
+
+@requires_cuda
+@pytest.mark.parametrize(
+    "name",
+    [
+        "regression",
+        "regression_zero_missing",
+        "binary",
+        "multiclass",
+        "multiclassova",
+        "rf",
+        "dart",
+        "linear_tree_nan",
+        "categorical",
+        "deep",
+        "stumps",
+    ],
+)
+def test_default_mode_is_the_pairwise_sum(zoo, name):
+    """Default mode: the canonical pairwise sum, for every dtype, layout and iteration slice; normal predictions are
+    converted from it (close to the CPU's); leaf indices and contributions do not depend on the mode."""
+    booster, X = zoo[name]
+    rng = np.random.default_rng(len(name) + 100)
+    rows = np.vstack([X[:400], _probe_rows(booster, X, rng)])
+    for dtype, order in itertools.product((np.float64, np.float32), ("C", "F")):
+        data = np.asarray(rows, dtype=dtype, order=order)
+        _assert_pairwise(booster, data)
+        for start, num in ((0, 1), (3, 7), (10, -1), (24, 5), (30, 2), (0, 9), (1, 17)):
+            _assert_pairwise(booster, data, start_iteration=start, num_iteration=num)
+        normal = booster.predict(data, device="cuda")
+        np.testing.assert_allclose(normal, booster.predict(data, device="cpu"), rtol=1e-12, atol=1e-12)
+        np.testing.assert_array_equal(
+            booster.predict(data, device="cuda", pred_leaf=True), booster.predict(data, device="cpu", pred_leaf=True)
+        )
+        if not name.startswith("linear_tree"):
+            np.testing.assert_array_equal(
+                booster.predict(data[:100], device="cuda", pred_contrib=True),
+                booster.predict(data[:100], device="cpu", pred_contrib=True),
+            )
+
+
+@requires_cuda
+def test_default_mode_does_not_depend_on_the_batch():
+    """One row gets the same bits alone, in any slice of a batch, from host or device memory, and in any layout."""
+    rng = np.random.default_rng(77)
+    X = _features(rng, 3000, 30)
+    y = np.nansum(X[:, :4], axis=1)
+    for objective, label, extra, rounds in (
+        ("regression", y, {}, 300),
+        ("multiclass", np.digitize(y, [-1, 0, 1]).astype(float), {"num_class": 4}, 120),
+    ):
+        booster = lgb.train(_base(objective=objective, num_leaves=31, **extra), lgb.Dataset(X, label), rounds)
+        test = _features(rng, 2500, 30).astype(np.float32)
+        full = _assert_pairwise(booster, test)
+        for lo, hi in ((0, 1), (7, 8), (0, 3), (100, 233), (1999, 2500), (5, 1205)):
+            np.testing.assert_array_equal(booster.predict(test[lo:hi], device="cuda", raw_score=True), full[lo:hi])
+        np.testing.assert_array_equal(booster.predict(np.asfortranarray(test), device="cuda", raw_score=True), full)
+        np.testing.assert_array_equal(booster.predict(test[::7], device="cuda", raw_score=True), full[::7])
 
 
 @requires_cuda
@@ -337,20 +446,26 @@ def test_device_arrays_stay_on_the_device(zoo):
             host = X.astype(dtype)
             dev = cupy.asarray(host)
             for kwargs in ({}, {"raw_score": True}, {"pred_leaf": True}, {"pred_contrib": True}):
-                out = booster.predict(dev, **kwargs)
+                out = booster.predict(dev, deterministic=True, **kwargs)
                 assert isinstance(out, cupy.ndarray)
                 np.testing.assert_array_equal(cupy.asnumpy(out), booster.predict(host, device="cpu", **kwargs))
+            ref = _pairwise_reference(booster, host)
+            out = booster.predict(dev, raw_score=True)
+            assert isinstance(out, cupy.ndarray)
+            np.testing.assert_array_equal(cupy.asnumpy(out), ref)
             # a strided view (every other row, a column slice) is read in place
             view = dev[::2, :]
             np.testing.assert_array_equal(
-                cupy.asnumpy(booster.predict(view, raw_score=True)),
+                cupy.asnumpy(booster.predict(view, raw_score=True, deterministic=True)),
                 booster.predict(np.ascontiguousarray(host[::2, :]), device="cpu", raw_score=True),
             )
+            np.testing.assert_array_equal(cupy.asnumpy(booster.predict(view, raw_score=True)), ref[::2])
             fortran = cupy.asfortranarray(dev)
             np.testing.assert_array_equal(
-                cupy.asnumpy(booster.predict(fortran, raw_score=True)),
+                cupy.asnumpy(booster.predict(fortran, raw_score=True, deterministic=True)),
                 booster.predict(host, device="cpu", raw_score=True),
             )
+            np.testing.assert_array_equal(cupy.asnumpy(booster.predict(fortran, raw_score=True)), ref)
         with pytest.raises(ValueError, match="device='cpu'"):
             booster.predict(cupy.asarray(X), device="cpu")
 
@@ -362,13 +477,76 @@ def test_torch_tensors_stay_torch(zoo):
         pytest.skip("torch without CUDA")
     booster, X = zoo["multiclass"]
     t = torch.as_tensor(X.astype(np.float32), device="cuda")
-    out = booster.predict(t, raw_score=True)
+    out = booster.predict(t, raw_score=True, deterministic=True)
     assert isinstance(out, torch.Tensor)
     assert out.is_cuda
     assert out.dtype == torch.float64
     np.testing.assert_array_equal(
         out.cpu().numpy(), booster.predict(X.astype(np.float32), device="cpu", raw_score=True)
     )
+    out = booster.predict(t, raw_score=True)
+    assert isinstance(out, torch.Tensor)
+    np.testing.assert_array_equal(out.cpu().numpy(), _pairwise_reference(booster, X.astype(np.float32)))
+
+
+@requires_cuda
+def test_predict_many_equals_one_by_one(zoo):
+    """A batch of jobs (several models, shared and own inputs, iteration slices, linear and categorical models that
+    take other paths) gives each job exactly its own prediction, in both modes, from host and device memory."""
+    names = ["regression", "multiclass", "categorical", "linear_tree", "binary", "deep", "stumps", "rf"]
+    boosters, inputs, starts, nums = [], [], [], []
+    rng = np.random.default_rng(9)
+    for name in names:
+        booster, X = zoo[name]
+        own = np.ascontiguousarray(X[: int(rng.integers(1, 600))], dtype=np.float32)
+        for start, num in ((0, None), (3, 7), (0, 1), (2, -1)):
+            boosters.append(booster)
+            inputs.append(own)
+            starts.append(start)
+            nums.append(num)
+    for raw in (True, False):
+        for deterministic in (False, True):
+            got = lgb.predict_many(boosters, inputs, starts, nums, raw_score=raw, deterministic=deterministic)
+            assert len(got) == len(boosters)
+            for b, x, st, nm, g in zip(boosters, inputs, starts, nums, got, strict=True):
+                one = b.predict(
+                    x, device="cuda", start_iteration=st, num_iteration=nm, raw_score=raw, deterministic=deterministic
+                )
+                assert g.shape == one.shape
+                np.testing.assert_array_equal(g, one)
+                if deterministic:
+                    np.testing.assert_array_equal(
+                        g, b.predict(x, device="cpu", start_iteration=st, num_iteration=nm, raw_score=raw)
+                    )
+    # one input for every job, Fortran order, float64
+    booster, X = zoo["regression"]
+    shared = np.asfortranarray(X[:333])
+    got = lgb.predict_many(
+        [booster, zoo["regression_zero_missing"][0], booster], shared, num_iteration=[5, None, -1], raw_score=True
+    )
+    np.testing.assert_array_equal(got[0], booster.predict(shared, device="cuda", num_iteration=5, raw_score=True))
+    np.testing.assert_array_equal(got[2], booster.predict(shared, device="cuda", raw_score=True))
+    cupy = pytest.importorskip("cupy")
+    dev = [cupy.asarray(x) for x in inputs]
+    got = lgb.predict_many(boosters, dev, starts, nums, raw_score=True)
+    for b, x, st, nm, g in zip(boosters, inputs, starts, nums, got, strict=True):
+        assert isinstance(g, cupy.ndarray)
+        np.testing.assert_array_equal(
+            cupy.asnumpy(g), b.predict(x, device="cuda", start_iteration=st, num_iteration=nm, raw_score=True)
+        )
+
+
+@requires_cuda
+def test_predict_many_refuses_mixed_inputs(zoo):
+    booster, X = zoo["regression"]
+    assert lgb.predict_many([], X) == []
+    with pytest.raises(TypeError, match="all float32 or all float64"):
+        lgb.predict_many([booster, booster], [X.astype(np.float32), X.astype(np.float64)])
+    with pytest.raises(ValueError, match="2 boosters, 3 inputs"):
+        lgb.predict_many([booster, booster], [X, X, X])
+    cupy = pytest.importorskip("cupy")
+    with pytest.raises(TypeError, match="all numpy arrays or all device arrays"):
+        lgb.predict_many([booster, booster], [X, cupy.asarray(X)])
 
 
 _KERNEL_SCRIPT = r"""
@@ -376,7 +554,7 @@ import sys
 import numpy as np
 import falcata as lgb
 sys.path.insert(0, {test_dir!r})
-from test_cuda_predictor import _zoo
+from test_cuda_predictor import _zoo, _pairwise_reference
 for name, (booster, X) in _zoo().items():
     for dtype in (np.float32, np.float64):
         for order in ("C", "F"):
@@ -387,9 +565,16 @@ for name, (booster, X) in _zoo().items():
                 requests.append({{"pred_contrib": True}})
             for kwargs in requests:
                 cpu = booster.predict(data, device="cpu", **kwargs)
-                gpu = booster.predict(data, device="cuda", **kwargs)
+                gpu = booster.predict(data, device="cuda", deterministic=True, **kwargs)
                 if not np.array_equal(cpu, gpu, equal_nan=True):
                     print("MISMATCH", name, dtype.__name__, order, kwargs, float(np.nanmax(np.abs(cpu - gpu))))
+                    sys.exit(1)
+            for start, num in ((0, -1), (4, 9), (1, 17)):
+                ref = _pairwise_reference(booster, data, start, num)
+                gpu = booster.predict(data, device="cuda", raw_score=True, start_iteration=start, num_iteration=num)
+                if not np.array_equal(ref, gpu, equal_nan=True):
+                    print("PAIRWISE MISMATCH", name, dtype.__name__, order, start, num,
+                          float(np.nanmax(np.abs(ref - gpu))))
                     sys.exit(1)
 print("OK")
 """
@@ -400,16 +585,40 @@ print("OK")
     "debug",
     [
         "predict_kernel=row",
-        "predict_kernel=ilp,predict_ilp=2",
-        "predict_kernel=ilp,predict_ilp=8",
+        "predict_kernel=row,predict_ilp=1",
+        "predict_kernel=row,predict_ilp=8",
         "predict_kernel=tile",
-        "predict_kernel=tile,predict_tile_rows=3",
-        "predict_kernel=tile,predict_tile_rows=64",
+        "predict_kernel=tile,predict_ilp=1,predict_tile_rows=5,predict_tile_trees=7",
+        "predict_kernel=tile,predict_ilp=4,predict_tile_rows=40",
+        "predict_kernel=tile,predict_tile_rows=3,predict_tile_trees=1",
         "predict_chunk_rows=37",
+        "predict_tile_rows=1",
+        "predict_tile_rows=3,predict_wave_groups=1,predict_ilp=1",
+        "predict_tile_rows=32,predict_wave_groups=8,predict_ilp=4",
+        "predict_spans=1",
+        "predict_spans=5,predict_wave_groups=2",
+        "predict_target_blocks=100000,predict_ilp=2",
+        "predict_stage=0",
+        "predict_stage=1,predict_tile_rows=2",
+        "predict_chunk_rows=37,predict_spans=3",
+        "predict_compact=0",
+        "predict_compact=0,predict_stage=0,predict_spans=4",
+        "predict_group_lanes=1",
+        "predict_group_lanes=2,predict_compact=0",
+        "predict_group_lanes=2,predict_stage=1,predict_tile_rows=2,predict_out_chunk=3",
+        "predict_group_lanes=4,predict_stage=0,predict_spans=3",
+        "predict_group_lanes=4,predict_stage=1,predict_tile_rows=1",
+        "predict_group_lanes=8,predict_tile_rows=3",
+        "predict_wave_groups=64,predict_threads=64",
+        "predict_group_lanes=1,predict_task_groups=2",
+        "predict_group_lanes=1,predict_task_groups=8,predict_spans=3",
+        "predict_group_lanes=1,predict_task_groups=4,predict_out_chunk=1,predict_compact=0",
+        "predict_out_chunk=3",
     ],
 )
 def test_every_kernel_is_exact(debug, tmp_path):
-    """Each raw-score kernel, forced through FALCATA_DEBUG (read once per process), equals the CPU predictor."""
+    """Each raw-score kernel and shape, forced through FALCATA_DEBUG (read once per process): the deterministic mode
+    equals the CPU predictor and the default mode the pairwise reference, bit for bit."""
     import os  # noqa: PLC0415
     import subprocess  # noqa: PLC0415
     import sys  # noqa: PLC0415

@@ -370,6 +370,12 @@ class FALCATA_EXPORT Boosting {
     return TreeRangeView();
   }
 
+  /*! \brief TreesInRange without the tree list (the shape fields only): what a prediction from a packed copy needs */
+  virtual TreeRangeView RangeShape(const PredictRange& /*range*/) const {
+    Log::Fatal("This boosting type does not expose its trees to device predictors");
+    return TreeRangeView();
+  }
+
   /*!
   * \brief Turn the raw scores of one row (as PredictRawInRange leaves them) into the normal prediction, in place:
   *        the average of a forest, then the objective's output transform; PredictInRange applies exactly this

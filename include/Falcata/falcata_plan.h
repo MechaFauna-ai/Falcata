@@ -1452,9 +1452,17 @@ inline bool FalcataVerifyEnabled() {
  *    pop before the comparison, so a MISMATCH line must appear
  *  - ``r3rebuild``  test hook for the parallel shadow: rebuilds its kept order
  *    from the records on every level
- *  - ``predict_kernel=row|ilp|tile`` the CUDA predictor uses this kernel for raw scores instead of the one its
- *    plan picks, and ``predict_ilp=N`` (1, 2, 4 or 8 trees in flight per thread) and ``predict_tile_rows=N``
- *    (rows per block) set that kernel's shape: for benchmarks; every kernel is exact, so none changes any result
+ *  - ``predict_kernel=row|tile`` the CUDA predictor's deterministic mode uses this kernel for raw scores instead of
+ *    the one its plan picks, and ``predict_ilp=N`` (walks in flight per thread), ``predict_tile_rows=N`` (rows per
+ *    block) and ``predict_tile_trees=N`` (trees per tile) set its shape: for benchmarks; both kernels are exact, so
+ *    none changes any result
+ *  - ``predict_wave_groups=N``, ``predict_spans=N``, ``predict_target_blocks=N``, ``predict_stage=0|1`` and
+ *    ``predict_compact=0|1``, ``predict_threads=N``, ``predict_group_lanes=1|2|4|8``, ``predict_task_groups=1|2|4|8``
+ *    and ``predict_out_chunk=N`` set the shape of the default (pairwise) mode's kernel: groups
+ *    per wave, tree spans per row tile, the grid the span count aims for, whether rows are staged in shared memory,
+ *    which tree layout it walks, threads per block (a wave's tasks beyond them loop), the lanes sharing one group's
+ *    walks, the groups one task adds, and the outputs per block; ``predict_tile_rows`` and ``predict_ilp`` apply to it too. The pairwise sum is one fixed order, so none
+ *    of them changes a result
  *  - ``predict_chunk_rows=N`` the CUDA predictor copies a host input to the device N rows at a time (tests the
  *    chunked path on small inputs); does not change any result
  * debug and dump also keep trees off the device-driven flows (the device
@@ -1478,7 +1486,17 @@ struct FalcataDebugOptions {
   std::string predict_kernel;       // "" = the CUDA predictor's own plan
   int predict_ilp = 0;              // 0 = the plan's
   int predict_tile_rows = 0;        // 0 = the plan's
+  int predict_tile_trees = 0;       // 0 = the plan's
   int64_t predict_chunk_rows = 0;   // 0 = sized from free device memory
+  int predict_wave_groups = 0;      // 0 = the plan's
+  int predict_spans = 0;            // 0 = the plan's
+  int predict_target_blocks = 0;    // 0 = the plan's
+  int predict_stage = -1;           // -1 = the plan's, 0 = rows from global memory, 1 = staged
+  int predict_compact = -1;         // -1 = the plan's, 0 = the node layout, 1 = the compact layout where it exists
+  int predict_threads = 0;          // 0 = the plan's: threads per block of the default mode (tasks beyond loop)
+  int predict_group_lanes = 0;      // 0 = the plan's: lanes sharing one group's walks (1, 2, 4 or 8)
+  int predict_task_groups = 0;      // 0 = the plan's: consecutive groups per task (1, 2, 4 or 8)
+  int predict_out_chunk = 0;        // 0 = the plan's: outputs per block
 };
 
 inline const FalcataDebugOptions& FalcataDebug() {
@@ -1539,8 +1557,28 @@ inline const FalcataDebugOptions& FalcataDebug() {
         o.predict_kernel = token.substr(15);
       } else if (token.rfind("predict_ilp=", 0) == 0) {
         o.predict_ilp = std::atoi(token.c_str() + 12);
+      } else if (token.rfind("predict_tile_trees=", 0) == 0) {
+        o.predict_tile_trees = std::atoi(token.c_str() + 19);
       } else if (token.rfind("predict_tile_rows=", 0) == 0) {
         o.predict_tile_rows = std::atoi(token.c_str() + 18);
+      } else if (token.rfind("predict_wave_groups=", 0) == 0) {
+        o.predict_wave_groups = std::atoi(token.c_str() + 20);
+      } else if (token.rfind("predict_spans=", 0) == 0) {
+        o.predict_spans = std::atoi(token.c_str() + 14);
+      } else if (token.rfind("predict_target_blocks=", 0) == 0) {
+        o.predict_target_blocks = std::atoi(token.c_str() + 22);
+      } else if (token.rfind("predict_stage=", 0) == 0) {
+        o.predict_stage = std::atoi(token.c_str() + 14) != 0 ? 1 : 0;
+      } else if (token.rfind("predict_task_groups=", 0) == 0) {
+        o.predict_task_groups = std::atoi(token.c_str() + 20);
+      } else if (token.rfind("predict_out_chunk=", 0) == 0) {
+        o.predict_out_chunk = std::atoi(token.c_str() + 18);
+      } else if (token.rfind("predict_group_lanes=", 0) == 0) {
+        o.predict_group_lanes = std::atoi(token.c_str() + 20);
+      } else if (token.rfind("predict_threads=", 0) == 0) {
+        o.predict_threads = std::atoi(token.c_str() + 16);
+      } else if (token.rfind("predict_compact=", 0) == 0) {
+        o.predict_compact = std::atoi(token.c_str() + 16) != 0 ? 1 : 0;
       } else if (token.rfind("predict_chunk_rows=", 0) == 0) {
         o.predict_chunk_rows = std::max<int64_t>(0, std::atoll(token.c_str() + 19));
       } else if (!token.empty()) {

@@ -61,8 +61,10 @@ What makes it fast
   `nonquant_deterministic`, `nonquant_hist_cost`), and individually
   overridable for experiments.
 - **Native GPU inference.** `Booster.predict()` scores dense rows with its own
-  CUDA predictor, bit-identical to the CPU predictor (see below); device arrays
-  stay on the device end to end.
+  CUDA predictor (speed against NVIDIA FIL in docs/performance.md section 8),
+  with a deterministic mode bit-identical to the CPU predictor; device arrays
+  stay on the device end to end, and `falcata.predict_many` scores many models
+  in one call.
 
 Correctness discipline
 ----------------------
@@ -104,25 +106,41 @@ GPU inference
 
 `Booster.predict()` has its own CUDA predictor: the trees are packed once for
 the device (and kept until the model changes), and dense rows are scored on
-the GPU with no extra dependency. Its raw scores, leaf indices and feature contributions are
-**bit-identical** to the CPU predictor's: each output adds the leaf values in
-tree order in double precision, float32 inputs are routed with thresholds
-rounded down to float (exact for every float), and NaN, zero-as-missing and
-categorical splits follow the CPU rules. Normal (transformed) predictions are
-converted from those raw scores by the same host code the CPU predictor runs.
+the GPU with no extra dependency. Every row reaches the CPU predictor's
+leaves: float32 inputs are routed with thresholds rounded down to float (exact
+for every float), and NaN, zero-as-missing and categorical splits follow the
+CPU rules, so leaf indices and feature contributions are **bit-identical**.
+How each output's leaf values are added depends on the mode:
+
+- **default (fast)**: in one fixed pairwise order (groups of 8 iterations in
+  tree order, then a binary tree over the groups), so that one row's trees are
+  spread over the GPU. The order depends only on the model and the iteration
+  range: a row gets the same bits in any batch, call and GPU. It differs from
+  the CPU predictor's in-order sum by rounding only (largest difference on the
+  benchmark models about 1e-13, see docs/performance.md section 8);
+- **`deterministic=True`**: in tree order, exactly as the CPU predictor: raw
+  scores and normal predictions are bit-identical to `device="cpu"`.
+
+Normal (transformed) predictions are converted from the raw scores by the same
+host code the CPU predictor runs.
 
 ```python
-preds = model.predict(X_test)                 # numpy in -> numpy out
-preds = model.predict(cupy_X)                 # device in -> device out (CuPy, PyTorch, any __cuda_array_interface__)
-preds = model.predict(X_test, device="cuda")  # force the GPU (an error where it cannot run)
-preds = model.predict(X_test, device="cpu")   # force the CPU predictor
+preds = model.predict(X_test)                       # numpy in -> numpy out
+preds = model.predict(cupy_X)                       # device in -> device out (CuPy, PyTorch, any __cuda_array_interface__)
+preds = model.predict(X_test, device="cuda")        # force the GPU (an error where it cannot run)
+preds = model.predict(X_test, device="cpu")         # force the CPU predictor
+preds = model.predict(X_test, deterministic=True)   # GPU sums in tree order: bit-identical to the CPU predictor
+outs = falcata.predict_many([m1, m2, m2], [X1, X2, X2], num_iteration=[None, 100, 200])  # many models, one call
 ```
 
 - With `device=None` (the default) a device array is predicted on its GPU, and
   a 2-D numpy array is predicted on the GPU when the model was configured with
   `device_type="cuda"` and this build and machine can run the CUDA predictor;
-  everything else uses the CPU predictor. The choice changes speed, not
-  results, and a failure on the GPU is raised, never retried on the CPU.
+  everything else uses the CPU predictor. A failure on the GPU is raised, never
+  retried on the CPU.
+- `falcata.predict_many` predicts many (booster, input, iteration range) jobs
+  in a few launches, each job with exactly its own `predict` result: the shape
+  of a daily scoring run of thousands of small predictions.
 - Host inputs go to the device in row chunks (any number of rows, 64-bit
   offsets); `Booster.cuda_predict_stats` reports the device memory of the last
   CUDA prediction (the cached model and the call's buffers) and its chunking.

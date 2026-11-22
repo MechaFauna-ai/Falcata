@@ -1279,13 +1279,252 @@ before the last change.
 Not taken: tree-shaped shuffle scans for the threshold prefixes on trees whose level construct is the
 order-dependent atomic one (the default graph loop); see `perf-dead-ends.md`.
 
-## 8. GPU inference via NVIDIA FIL
+## 8. GPU inference: the native CUDA predictor
 
-`Booster.predict()` on a CUDA-trained model routes through cuML's Forest
-Inference Library when available: numerai predict 0.90s → **0.046s** (CuPy
-in/out), higgs 0.37s → 0.004s (July 2026, pre-launch build; no recorded run
-is checked in; not re-measured for 1.1). See the README for precision notes
-and the opt-out.
+**The problem.** `Booster.predict()` reached the GPU only through cuML's Forest Inference Library (FIL): a Treelite
+handoff per iteration slice, host slabs of 2**29 cells around FIL's 32-bit offsets, and fp32 routing by default that
+sends rows near a threshold to another leaf, with exact routing (fp64) at half the speed.
+
+**The idea.** Falcata's own predictor (`src/boosting/cuda/cuda_predictor.*`). Its routing is exact: a float32 input is
+compared with the largest float not above each double threshold, which decides `(double)x <= t` exactly for every
+float x, so every row reaches the CPU predictor's leaves, and leaf indices and TreeSHAP contributions are
+bit-identical. What is left is how each output adds its leaf values, and the predictor has two modes for that:
+
+- **Default (fast).** One fixed pairwise order: the iterations of the range in groups of 8, each group added in tree
+  order from 0.0, then the group sums by the complete binary tree over the group index (a missing partner counts as
+  0.0, which changes nothing, since no partial sum is ever -0.0). One row's trees can then be spread over many
+  threads, and because the order is set by the iteration range alone, a row gets the same bits in any batch, in any
+  call, from host or device memory and on any GPU. It differs from the in-order sum by rounding only: at most
+  1.2e-13 on the matrix below.
+- **Deterministic** (`predict(..., deterministic=True)`, the C API's `deterministic` argument). Each output adds its
+  leaf values in tree order, as `GBDT::PredictRawInRange` does, so raw scores and normal predictions are bit-identical
+  to the CPU predictor. On small batches its chain of dependent additions per row sets its speed.
+
+**The default mode's kernel** (`PredictPairwiseKernel`, plan `ChoosePairwisePlan`). A block takes a tile of rows (8 by
+default; up to 32 when the rows alone fill the device and 32 staged rows fit in 16 KiB), one output, and an aligned
+span of groups. A task walks a unit of groups for one (row, output): 8 consecutive groups (64 trees) when a span holds
+them without wasting much of its last wave, adding each group's trees in order and the 8 group sums by the aligned
+tree in registers, with 8 walks in flight per thread. Warp shuffles add aligned segments of unit sums, and a
+binary-counter stack per (row, output) in shared memory keeps the aligned subtree sums across waves. Small batches
+spread a group's 8 trees over 2, 4 or 8 lanes instead, chaining the in-order sum through them by shuffles. When the
+row tiles alone do not fill the device (about 16 blocks per multiprocessor), each tile's groups are cut into spans that
+run in their own blocks, and a second kernel adds the spans' sums by the same tree; a request that is a single tile
+can instead run as one block of up to 512 threads. Rows are staged in shared memory, over the model's features so that
+staged reads need no bounds check, when the block's walks read at least twice the features staging copies; other rows
+are read through the L1 cache. Wide rows (thousands of columns) get their own tiles: 1-2 staged rows with 2 lanes per
+group (4 for a single row), all outputs of a multi-output model in one block when that still fills the device, and
+unstaged 8-row tiles with 2 lanes when only some of the outputs could share a staged row. The trees are walked in a
+compact breadth-first layout (8-byte slots holding the threshold and feature, 16 bytes for double thresholds, a node's
+two children adjacent, a leaf's slot holding its value, each output's trees contiguous); models with linear or vector
+leaves keep the node layout. No shape changes a bit of the result: `test_cuda_predictor.py` checks the default mode
+against a NumPy reference of the pairwise sum built from the CPU predictor's per-iteration scores, in both layouts and
+dtypes and under every kernel shape forced through `FALCATA_DEBUG` (`predict_tile_rows`, `predict_group_lanes`,
+`predict_spans`, `predict_task_groups`, `predict_stage`, `predict_compact` and others).
+
+Each of these rules was measured on the matrix shapes below against the alternative (RTX 5090, device input):
+
+| rule | measured on | effect |
+|---|---|---|
+| groups per task a template (1 or 8), not a runtime loop | every default-mode kernel | the loop cost 14-16 registers (4 instead of 6 blocks of 256 threads per multiprocessor) |
+| 8 groups per task | 15-leaf and 13-output models | 1.1-1.5x |
+| one output per block | real model 0204 (13 outputs), 100k rows; 13-class synthetic | 1.6x; 1.5x |
+| stage rows only at enough reuse | real model 0010 (6,287 columns), 100k rows | 2.1x |
+| breadth-first compact layout | large batches | the depth-first compact layout lost to the node layout |
+| up to 32 rows per block, not 64 | 100 x 15 leaves at 1M rows | 64 lost 1.3x |
+| 8 walks in flight at every batch size | real models at 100k rows | 4 walks gained 1.1-1.2x on synthetic 15-leaf trees, lost 1.1-1.25x on the real models |
+| one-row blocks keep their wave size | 13 one-row cells | shrinking them toward a warp lost in 12 (down to 0.58x on 20,000 trees) |
+| partly bundled wide multi-output rows unstaged, 2 lanes | real model 0017 (9 outputs, 6,339 columns), 400 and 1k rows | 1.23x and 1.23x over 3 staged outputs per block |
+| single-tile blocks only up to 512 threads | one-row 1k-tree models | 1024-thread single blocks lost 1.25-1.35x to 32-group spans |
+
+Measured and dropped: tasks over the real groups only (padding groups without a task), and refilling a finished walk's
+slot with the next tree of its task (both slower on the matrix).
+
+**The deterministic mode's kernel** (`kTileWs`). It stages 8 rows (4 for small batches) in shared memory; warp 0 keeps
+their running sums, lane r adding row r's leaf values in tree order, while seven warps walk the next tile of 64 trees
+for every (row, tree) pair, two walks in flight per thread; the tiles' leaf values are double-buffered, so the chains
+run beside the walks. Wide rows (2,000+ columns) stage as many rows as fit in 48 KiB when the walks read more features
+than the staging copies (1.4-2.4x on those rows over 8 rows read from global memory).
+
+**The deterministic kernel's speed rounds** (RTX 5090 on a rented box: driver 595.91.07, AMD Ryzen 9 9950X, 16 threads
+for the CPU predictor; device input, rows per second; every variant exact against the CPU predictor):
+
+| round | change | 1k trees x 15 leaves, 50 feat., 1M rows | 1k x 63, 500 feat., 1M rows | 1k x 63, 500, 1k rows | real model 0151 (20k x 21, 248), 100k rows | real model 0204 (125k x 5, 13 classes, 533), 100k rows |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | a thread per row, gathers from global memory | 36.4M | 4.1M | 0.34M | 1.40M | 0.09M |
+| 1 | + 2-8 tree walks in flight per thread | 36.4M | 4.1M | 0.34M | - | - |
+| 2 | 8 rows staged in shared memory, threads over trees, a barrier then one thread per row sums | 90.5M | 41.0M | 8.7M | 3.28M | 0.35M |
+| 3 | + a summing warp beside the walking warps (32 rows) | 50.2M | 15.4M | 9.8M | 1.03M | 0.33M |
+| 4 | summing warp with 8 rows (4 below two blocks per multiprocessor) | 88.9M | 42.4M | 9.8M | 3.21M | 0.67M |
+| 4 | + 8-byte depth-first nodes (left child implicit) | 79.2M | 37.0M | 9.3M | 2.93M | 0.60M |
+| 5 | + tree nodes staged in shared memory per tile | 18.3M | 7.6M | 4.9M | - | - |
+| 6 | + summing warp and nodes in shared memory | 51.5M | 16.1M | 5.8M | 1.40M | - |
+| 7 | two passes for small batches (all leaf values, then the sums) | - | - | 4.9M | 1.64M | 0.24M at 1k rows (0.20M) |
+
+Round 4's kernel without the 8-byte nodes is the plan: the best or within 3% of the best on every shape measured
+except the 100k-row narrow case of round 3's 32-tree tiles (91.5M against 88.9M). Rounds 5-7 gained nothing on the
+large shapes (the two-pass variant only on the smallest batches of tiny-tree models, 1.2-2x, not worth a third kernel),
+so the rounds stopped there; the measured losers are not kept.
+
+**Many small predictions** (`falcata.predict_many`, C: `FLC_BoostersPredictForMatCUDA`). A daily scoring run predicts
+thousands of (model, iteration count) jobs of a few hundred rows each. One call takes them all: each job keeps its own
+plan, the one its own `predict` would run, so its result is that call's; jobs share a launch over a job table when they
+have the same layout, staging, categorical kernel, shared-memory class, groups per task and threads per block, and the
+device buffers, page-locked staging and host-side lists are kept across calls. Jobs in the deterministic mode, or with
+vector or linear leaves, run one after the other. (Spans sized for the batch as a whole, so that every block did about
+the same rows x trees, gave each job of a large batch 1-2 spans, and jobs with deep or wide trees formed a tail:
+1.07-1.45x slower than a loop of `predict` calls on 500-row jobs of 32-99 real models.)
+
+**The matrix** (RTX 5090; single-output cells measured on the squashed predictor source before the rebase (2580e070, the
+same predictor code), multiclass cells and spot re-checks on the rebased head's code. The cells: 16 synthetic shapes and
+11 real models of a downstream walk-forward run, from 1 to 10M rows (10M only for 50 features, 1M only up to 1,000
+features), inputs drawn inside each model's threshold ranges with 10% NaN, from device memory. FIL is nvforest 26.10
+through Treelite in its default configuration (no `optimize()`): fp32 is its default float32 routing, fast but inexact,
+fp64 routes exactly; both are the best of three timings, a classifier timed for its raw outputs (`predict_proba`). "/
+FIL" is the native mode's rows per second over FIL's; every deterministic result was compared with the CPU predictor bit
+for bit):
+
+| model (trees x leaves, features) | rows | FIL fp32 | FIL fp64 | default | / FIL fp32 | / FIL fp64 | deterministic | det. / FIL fp64 | max abs default - det. |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 100 x 15 leaves, 50 feat. | 1 | 45.9k | 30.1k | 71.2k | 1.55 | 2.37 | 66k | 2.20 | 1.4e-17 |
+| 100 x 15 leaves, 50 feat. | 1,000 | 33.7M | 21.4M | 49.3M | 1.46 | 2.30 | 54.5M | 2.54 | 2.2e-16 |
+| 100 x 15 leaves, 50 feat. | 100,000 | 890M | 351M | 967M | 1.09 | 2.76 | 668M | 1.90 | 3.6e-16 |
+| 100 x 15 leaves, 50 feat. | 1,000,000 | 982M | 355M | 1.1G | 1.12 | 3.11 | 726M | 2.05 | 5.0e-16 |
+| 100 x 15 leaves, 50 feat. | 10,000,000 | 1.02G | 360M | 1.16G | 1.13 | 3.21 | 751M | 2.09 | 4.4e-16 |
+| 1k x 15, 50 | 1 | 7.52k | 5.04k | 60.1k | 8.00 | 11.93 | 22.8k | 4.52 | 1.1e-16 |
+| 1k x 15, 50 | 1,000 | 5.18M | 3.38M | 32.6M | 6.29 | 9.62 | 14.8M | 4.36 | 1.4e-15 |
+| 1k x 15, 50 | 100,000 | 111M | 47.9M | 154M | 1.38 | 3.22 | 86.2M | 1.80 | 2.4e-15 |
+| 1k x 15, 50 | 1,000,000 | 122M | 51.9M | 187M | 1.53 | 3.60 | 87.8M | 1.69 | 4.0e-15 |
+| 1k x 15, 50 | 10,000,000 | 124M | 52.6M | 189M | 1.53 | 3.59 | 85.5M | 1.63 | 4.7e-15 |
+| 1k x 63, 500 | 1 | 5.81k | 6.46k | 60.1k | 10.35 | 9.30 | 17.7k | 2.73 | 6.9e-18 |
+| 1k x 63, 500 | 1,000 | 3.53M | 4.67M | 23.4M | 6.62 | 5.00 | 10.9M | 2.32 | 1.7e-15 |
+| 1k x 63, 500 | 100,000 | 19.6M | 12.9M | 64.1M | 3.27 | 4.96 | 41.4M | 3.20 | 2.7e-15 |
+| 1k x 63, 500 | 1,000,000 | 20.2M | 13.2M | 65M | 3.22 | 4.91 | 42.4M | 3.20 | 4.2e-15 |
+| 1k x 255, 500 | 1 | 4.86k | 5.45k | 58.1k | 11.96 | 10.66 | 15k | 2.76 | 1.7e-16 |
+| 1k x 255, 500 | 1,000 | 2.89M | 3.97M | 19.9M | 6.89 | 5.01 | 8.86M | 2.23 | 1.3e-15 |
+| 1k x 255, 500 | 100,000 | 16M | 10.8M | 41.8M | 2.61 | 3.88 | 26.5M | 2.46 | 2.7e-15 |
+| 1k x 255, 500 | 1,000,000 | 16.5M | 11.1M | 42.8M | 2.60 | 3.86 | 27M | 2.43 | 4.7e-15 |
+| 1k x 255 balanced, 500 | 1 | 4.91k | 6.11k | 57.9k | 11.78 | 9.47 | 18.4k | 3.01 | 1.4e-17 |
+| 1k x 255 balanced, 500 | 1,000 | 3.74M | 5.09M | 17.8M | 4.76 | 3.50 | 10.7M | 2.10 | 1.8e-15 |
+| 1k x 255 balanced, 500 | 100,000 | 20.3M | 13.4M | 34.8M | 1.72 | 2.59 | 30.8M | 2.29 | 3.1e-15 |
+| 1k x 255 balanced, 500 | 1,000,000 | 21.2M | 14.2M | 35.2M | 1.66 | 2.48 | 30.5M | 2.15 | 4.4e-15 |
+| 1k x 255 deep, 500 | 1 | 6.47k | 7.28k | 56k | 8.65 | 7.69 | 18.8k | 2.58 | 9.4e-17 |
+| 1k x 255 deep, 500 | 1,000 | 3.6M | 4.68M | 25.7M | 7.14 | 5.48 | 11.6M | 2.49 | 1.6e-15 |
+| 1k x 255 deep, 500 | 100,000 | 20.2M | 13M | 81.6M | 4.05 | 6.28 | 45.4M | 3.49 | 2.6e-15 |
+| 1k x 255 deep, 500 | 1,000,000 | 20.7M | 13.2M | 84M | 4.06 | 6.35 | 46.4M | 3.50 | 3.3e-15 |
+| 300 x 1023, 500 | 1 | 12.7k | 13.6k | 58.4k | 4.58 | 4.30 | 30.7k | 2.26 | 1.5e-16 |
+| 300 x 1023, 500 | 1,000 | 7.33M | 9.84M | 20.9M | 2.85 | 2.12 | 19.8M | 2.01 | 6.7e-16 |
+| 300 x 1023, 500 | 100,000 | 39.8M | 25.6M | 91.1M | 2.29 | 3.56 | 65.7M | 2.57 | 1.0e-15 |
+| 300 x 1023, 500 | 1,000,000 | 40.9M | 26.3M | 97.9M | 2.39 | 3.72 | 68M | 2.58 | 1.2e-15 |
+| 2k x 1023 deep, 500 | 1 | 3.09k | 3.59k | 57.5k | 18.60 | 16.03 | 10.2k | 2.85 | 3.3e-16 |
+| 2k x 1023 deep, 500 | 1,000 | 1.74M | 2.38M | 16.4M | 9.43 | 6.90 | 5.89M | 2.47 | 4.2e-15 |
+| 2k x 1023 deep, 500 | 100,000 | 9.81M | 6.55M | 38.3M | 3.90 | 5.84 | 21.6M | 3.30 | 6.0e-15 |
+| 2k x 1023 deep, 500 | 1,000,000 | 10.1M | 6.71M | 39.6M | 3.92 | 5.89 | 22.2M | 3.30 | 8.4e-15 |
+| 5k x 31, 5000 | 1 | 18.8k | 14.2k | 53.5k | 2.84 | 3.76 | 4.84k | 0.34 | 1.1e-16 |
+| 5k x 31, 5000 | 1,000 | 3.83M | 2.55M | 4.88M | 1.28 | 1.92 | 2.35M | 0.92 | 1.1e-14 |
+| 5k x 31, 5000 | 100,000 | 4.37M | 2.45M | 6.36M | 1.46 | 2.59 | 3.11M | 1.27 | 1.9e-14 |
+| 1k x 63, 5000 | 1 | 47k | 32.7k | 52.8k | 1.12 | 1.61 | 16.3k | 0.50 | 2.2e-16 |
+| 1k x 63, 5000 | 1,000 | 13.9M | 6.84M | 16.6M | 1.19 | 2.42 | 7.98M | 1.17 | 2.8e-15 |
+| 1k x 63, 5000 | 100,000 | 17.7M | 5.84M | 23.7M | 1.34 | 4.06 | 10.2M | 1.75 | 3.3e-15 |
+| 2k it. x 5 classes x 63, 500 | 1 | 606 | 713 | 54.9k | 90.66 | 77.10 | 2.25k | 3.16 | 3.7e-16 |
+| 2k it. x 5 classes x 63, 500 | 1,000 | 375k | 517k | 5.34M | 14.26 | 10.34 | 1.27M | 2.46 | 3.9e-15 |
+| 2k it. x 5 classes x 63, 500 | 100,000 | 2.12M | 1.44M | 6.18M | 2.92 | 4.28 | 3.38M | 2.34 | 8.2e-15 |
+| 2k it. x 5 classes x 63, 500 | 1,000,000 | 2.19M | 1.49M | 6.27M | 2.87 | 4.22 | 3.46M | 2.33 | 8.9e-15 |
+| 5k it. x 13 classes x 7, 500 | 1 | 2.7k | 1.96k | 45.2k | 16.75 | 23.08 | 429 | 0.22 | 1.8e-15 |
+| 5k it. x 13 classes x 7, 500 | 1,000 | 550k | 473k | 1.71M | 3.11 | 3.62 | 378k | 0.80 | 1.4e-14 |
+| 5k it. x 13 classes x 7, 500 | 100,000 | 614k | 511k | 2.37M | 3.85 | 4.64 | 1.08M | 2.11 | 2.0e-14 |
+| 5k it. x 13 classes x 7, 500 | 1,000,000 | 614k | 511k | 2.28M | 3.71 | 4.46 | 1.1M | 2.15 | 2.5e-14 |
+| 1k x 63, 200, 20% categorical | 1 | 4.47k | 4.08k | 50k | 11.19 | 12.26 | 10.2k | 2.50 | 5.0e-16 |
+| 1k x 63, 200, 20% categorical | 1,000 | 2.4M | 2.26M | 16.6M | 6.92 | 7.36 | 5.71M | 2.53 | 2.0e-15 |
+| 1k x 63, 200, 20% categorical | 100,000 | 27.6M | 12.2M | 42.8M | 1.55 | 3.50 | 29.3M | 2.40 | 2.7e-15 |
+| 1k x 63, 200, 20% categorical | 1,000,000 | 28.8M | 12.8M | 45.3M | 1.57 | 3.55 | 30.3M | 2.37 | 4.4e-15 |
+| 20k x 15, 250 | 1 | 387 | 260 | 41.8k | 107.91 | 160.66 | 1.54k | 5.91 | 2.7e-15 |
+| 20k x 15, 250 | 1,000 | 273k | 179k | 4.48M | 16.40 | 25.00 | 915k | 5.11 | 5.1e-14 |
+| 20k x 15, 250 | 100,000 | 3.04M | 985k | 7.31M | 2.40 | 7.42 | 4.1M | 4.17 | 7.5e-14 |
+| 20k x 15, 250 | 1,000,000 | 3.22M | 1.04M | 7.61M | 2.36 | 7.29 | 4.22M | 4.04 | 7.5e-14 |
+| 20k x 63, 250 | 1 | 305 | 206 | 41k | 134.30 | 198.84 | 1.16k | 5.60 | 1.2e-14 |
+| 20k x 63, 250 | 1,000 | 190k | 135k | 2.97M | 15.58 | 22.02 | 643k | 4.78 | 5.4e-14 |
+| 20k x 63, 250 | 100,000 | 2.13M | 729k | 4.7M | 2.21 | 6.45 | 2.5M | 3.43 | 5.8e-14 |
+| 20k x 63, 250 | 1,000,000 | 2.25M | 768k | 4.89M | 2.17 | 6.37 | 2.51M | 3.27 | 8.1e-14 |
+| 20k x 255, 250 | 1 | 257 | 172 | 40.6k | 157.98 | 235.68 | 954 | 5.54 | 4.7e-15 |
+| 20k x 255, 250 | 1,000 | 153k | 73.1k | 2.04M | 13.34 | 27.96 | 364k | 4.98 | 2.9e-14 |
+| 20k x 255, 250 | 100,000 | 1.7M | 375k | 3.13M | 1.84 | 8.33 | 1.37M | 3.65 | 6.4e-14 |
+| 20k x 255, 250 | 1,000,000 | 1.8M | 387k | 3.32M | 1.85 | 8.57 | 1.4M | 3.61 | 7.5e-14 |
+| real model 0151 (20,000 trees, 248 feat.) | 1 | 352 | 228 | 40.9k | 116.16 | 179.58 | 1.27k | 5.60 | 8.7e-18 |
+| real model 0151 (20,000 trees, 248 feat.) | 400 | 91.7k | 60.9k | 2.82M | 30.72 | 46.26 | 303k | 4.98 | 2.1e-15 |
+| real model 0151 (20,000 trees, 248 feat.) | 1,000 | 230k | 153k | 3.71M | 16.14 | 24.34 | 755k | 4.94 | 2.2e-15 |
+| real model 0151 (20,000 trees, 248 feat.) | 100,000 | 2.56M | 826k | 4.54M | 1.77 | 5.49 | 3.17M | 3.84 | 3.7e-15 |
+| real model 0151 (20,000 trees, 248 feat.) | 1,000,000 | 2.73M | 870k | 4.83M | 1.77 | 5.56 | 3.25M | 3.74 | 3.7e-15 |
+| real model 0204 (125,593 trees, 13 outputs, 533 feat.) | 1 | 1.72k | 1.21k | 37.4k | 21.67 | 30.95 | 223 | 0.18 | 3.1e-14 |
+| real model 0204 (125,593 trees, 13 outputs, 533 feat.) | 400 | 648k | 213k | 1.14M | 1.76 | 5.36 | 83.8k | 0.39 | 5.1e-14 |
+| real model 0204 (125,593 trees, 13 outputs, 533 feat.) | 1,000 | 840k | 317k | 1.14M | 1.36 | 3.60 | 202k | 0.64 | 5.2e-14 |
+| real model 0204 (125,593 trees, 13 outputs, 533 feat.) | 100,000 | 1.15M | 306k | 1.55M | 1.35 | 5.06 | 669k | 2.19 | 6.2e-14 |
+| real model 0204 (125,593 trees, 13 outputs, 533 feat.) | 1,000,000 | 1.15M | 305k | 1.57M | 1.37 | 5.14 | 682k | 2.23 | 6.3e-14 |
+| real model 0010 (559 trees, 6,287 feat.) | 1 | 42.9k | 29.8k | 45.4k | 1.06 | 1.52 | 14.8k | 0.49 | 3.0e-18 |
+| real model 0010 (559 trees, 6,287 feat.) | 400 | 8.05M | 4.44M | 9.12M | 1.13 | 2.05 | 3.22M | 0.72 | 1.2e-17 |
+| real model 0010 (559 trees, 6,287 feat.) | 1,000 | 12.6M | 5.69M | 15.1M | 1.20 | 2.66 | 7.79M | 1.37 | 1.4e-17 |
+| real model 0010 (559 trees, 6,287 feat.) | 100,000 | 15M | 4.75M | 21.1M | 1.41 | 4.45 | 13.9M | 2.93 | 2.0e-17 |
+| real model 0137 (14,792 trees, 60 feat.) | 1 | 541 | 351 | 46.9k | 86.64 | 133.42 | 2.19k | 6.23 | 3.7e-16 |
+| real model 0137 (14,792 trees, 60 feat.) | 400 | 187k | 114k | 5.67M | 30.24 | 49.54 | 542k | 4.74 | 6.5e-16 |
+| real model 0137 (14,792 trees, 60 feat.) | 1,000 | 468k | 286k | 6.37M | 13.62 | 22.31 | 1.35M | 4.74 | 7.5e-16 |
+| real model 0137 (14,792 trees, 60 feat.) | 100,000 | 9.37M | 4.03M | 13.7M | 1.47 | 3.40 | 6.84M | 1.70 | 1.4e-15 |
+| real model 0137 (14,792 trees, 60 feat.) | 1,000,000 | 10.1M | 4.34M | 15.4M | 1.53 | 3.56 | 7M | 1.61 | 1.7e-15 |
+| real model 0268 (61,730 trees, 5 outputs, 2,511 feat.) | 1 | 1.37k | 1.03k | 32.2k | 23.46 | 31.40 | 288 | 0.28 | 4.1e-14 |
+| real model 0268 (61,730 trees, 5 outputs, 2,511 feat.) | 400 | 254k | 172k | 337k | 1.33 | 1.95 | 66.3k | 0.38 | 5.9e-14 |
+| real model 0268 (61,730 trees, 5 outputs, 2,511 feat.) | 1,000 | 252k | 260k | 344k | 1.37 | 1.32 | 166k | 0.64 | 8.2e-14 |
+| real model 0268 (61,730 trees, 5 outputs, 2,511 feat.) | 100,000 | 290k | 287k | 404k | 1.39 | 1.41 | 240k | 0.84 | 1.2e-13 |
+| real model 0174 (16,111 trees, 694 feat.) | 1 | 294 | 330 | 39.2k | 133.25 | 118.83 | 1.02k | 3.11 | 3.0e-16 |
+| real model 0174 (16,111 trees, 694 feat.) | 400 | 65.3k | 88.8k | 1.48M | 22.67 | 16.67 | 218k | 2.46 | 5.4e-16 |
+| real model 0174 (16,111 trees, 694 feat.) | 1,000 | 162k | 222k | 1.87M | 11.49 | 8.42 | 538k | 2.43 | 6.7e-16 |
+| real model 0174 (16,111 trees, 694 feat.) | 100,000 | 917k | 618k | 2.09M | 2.28 | 3.38 | 1.43M | 2.32 | 9.9e-16 |
+| real model 0174 (16,111 trees, 694 feat.) | 1,000,000 | 944k | 635k | 2.13M | 2.26 | 3.36 | 1.46M | 2.31 | 1.4e-15 |
+| real model 0064 (312 trees, 8,405 feat.) | 1 | 46.9k | 32.9k | 49.6k | 1.06 | 1.51 | 21.7k | 0.66 | 6.9e-18 |
+| real model 0064 (312 trees, 8,405 feat.) | 400 | 7.83M | 4.89M | 11.2M | 1.43 | 2.29 | 5.07M | 1.04 | 7.6e-17 |
+| real model 0064 (312 trees, 8,405 feat.) | 1,000 | 10.4M | 5.87M | 15.1M | 1.46 | 2.57 | 11.4M | 1.94 | 9.0e-17 |
+| real model 0064 (312 trees, 8,405 feat.) | 100,000 | 8.63M | 4.68M | 15.9M | 1.84 | 3.39 | 11.7M | 2.50 | 1.7e-16 |
+| real model 0081 (25,840 trees, 16 outputs, 222 feat.) | 1 | 3.2k | 2.3k | 50.1k | 15.67 | 21.76 | 721 | 0.31 | 1.4e-14 |
+| real model 0081 (25,840 trees, 16 outputs, 222 feat.) | 400 | 542k | 298k | 1.64M | 3.02 | 5.48 | 153k | 0.51 | 4.3e-14 |
+| real model 0081 (25,840 trees, 16 outputs, 222 feat.) | 1,000 | 550k | 364k | 1.75M | 3.18 | 4.80 | 371k | 1.02 | 3.7e-14 |
+| real model 0081 (25,840 trees, 16 outputs, 222 feat.) | 100,000 | 653k | 396k | 2.33M | 3.57 | 5.90 | 1.62M | 4.09 | 4.9e-14 |
+| real model 0081 (25,840 trees, 16 outputs, 222 feat.) | 1,000,000 | 654k | 395k | 2.38M | 3.64 | 6.04 | 1.65M | 4.19 | 5.3e-14 |
+| real model 0017 (37,656 trees, 9 outputs, 6,339 feat.) | 1 | 3.1k | 2.16k | 46.4k | 14.94 | 21.48 | 653 | 0.30 | 2.0e-14 |
+| real model 0017 (37,656 trees, 9 outputs, 6,339 feat.) | 400 | 425k | 295k | 567k | 1.34 | 1.92 | 243k | 0.82 | 5.6e-14 |
+| real model 0017 (37,656 trees, 9 outputs, 6,339 feat.) | 1,000 | 507k | 340k | 620k | 1.22 | 1.82 | 303k | 0.89 | 5.5e-14 |
+| real model 0017 (37,656 trees, 9 outputs, 6,339 feat.) | 100,000 | 538k | 373k | 557k | 1.03 | 1.49 | 324k | 0.87 | 7.5e-14 |
+| real model 0225 (4,553 trees, 2,426 feat.) | 1 | 2.96k | 11k | 48.5k | 16.38 | 4.41 | 3.48k | 0.32 | 1.7e-17 |
+| real model 0225 (4,553 trees, 2,426 feat.) | 400 | 895k | 2.38M | 3.52M | 3.93 | 1.48 | 794k | 0.33 | 3.5e-16 |
+| real model 0225 (4,553 trees, 2,426 feat.) | 1,000 | 2.24M | 2.73M | 4.09M | 1.82 | 1.50 | 1.93M | 0.71 | 2.6e-16 |
+| real model 0225 (4,553 trees, 2,426 feat.) | 100,000 | 3.17M | 3.01M | 5.06M | 1.60 | 1.68 | 2.8M | 0.93 | 4.9e-16 |
+| real model 0091 (35,835 trees, 5 outputs, 2,568 feat.) | 1 | 5.06k | 3.65k | 46.8k | 9.26 | 12.82 | 777 | 0.21 | 1.4e-14 |
+| real model 0091 (35,835 trees, 5 outputs, 2,568 feat.) | 400 | 1.24M | 607k | 1.44M | 1.16 | 2.37 | 283k | 0.47 | 3.1e-14 |
+| real model 0091 (35,835 trees, 5 outputs, 2,568 feat.) | 1,000 | 1.2M | 921k | 1.48M | 1.23 | 1.61 | 700k | 0.76 | 2.9e-14 |
+| real model 0091 (35,835 trees, 5 outputs, 2,568 feat.) | 100,000 | 1.34M | 985k | 1.66M | 1.24 | 1.68 | 965k | 0.98 | 4.1e-14 |
+
+**What it shows.** The default mode is faster than FIL's fp32 routing in 113 of 113 cells (min 1.03x, real model 0017 at
+100,000 rows; median 2.84x; max 158x) and faster than its exact fp64 routing in 113 of 113 (min 1.32x, median 4.80x).
+The deterministic mode, bit-identical to the CPU predictor in 113 of 113 cells, is faster than FIL fp64 in 84 of 113
+(median 2.32x); on small batches of models with many trees its in-order chain per row sets the pace (down to 0.18x FIL
+fp64, real model 0204 at 1 row). The largest difference between the two modes is 1.2e-13. The CPU predictor was 10-500x
+slower than the deterministic kernel on the 2026-11-17 matrix.
+
+**A daily scoring run** (the production cell: the downstream run's 508 GBDT models, 4,332,962 trees in all, 500 rows
+each, device input, the median of 5 passes after a warm-up pass that packs each model; each model also at its 9
+checkpoints, 4,563 jobs):
+
+| | seconds | / FIL fp32 loop |
+|---|---:|---:|
+| FIL fp32, one call per model (raw outputs) | 1.3174 | 1.00 |
+| FIL fp64, one call per model (raw outputs) | 1.3938 | 0.95 |
+| default mode, one `predict` per model | 0.0804 | 16.4 |
+| default mode, one `predict_many` per chunk | 0.0788 | 16.7 |
+| default mode, `predict_many` from host (numpy) input | 0.1783 | 7.4 |
+| checkpoints: one `predict` per job | 0.4302 | - |
+| checkpoints: one `predict_many` per chunk | 0.3668 | - |
+
+`predict_many` matched the per-model calls bit for bit in every chunk, at every checkpoint too. FIL's largest difference
+from the default mode over the corpus was 1.3 in fp32 and 0.81 in fp64; FIL's fp64 routing is not exact on every model
+either (up to 4e-3 on real model 0064 in the matrix), and the corpus run does not compare with the CPU predictor. FIL
+has no iteration ranges, so the checkpoint workload would need one converted model per checkpoint; the warm-up (packing,
+or FIL's conversion) is paid once per model and day and is not in these times.
 
 ## 8b. Model size: the FALB binary format
 
