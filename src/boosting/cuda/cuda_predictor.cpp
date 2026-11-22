@@ -702,7 +702,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     const int64_t blocks = row_tiles * ((K + plan.out_chunk - 1) / plan.out_chunk);
     // A single tile can use a larger block to keep its entire reduction in one launch, up to 512 threads (fit 0064 at
     // 1 row: 64 groups x 8 lanes, 1.03x over 32-group spans; 1024-thread single blocks of 1000-tree models lost
-    // 1.25-1.35x to 32-group spans: GPU Queue 10137)
+    // 1.25-1.35x to 32-group spans: round 15)
     const bool single_block = blocks == 1 && static_cast<int64_t>(pairs) * group_cap * gl <= 512;
     const int wave_thread_cap = single_block ? 1024 : (plan.out_chunk % 2 != 0 && plan.out_chunk > 1 ? 288 : 256);
     plan.wave_groups = 1;
@@ -710,7 +710,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
       plan.wave_groups *= 2;
     }
     // (Shrinking one-row blocks toward a warp when they leave SMs idle lost in 12 of the 13 matrix cells it changed,
-    // down to 0.58x on 20,000 trees: n23 matrix, GPU Queue 9939-9942.)
+    // down to 0.58x on 20,000 trees on the benchmark matrix.)
     if (debug.predict_wave_groups > 0) {
       plan.wave_groups = 1 << FloorLog2(std::min(debug.predict_wave_groups, 1024));
       while (plan.wave_groups > 1 && plan.wave_groups * pairs > 1024) {
@@ -805,7 +805,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     } else if (best_oc > 1) {
       // only a subset of outputs would share a staged row (e.g. 3 of 9 at 400-1k rows): unstaged tiles of 8 rows, one
       // output per block, 2 lanes per group win instead (fit 0017 at 1k rows: 624k rows/s against 506k staged with 3
-      // outputs per block and 549k unstaged with 1 lane; 574k against 467k at 400 rows: GPU Queue 10087)
+      // outputs per block and 549k unstaged with 1 lane; 574k against 467k at 400 rows: round 14)
       unstaged_two_lanes = true;
     }
   }
