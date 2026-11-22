@@ -85,7 +85,7 @@ def _active_readback_probe(graph, setting):
 
             booster.eval_train(feval=capture)
             assert len(live) == 1
-            prediction = booster.predict(X[:rows], raw_score=True, use_fil=False, num_threads=32)
+            prediction = booster.predict(X[:rows], raw_score=True, device="cpu", num_threads=32)
             np.testing.assert_allclose(live[0], prediction, rtol=0.0, atol=1e-12)
             model = "\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line)
             arm.append((empty, model, live[0]))

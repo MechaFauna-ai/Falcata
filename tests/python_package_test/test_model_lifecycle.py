@@ -54,12 +54,12 @@ def test_model_replacement_invalidates_cached_fil_prediction(monkeypatch):
 
     monkeypatch.setattr(basic, "_load_fil_modules", lambda: (object(), object()))
     monkeypatch.setattr(model, "_build_fil_model", build_fake)
-    first = model.predict(x)
+    first = model.predict(x, use_fil=True)
     np.testing.assert_array_equal(first, np.ones(x.shape[0]))
 
     model.model_from_binary(replacement_binary)
     model.params["device_type"] = "cuda"
-    second = model.predict(x)
+    second = model.predict(x, use_fil=True)
     np.testing.assert_array_equal(second, np.full(x.shape[0], 2.0))
     assert len(built) == 2
 

@@ -41,6 +41,9 @@
 #ifdef USE_CUDA
 #include <Falcata/cuda/cuda_utils.hu>
 
+#include <Falcata/cuda/cuda_driver_shim.hpp>
+
+#include "boosting/cuda/cuda_predictor.hpp"
 #include "io/cuda/cuda_dense_binner.hpp"
 #endif  // USE_CUDA
 
@@ -260,6 +263,7 @@ class Booster {
 
   void MergeFrom(const Booster* other) {
     UNIQUE_LOCK(mutex_)
+    InvalidateDevicePredictor();
     boosting_->MergeFrom(other->boosting_.get());
   }
 
@@ -302,6 +306,7 @@ class Booster {
   void ResetTrainingData(const Dataset* train_data) {
     if (train_data != train_data_) {
       UNIQUE_LOCK(mutex_)
+      InvalidateDevicePredictor();
       RequireTrainData("reset its training data");
       // a subset of the extended training Dataset has the same bin mappers as that Dataset, so GBDT would accept
       // it, take its feature count, and only then fail in the stale tree learner
@@ -474,6 +479,7 @@ class Booster {
 
   void ResetConfig(const char* parameters) {
     UNIQUE_LOCK(mutex_)
+    InvalidateDevicePredictor();
     CheckTrainDataUnchanged();
     auto param = Config::Str2Map(parameters);
     // Config::Set reads an unset device_type as "auto" (cuda when a GPU is usable), and a reset's map holds only the
@@ -626,6 +632,7 @@ class Booster {
 
   bool TrainOneIter() {
     UNIQUE_LOCK(mutex_)
+    InvalidateDevicePredictor();
     RequireTrainData("train");
     CheckTrainDataUnchanged();
     RebuildObjectiveIfTrainFieldsChanged();
@@ -634,12 +641,14 @@ class Booster {
 
   void Refit(const int32_t* leaf_preds, int32_t nrow, int32_t ncol) {
     UNIQUE_LOCK(mutex_)
+    InvalidateDevicePredictor();
     CheckTrainDataUnchanged();
     boosting_->RefitTree(leaf_preds, nrow, ncol);
   }
 
   bool TrainOneIter(const score_t* gradients, const score_t* hessians) {
     UNIQUE_LOCK(mutex_)
+    InvalidateDevicePredictor();
     RequireTrainData("train");
     CheckTrainDataUnchanged();
     RebuildObjectiveIfTrainFieldsChanged();
@@ -703,6 +712,7 @@ class Booster {
 
   void RollbackOneIter() {
     UNIQUE_LOCK(mutex_)
+    InvalidateDevicePredictor();
     boosting_->RollbackOneIter();
   }
 
@@ -1098,6 +1108,7 @@ class Booster {
   }
 
   void LoadModelFromString(const char* model_str) {
+    InvalidateDevicePredictor();
     size_t len = std::strlen(model_str);
     boosting_->LoadModelFromString(model_str, len);
   }
@@ -1121,6 +1132,7 @@ class Booster {
   }
 
   void LoadModelFromBinary(const char* buffer, size_t len) {
+    InvalidateDevicePredictor();
     boosting_->LoadModelFromBinary(buffer, len);
   }
 
@@ -1165,11 +1177,13 @@ class Booster {
 
   void SetLeafValue(int tree_idx, int leaf_idx, double val) {
     UNIQUE_LOCK(mutex_)
+    InvalidateDevicePredictor();
     dynamic_cast<GBDTBase*>(boosting_.get())->SetLeafValue(tree_idx, leaf_idx, val);
   }
 
   void ShuffleModels(int start_iter, int end_iter) {
     UNIQUE_LOCK(mutex_)
+    InvalidateDevicePredictor();
     boosting_->ShuffleModels(start_iter, end_iter);
   }
 
@@ -1218,7 +1232,49 @@ class Booster {
 
   const Boosting* GetBoosting() const { return boosting_.get(); }
 
+#ifdef USE_CUDA
+  /*!
+  * \brief Predict dense rows with the native CUDA predictor (normal, raw score or leaf index); the result equals
+  *        Predict's on the same rows (see CUDAPredictor)
+  */
+  void PredictCUDA(int start_iteration, int num_iteration, const Config& config, CUDAPredictRequest request,
+                   int64_t* out_len, CUDAPredictStats* stats) const {
+    SHARED_LOCK(mutex_);
+    CheckPredictType(request.predict_type);
+    if (config.pred_early_stop) {
+      Log::Fatal("pred_early_stop is not implemented by the CUDA predictor; predict with device='cpu' to use it");
+    }
+    if (!config.predict_disable_shape_check && request.num_col != boosting_->MaxFeatureIdx() + 1) {
+      Log::Fatal("The number of features in data (%d) is not the same as it was in training data (%d).\n" \
+                 "You can set ``predict_disable_shape_check=true`` to discard this error, but please be aware what you are doing.",
+                 request.num_col, boosting_->MaxFeatureIdx() + 1);
+    }
+    if (request.device_id < 0) {
+      request.device_id = config.gpu_device_id;
+    }
+    const bool is_leaf = request.predict_type == C_API_PREDICT_LEAF_INDEX;
+    const bool is_contrib = request.predict_type == C_API_PREDICT_CONTRIB;
+    // with contributions this also checks the model (vector leaves, a FALB model without counts) and sets every
+    // tree's depth, as for the CPU predictor
+    const Boosting::PredictRange range = boosting_->ResolvePredictRange(start_iteration, num_iteration, is_contrib);
+    const int64_t per_row = boosting_->NumPredictOneRow(start_iteration, num_iteration, is_leaf, is_contrib);
+    cuda_predictor_.Predict(boosting_.get(), range, request, stats);
+    *out_len = per_row * request.num_row;
+  }
+#endif  // USE_CUDA
+
  private:
+  /*! \brief the model changed: device copies of it are stale */
+  void InvalidateDevicePredictor() {
+#ifdef USE_CUDA
+    cuda_predictor_.Invalidate();
+#endif  // USE_CUDA
+  }
+#ifdef USE_CUDA
+  /*! \brief the model packed for the CUDA predictor, kept across predictions until the model changes */
+  mutable CUDAPredictor cuda_predictor_;
+#endif  // USE_CUDA
+
   // nullptr for a model-loaded Booster: the filename constructor never
   // attaches training data
   const Dataset* train_data_ = nullptr;
@@ -4218,6 +4274,94 @@ int FLC_BoosterPredictForMat(BoosterHandle handle,
   auto get_row_fun = RowPairFunctionFromDenseMatrix(data, nrow, ncol, data_type, is_row_major);
   ref_booster->Predict(start_iteration, num_iteration, predict_type, nrow, ncol, get_row_fun,
                        config, out_result, out_len);
+  API_END();
+}
+
+int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
+                                  const void* data,
+                                  int data_type,
+                                  int64_t nrow,
+                                  int32_t ncol,
+                                  int64_t row_stride,
+                                  int64_t col_stride,
+                                  int data_on_device,
+                                  void* stream,
+                                  int predict_type,
+                                  int start_iteration,
+                                  int num_iteration,
+                                  const char* parameter,
+                                  int64_t* out_len,
+                                  void* out_result,
+                                  int64_t* out_stats) {
+  API_BEGIN();
+#ifndef USE_CUDA
+  (void)handle;
+  (void)data;
+  (void)data_type;
+  (void)nrow;
+  (void)ncol;
+  (void)row_stride;
+  (void)col_stride;
+  (void)data_on_device;
+  (void)stream;
+  (void)predict_type;
+  (void)start_iteration;
+  (void)num_iteration;
+  (void)parameter;
+  (void)out_len;
+  (void)out_result;
+  (void)out_stats;
+  Log::Fatal("The CUDA predictor requires a CUDA build of Falcata");
+#else
+  if (nrow < 0 || ncol < 0) {
+    Log::Fatal("FLC_BoosterPredictForMatCUDA: negative shape (%s rows, %d columns)", std::to_string(nrow).c_str(),
+               ncol);
+  }
+  auto param = Config::Str2Map(parameter);
+  Config config;
+  config.Set(param);
+  OMP_SET_NUM_THREADS(config.num_threads);
+  Booster* ref_booster = reinterpret_cast<Booster*>(handle);
+  Falcata::CUDAPredictRequest request;
+  request.data = data;
+  request.data_type = data_type;
+  request.num_row = nrow;
+  request.num_col = ncol;
+  request.row_stride = row_stride;
+  request.col_stride = col_stride;
+  request.on_device = data_on_device != 0;
+  request.stream = reinterpret_cast<cudaStream_t>(stream);
+  request.predict_type = predict_type;
+  request.out = out_result;
+  Falcata::CUDAPredictStats stats;
+  ref_booster->PredictCUDA(start_iteration, num_iteration, config, request, out_len, &stats);
+  if (out_stats != nullptr) {
+    out_stats[0] = stats.forest_bytes;
+    out_stats[1] = stats.scratch_bytes;
+    out_stats[2] = stats.num_chunks;
+    out_stats[3] = stats.chunk_rows;
+  }
+#endif  // USE_CUDA
+  API_END();
+}
+
+int FLC_HasCUDAPredictor(int* out) {
+  API_BEGIN();
+#ifdef USE_CUDA
+  bool driver = true;
+#if !defined(USE_ROCM)
+  // a driverless host must not reach the CUDA runtime (see CudaDriverShim)
+  driver = Falcata::CudaDriverShim::MissingDriverMessage() == nullptr;
+#endif  // !defined(USE_ROCM)
+  int count = 0;
+  if (driver && cudaGetDeviceCount(&count) != cudaSuccess) {
+    cudaGetLastError();  // consume the error: no usable device is an answer here, not a failure
+    count = 0;
+  }
+  *out = count > 0 ? 1 : 0;
+#else
+  *out = 0;
+#endif  // USE_CUDA
   API_END();
 }
 

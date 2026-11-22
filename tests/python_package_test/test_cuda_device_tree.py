@@ -627,7 +627,7 @@ def _end_readback_probe(graph, gate):
             booster.eval_train(feval=capture_scores)
             assert len(live_scores) == 1
             # Explicit regular CPU prediction; FIL's optional fp32 routing is irrelevant to score-cache parity.
-            prediction = booster.predict(X, raw_score=True, use_fil=False, num_threads=32)
+            prediction = booster.predict(X, raw_score=True, device="cpu", num_threads=32)
             np.testing.assert_allclose(live_scores[0], prediction, rtol=0.0, atol=1e-12)
             model = "\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line)
             arm.append((empty, model, live_scores[0]))
@@ -733,7 +733,7 @@ def _host_cache_probe(graph, scenario):
 
             current.eval_train(feval=capture)
             assert len(live) == 1
-            prediction = current.predict(X, raw_score=True, use_fil=False, num_threads=32)
+            prediction = current.predict(X, raw_score=True, device="cpu", num_threads=32)
             np.testing.assert_allclose(live[0], prediction, rtol=0.0, atol=1e-12)
             model = "\n".join(line for line in current.model_to_string().splitlines() if "cuda_plan" not in line)
             return model, live[0]
@@ -756,7 +756,7 @@ def _host_cache_probe(graph, scenario):
                 decay_rate=0.4,
                 reference=booster.train_set,
                 dataset_params={"feature_pre_filter": False},
-                use_fil=False,
+                device="cpu",
                 num_threads=32,
             )
             arm.append(snapshot(fitted))
@@ -878,7 +878,7 @@ def _final_all_map_probe(graph, scenario, gate):
 
             booster.eval_train(feval=capture)
             assert len(live) == 1
-            prediction = booster.predict(X[:rows], raw_score=True, use_fil=False, num_threads=32)
+            prediction = booster.predict(X[:rows], raw_score=True, device="cpu", num_threads=32)
             np.testing.assert_allclose(live[0], prediction, rtol=0.0, atol=1e-12)
             model = "\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line)
             arm.append((empty, model, live[0]))

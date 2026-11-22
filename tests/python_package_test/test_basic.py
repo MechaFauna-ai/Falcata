@@ -1432,18 +1432,18 @@ def test_fil_predict_parity_and_residency(fil_cuda_booster):
     p_fil = booster.predict(X)
     if not _fil_was_used(booster):
         pytest.skip("FIL could not serve this model on this machine")
-    p_cpu = booster.predict(X, use_fil=False)
+    p_cpu = booster.predict(X, device="cpu")
     assert isinstance(p_fil, np.ndarray)  # numpy in -> numpy out
     np.testing.assert_allclose(p_fil, p_cpu, rtol=1e-4, atol=1e-6)
     r_fil = booster.predict(X, raw_score=True)
-    r_cpu = booster.predict(X, raw_score=True, use_fil=False)
+    r_cpu = booster.predict(X, raw_score=True, device="cpu")
     np.testing.assert_allclose(r_fil, r_cpu, rtol=1e-4, atol=1e-5)
 
 
 def test_fil_opt_outs(fil_cuda_booster, monkeypatch):
     booster, X = fil_cuda_booster
     booster._invalidate_fil_cache()
-    booster.predict(X, use_fil=False)
+    booster.predict(X, device="cpu")
     assert not booster.__dict__.get("_fil_models")
     monkeypatch.setenv("FALCATA_FIL", "0")
     booster.predict(X)
@@ -1458,7 +1458,7 @@ def test_fil_cache_invalidated_on_model_change(fil_cuda_booster):
         pytest.skip("FIL could not serve this model on this machine")
     booster.set_leaf_output(0, 0, 1234.5)
     changed = booster.predict(X)
-    changed_cpu = booster.predict(X, use_fil=False)
+    changed_cpu = booster.predict(X, device="cpu")
     assert not np.allclose(baseline, changed)
     np.testing.assert_allclose(changed, changed_cpu, rtol=1e-4, atol=1e-6)
 
@@ -1482,12 +1482,12 @@ def test_fil_host_input_is_scored_in_slabs(fil_cuda_booster, monkeypatch):
     slabbed = booster.predict(X)
     raw_slabbed = booster.predict(X, raw_score=True)
     np.testing.assert_array_equal(slabbed, whole)
-    np.testing.assert_allclose(slabbed, booster.predict(X, use_fil=False), rtol=1e-4, atol=1e-6)
-    np.testing.assert_allclose(raw_slabbed, booster.predict(X, raw_score=True, use_fil=False), rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(slabbed, booster.predict(X, device="cpu"), rtol=1e-4, atol=1e-6)
+    np.testing.assert_allclose(raw_slabbed, booster.predict(X, raw_score=True, device="cpu"), rtol=1e-4, atol=1e-5)
     # an int8 host input is widened per slab, never as a whole copy
     slabbed_int = booster.predict((X * 100).astype(np.int8))
     np.testing.assert_allclose(
-        slabbed_int, booster.predict((X * 100).astype(np.int8), use_fil=False), rtol=1e-4, atol=1e-6
+        slabbed_int, booster.predict((X * 100).astype(np.int8), device="cpu"), rtol=1e-4, atol=1e-6
     )
 
 
