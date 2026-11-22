@@ -456,19 +456,40 @@ def _split_count_reference(booster, start_iteration=0, num_iteration=-1):
     return out
 
 
-def test_cost_inputs_report_the_split_nodes_per_row():
+def _cost_inputs(booster, start=0, num=-1, what=3, params=""):
+    values = (basic.ctypes.c_double * 3)()
+    basic._safe_call(
+        basic._LIB.FLC_BoosterCUDAPredictCostInputs(
+            booster._handle,
+            basic.ctypes.c_int(start),
+            basic.ctypes.c_int(num),
+            basic._c_str(params) if params else basic._EMPTY_C_STR,
+            basic.ctypes.c_int(what),
+            values,
+        )
+    )
+    return list(values)
+
+
+def _leaf_depth_reference(booster):
+    """Sum over the trees of the mean depth of their leaves (each leaf counted once)."""
+
+    def leaves(node, depth):
+        if "split_index" not in node:
+            return [depth]
+        return leaves(node["left_child"], depth + 1) + leaves(node["right_child"], depth + 1)
+
+    return sum(float(np.mean(leaves(t["tree_structure"], 0))) for t in booster.dump_model()["tree_info"])
+
+
+def test_cost_inputs_report_the_split_nodes_per_row(tmp_path):
     rng = np.random.default_rng(1)
     X = rng.normal(size=(3000, 6))
     y = X[:, 0] + np.sin(3 * X[:, 1]) + 0.1 * rng.normal(size=3000)
     for leaves in (2, 7, 31):
         booster = lgb.train(_base(objective="regression", num_leaves=leaves), lgb.Dataset(X, y), num_boost_round=12)
         for start, num in ((0, -1), (3, 4), (0, 1)):
-            values = (basic.ctypes.c_double * 3)()
-            basic._safe_call(
-                basic._LIB.FLC_BoosterCUDAPredictCostInputs(
-                    booster._handle, basic.ctypes.c_int(start), basic.ctypes.c_int(num), basic._EMPTY_C_STR, values
-                )
-            )
+            values = _cost_inputs(booster, start, num)
             np.testing.assert_allclose(values[0], _split_count_reference(booster, start, num), rtol=1e-12)
             if leaves == 2:
                 assert values[0] == (12 - start if num <= 0 else num)
@@ -476,15 +497,66 @@ def test_cost_inputs_report_the_split_nodes_per_row():
                 assert values[1] > 0
             else:
                 assert values[1] == -1.0
+        # only what is asked for
+        assert _cost_inputs(booster, what=1)[1:] == [-1.0, 0.0]
+        assert _cost_inputs(booster, what=2)[0] == -1.0
         # a model read back from text keeps its row counts, so the same number
         again = lgb.Booster(model_str=booster.model_to_string())
-        values = (basic.ctypes.c_double * 3)()
-        basic._safe_call(
-            basic._LIB.FLC_BoosterCUDAPredictCostInputs(
-                again._handle, basic.ctypes.c_int(0), basic.ctypes.c_int(-1), basic._EMPTY_C_STR, values
-            )
-        )
-        np.testing.assert_allclose(values[0], _split_count_reference(booster), rtol=1e-12)
+        np.testing.assert_allclose(_cost_inputs(again)[0], _split_count_reference(booster), rtol=1e-12)
+        # a binary model saved without row counts: the mean leaf depth of each tree
+        path = tmp_path / f"model_{leaves}.falb"
+        path.write_bytes(booster.model_to_binary(with_stats=False))
+        no_counts = lgb.Booster(model_file=str(path))
+        np.testing.assert_allclose(_cost_inputs(no_counts)[0], _leaf_depth_reference(booster), rtol=1e-12)
+    # multiclass: every class's trees count
+    yk = np.digitize(y, np.quantile(y, [0.33, 0.66])).astype(float)
+    multi = lgb.train(_base(objective="multiclass", num_class=3), lgb.Dataset(X, yk), num_boost_round=5)
+    assert multi.num_trees() == 15
+    np.testing.assert_allclose(_cost_inputs(multi)[0], _split_count_reference(multi), rtol=1e-12)
+    np.testing.assert_allclose(_cost_inputs(multi, 1, 2)[0], _split_count_reference(multi, 1, 2), rtol=1e-12)
+    # single-leaf trees pass no split node
+    flat = lgb.train(_base(objective="regression", min_data_in_leaf=10_000), lgb.Dataset(X, y), num_boost_round=3)
+    assert _cost_inputs(flat)[0] == 0.0
+
+
+def test_auto_rule_touches_the_device_last(monkeypatch):
+    """A request over the buffer cap makes no cost-input call; one the CPU wins even against a warm GPU asks only for
+    the split nodes (no CUDA call); only a request the GPU could win reads the device."""
+    rng = np.random.default_rng(4)
+    X = rng.normal(size=(600, 5)).astype(np.float32)
+    booster = lgb.train(_base(objective="regression"), lgb.Dataset(X, X[:, 0]), num_boost_round=4)
+    calls = []
+    original = basic._LIB.FLC_BoosterCUDAPredictCostInputs
+
+    def recording(*args):
+        calls.append(args[4].value)
+        return original(*args)
+
+    monkeypatch.setattr(basic._LIB, "FLC_BoosterCUDAPredictCostInputs", recording)
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "max_buffer_bytes", 1000)
+    assert not booster._auto_predict_on_cuda(X, 0, -1, basic._C_API_PREDICT_NORMAL, {})
+    assert calls == []
+    assert not booster._last_auto_predict["fits"]
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "max_buffer_bytes", 256 << 20)
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", float("inf"))
+    assert not booster._auto_predict_on_cuda(X, 0, -1, basic._C_API_PREDICT_NORMAL, {})
+    assert calls == [1]
+    calls.clear()
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+    on_cuda = booster._auto_predict_on_cuda(X, 0, -1, basic._C_API_PREDICT_NORMAL, {})
+    assert calls == [1, 2]
+    assert on_cuda == CUDA_PREDICTOR  # a CPU build reads -1 free bytes: the CPU
+
+
+def test_auto_rule_unreadable_device_means_cpu(monkeypatch):
+    """Free memory that cannot be read (-1: an invalid gpu_device_id, a CPU build) never picks the GPU."""
+    rng = np.random.default_rng(5)
+    X = rng.normal(size=(600, 5)).astype(np.float32)
+    booster = lgb.train(_base(objective="regression"), lgb.Dataset(X, X[:, 0]), num_boost_round=4)
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+    assert not booster._auto_predict_on_cuda(X, 0, -1, basic._C_API_PREDICT_NORMAL, {"gpu_device_id": 4096})
+    assert booster._last_auto_predict["free_device_bytes"] == -1.0
+    assert not booster._last_auto_predict["fits"]
 
 
 @requires_cuda
@@ -511,10 +583,16 @@ def test_auto_routing_follows_the_rules(zoo, monkeypatch):
         assert booster.cuda_predict_stats is not None
         assert booster.cuda_predict_stats["model_device_bytes"] > 0
         assert booster._last_auto_predict["device"] == "cuda"
-        for kwargs in ({}, {"pred_leaf": True}, {"pred_contrib": True}):
+        for kwargs in ({}, {"pred_leaf": True}):
             np.testing.assert_array_equal(
                 booster.predict(X[:300], **kwargs), booster.predict(X[:300], device="cpu", **kwargs)
             )
+        # feature contributions stay on the CPU under device=None (TreeSHAP's cost and scratch are outside the rule)
+        booster.cuda_predict_stats = None
+        np.testing.assert_array_equal(
+            booster.predict(X[:300], pred_contrib=True), booster.predict(X[:300], device="cpu", pred_contrib=True)
+        )
+        assert booster.cuda_predict_stats is None
         # deterministic=False is the fast pairwise sum, on request
         np.testing.assert_array_equal(
             booster.predict(X, raw_score=True, deterministic=False), _pairwise_reference(booster, X)
@@ -579,19 +657,62 @@ def test_auto_routing_cost_inputs_track_packing():
         booster.update()
 
     def packed():
-        values = (basic.ctypes.c_double * 3)()
-        basic._safe_call(
-            basic._LIB.FLC_BoosterCUDAPredictCostInputs(
-                booster._handle, basic.ctypes.c_int(0), basic.ctypes.c_int(-1), basic._EMPTY_C_STR, values
-            )
-        )
-        return values[2]
+        return _cost_inputs(booster)[2]
 
     assert packed() == 0.0
     booster.predict(X, device="cuda")
     assert packed() == 1.0
     booster.update()
     assert packed() == 0.0
+
+
+@requires_cuda
+def test_unreadable_device_falls_back_and_leaves_no_cuda_error(monkeypatch):
+    """predict(device=None) with a gpu_device_id that does not exist predicts on the CPU; device='cuda' raises; and
+    neither leaves a CUDA error behind for the next CUDA call of the process."""
+    rng = np.random.default_rng(6)
+    X = rng.normal(size=(800, 5)).astype(np.float32)
+    y = X[:, 0] - X[:, 2]
+    booster = lgb.train(_base("cuda", objective="regression"), lgb.Dataset(X, y), num_boost_round=5)
+    cpu = booster.predict(X, device="cpu")
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+    booster.cuda_predict_stats = None
+    np.testing.assert_array_equal(booster.predict(X, gpu_device_id=4096), cpu)
+    assert booster.cuda_predict_stats is None
+    assert booster._last_auto_predict["free_device_bytes"] == -1.0
+    with pytest.raises(lgb.basic.FalcataError, match="CUDA"):
+        booster.predict(X, device="cuda", gpu_device_id=4096)
+    # the process's next CUDA work is unaffected: training, and the device chosen by the rule
+    again = lgb.train(_base("cuda", objective="regression"), lgb.Dataset(X, y), num_boost_round=5)
+    np.testing.assert_array_equal(again.predict(X), again.predict(X, device="cpu"))
+    assert again.cuda_predict_stats is not None
+    np.testing.assert_array_equal(booster.predict(X, device="cuda", deterministic=True), cpu)
+
+
+@requires_cuda
+def test_auto_estimate_matches_the_allocation(monkeypatch):
+    """The rule's buffer bytes are the CUDA predictor's (one chunk: rows and result, plus one byte each) for
+    multi-target, multiclass and leaf-index requests, and its output width is the result's for contributions."""
+    rng = np.random.default_rng(7)
+    X = rng.normal(size=(2000, 8)).astype(np.float32)
+    targets = np.stack([X[:, k % 8] + 0.1 * k for k in range(16)], axis=1)
+    vector = lgb.train(
+        _base("cuda", objective="multi_regression", metric="multi_rmse", num_class=16, tree_mode="vector_leaf"),
+        lgb.Dataset(X, label=targets),
+        num_boost_round=6,
+    )
+    yk = np.digitize(X[:, 0], [-1.0, 0.0, 1.0]).astype(float)
+    multi = lgb.train(_base("cuda", objective="multiclass", num_class=4), lgb.Dataset(X, yk), num_boost_round=6)
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+    for booster, kwargs in ((vector, {}), (multi, {}), (multi, {"raw_score": True}), (multi, {"pred_leaf": True})):
+        booster.cuda_predict_stats = None
+        out = booster.predict(X, **kwargs)
+        assert booster.cuda_predict_stats is not None
+        assert booster._last_auto_predict["buffer_bytes"] + 2 == booster.cuda_predict_stats["buffer_device_bytes"]
+        assert booster._last_auto_predict["buffer_bytes"] == X.nbytes + out.nbytes
+    assert vector._predict_output_width(basic._C_API_PREDICT_NORMAL, 0, -1) == 16
+    contrib = multi.predict(X[:50], device="cuda", pred_contrib=True)
+    assert multi._predict_output_width(basic._C_API_PREDICT_CONTRIB, 0, -1) * 50 == contrib.size
 
 
 @requires_cuda

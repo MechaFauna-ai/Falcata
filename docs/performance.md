@@ -1550,8 +1550,13 @@ round: 0.05-0.13 s on the GPU against 0.2-1.4 s on the CPU, even on the first ca
 
 **The rule.** `predict(device=None)` on a host array of a `device_type="cuda"` model now estimates both predictors'
 time and picks the GPU only when its estimate times 1.3 is below the CPU's and the call's device buffers (its rows and
-result, one chunk) are at most 256 MiB and at most an eighth of the free device memory
-(`basic._auto_cuda_estimate`, constants in `basic._AUTO_CUDA_COST`):
+result, one chunk) are at most 256 MiB and at most a tenth of the free device memory (`basic._auto_cuda_estimate`,
+constants in `basic._AUTO_CUDA_COST`). A tenth rather than the predictor's own single-chunk limit of an eighth leaves
+room for the model it packs before it sizes the chunk. The device is touched last: a request over 256 MiB, or one the
+CPU wins even against a warm GPU with the model packed, is decided without any CUDA call, and a device whose free
+memory cannot be read (an invalid `gpu_device_id`, an exclusive-mode device in use, no memory for a context) means the
+CPU, with no CUDA error left behind. Feature contributions (`pred_contrib`) stay on the CPU under `device=None`:
+TreeSHAP's cost is not the split count, and its device scratch (up to 1 GiB) is outside the buffer cap.
 
 - CPU: rows x (split nodes per row x 11 ns + columns x 3 ns), over the predictor's threads (at most one per row);
 - GPU: 70 ms if no CUDA prediction has run in the process yet, 10 us per tree if the model is not packed on the
@@ -1580,7 +1585,7 @@ are medians of fresh processes on a host other jobs were also loading, so the CP
 | synthetic, 5 classes (100,000 x 2,568, 200) | 500 | 0.083 / 0.067 s | 0.179 / 0.199 s | CPU (also over 256 MiB) |
 | synthetic, 9 classes (100,000 x 2,000, 270) | 1,303 | 0.127 / 0.164 s | 0.158 / 0.191 s | CPU (also over 256 MiB) |
 | fraud-deep (56,962 x 29, 200) | 1,569 | 0.062 / 0.050 s | 0.077 / 0.111 s | CPU |
-| downstream fit, 6 classes (60,484 x 6,460, 1,800) | 4,062 | 0.242 / 0.621 s | 0.250 / 0.441 s | CPU (over 256 MiB) |
+| downstream fit, 6 classes (60,484 x 6,460, 1,800) | 4,062 | 0.242 / 0.621 s | 0.250 / 0.441 s | CPU (also over 256 MiB) |
 | higgs-deep quant (500,000 x 28, 100) | 1,000 | 0.346 / 0.303 s | 0.085 / 0.082 s | GPU |
 | covtype-deep quant (116,203 x 54, 700) | 6,484 | 0.519 / 0.645 s | 0.091 / 0.052 s | GPU |
 | covtype-shallow nonquant (116,203 x 54, 700) | 3,215 | 0.258 / 0.218 s | 0.087 / 0.059 s | GPU |
@@ -1590,8 +1595,9 @@ are medians of fresh processes on a host other jobs were also loading, so the CP
 | downstream fit, 3 classes (60,484 x 63, 900) | 5,032 | 0.210 / 0.182 s | 0.087 / 0.065 s | GPU |
 | downstream fit, 16 classes (60,484 x 222, 4,800) | 34,680 | 1.445 / 1.433 s | 0.148 / 0.125 s | GPU |
 
-The one cell where the cap gives up a measured gain is the 6,460-column fit (0.44 against 0.62 s, with 1 GB more on
-the device); `device="cuda"` still takes it. Once a process has loaded the predictor, the 70 ms term drops out and
+The one cell where the rule gives up a measured gain is the 6,460-column fit (0.44 against 0.62 s, with 1 GB more
+on the device): on a first call both the margin (0.250 x 1.3 > 0.242 s) and the 256 MiB cap keep it on the CPU, on
+later calls the cap alone; `device="cuda"` still takes it. Once a process has loaded the predictor, the 70 ms term drops out and
 smaller requests go to the GPU too (year: 5 ms estimated, 4 ms measured, against 20-40 ms on the CPU).
 
 **Why not the CPU by default.** Predicting host arrays on the CPU unless `device="cuda"` is passed would also have
@@ -1614,7 +1620,8 @@ the paired ratio to 1.1.0 with its 95% interval):
 | synthetic, 16 classes, 222 columns | 0.063 s | 0.226 s | 0.066 s | -71% (-75% to -65%) | 1.74 / 1.74 / 1.74 GB |
 | downstream fit, 16 classes, 4,800 trees | 0.102 s | 1.674 s | 0.066 s | -94% (-95% to -92%) | 0.82 / 0.83 / 0.82 GB |
 
-No cell is slower than 1.1.0 (no interval lies above zero), and no device-memory peak is above 1.1.0's. On the GPU
+No cell is slower than 1.1.0 (no interval lies above zero), and no device-memory peak is more than 0.01 GB (the
+sampling noise) above 1.1.0's. On the GPU
 cells the change is within noise of the first candidate except the 4,800-tree fit, 36 ms slower in the median (+41%,
 interval -2% to +102%): the price of the in-order sum on its first call. The desktop was in use during the run, so
 these intervals are wider than the release matrix's.

@@ -1233,23 +1233,32 @@ class Booster {
 
   const Boosting* GetBoosting() const { return boosting_.get(); }
 
-  /*! \brief what FLC_BoosterCUDAPredictCostInputs reports */
-  void CUDAPredictCostInputs(int start_iteration, int num_iteration, const Config& config, double* out) const {
+  /*! \brief what FLC_BoosterCUDAPredictCostInputs reports (`what`: 1 the split nodes, 2 the device state) */
+  void CUDAPredictCostInputs(int start_iteration, int num_iteration, const Config& config, int what,
+                             double* out) const {
     SHARED_LOCK(mutex_);
-    const Boosting::PredictRange range = boosting_->ResolvePredictRange(start_iteration, num_iteration, false);
-    double splits = 0.0;
-    for (const Tree* tree : boosting_->TreesInRange(range).trees) {
-      splits += tree->MeanSplitsPerRow();
-    }
-    out[0] = splits;
+    out[0] = -1.0;
     out[1] = -1.0;
     out[2] = 0.0;
+    if (what & 1) {
+      const Boosting::PredictRange range = boosting_->ResolvePredictRange(start_iteration, num_iteration, false);
+      double splits = 0.0;
+      for (const Tree* tree : boosting_->TreesInRange(range).trees) {
+        splits += tree->MeanSplitsPerRow();
+      }
+      out[0] = splits;
+    }
 #ifdef USE_CUDA
-    int usable = 0;
-    FLC_HasCUDAPredictor(&usable);
-    if (usable) {
-      out[1] = static_cast<double>(CUDAPredictor::FreeDeviceBytes(config.gpu_device_id));
-      out[2] = cuda_predictor_.HasForest(config.gpu_device_id) ? 1.0 : 0.0;
+    if (what & 2) {
+      int usable = 0;
+      FLC_HasCUDAPredictor(&usable);
+      if (usable) {
+        const int64_t free_bytes = CUDAPredictor::FreeDeviceBytes(config.gpu_device_id);
+        out[1] = static_cast<double>(free_bytes);
+        if (free_bytes >= 0) {
+          out[2] = cuda_predictor_.HasForest(config.gpu_device_id) ? 1.0 : 0.0;
+        }
+      }
     }
 #else
     (void)config;
@@ -4529,13 +4538,15 @@ int FLC_BoosterCUDAPredictCostInputs(BoosterHandle handle,
                                       int start_iteration,
                                       int num_iteration,
                                       const char* parameter,
+                                      int what,
                                       double* out_values) {
   API_BEGIN();
   Config config;
   if (parameter != nullptr && parameter[0] != '\0') {
     config.Set(Config::Str2Map(parameter));
   }
-  reinterpret_cast<Booster*>(handle)->CUDAPredictCostInputs(start_iteration, num_iteration, config, out_values);
+  reinterpret_cast<Booster*>(handle)->CUDAPredictCostInputs(start_iteration, num_iteration, config, what,
+                                                            out_values);
   API_END();
 }
 

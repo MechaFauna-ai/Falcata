@@ -3919,8 +3919,9 @@ class Dataset:
 
 
 _CUDA_PREDICTOR_USABLE: Optional[bool] = None
-# whether a CUDA prediction has run in this process: the first one loads the predictor's kernels
-_CUDA_PREDICTOR_LOADED = False
+# the devices (gpu_device_id, -1 for the current one) a CUDA prediction has run on in this process: the first one on
+# a device loads the predictor's kernels there
+_CUDA_PREDICTOR_LOADED: Set[int] = set()
 
 # The cost model by which ``Booster.predict(device=None)`` chooses the predictor for a host numpy array of a
 # ``device_type="cuda"`` model (``_auto_predict_on_cuda``). The constants were measured on ONE machine -- an RTX 5090
@@ -3940,9 +3941,10 @@ _AUTO_CUDA_COST = {
     "gpu_splits_per_s": 1e11,
     # the GPU is chosen only when its estimate times this is below the CPU's
     "margin": 1.3,
-    # device memory: a call's input and output buffers at most this, and at most this fraction of the free memory
+    # device memory: a call's input and output buffers at most this, and at most this fraction of the free memory (an
+    # eighth would be the predictor's single-chunk limit; a tenth leaves room for the model it packs first)
     "max_buffer_bytes": 256 << 20,
-    "max_free_fraction": 0.125,
+    "max_free_fraction": 0.1,
 }
 
 
@@ -3954,6 +3956,17 @@ def _cuda_predictor_usable() -> bool:
         _safe_call(_LIB.FLC_HasCUDAPredictor(ctypes.byref(out)))
         _CUDA_PREDICTOR_USABLE = bool(out.value)
     return _CUDA_PREDICTOR_USABLE
+
+
+def _gpu_device_key(kwargs: Dict[str, Any]) -> int:
+    """Return the ``gpu_device_id`` of a prediction's parameters, or -1 (the current device) when none is given."""
+    for alias in _ConfigAliases.get("gpu_device_id"):
+        if alias in kwargs:
+            try:
+                return int(kwargs[alias])
+            except (TypeError, ValueError):
+                return -1
+    return -1
 
 
 def _cpu_predict_threads(kwargs: Dict[str, Any]) -> int:
@@ -5602,6 +5615,7 @@ class Booster:
             and data.ndim == 2
             and data.shape[0] > 0
             and not early_stop
+            and predict_type != _C_API_PREDICT_CONTRIB
             and self._trained_on_cuda()
             and _cuda_predictor_usable()
             and self._auto_predict_on_cuda(data, start_iteration, num_iteration, predict_type, kwargs)
@@ -5609,14 +5623,26 @@ class Booster:
             return "cuda"
         return "cpu"
 
-    def _auto_predict_on_cuda(
-        self, data: np.ndarray, start_iteration: int, num_iteration: int, predict_type: int, kwargs: Dict[str, Any]
-    ) -> bool:
-        """Apply the cost rule of ``predict(device=None)`` to a host array (constants: ``_AUTO_CUDA_COST``).
+    def _predict_output_width(self, predict_type: int, start_iteration: int, num_iteration: int) -> int:
+        """Return the values per row of a prediction, as ``FLC_BoosterCalcNumPredict`` counts them.
 
-        Estimates both predictors' time for this call and the CUDA predictor's device buffers, and picks the GPU only
-        when it is faster by the margin and its buffers fit. The estimate is kept in ``self._last_auto_predict``.
+        That is what the CUDA predictor allocates: every target of a vector-leaf model, every class, a leaf index per
+        tree, the contributions of every feature and class.
         """
+        per_row = ctypes.c_int64(0)
+        _safe_call(
+            _LIB.FLC_BoosterCalcNumPredict(
+                self._handle,
+                ctypes.c_int(1),
+                ctypes.c_int(predict_type),
+                ctypes.c_int(start_iteration),
+                ctypes.c_int(num_iteration),
+                ctypes.byref(per_row),
+            )
+        )
+        return int(per_row.value)
+
+    def _cost_inputs(self, start_iteration: int, num_iteration: int, what: int, kwargs: Dict[str, Any]) -> List[float]:
         values = (ctypes.c_double * 3)()
         device_params = {k: v for k, v in kwargs.items() if k in _ConfigAliases.get("gpu_device_id")}
         _safe_call(
@@ -5625,34 +5651,47 @@ class Booster:
                 ctypes.c_int(start_iteration),
                 ctypes.c_int(num_iteration),
                 _c_str(_param_dict_to_str(device_params)) if device_params else _EMPTY_C_STR,
+                ctypes.c_int(what),
                 values,
             )
         )
+        return [float(v) for v in values]
+
+    def _auto_predict_on_cuda(
+        self, data: np.ndarray, start_iteration: int, num_iteration: int, predict_type: int, kwargs: Dict[str, Any]
+    ) -> bool:
+        """Apply the cost rule of ``predict(device=None)`` to a host array (constants: ``_AUTO_CUDA_COST``).
+
+        Estimates both predictors' time for this call and the CUDA predictor's device buffers, and picks the GPU only
+        when it is faster by the margin and its buffers fit. The device is touched last: a request over the fixed
+        buffer cap, or one the CPU wins even against a warm GPU, is decided without any CUDA call; a device whose free
+        memory cannot be read (an invalid ``gpu_device_id``, an exclusive-mode device in use) means the CPU. The
+        estimate is kept in ``self._last_auto_predict``.
+        """
         nrow, ncol = data.shape
-        if predict_type == _C_API_PREDICT_LEAF_INDEX:
-            iterations = self.current_iteration() - max(start_iteration, 0)
-            if num_iteration > 0:
-                iterations = min(iterations, num_iteration)
-            out_width = self.num_model_per_iteration() * max(iterations, 0)
-            out_itemsize = 4
-        elif predict_type == _C_API_PREDICT_CONTRIB:
-            out_width = self.num_model_per_iteration() * (self.num_feature() + 1)
-            out_itemsize = 8
+        out_itemsize = 4 if predict_type == _C_API_PREDICT_LEAF_INDEX else 8
+        out_bytes_per_row = self._predict_output_width(predict_type, start_iteration, num_iteration) * out_itemsize
+        in_itemsize = 8 if data.dtype == np.float64 else 4
+        common: Dict[str, Any] = {
+            "nrow": nrow,
+            "ncol": ncol,
+            "in_itemsize": in_itemsize,
+            "out_bytes_per_row": out_bytes_per_row,
+            "num_trees": self.num_trees(),
+            "loaded": _gpu_device_key(kwargs) in _CUDA_PREDICTOR_LOADED,
+            "threads": _cpu_predict_threads(kwargs),
+        }
+        if float(nrow) * (ncol * in_itemsize + out_bytes_per_row) > _AUTO_CUDA_COST["max_buffer_bytes"]:
+            estimate = _auto_cuda_estimate(splits_per_row=0.0, free_device_bytes=-1.0, packed=False, **common)
         else:
-            out_width = self.num_model_per_iteration()
-            out_itemsize = 8
-        estimate = _auto_cuda_estimate(
-            nrow=nrow,
-            ncol=ncol,
-            in_itemsize=8 if data.dtype == np.float64 else 4,
-            out_bytes_per_row=out_width * out_itemsize,
-            splits_per_row=float(values[0]),
-            free_device_bytes=float(values[1]),
-            num_trees=self.num_trees(),
-            packed=values[2] != 0,
-            loaded=_CUDA_PREDICTOR_LOADED,
-            threads=_cpu_predict_threads(kwargs),
-        )
+            splits = self._cost_inputs(start_iteration, num_iteration, 1, kwargs)[0]
+            # the best case for the GPU (enough memory, the model packed): when the CPU still wins, no CUDA call
+            estimate = _auto_cuda_estimate(splits_per_row=splits, free_device_bytes=float("inf"), packed=True, **common)
+            if estimate["device"] == "cuda":
+                _, free, packed = self._cost_inputs(start_iteration, num_iteration, 2, kwargs)
+                estimate = _auto_cuda_estimate(
+                    splits_per_row=splits, free_device_bytes=free, packed=packed != 0, **common
+                )
         self._last_auto_predict = estimate
         return estimate["device"] == "cuda"
 
@@ -5756,8 +5795,7 @@ class Booster:
         )
         if out_len.value != nrow * width:
             raise FalcataError(f"CUDA predictor wrote {out_len.value} values, expected {nrow * width}")
-        global _CUDA_PREDICTOR_LOADED
-        _CUDA_PREDICTOR_LOADED = True
+        _CUDA_PREDICTOR_LOADED.add(_gpu_device_key(kwargs))
         self.cuda_predict_stats = {
             "model_device_bytes": int(stats[0]),
             "buffer_device_bytes": int(stats[1]),
@@ -5822,17 +5860,19 @@ class Booster:
 
             - a device array (CuPy, PyTorch, or any ``__cuda_array_interface__`` producer) is predicted on
               its GPU, and the result is a device array of the same library (CuPy for other producers);
-            - a 2-D numpy array of a model configured with ``device_type="cuda"``, without ``pred_early_stop``,
-              on a build and machine that can run the CUDA predictor, is predicted on the GPU only when a cost
-              estimate expects the GPU to finish first by a clear margin and the call's device buffers fit (its
-              rows and result, at most 256 MiB and at most an eighth of the free device memory). The estimate
+            - a 2-D numpy array of a model configured with ``device_type="cuda"``, without ``pred_early_stop`` or
+              ``pred_contrib``, on a build and machine that can run the CUDA predictor, is predicted on the GPU
+              only when a cost estimate expects the GPU to finish first by a clear margin and the call's device
+              buffers fit (its rows and result, at most 256 MiB and at most a tenth of the free device memory;
+              a device whose free memory cannot be read means the CPU). The estimate
               weighs the rows, the split nodes a row passes in the predicted trees, the columns, the copies to and
               from the device, the CPU predictor's threads, and whether this process has loaded the CUDA
               predictor yet and this model is already on the device. Its constants were measured on one machine
               (an RTX 5090 with a 16-core CPU; docs/performance.md, section 8), so on other hardware it can miss
               a speedup; pass ``device="cuda"`` or ``device="cpu"`` to choose. Whichever predictor it picks, the
               result is the CPU predictor's bit for bit (see ``deterministic``) and a numpy array;
-            - everything else (other inputs, ``pred_early_stop``) uses the CPU predictor.
+            - everything else (other inputs, ``pred_early_stop``, ``pred_contrib`` on a host array) uses the CPU
+              predictor.
 
             Both predictors send every row to the same leaves: leaf indices and feature contributions of the
             CUDA predictor are bit-identical to the CPU predictor's. Raw scores (and the normal predictions
@@ -6622,6 +6662,5 @@ def predict_many(
     for i in range(n):
         if c_len[i] != parts[i][3] * widths[i]:
             raise FalcataError(f"predict_many: job {i} wrote {c_len[i]} values, expected {parts[i][3] * widths[i]}")
-    global _CUDA_PREDICTOR_LOADED
-    _CUDA_PREDICTOR_LOADED = True
+    _CUDA_PREDICTOR_LOADED.add(_gpu_device_key(kwargs))
     return outs

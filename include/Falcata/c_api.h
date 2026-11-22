@@ -1639,11 +1639,14 @@ FALCATA_C_EXPORT int FLC_HasCUDAPredictor(int* out);
  * \param start_iteration Start index of the iteration to predict
  * \param num_iteration Number of iteration for prediction, <= 0 means no limit
  * \param parameter Other parameters for prediction (``gpu_device_id``)
+ * \param what Which values to compute (a bit mask): 1 the split nodes (no CUDA call), 2 the device state (the only
+ *        part that touches the CUDA runtime); values not asked for are -1, -1 and 0
  * \param[out] out_values Three values:
  *   - the split nodes one row passes, summed over the trees of the iteration range (per tree: the training rows
  *     through its split nodes over the rows at its root; the mean leaf depth for a tree saved without row counts);
- *   - the free memory of the CUDA device the prediction would use, in bytes (-1 when the CUDA predictor cannot run
- *     here);
+ *   - the free memory of the CUDA device the prediction would use, in bytes; -1 when the CUDA predictor cannot run
+ *     here or the device cannot be queried (an invalid ``gpu_device_id``, an exclusive-mode device in use, no memory
+ *     for a context): never an error, and no CUDA error is left behind;
  *   - 1 when this booster keeps a packed copy of its model on that device, else 0
  * \return 0 when succeed, -1 when failure happens
  */
@@ -1651,6 +1654,7 @@ FALCATA_C_EXPORT int FLC_BoosterCUDAPredictCostInputs(BoosterHandle handle,
                                                         int start_iteration,
                                                         int num_iteration,
                                                         const char* parameter,
+                                                        int what,
                                                         double* out_values);
 
 /*!

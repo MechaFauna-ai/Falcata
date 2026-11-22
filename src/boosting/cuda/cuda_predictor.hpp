@@ -299,9 +299,15 @@ class CUDAPredictor {
   void Predict(const Boosting* boosting, const Boosting::PredictRange& range, const CUDAPredictRequest& request,
                CUDAPredictStats* stats);
   void Invalidate();
-  /*! \brief whether a packed copy of the model is kept for `device_id` (-1: the current device), in any layout */
+  /*!
+   * \brief whether a packed copy of the model is kept for `device_id` (-1: the current device), in any layout; false
+   *        without touching the device when nothing is packed, and false (error cleared) when it cannot be resolved
+   */
   bool HasForest(int device_id);
-  /*! \brief free memory of `device_id` (-1: the current device), in bytes */
+  /*!
+   * \brief free memory of `device_id` (-1: the current device), in bytes; -1, never fatal, when it cannot be queried
+   *        (the runtime's last error is cleared)
+   */
   static int64_t FreeDeviceBytes(int device_id);
   /*!
    * \brief Several models' normal or raw-score predictions in a few launches. `common` gives what every job shares:
