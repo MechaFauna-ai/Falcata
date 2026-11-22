@@ -314,10 +314,7 @@ class UnresolvedCUDATimeout(RuntimeError):
 
 
 def run(spec, device, timeout=300):
-    # Engine predictor only: FIL predicts in single precision, which collapses
-    # legitimate near-zero models (whole-iteration early stops) to constant
-    # and fails the std(pred) > 0 assert on a healthy model.
-    env = dict(os.environ, FALCATA_FIL="0")
+    env = dict(os.environ)
     try:
         proc = subprocess.run(
             [sys.executable, "-c", _WORKER_SOURCE, json.dumps(spec), device],

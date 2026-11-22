@@ -75,8 +75,6 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
   - Per-era numerai validation of the shared-structure model vs round-robin
     (modeling change: validate, don't assume); SketchBoost-style reduced
     split-gradient hook.
-  - FIL predict falls back to CPU for vector-leaf models (treelite has no
-    vector-leaf IR).
 
 - **Hybrid coverage extensions.** The hybrid/graph fast paths fall back to
   the classic loop for several feature classes; scoped 2026-08-01.

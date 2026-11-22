@@ -45,6 +45,14 @@ def test_device_argument_is_checked():
         booster.predict(X, device="tpu")
 
 
+def test_use_fil_was_removed():
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(100, 3))
+    booster = lgb.train({"objective": "regression", "verbose": -1, "device_type": "cpu"}, lgb.Dataset(X, X[:, 0]), 2)
+    with pytest.raises(TypeError, match="use_fil"):
+        booster.predict(X, use_fil=True)
+
+
 # --------------------------------------------------------------------------- model zoo
 
 

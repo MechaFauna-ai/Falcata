@@ -171,7 +171,6 @@ class WorkerScript:
         assert index < len(self.expected), f"unexpected extra worker {actual}"
         assert actual == self.expected[index]
         assert argv[:3] == [sys.executable, "-c", self.fuzz._WORKER_SOURCE]
-        assert kwargs["env"]["FALCATA_FIL"] == "0"
         assert kwargs["capture_output"]
         assert kwargs["text"]
         assert not kwargs["check"]
