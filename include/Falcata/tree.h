@@ -203,6 +203,13 @@ class Tree {
   /*! \brief Get Number of leaves*/
   inline int num_leaves() const { return num_leaves_; }
 
+  /*!
+  * \brief The split nodes a row passes on its way to a leaf, on average: the training rows through each split node over
+  *        the rows at the root (each split node's share of the data), or the mean depth of the leaves when the tree
+  *        has no row counts (a model saved without them). The cost a predictor pays per row and tree.
+  */
+  double MeanSplitsPerRow() const;
+
   /*! \brief Get depth of specific leaf*/
   inline int leaf_depth(int leaf_idx) const { return leaf_depth_[leaf_idx]; }
 

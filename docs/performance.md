@@ -1526,6 +1526,81 @@ either (up to 4e-3 on real model 0064 in the matrix), and the corpus run does no
 has no iteration ranges, so the checkpoint workload would need one converted model per checkpoint; the warm-up (packing,
 or FIL's conversion) is paid once per model and day and is not in these times.
 
+### Host arrays and `device=None`
+
+**The problem.** In the first 1.2.0 candidate, `predict(device=None)` sent every 2-D numpy array of a
+`device_type="cuda"` model to the CUDA predictor. The 1.2.0 speed matrix against 1.1.0 (which predicted these on the
+CPU) found four cells slower: year-shallow +171%, Numerai nonquant +48%, a synthetic 100,000 x 2,568 cell +50% and
+Numerai example +34%, and the two Numerai cells held 0.85 GB more device memory, all of it during `predict`. Measured
+on the first GPU prediction of a process (RTX 5090, nsys, fresh processes):
+
+| cost | measured |
+|---|---|
+| loading the predictor's kernels (`cuLibraryLoadData`, once per process; the module is 54 MB) | 44-87 ms |
+| the first launch of a kernel | 5-17 ms |
+| copying the rows to the device (pageable memory) | 10-14 GB/s: 2 ms for year (19 MB), 131 ms for Numerai (1.4 GB) |
+| device allocations | under 0.5 ms |
+| the kernel | 0.08-1.4 ms on these cells |
+
+So the regressions had two causes. Year's trees are cheap (550 split nodes per row): the CPU predictor finishes in
+about 20-40 ms, less than the GPU's one-time kernel load. Numerai's and the synthetic cell's rows are wide (2,568-3,555
+columns) and their trees shallow: copying the rows costs about as much as the CPU predictor's whole job (67-135 ms),
+and the predictor keeps two 512 MiB chunk buffers, the extra device memory. Deep or long models are the other way
+round: 0.05-0.13 s on the GPU against 0.2-1.4 s on the CPU, even on the first call.
+
+**The rule.** `predict(device=None)` on a host array of a `device_type="cuda"` model now estimates both predictors'
+time and picks the GPU only when its estimate times 1.3 is below the CPU's and the call's device buffers (its rows and
+result, one chunk) are at most 256 MiB and at most an eighth of the free device memory
+(`basic._auto_cuda_estimate`, constants in `basic._AUTO_CUDA_COST`):
+
+- CPU: rows x (split nodes per row x 11 ns + columns x 3 ns), over the predictor's threads (at most one per row);
+- GPU: 70 ms if no CUDA prediction has run in the process yet, 10 us per tree if the model is not packed on the
+  device yet, 3 ms per call, (rows + result bytes) / 10 GB/s, and rows x split nodes per row / 1e11 per second.
+
+The split nodes per row come from the model (`FLC_BoosterCUDAPredictCostInputs`): per tree, the training rows through
+its split nodes over the rows at its root, summed over the predicted iterations. **These constants were measured on one
+machine** (an RTX 5090 with a 16-core Ryzen 9 9950X3D); on other hardware the rule can miss a speedup or, less likely
+with the margin, pick the slower side. `device="cuda"` and `device="cpu"` choose explicitly and are unchanged:
+`device="cuda"` runs on the GPU for any size, in the default (pairwise) mode.
+
+When the rule picks the GPU it uses the deterministic mode (in-order sum) unless `deterministic=False` is passed, so
+`device=None` returns the CPU predictor's result bit for bit whichever predictor ran. Before, the first candidate's
+automatic GPU predictions differed from the CPU predictor's in the last bits (602,471 of 813,421 values on covtype-deep,
+up to 2.6e-12 on year). The deterministic mode is about as fast as the default on these cells (warm: 6.9 against 7.1 ms
+on covtype-deep, 23 against 39 ms on the 4,800-tree fit, 10 against 6 ms on higgs-deep).
+
+What the rule chooses on the probed cells (first prediction of a process, so with the kernel load; the measured times
+are medians of fresh processes on a host other jobs were also loading, so the CPU times are noisier than the matrix's):
+
+| cell (rows x columns, trees) | split nodes per row | CPU estimate / measured | GPU estimate / measured | chosen |
+|---|---:|---:|---:|---|
+| year-shallow fp32 (51,630 x 90, 100) | 550 | 0.020 / 0.077 s | 0.076 / 0.133 s | CPU |
+| Numerai nonquant fp32 (100,000 x 3,555, 100) | 480 | 0.100 / 0.122 s | 0.217 / 0.205 s | CPU (also over 256 MiB) |
+| Numerai example quant (100,000 x 3,555, 100) | 480 | 0.100 / 0.109 s | 0.217 / 0.255 s | CPU (also over 256 MiB) |
+| synthetic, 5 classes (100,000 x 2,568, 200) | 500 | 0.083 / 0.067 s | 0.179 / 0.199 s | CPU (also over 256 MiB) |
+| synthetic, 9 classes (100,000 x 2,000, 270) | 1,303 | 0.127 / 0.164 s | 0.158 / 0.191 s | CPU (also over 256 MiB) |
+| fraud-deep (56,962 x 29, 200) | 1,569 | 0.062 / 0.050 s | 0.077 / 0.111 s | CPU |
+| downstream fit, 6 classes (60,484 x 6,460, 1,800) | 4,062 | 0.242 / 0.621 s | 0.250 / 0.441 s | CPU (over 256 MiB) |
+| higgs-deep quant (500,000 x 28, 100) | 1,000 | 0.346 / 0.303 s | 0.085 / 0.082 s | GPU |
+| covtype-deep quant (116,203 x 54, 700) | 6,484 | 0.519 / 0.645 s | 0.091 / 0.052 s | GPU |
+| covtype-shallow nonquant (116,203 x 54, 700) | 3,215 | 0.258 / 0.218 s | 0.087 / 0.059 s | GPU |
+| synthetic, 3 classes (100,000 x 63, 450) | 2,242 | 0.155 / 0.100 s | 0.083 / 0.047 s | GPU |
+| synthetic, 5 classes (100,000 x 122, 500) | 1,769 | 0.124 / 0.137 s | 0.085 / 0.083 s | GPU |
+| synthetic, 16 classes (100,000 x 222, 480) | 2,897 | 0.203 / 0.225 s | 0.091 / 0.063 s | GPU |
+| downstream fit, 3 classes (60,484 x 63, 900) | 5,032 | 0.210 / 0.182 s | 0.087 / 0.065 s | GPU |
+| downstream fit, 16 classes (60,484 x 222, 4,800) | 34,680 | 1.445 / 1.433 s | 0.148 / 0.125 s | GPU |
+
+The one cell where the cap gives up a measured gain is the 6,460-column fit (0.44 against 0.62 s, with 1 GB more on
+the device); `device="cuda"` still takes it. Once a process has loaded the predictor, the 70 ms term drops out and
+smaller requests go to the GPU too (year: 5 ms estimated, 4 ms measured, against 20-40 ms on the CPU).
+
+**Why not the CPU by default.** Predicting host arrays on the CPU unless `device="cuda"` is passed would also have
+removed the regressions, with no estimate at all, but it gives up 2-11x on the deep and long models above (the GPU
+cells of the table, and -45% to -94% in the 1.2.0 matrix), which users of `device_type="cuda"` models get without
+changing their code.
+
+<!-- VERIFY -->
+
 ## 8b. Model size: the FALB binary format
 
 **The problem.** The upstream text model format is enormous — a 45k-tree

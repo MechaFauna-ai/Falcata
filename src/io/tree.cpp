@@ -1229,6 +1229,35 @@ double Tree::ExpectedValue() const {
   return exp_value;
 }
 
+double Tree::MeanSplitsPerRow() const {
+  const int num_split = num_leaves_ - 1;
+  if (num_split <= 0) {
+    return 0.0;
+  }
+  if (static_cast<int>(internal_count_.size()) >= num_split && internal_count_[0] > 0) {
+    double through = 0.0;
+    for (int i = 0; i < num_split; ++i) {
+      through += internal_count_[i];
+    }
+    return through / internal_count_[0];
+  }
+  // no counts: every leaf counts once
+  double depth_sum = 0.0;
+  std::vector<std::pair<int, int>> stack(1, std::make_pair(0, 0));
+  while (!stack.empty()) {
+    const std::pair<int, int> top = stack.back();
+    stack.pop_back();
+    for (const int child : {left_child_[top.first], right_child_[top.first]}) {
+      if (child < 0) {
+        depth_sum += top.second + 1;
+      } else {
+        stack.emplace_back(child, top.second + 1);
+      }
+    }
+  }
+  return depth_sum / num_leaves_;
+}
+
 void Tree::CheckLoadedStructure(int num_features) const {
   if (num_leaves_ < 1) {
     Log::Fatal("Tree model has invalid num_leaves=%d", num_leaves_);

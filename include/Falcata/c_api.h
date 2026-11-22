@@ -1634,6 +1634,26 @@ FALCATA_C_EXPORT int FLC_BoostersPredictForMatCUDA(int num_jobs,
 FALCATA_C_EXPORT int FLC_HasCUDAPredictor(int* out);
 
 /*!
+ * \brief What ``Booster.predict(device=None)`` weighs before it sends a host array to the CUDA predictor.
+ * \param handle Handle of booster
+ * \param start_iteration Start index of the iteration to predict
+ * \param num_iteration Number of iteration for prediction, <= 0 means no limit
+ * \param parameter Other parameters for prediction (``gpu_device_id``)
+ * \param[out] out_values Three values:
+ *   - the split nodes one row passes, summed over the trees of the iteration range (per tree: the training rows
+ *     through its split nodes over the rows at its root; the mean leaf depth for a tree saved without row counts);
+ *   - the free memory of the CUDA device the prediction would use, in bytes (-1 when the CUDA predictor cannot run
+ *     here);
+ *   - 1 when this booster keeps a packed copy of its model on that device, else 0
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_BoosterCUDAPredictCostInputs(BoosterHandle handle,
+                                                        int start_iteration,
+                                                        int num_iteration,
+                                                        const char* parameter,
+                                                        double* out_values);
+
+/*!
  * \brief Make prediction for a new dataset.
  * \note
  * You should pre-allocate memory for ``out_result``:

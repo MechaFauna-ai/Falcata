@@ -602,6 +602,24 @@ void CUDAPredictor::Invalidate() {
   forests_.clear();
 }
 
+bool CUDAPredictor::HasForest(int device_id) {
+  DeviceGuard guard(device_id);
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& kv : forests_) {
+    if (std::get<0>(kv.first) == guard.device() && kv.second != nullptr) {
+      return true;
+    }
+  }
+  return false;
+}
+
+int64_t CUDAPredictor::FreeDeviceBytes(int device_id) {
+  DeviceGuard guard(device_id);
+  size_t free_bytes = 0, total_bytes = 0;
+  CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &total_bytes));
+  return static_cast<int64_t>(free_bytes);
+}
+
 
 std::shared_ptr<const CUDAPackedForest> CUDAPredictor::GetForest(const Boosting* boosting, int device_id,
                                                                  bool double_thresholds, bool compact) {

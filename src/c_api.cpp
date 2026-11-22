@@ -14,6 +14,7 @@
 #include <Falcata/network.h>
 #include <Falcata/objective_function.h>
 #include <Falcata/prediction_early_stop.h>
+#include <Falcata/tree.h>
 #include <Falcata/utils/byte_buffer.h>
 #include <Falcata/utils/common.h>
 #include <Falcata/utils/log.h>
@@ -1260,6 +1261,29 @@ class Booster {
     const int64_t per_row = boosting_->NumPredictOneRow(start_iteration, num_iteration, is_leaf, is_contrib);
     cuda_predictor_.Predict(boosting_.get(), range, request, stats);
     *out_len = per_row * request.num_row;
+  }
+
+  /*! \brief what FLC_BoosterCUDAPredictCostInputs reports */
+  void CUDAPredictCostInputs(int start_iteration, int num_iteration, const Config& config, double* out) const {
+    SHARED_LOCK(mutex_);
+    const Boosting::PredictRange range = boosting_->ResolvePredictRange(start_iteration, num_iteration, false);
+    double splits = 0.0;
+    for (const Tree* tree : boosting_->TreesInRange(range).trees) {
+      splits += tree->MeanSplitsPerRow();
+    }
+    out[0] = splits;
+    out[1] = -1.0;
+    out[2] = 0.0;
+#ifdef USE_CUDA
+    int usable = 0;
+    FLC_HasCUDAPredictor(&usable);
+    if (usable) {
+      out[1] = static_cast<double>(CUDAPredictor::FreeDeviceBytes(config.gpu_device_id));
+      out[2] = cuda_predictor_.HasForest(config.gpu_device_id) ? 1.0 : 0.0;
+    }
+#else
+    (void)config;
+#endif  // USE_CUDA
   }
 
   /*!
@@ -4498,6 +4522,20 @@ int FLC_HasCUDAPredictor(int* out) {
 #else
   *out = 0;
 #endif  // USE_CUDA
+  API_END();
+}
+
+int FLC_BoosterCUDAPredictCostInputs(BoosterHandle handle,
+                                      int start_iteration,
+                                      int num_iteration,
+                                      const char* parameter,
+                                      double* out_values) {
+  API_BEGIN();
+  Config config;
+  if (parameter != nullptr && parameter[0] != '\0') {
+    config.Set(Config::Str2Map(parameter));
+  }
+  reinterpret_cast<Booster*>(handle)->CUDAPredictCostInputs(start_iteration, num_iteration, config, out_values);
   API_END();
 }
 
