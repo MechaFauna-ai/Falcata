@@ -233,8 +233,9 @@ __global__ void ComputeGradMagHistogramKernel(
     const score_t g = fabs(input_gradients[index]);
     if (g > 0.0f) {
       const score_t frac = g / grad_abs_max;  // in (0, 1]
-      // float throughout: scaling by a power of two is exact in float, so this is the bucket the
-      // former double multiply and floor gave, for every frac (checked exhaustively over all floats)
+      // float math: -log2f of a positive finite float lies in about [-128, 149], so multiplying by
+      // 128 is exact in float as it was in double, and the bucket is the one the former double
+      // multiply and floor gave (checked on sm_120 for all 2^32 float bit patterns of frac)
       int bucket = static_cast<int>(floorf(-log2f(frac) * kMagBucketsPerOctave));
       if (bucket < 0) bucket = 0;
       if (bucket >= num_buckets) bucket = num_buckets - 1;
