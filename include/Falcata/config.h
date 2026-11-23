@@ -58,6 +58,11 @@ struct Config {
   explicit Config(std::unordered_map<std::string, std::string> parameters_map) {
     Set(parameters_map);
   }
+  /*!
+  * \brief A prediction's parameters (see SetForPrediction)
+  * \param parameters The prediction's parameter string, as the C API's predict functions take it (may be nullptr)
+  */
+  FALCATA_EXPORT static Config ForPrediction(const char* parameters);
   std::string ToString() const;
   /*!
   * \brief Get string value by specific name of key
@@ -272,6 +277,7 @@ struct Config {
   // desc = ``cpu`` is the portable full-precision backend and supports the widest range of operating systems and hardware; quantized training requires ``cuda``
   // desc = ``gpu`` is the legacy OpenCL backend inherited from LightGBM; it is not developed here. If you use it: smaller ``max_bin`` (e.g. 63) speeds it up, and it accumulates in 32-bit floats by default (``gpu_use_dp=true`` restores 64-bit at a speed cost)
   // desc = **Note**: on CUDA builds, leaving ``device_type`` unset auto-selects ``cuda`` when a usable GPU is present (a one-time log line reports the choice); pass ``device_type=cpu`` to force CPU training
+  // desc = **Note**: in the Python package, ``Booster.predict()`` of a numpy array with a model trained with ``device_type=cuda`` runs on the GPU only when a cost estimate expects the GPU to finish first by a clear margin and the call's device buffers are small (at most 256 MiB and a tenth of the free device memory; feature contributions stay on the CPU); otherwise on the CPU predictor, as in 1.1.0. Either way the result is the CPU predictor's bit for bit (unless ``deterministic=False`` is passed). The estimate's constants were measured on one RTX 5090; pass ``device="cuda"`` or ``device="cpu"`` to ``predict`` to choose (see its docstring and section 8 of `performance <https://github.com/MechaFauna-ai/Falcata/blob/master/docs/performance.md>`__)
   // desc = **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build Falcata with CUDA, ROCm, or OpenCL support
   std::string device_type = "cpu";
 
@@ -1257,6 +1263,14 @@ struct Config {
 
   bool is_parallel = false;
   bool is_data_based_parallel = false;
+  /*!
+  * \brief Parse a prediction's parameters: every member as Set parses it, but never the choice of a training device
+  *        (no GPU probe, so a CPU prediction does not initialize CUDA) and none of the training checks (a prediction
+  *        may carry the parameters the model was trained with -- the scikit-learn wrappers pass them all -- and reads
+  *        only what predicts: num_threads, early stopping, the shape check, gpu_device_id, file and output options)
+  */
+  FALCATA_EXPORT void SetForPrediction(const std::unordered_map<std::string, std::string>& params);
+
   FALCATA_EXPORT void Set(const std::unordered_map<std::string, std::string>& params);
   static const std::unordered_map<std::string, std::string>& alias_table();
   static const std::unordered_map<std::string, std::vector<std::string>>& parameter2aliases();
@@ -1279,6 +1293,8 @@ struct Config {
 
  private:
   void CheckParamConflict(const std::unordered_map<std::string, std::string>& params);
+  /*! \brief the checks Set and SetForPrediction share: what guards a value the predictor reads too (num_threads) */
+  void CheckSharedParams() const;
   void ResolveFalcataParams();
   void GetMembersFromString(const std::unordered_map<std::string, std::string>& params);
   std::string SaveMembersToString() const;

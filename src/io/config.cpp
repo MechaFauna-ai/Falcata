@@ -304,6 +304,28 @@ void Config::GetInteractionConstraints() {
   }
 }
 
+#ifdef USE_CUDA
+namespace {
+// See CUDASideSizeOfConfig(): if nvcc and the host compiler disagree about Config's layout, every class holding one
+// by value has its members shifted between translation units and the failure surfaces as a wild pointer in an
+// unrelated kernel. Checked once (Set and SetForPrediction), loudly; a size comparison, no CUDA call.
+void CheckConfigLayoutOnce() {
+  static std::once_flag config_layout_checked;
+  std::call_once(config_layout_checked, []() {
+    const size_t host_size = sizeof(Config);
+    const size_t device_size = CUDASideSizeOfConfig();
+    if (host_size != device_size) {
+      Log::Fatal("Config layout differs between the host compiler (%zu bytes) and nvcc "
+                 "(%zu bytes). A member is almost certainly declared inside an "
+                 "`#ifndef __NVCC__` block in config.h, which hides it from nvcc; only "
+                 "`#pragma region` markers belong in there.",
+                 host_size, device_size);
+    }
+  });
+}
+}  // namespace
+#endif  // USE_CUDA
+
 void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   // generate seeds by seed.
   if (GetInt(params, "seed", &seed)) {
@@ -324,24 +346,7 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   GetMetricType(params, objective, &metric);
   GetDeviceType(params, &device_type);
 #ifdef USE_CUDA
-  // See CUDASideSizeOfConfig(): if nvcc and the host compiler disagree about
-  // Config's layout, every class holding one by value has its members shifted
-  // between translation units and the failure surfaces as a wild pointer in an
-  // unrelated kernel. Check once, loudly.
-  {
-    static std::once_flag config_layout_checked;
-    std::call_once(config_layout_checked, []() {
-      const size_t host_size = sizeof(Config);
-      const size_t device_size = CUDASideSizeOfConfig();
-      if (host_size != device_size) {
-        Log::Fatal("Config layout differs between the host compiler (%zu bytes) and nvcc "
-                   "(%zu bytes). A member is almost certainly declared inside an "
-                   "`#ifndef __NVCC__` block in config.h, which hides it from nvcc; only "
-                   "`#pragma region` markers belong in there.",
-                   host_size, device_size);
-      }
-    });
-  }
+  CheckConfigLayoutOnce();
   // device_type keeps LightGBM's "cpu" spelling in parameter files, but in
   // this library UNSET means auto: a CUDA build with a usable GPU trains on
   // it. Passing device_type explicitly (either value) pins the choice.
@@ -489,6 +494,23 @@ bool CheckMultiClassObjective(const std::string& objective) {
   // multi_regression rides the multiclass plumbing (num_class = target count)
   return (objective == std::string("multiclass") || objective == std::string("multiclassova")
           || objective == std::string("multi_regression"));
+}
+
+Config Config::ForPrediction(const char* parameters) {
+  Config config;
+  config.SetForPrediction(Str2Map(parameters != nullptr ? parameters : ""));
+  return config;
+}
+
+void Config::SetForPrediction(const std::unordered_map<std::string, std::string>& params) {
+#ifdef USE_CUDA
+  CheckConfigLayoutOnce();
+#endif  // USE_CUDA
+  // device_type keeps the caller's value (cpu when unset): a prediction never probes for a training device
+  GetDeviceType(params, &device_type);
+  // every member, with the per-member checks of the generated parser (e.g. num_gpu > 0)
+  GetMembersFromString(params);
+  CheckSharedParams();
 }
 
 void Config::CheckParamConflict(const std::unordered_map<std::string, std::string>& params) {
@@ -852,8 +874,13 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     Log::Warning("bagging_by_query=true is only compatible with data_sample_strategy=bagging. Setting bagging_by_query=false.");
     bagging_by_query = false;
   }
+  CheckSharedParams();
+}
+
+void Config::CheckSharedParams() const {
   // libgomp lays out a parallel team's start-up state on the calling thread's stack (alloca), so num_threads=100000
   // overflowed the stack and the process segfaulted in the first parallel region. More threads than this never help.
+  // Predictions set the same OpenMP thread count from their own parameters, so they check it too.
   const int max_num_threads = std::max(1024, 4 * static_cast<int>(std::thread::hardware_concurrency()));
   if (num_threads > max_num_threads) {
     Log::Fatal("num_threads=%d is more than the supported %d (4 x the %u hardware threads, at least 1024)", num_threads,

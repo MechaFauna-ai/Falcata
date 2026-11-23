@@ -139,10 +139,10 @@ int64_t VectorBytes(const CUDAVector<T>& v) {
 class DeviceGuard {
  public:
   explicit DeviceGuard(int device_id) {
-    CUDASUCCESS_OR_FATAL(cudaGetDevice(&previous_));
+    Check(cudaGetDevice(&previous_));
     current_ = previous_;
     if (device_id >= 0 && device_id != previous_) {
-      CUDASUCCESS_OR_FATAL(cudaSetDevice(device_id));
+      Check(cudaSetDevice(device_id));
       current_ = device_id;
       changed_ = true;
     }
@@ -155,6 +155,15 @@ class DeviceGuard {
   int device() const { return current_; }
 
  private:
+  // an invalid device (e.g. gpu_device_id) is raised, after clearing the runtime's last error: left set, it would fail
+  // the next unrelated CUDA call of the process
+  static void Check(cudaError_t code) {
+    if (code != cudaSuccess) {
+      cudaGetLastError();
+      CUDASUCCESS_OR_FATAL(code);
+    }
+  }
+
   int previous_ = 0;
   int current_ = 0;
   bool changed_ = false;
@@ -600,6 +609,49 @@ CUDAPredictor::~CUDAPredictor() {
 void CUDAPredictor::Invalidate() {
   std::lock_guard<std::mutex> lock(mutex_);
   forests_.clear();
+}
+
+bool CUDAPredictor::HasForest(int device_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (forests_.empty()) {
+    return false;
+  }
+  int device = device_id;
+  if (device < 0 && cudaGetDevice(&device) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  for (const auto& kv : forests_) {
+    if (std::get<0>(kv.first) == device && kv.second != nullptr) {
+      return true;
+    }
+  }
+  return false;
+}
+
+int64_t CUDAPredictor::FreeDeviceBytes(int device_id) {
+  // never fatal: -1 when the device cannot be queried (an invalid gpu_device_id, an exclusive-mode device in use, no
+  // memory left for a context), with the runtime's last error cleared so that nothing is left for a later call
+  int previous = 0;
+  if (cudaGetDevice(&previous) != cudaSuccess) {
+    cudaGetLastError();
+    return -1;
+  }
+  const bool change = device_id >= 0 && device_id != previous;
+  if (change && cudaSetDevice(device_id) != cudaSuccess) {
+    cudaGetLastError();
+    return -1;
+  }
+  size_t free_bytes = 0, total_bytes = 0;
+  const cudaError_t queried = cudaMemGetInfo(&free_bytes, &total_bytes);
+  if (change) {
+    cudaSetDevice(previous);
+  }
+  if (queried != cudaSuccess) {
+    cudaGetLastError();
+    return -1;
+  }
+  return static_cast<int64_t>(free_bytes);
 }
 
 

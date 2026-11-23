@@ -14,6 +14,7 @@
 #include <Falcata/network.h>
 #include <Falcata/objective_function.h>
 #include <Falcata/prediction_early_stop.h>
+#include <Falcata/tree.h>
 #include <Falcata/utils/byte_buffer.h>
 #include <Falcata/utils/common.h>
 #include <Falcata/utils/log.h>
@@ -159,7 +160,7 @@ struct SingleRowPredictor {
              int predict_type,
              Boosting *boosting,
              int start_iter,
-             int num_iter) : config(Config::Str2Map(parameters)), data_type(data_type), num_cols(num_cols),
+             int num_iter) : config(Config::ForPrediction(parameters)), data_type(data_type), num_cols(num_cols),
                              single_row_predictor_inner(new SingleRowPredictorInner(predict_type, boosting, config, start_iter, num_iter)),
                              booster_mutex(booster_mutex), boosting_(boosting), predict_type_(predict_type),
                              start_iter_(start_iter), num_iter_(num_iter) {
@@ -1231,6 +1232,37 @@ class Booster {
   }
 
   const Boosting* GetBoosting() const { return boosting_.get(); }
+
+  /*! \brief what FLC_BoosterCUDAPredictCostInputs reports (`what`: 1 the split nodes, 2 the device state) */
+  void CUDAPredictCostInputs(int start_iteration, int num_iteration, int gpu_device_id, int what, double* out) const {
+    SHARED_LOCK(mutex_);
+    out[0] = -1.0;
+    out[1] = -1.0;
+    out[2] = 0.0;
+    if (what & 1) {
+      const Boosting::PredictRange range = boosting_->ResolvePredictRange(start_iteration, num_iteration, false);
+      double splits = 0.0;
+      for (const Tree* tree : boosting_->TreesInRange(range).trees) {
+        splits += tree->MeanSplitsPerRow();
+      }
+      out[0] = splits;
+    }
+#ifdef USE_CUDA
+    if (what & 2) {
+      int usable = 0;
+      FLC_HasCUDAPredictor(&usable);
+      if (usable) {
+        const int64_t free_bytes = CUDAPredictor::FreeDeviceBytes(gpu_device_id);
+        out[1] = static_cast<double>(free_bytes);
+        if (free_bytes >= 0) {
+          out[2] = cuda_predictor_.HasForest(gpu_device_id) ? 1.0 : 0.0;
+        }
+      }
+    }
+#else
+    (void)gpu_device_id;
+#endif  // USE_CUDA
+  }
 
 #ifdef USE_CUDA
   /*!
@@ -3947,7 +3979,7 @@ int FLC_BoosterPredictForFile(BoosterHandle handle,
   API_BEGIN();
   auto param = Config::Str2Map(parameter);
   Config config;
-  config.Set(param);
+  config.SetForPrediction(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   ref_booster->Predict(start_iteration, num_iteration, predict_type, data_filename, data_has_header,
@@ -3971,7 +4003,7 @@ int FLC_BoosterPredictForFileToArray(BoosterHandle handle,
   *out_result = nullptr;
   auto param = Config::Str2Map(parameter);
   Config config;
-  config.Set(param);
+  config.SetForPrediction(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   std::vector<double> result;
@@ -4042,7 +4074,7 @@ int FLC_BoosterPredictForCSR(BoosterHandle handle,
   }
   auto param = Config::Str2Map(parameter);
   Config config;
-  config.Set(param);
+  config.SetForPrediction(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
@@ -4074,7 +4106,7 @@ int FLC_BoosterPredictSparseOutput(BoosterHandle handle,
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   auto param = Config::Str2Map(parameter);
   Config config;
-  config.Set(param);
+  config.SetForPrediction(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   if (matrix_type == C_API_MATRIX_TYPE_CSR) {
     if (num_col_or_row <= 0) {
@@ -4160,7 +4192,7 @@ int FLC_BoosterPredictForCSRSingleRow(BoosterHandle handle,
   }
   auto param = Config::Str2Map(parameter);
   Config config;
-  config.Set(param);
+  config.SetForPrediction(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
@@ -4231,7 +4263,7 @@ int FLC_BoosterPredictForCSC(BoosterHandle handle,
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   auto param = Config::Str2Map(parameter);
   Config config;
-  config.Set(param);
+  config.SetForPrediction(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   int num_threads = OMP_NUM_THREADS();
   int ncol = static_cast<int>(ncol_ptr - 1);
@@ -4303,7 +4335,7 @@ int FLC_BoosterPredictForMat(BoosterHandle handle,
   API_BEGIN();
   auto param = Config::Str2Map(parameter);
   Config config;
-  config.Set(param);
+  config.SetForPrediction(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   auto get_row_fun = RowPairFunctionFromDenseMatrix(data, nrow, ncol, data_type, is_row_major);
@@ -4355,15 +4387,11 @@ int FLC_BoosterPredictForMatCUDA(BoosterHandle handle,
                ncol);
   }
   // no parameters (the usual call): the defaults, set up once -- building a Config costs more than a small prediction
-  static const Config default_config = []() {
-    Config c;
-    c.Set(std::unordered_map<std::string, std::string>());
-    return c;
-  }();
+  static const Config default_config = Config::ForPrediction(nullptr);
   std::unique_ptr<Config> parsed;
   if (parameter != nullptr && parameter[0] != '\0') {
     parsed.reset(new Config());
-    parsed->Set(Config::Str2Map(parameter));
+    parsed->SetForPrediction(Config::Str2Map(parameter));
   }
   const Config& config = parsed != nullptr ? *parsed : default_config;
   OMP_SET_NUM_THREADS(config.num_threads);
@@ -4441,7 +4469,7 @@ int FLC_BoostersPredictForMatCUDA(int num_jobs,
   Config defaults;
   if (parameter != nullptr && parameter[0] != '\0') {
     parsed.reset(new Config());
-    parsed->Set(Config::Str2Map(parameter));
+    parsed->SetForPrediction(Config::Str2Map(parameter));
   }
   const Config& config = parsed != nullptr ? *parsed : defaults;
   OMP_SET_NUM_THREADS(config.num_threads);
@@ -4501,6 +4529,24 @@ int FLC_HasCUDAPredictor(int* out) {
   API_END();
 }
 
+int FLC_BoosterCUDAPredictCostInputs(BoosterHandle handle,
+                                      int start_iteration,
+                                      int num_iteration,
+                                      const char* parameter,
+                                      int what,
+                                      double* out_values) {
+  API_BEGIN();
+  // the split nodes need no parameter; the device state reads gpu_device_id alone (no Config: nothing else is
+  // parsed, checked or probed)
+  int gpu_device_id = -1;
+  if ((what & 2) != 0 && parameter != nullptr && parameter[0] != '\0') {
+    Config::GetInt(Config::Str2Map(parameter), "gpu_device_id", &gpu_device_id);
+  }
+  reinterpret_cast<Booster*>(handle)->CUDAPredictCostInputs(start_iteration, num_iteration, gpu_device_id, what,
+                                                            out_values);
+  API_END();
+}
+
 int FLC_BoosterPredictForMatSingleRow(BoosterHandle handle,
                                        const void* data,
                                        int data_type,
@@ -4515,7 +4561,7 @@ int FLC_BoosterPredictForMatSingleRow(BoosterHandle handle,
   API_BEGIN();
   auto param = Config::Str2Map(parameter);
   Config config;
-  config.Set(param);
+  config.SetForPrediction(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   auto get_row_fun = RowPairFunctionFromDenseMatrix(data, 1, ncol, data_type, is_row_major);
@@ -4571,7 +4617,7 @@ int FLC_BoosterPredictForMats(BoosterHandle handle,
   API_BEGIN();
   auto param = Config::Str2Map(parameter);
   Config config;
-  config.Set(param);
+  config.SetForPrediction(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   auto get_row_fun = RowPairFunctionFromDenseRows(data, ncol, data_type);
@@ -4591,7 +4637,7 @@ void FLC_BoosterPredictForArrowChunkedArray(BoosterHandle handle,
   // Apply the configuration
   auto param = Config::Str2Map(parameter);
   Config config;
-  config.Set(param);
+  config.SetForPrediction(param);
   OMP_SET_NUM_THREADS(config.num_threads);
 
   // Set up iterators for all fields

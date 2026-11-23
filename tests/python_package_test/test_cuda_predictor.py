@@ -11,6 +11,9 @@ Every comparison below is exact unless it says otherwise.
 """
 
 import itertools
+import json
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -351,24 +354,557 @@ def test_contributions_refused_as_on_the_cpu(zoo):
             booster.predict(X[:10], device=device, pred_contrib=True)
 
 
+# --------------------------------------------------------------------------- device=None on host arrays
+
+
+def _estimate(**overrides):
+    kwargs = {
+        "nrow": 100_000,
+        "ncol": 50,
+        "in_itemsize": 4,
+        "out_bytes_per_row": 8,
+        "splits_per_row": 1000.0,
+        "free_device_bytes": float(16 << 30),
+        "num_trees": 200,
+        "packed": True,
+        "loaded": True,
+        "threads": 16,
+    }
+    kwargs.update(overrides)
+    return basic._auto_cuda_estimate(**kwargs)
+
+
+def test_auto_estimate_both_sides_of_the_threshold():
+    """More work per row tips a request to the GPU; less (or more bytes per unit of work) keeps it on the CPU."""
+    assert _estimate(splits_per_row=20_000.0)["device"] == "cuda"
+    assert _estimate(nrow=100, splits_per_row=50.0)["device"] == "cpu"
+    # find the boundary in rows x splits for one shape and check both of its sides
+    lo, hi = 1.0, 1e7
+    for _ in range(60):
+        mid = (lo * hi) ** 0.5
+        if _estimate(splits_per_row=mid)["device"] == "cuda":
+            hi = mid
+        else:
+            lo = mid
+    assert _estimate(splits_per_row=hi * 1.01)["device"] == "cuda"
+    assert _estimate(splits_per_row=lo * 0.99)["device"] == "cpu"
+    # the same work over wide rows: the copy outweighs it
+    assert _estimate(splits_per_row=hi * 1.01, ncol=50_000, nrow=1000)["device"] == "cpu"
+
+
+def test_auto_estimate_first_prediction_pays_the_kernel_load():
+    """A request the GPU wins once its kernels are loaded can lose while they are not (the first CUDA prediction of
+    a process), and packing the model counts until it is packed."""
+    lo, hi = 1.0, 1e7
+    for _ in range(60):
+        mid = (lo * hi) ** 0.5
+        if _estimate(nrow=20_000, splits_per_row=mid)["device"] == "cuda":
+            hi = mid
+        else:
+            lo = mid
+    warm = _estimate(nrow=20_000, splits_per_row=hi * 1.01)
+    cold = _estimate(nrow=20_000, splits_per_row=hi * 1.01, loaded=False)
+    unpacked = _estimate(nrow=20_000, splits_per_row=hi * 1.01, packed=False, num_trees=100_000)
+    assert warm["device"] == "cuda"
+    assert cold["device"] == "cpu"
+    assert cold["cuda_s"] > warm["cuda_s"]
+    assert unpacked["device"] == "cpu"
+    assert unpacked["cuda_s"] > warm["cuda_s"]
+
+
+def test_auto_estimate_device_memory_limits():
+    """The GPU is never chosen when the call's buffers exceed the fixed cap or the share of the free memory."""
+    c = basic._AUTO_CUDA_COST
+    heavy = {"splits_per_row": 1e6}
+    assert _estimate(**heavy)["device"] == "cuda"
+    rows_over_cap = int(c["max_buffer_bytes"] // (50 * 4 + 8)) + 1
+    over = _estimate(nrow=rows_over_cap, **heavy)
+    assert over["device"] == "cpu"
+    assert not over["fits"]
+    tight = _estimate(free_device_bytes=float(100_000 * (50 * 4 + 8)) / c["max_free_fraction"] * 0.99, **heavy)
+    assert tight["device"] == "cpu"
+    assert not tight["fits"]
+    assert _estimate(free_device_bytes=-1.0, **heavy)["device"] == "cpu"
+
+
+def test_auto_estimate_more_cpu_threads_favour_the_cpu():
+    lo, hi = 1.0, 1e7
+    for _ in range(60):
+        mid = (lo * hi) ** 0.5
+        if _estimate(splits_per_row=mid, threads=16)["device"] == "cuda":
+            hi = mid
+        else:
+            lo = mid
+    assert _estimate(splits_per_row=hi * 1.01, threads=16)["device"] == "cuda"
+    assert _estimate(splits_per_row=hi * 1.01, threads=64)["device"] == "cpu"
+
+
+def test_cpu_predict_threads(monkeypatch):
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    assert basic._cpu_predict_threads({"num_threads": 3}) == 3
+    assert basic._cpu_predict_threads({"n_jobs": 5}) == 5
+    assert basic._cpu_predict_threads({}) >= 1
+    monkeypatch.setenv("OMP_NUM_THREADS", "7")
+    assert basic._cpu_predict_threads({}) == 7
+    assert basic._cpu_predict_threads({"num_threads": 2}) == 2
+
+
+def _split_count_reference(booster, start_iteration=0, num_iteration=-1):
+    """Sum over the trees of the range: each split node's training rows over the rows at the root."""
+    k = booster.num_model_per_iteration()
+    trees = booster.dump_model()["tree_info"]
+    total = len(trees) // k
+    end = total if num_iteration <= 0 else min(total, start_iteration + num_iteration)
+    out = 0.0
+
+    def walk(node, root):
+        if "split_index" not in node:
+            return 0.0
+        return node["internal_count"] / root + walk(node["left_child"], root) + walk(node["right_child"], root)
+
+    for tree in trees[start_iteration * k : end * k]:
+        s = tree["tree_structure"]
+        if "split_index" in s:
+            out += walk(s, s["internal_count"])
+    return out
+
+
+def _cost_inputs(booster, start=0, num=-1, what=3, params=""):
+    values = (basic.ctypes.c_double * 3)()
+    basic._safe_call(
+        basic._LIB.FLC_BoosterCUDAPredictCostInputs(
+            booster._handle,
+            basic.ctypes.c_int(start),
+            basic.ctypes.c_int(num),
+            basic._c_str(params) if params else basic._EMPTY_C_STR,
+            basic.ctypes.c_int(what),
+            values,
+        )
+    )
+    return list(values)
+
+
+def _leaf_depth_reference(booster):
+    """Sum over the trees of the mean depth of their leaves (each leaf counted once)."""
+
+    def leaves(node, depth):
+        if "split_index" not in node:
+            return [depth]
+        return leaves(node["left_child"], depth + 1) + leaves(node["right_child"], depth + 1)
+
+    return sum(float(np.mean(leaves(t["tree_structure"], 0))) for t in booster.dump_model()["tree_info"])
+
+
+def test_cost_inputs_report_the_split_nodes_per_row(tmp_path):
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(3000, 6))
+    y = X[:, 0] + np.sin(3 * X[:, 1]) + 0.1 * rng.normal(size=3000)
+    for leaves in (2, 7, 31):
+        booster = lgb.train(_base(objective="regression", num_leaves=leaves), lgb.Dataset(X, y), num_boost_round=12)
+        for start, num in ((0, -1), (3, 4), (0, 1)):
+            values = _cost_inputs(booster, start, num)
+            np.testing.assert_allclose(values[0], _split_count_reference(booster, start, num), rtol=1e-12)
+            if leaves == 2:
+                assert values[0] == (12 - start if num <= 0 else num)
+            if basic._cuda_predictor_usable():
+                assert values[1] > 0
+            else:
+                assert values[1] == -1.0
+        # only what is asked for
+        assert _cost_inputs(booster, what=1)[1:] == [-1.0, 0.0]
+        assert _cost_inputs(booster, what=2)[0] == -1.0
+        # a model read back from text keeps its row counts, so the same number
+        again = lgb.Booster(model_str=booster.model_to_string())
+        np.testing.assert_allclose(_cost_inputs(again)[0], _split_count_reference(booster), rtol=1e-12)
+        # a binary model saved without row counts: the mean leaf depth of each tree
+        path = tmp_path / f"model_{leaves}.falb"
+        path.write_bytes(booster.model_to_binary(with_stats=False))
+        no_counts = lgb.Booster(model_file=str(path))
+        np.testing.assert_allclose(_cost_inputs(no_counts)[0], _leaf_depth_reference(booster), rtol=1e-12)
+    # multiclass: every class's trees count
+    yk = np.digitize(y, np.quantile(y, [0.33, 0.66])).astype(float)
+    multi = lgb.train(_base(objective="multiclass", num_class=3), lgb.Dataset(X, yk), num_boost_round=5)
+    assert multi.num_trees() == 15
+    np.testing.assert_allclose(_cost_inputs(multi)[0], _split_count_reference(multi), rtol=1e-12)
+    np.testing.assert_allclose(_cost_inputs(multi, 1, 2)[0], _split_count_reference(multi, 1, 2), rtol=1e-12)
+    # single-leaf trees pass no split node
+    flat = lgb.train(_base(objective="regression", min_data_in_leaf=10_000), lgb.Dataset(X, y), num_boost_round=3)
+    assert _cost_inputs(flat)[0] == 0.0
+
+
+def test_auto_rule_touches_the_device_last(monkeypatch):
+    """A request over the buffer cap makes no cost-input call; one the CPU wins even against a warm GPU asks only for
+    the split nodes (no CUDA call); only a request the GPU could win reads the device."""
+    rng = np.random.default_rng(4)
+    X = rng.normal(size=(600, 5)).astype(np.float32)
+    booster = lgb.train(_base(objective="regression"), lgb.Dataset(X, X[:, 0]), num_boost_round=4)
+    calls = []
+    original = basic._LIB.FLC_BoosterCUDAPredictCostInputs
+
+    def recording(*args):
+        calls.append(args[4].value)
+        return original(*args)
+
+    monkeypatch.setattr(basic._LIB, "FLC_BoosterCUDAPredictCostInputs", recording)
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "max_buffer_bytes", 1000)
+    assert not booster._auto_predict_on_cuda(X, 0, -1, basic._C_API_PREDICT_NORMAL, {})
+    assert calls == []
+    assert not booster._last_auto_predict["fits"]
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "max_buffer_bytes", 256 << 20)
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", float("inf"))
+    assert not booster._auto_predict_on_cuda(X, 0, -1, basic._C_API_PREDICT_NORMAL, {})
+    assert calls == [1]
+    calls.clear()
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+    on_cuda = booster._auto_predict_on_cuda(X, 0, -1, basic._C_API_PREDICT_NORMAL, {})
+    usable = basic._cuda_predictor_usable()
+    assert calls == ([1, 2] if usable else [1])  # without a usable CUDA predictor, no device query
+    assert on_cuda == usable
+
+
+_CPU_ROUTED_PREDICT = r"""
+import ctypes
+import json
+import os
+import sys
+
+import numpy as np
+
+import falcata as lgb
+from falcata import basic
+
+rng = np.random.default_rng(0)
+X = rng.normal(size=(500, 5))
+trained = lgb.train(
+    {"objective": "regression", "device_type": "cpu", "verbose": -1, "num_threads": 2},
+    lgb.Dataset(X, np.ascontiguousarray(X[:, 0])),
+    5,
+)
+text = trained.model_to_string().replace("[device_type: cpu]", "[device_type: cuda]")
+assert "[device_type: cuda]" in text
+loaded = lgb.Booster(model_str=text)
+assert loaded._trained_on_cuda()
+ref = trained.predict(X, device="cpu")
+ok = {}
+# a small request: the CPU wins even against a warm GPU with the model packed
+ok["small"] = bool(np.array_equal(loaded.predict(X), ref)) and loaded._last_auto_predict["device"] == "cpu"
+# over the buffer cap, with a margin that would otherwise always choose the GPU
+basic._AUTO_CUDA_COST["margin"] = 0.0
+basic._AUTO_CUDA_COST["max_buffer_bytes"] = 1000
+ok["cap"] = bool(np.array_equal(loaded.predict(X), ref)) and not loaded._last_auto_predict["fits"]
+basic._AUTO_CUDA_COST["max_buffer_bytes"] = 256 << 20
+# contributions, early stopping and non-numpy inputs never reach the estimate
+loaded.predict(X[:20], pred_contrib=True)
+loaded.predict(X, pred_early_stop=True)
+loaded.predict(X[:20].tolist())
+# the CPU predictor itself, explicitly and for a CPU-configured model: no GPU probe of an unset device_type
+ok["cpu"] = bool(np.array_equal(loaded.predict(X, device="cpu"), ref)) and bool(np.array_equal(trained.predict(X), ref))
+# a gpu_device_id on a CPU-routed request: the cost query reads it only for a request headed for the GPU
+basic._AUTO_CUDA_COST["margin"] = float("inf")
+ok["gpu_device_id"] = bool(np.array_equal(loaded.predict(X, gpu_device_id=0), ref))
+# the C API's CPU predictor called directly, with no parameters (device_type unset) and with training parameters
+out = np.empty(X.shape[0], dtype=np.float64)
+out_len = ctypes.c_int64(0)
+data = np.ascontiguousarray(X, dtype=np.float64)
+for params in (b"", b"quant_mode=fixedpoint use_quantized_grad=true device_type=cuda"):
+    basic._safe_call(
+        basic._LIB.FLC_BoosterPredictForMat(
+            loaded._handle,
+            data.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(basic._C_API_DTYPE_FLOAT64),
+            ctypes.c_int32(X.shape[0]),
+            ctypes.c_int32(X.shape[1]),
+            ctypes.c_int(1),
+            ctypes.c_int(basic._C_API_PREDICT_NORMAL),
+            ctypes.c_int(0),
+            ctypes.c_int(-1),
+            ctypes.c_char_p(params),
+            ctypes.byref(out_len),
+            out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        )
+    )
+    ok["c_api_" + ("plain" if not params else "training_params")] = bool(np.array_equal(out, ref))
+state = {"ok": ok, "probed": basic._CUDA_PREDICTOR_USABLE is not None, "libcuda": [], "nvidia_fds": []}
+if sys.platform.startswith("linux"):
+    with open("/proc/self/maps") as maps:
+        state["libcuda"] = sorted({line.split()[-1] for line in maps if "libcuda.so" in line})
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            continue
+        if target.startswith("/dev/nvidia"):
+            state["nvidia_fds"].append(target)
+print("PREDICT_STATE " + json.dumps(state))
+"""
+
+
+def test_cpu_routed_auto_predict_does_not_initialize_cuda():
+    """predict(device=None) of a CUDA-configured model that ends on the CPU never initializes CUDA, and neither does
+    the CPU predictor itself (device="cpu", a CPU-configured model, a gpu_device_id, the C API called directly with
+    and without training parameters): a process that forks children which use the GPU must stay CUDA-free (a fresh
+    interpreter; on Linux libcuda must not be mapped and no /dev/nvidia* device open)."""
+    result = subprocess.run(
+        [sys.executable, "-c", _CPU_ROUTED_PREDICT],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    lines = [line for line in result.stdout.splitlines() if line.startswith("PREDICT_STATE ")]
+    assert lines, result.stdout[-4000:] + result.stderr[-4000:]
+    state = json.loads(lines[-1].removeprefix("PREDICT_STATE "))
+    assert state["ok"] == {
+        "small": True,
+        "cap": True,
+        "cpu": True,
+        "gpu_device_id": True,
+        "c_api_plain": True,
+        "c_api_training_params": True,
+    }
+    assert not state["probed"], "a CPU-routed predict(device=None) probed the CUDA predictor"
+    assert not state["libcuda"], f"a CPU-routed predict(device=None) loaded the CUDA driver: {state['libcuda']}"
+    assert not state["nvidia_fds"], f"a CPU-routed predict(device=None) opened NVIDIA devices: {state['nvidia_fds']}"
+
+
+# parameters a prediction may carry from training (the scikit-learn wrappers forward every estimator parameter):
+# the CPU predictor parses them for prediction only, without the training checks that would refuse them on the CPU
+_TRAINING_ONLY_PARAMS = (
+    {"quant_mode": "fixedpoint"},
+    {"use_quantized_grad": True},
+    {"tree_mode": "vector_leaf"},
+    {"device_type": "cuda"},
+    {"quant_mode": "fixedpoint", "use_quantized_grad": True, "device_type": "cuda", "cuda_precision": "fp32"},
+)
+
+
+@pytest.mark.parametrize("objective", ["regression", "binary", "multiclass", "lambdarank", "poisson"])
+def test_cpu_predict_ignores_training_only_params(objective):
+    """CPU predictions with training-only (CUDA-only) parameters run, and give the same bits as without them."""
+    rng = np.random.default_rng(8)
+    X = rng.normal(size=(600, 6))
+    X[rng.random(X.shape) < 0.05] = np.nan
+    y = np.nansum(X[:, :3], axis=1)
+    extra = {}
+    kwargs = {}
+    if objective in ("binary", "poisson"):
+        y = (y > 0).astype(float) if objective == "binary" else np.abs(y)
+    elif objective == "multiclass":
+        y = np.digitize(y, [-1.0, 0.0, 1.0]).astype(float)
+        extra = {"num_class": 4}
+    elif objective == "lambdarank":
+        y = np.clip(np.digitize(y, [-1.0, 0.0, 1.0]), 0, 3).astype(float)
+        kwargs = {"group": [100] * 6}
+    booster = lgb.train(_base(objective=objective, **extra), lgb.Dataset(X, y, **kwargs), num_boost_round=8)
+    for predict_kwargs in ({}, {"raw_score": True}, {"pred_leaf": True}, {"pred_contrib": True}):
+        ref = booster.predict(X, device="cpu", **predict_kwargs)
+        for params in _TRAINING_ONLY_PARAMS:
+            np.testing.assert_array_equal(booster.predict(X, device="cpu", **predict_kwargs, **params), ref)
+            np.testing.assert_array_equal(booster.predict(X, **predict_kwargs, **params), ref)
+
+
+def test_sklearn_predict_forwards_training_only_params():
+    """The scikit-learn wrappers pass every estimator parameter to Booster.predict: CUDA-only training parameters
+    set on the estimator must not break, or change, its CPU predictions."""
+    rng = np.random.default_rng(9)
+    X = rng.normal(size=(500, 5))
+    y = X[:, 0] - 2 * X[:, 1]
+    reg = lgb.FalcataRegressor(n_estimators=6, num_leaves=7, device_type="cpu", verbose=-1).fit(X, y)
+    ref = reg.booster_.predict(X, device="cpu")
+    for params in _TRAINING_ONLY_PARAMS:
+        reg.set_params(**params)
+        np.testing.assert_array_equal(reg.predict(X), ref)
+        np.testing.assert_array_equal(reg.predict(X, device="cpu"), ref)
+        reg.set_params(device_type="cpu", quant_mode="auto", use_quantized_grad=False, tree_mode="scalar")
+    yc = (y > 0).astype(int)
+    clf = lgb.FalcataClassifier(n_estimators=6, num_leaves=7, device_type="cpu", verbose=-1).fit(X, yc)
+    ref = clf.predict_proba(X)
+    clf.set_params(quant_mode="fixedpoint", use_quantized_grad=True, device_type="cuda")
+    np.testing.assert_array_equal(clf.predict_proba(X, device="cpu"), ref)
+
+
+def test_auto_rule_unreadable_device_means_cpu(monkeypatch):
+    """Free memory that cannot be read (-1: an invalid gpu_device_id, a CPU build) never picks the GPU."""
+    rng = np.random.default_rng(5)
+    X = rng.normal(size=(600, 5)).astype(np.float32)
+    booster = lgb.train(_base(objective="regression"), lgb.Dataset(X, X[:, 0]), num_boost_round=4)
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+    assert not booster._auto_predict_on_cuda(X, 0, -1, basic._C_API_PREDICT_NORMAL, {"gpu_device_id": 4096})
+    assert booster._last_auto_predict["free_device_bytes"] == -1.0
+    assert not booster._last_auto_predict["fits"]
+
+
 @requires_cuda
-def test_auto_routing_follows_the_rules(zoo):
-    booster, X = zoo["regression"]
+def test_auto_routing_follows_the_rules(zoo, monkeypatch):
+    """device=None on a host array: the cost rule decides for a CUDA model; the result is the CPU predictor's bit
+    for bit either way (the GPU adds in tree order unless deterministic=False is passed)."""
+    booster, X = zoo["deep"]
+    X = X.astype(np.float32)
+    cpu = booster.predict(X, device="cpu", raw_score=True)
     booster.cuda_predict_stats = None
-    booster.predict(X)  # trained with device_type=cpu: the CPU predictor
+    booster.predict(X)  # trained with device_type=cpu: the CPU predictor, whatever the cost
     assert booster.cuda_predict_stats is None
     booster.params["device_type"] = "cuda"
     try:
-        booster.predict(X)
-        assert booster.cuda_predict_stats is not None
-        stats = booster.cuda_predict_stats
-        assert stats["model_device_bytes"] > 0
-        assert stats["num_chunks"] >= 1
+        # the rule says CPU (the GPU estimate can never win against an infinite margin)
+        monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", float("inf"))
         booster.cuda_predict_stats = None
-        booster.predict(X, pred_early_stop=True)  # early stopping stays on the CPU predictor
+        np.testing.assert_array_equal(booster.predict(X, raw_score=True), cpu)
+        assert booster.cuda_predict_stats is None
+        assert booster._last_auto_predict["device"] == "cpu"
+        # the rule says GPU
+        monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+        np.testing.assert_array_equal(booster.predict(X, raw_score=True), cpu)
+        assert booster.cuda_predict_stats is not None
+        assert booster.cuda_predict_stats["model_device_bytes"] > 0
+        assert booster._last_auto_predict["device"] == "cuda"
+        for kwargs in ({}, {"pred_leaf": True}):
+            np.testing.assert_array_equal(
+                booster.predict(X[:300], **kwargs), booster.predict(X[:300], device="cpu", **kwargs)
+            )
+        # feature contributions stay on the CPU under device=None (TreeSHAP's cost and scratch are outside the rule)
+        booster.cuda_predict_stats = None
+        np.testing.assert_array_equal(
+            booster.predict(X[:300], pred_contrib=True), booster.predict(X[:300], device="cpu", pred_contrib=True)
+        )
+        assert booster.cuda_predict_stats is None
+        # deterministic=False is the fast pairwise sum, on request
+        np.testing.assert_array_equal(
+            booster.predict(X, raw_score=True, deterministic=False), _pairwise_reference(booster, X)
+        )
+        # buffers over the cap: the CPU, however fast the GPU would be
+        monkeypatch.setitem(basic._AUTO_CUDA_COST, "max_buffer_bytes", 1024)
+        booster.cuda_predict_stats = None
+        np.testing.assert_array_equal(booster.predict(X, raw_score=True), cpu)
+        assert booster.cuda_predict_stats is None
+        assert not booster._last_auto_predict["fits"]
+        monkeypatch.setitem(basic._AUTO_CUDA_COST, "max_buffer_bytes", 256 << 20)
+        # early stopping stays on the CPU predictor
+        booster.cuda_predict_stats = None
+        booster.predict(X, pred_early_stop=True)
+        assert booster.cuda_predict_stats is None
+        # other inputs (lists, 1-D, sparse) stay on the CPU predictor
+        booster.cuda_predict_stats = None
+        booster.predict(X[:5].tolist())
         assert booster.cuda_predict_stats is None
     finally:
         booster.params["device_type"] = "cpu"
+
+
+@requires_cuda
+def test_explicit_device_cuda_ignores_the_cost_rule(zoo, monkeypatch):
+    """device='cuda' runs on the GPU for any size, in the default (pairwise) mode unless deterministic=True."""
+    booster, X = zoo["regression"]
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", float("inf"))
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "max_buffer_bytes", 0)
+    for rows in (1, 7, len(X)):
+        booster.cuda_predict_stats = None
+        out = booster.predict(X[:rows], device="cuda", raw_score=True)
+        assert booster.cuda_predict_stats is not None
+        np.testing.assert_array_equal(out, _pairwise_reference(booster, X[:rows]))
+        np.testing.assert_array_equal(
+            booster.predict(X[:rows], device="cuda", raw_score=True, deterministic=True),
+            booster.predict(X[:rows], device="cpu", raw_score=True),
+        )
+
+
+@requires_cuda
+def test_auto_routing_of_device_arrays_ignores_the_cost_rule(zoo, monkeypatch):
+    """A device array is predicted on its GPU whatever the cost rule says, in the default mode."""
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("torch without CUDA")
+    booster, X = zoo["regression"]
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", float("inf"))
+    t = torch.as_tensor(X[:3].astype(np.float32), device="cuda")
+    out = booster.predict(t, raw_score=True)
+    assert isinstance(out, torch.Tensor)
+    np.testing.assert_array_equal(out.cpu().numpy(), _pairwise_reference(booster, X[:3].astype(np.float32)))
+
+
+@requires_cuda
+def test_auto_routing_cost_inputs_track_packing():
+    """The packed-model flag the rule reads: set by a CUDA prediction, cleared when the model changes."""
+    rng = np.random.default_rng(2)
+    X = rng.normal(size=(500, 4))
+    booster = lgb.Booster(_base(objective="regression"), lgb.Dataset(X, X[:, 0], free_raw_data=False))
+    for _ in range(3):
+        booster.update()
+
+    def packed():
+        return _cost_inputs(booster)[2]
+
+    assert packed() == 0.0
+    booster.predict(X, device="cuda")
+    assert packed() == 1.0
+    booster.update()
+    assert packed() == 0.0
+
+
+@requires_cuda
+def test_unreadable_device_falls_back_and_leaves_no_cuda_error(monkeypatch):
+    """predict(device=None) with a gpu_device_id that does not exist predicts on the CPU; device='cuda' raises; and
+    neither leaves a CUDA error behind for the next CUDA call of the process."""
+    rng = np.random.default_rng(6)
+    X = rng.normal(size=(800, 5)).astype(np.float32)
+    y = X[:, 0] - X[:, 2]
+    booster = lgb.train(_base("cuda", objective="regression"), lgb.Dataset(X, y), num_boost_round=5)
+    cpu = booster.predict(X, device="cpu")
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+    booster.cuda_predict_stats = None
+    np.testing.assert_array_equal(booster.predict(X, gpu_device_id=4096), cpu)
+    assert booster.cuda_predict_stats is None
+    assert booster._last_auto_predict["free_device_bytes"] == -1.0
+    with pytest.raises(lgb.basic.FalcataError, match="CUDA"):
+        booster.predict(X, device="cuda", gpu_device_id=4096)
+    # the process's next CUDA work is unaffected: training, and the device chosen by the rule
+    again = lgb.train(_base("cuda", objective="regression"), lgb.Dataset(X, y), num_boost_round=5)
+    np.testing.assert_array_equal(again.predict(X), again.predict(X, device="cpu"))
+    assert again.cuda_predict_stats is not None
+    np.testing.assert_array_equal(booster.predict(X, device="cuda", deterministic=True), cpu)
+
+
+@requires_cuda
+def test_auto_estimate_matches_the_allocation(monkeypatch):
+    """The rule's buffer bytes are the CUDA predictor's (one chunk: rows and result, plus one byte each) for
+    multi-target, multiclass and leaf-index requests, and its output width is the result's for contributions."""
+    rng = np.random.default_rng(7)
+    X = rng.normal(size=(2000, 8)).astype(np.float32)
+    targets = np.stack([X[:, k % 8] + 0.1 * k for k in range(16)], axis=1)
+    vector = lgb.train(
+        _base("cuda", objective="multi_regression", metric="multi_rmse", num_class=16, tree_mode="vector_leaf"),
+        lgb.Dataset(X, label=targets),
+        num_boost_round=6,
+    )
+    yk = np.digitize(X[:, 0], [-1.0, 0.0, 1.0]).astype(float)
+    multi = lgb.train(_base("cuda", objective="multiclass", num_class=4), lgb.Dataset(X, yk), num_boost_round=6)
+    monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+    for booster, kwargs in ((vector, {}), (multi, {}), (multi, {"raw_score": True}), (multi, {"pred_leaf": True})):
+        booster.cuda_predict_stats = None
+        out = booster.predict(X, **kwargs)
+        assert booster.cuda_predict_stats is not None
+        assert booster._last_auto_predict["buffer_bytes"] + 2 == booster.cuda_predict_stats["buffer_device_bytes"]
+        assert booster._last_auto_predict["buffer_bytes"] == X.nbytes + out.nbytes
+    assert vector._predict_output_width(basic._C_API_PREDICT_NORMAL, 0, -1) == 16
+    contrib = multi.predict(X[:50], device="cuda", pred_contrib=True)
+    assert multi._predict_output_width(basic._C_API_PREDICT_CONTRIB, 0, -1) * 50 == contrib.size
+
+
+@requires_cuda
+def test_sklearn_cuda_quantized_model_predicts_on_both_devices(monkeypatch):
+    """A CUDA-trained quantized estimator (its parameters forwarded to every predict) predicts on the CPU and, when the
+    rule picks it, on the GPU, with the CPU predictor's bits either way."""
+    rng = np.random.default_rng(10)
+    X = rng.normal(size=(2000, 6)).astype(np.float32)
+    y = X[:, 0] - X[:, 3]
+    for extra in ({}, {"device_type": "cuda"}):
+        reg = lgb.FalcataRegressor(n_estimators=8, quant_mode="fixedpoint", verbose=-1, **extra).fit(X, y)
+        ref = reg.booster_.predict(X, device="cpu")
+        np.testing.assert_array_equal(reg.predict(X, device="cpu"), ref)
+        np.testing.assert_array_equal(reg.predict(X), ref)
+        monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 0.0)
+        np.testing.assert_array_equal(reg.predict(X), ref)
+        monkeypatch.setitem(basic._AUTO_CUDA_COST, "margin", 1.3)
 
 
 @requires_cuda

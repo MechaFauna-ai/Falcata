@@ -300,6 +300,16 @@ class CUDAPredictor {
                CUDAPredictStats* stats);
   void Invalidate();
   /*!
+   * \brief whether a packed copy of the model is kept for `device_id` (-1: the current device), in any layout; false
+   *        without touching the device when nothing is packed, and false (error cleared) when it cannot be resolved
+   */
+  bool HasForest(int device_id);
+  /*!
+   * \brief free memory of `device_id` (-1: the current device), in bytes; -1, never fatal, when it cannot be queried
+   *        (the runtime's last error is cleared)
+   */
+  static int64_t FreeDeviceBytes(int device_id);
+  /*!
    * \brief Several models' normal or raw-score predictions in a few launches. `common` gives what every job shares:
    *        data_type, on_device (device inputs on one device), stream, predict_type, device_id and deterministic.
    *        The default mode batches every job whose model has scalar leaves and no linear leaves into launches of the

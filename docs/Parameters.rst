@@ -278,6 +278,8 @@ Core Parameters
 
    -  **Note**: on CUDA builds, leaving ``device_type`` unset auto-selects ``cuda`` when a usable GPU is present (a one-time log line reports the choice); pass ``device_type=cpu`` to force CPU training
 
+   -  **Note**: in the Python package, ``Booster.predict()`` of a numpy array with a model trained with ``device_type=cuda`` runs on the GPU only when a cost estimate expects the GPU to finish first by a clear margin and the call's device buffers are small (at most 256 MiB and a tenth of the free device memory; feature contributions stay on the CPU); otherwise on the CPU predictor, as in 1.1.0. Either way the result is the CPU predictor's bit for bit (unless ``deterministic=False`` is passed). The estimate's constants were measured on one RTX 5090; pass ``device="cuda"`` or ``device="cpu"`` to ``predict`` to choose (see its docstring and section 8 of `performance <https://github.com/MechaFauna-ai/Falcata/blob/master/docs/performance.md>`__)
+
    -  **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build Falcata with CUDA, ROCm, or OpenCL support
 
 -  ``seed`` :raw-html:`<a id="seed" title="Permalink to this parameter" href="#seed">&#x1F517;&#xFE0E;</a>`, default = ``None``, type = int, aliases: ``random_seed``, ``random_state``
