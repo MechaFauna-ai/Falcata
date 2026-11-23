@@ -203,18 +203,19 @@ void LaunchTyped(const void* in, bool is_row_major, int64_t in_stride,
 constexpr int kTileCols = FalcataPlan::kConstructTileCols;
 
 // The tile's column stride in shared memory, in bytes. The fill writes a warp's
-// 32 consecutive columns at one row, so column j's byte lands in 4-byte word
-// j * stride / 4, and two columns conflict when those words share a bank
-// (word % 32). An unpadded stride of tile_rows bytes conflicts for most knob
-// values: 64 rows (the default) is 16 words, which puts the 32 stores in two
-// banks (16-way), and 128 rows is 32 words, one bank (32-way). Rounding the
-// stride up to an odd number of words (stride % 8 == 4, at most 6 bytes of
-// padding) puts the 32 columns in 32 different banks for every even tile_rows.
-// Where the padding would take the tile past kConstructTileSmemBytes (382 and
-// 384 rows) the stride stays tile_rows, so every accepted knob value still
-// launches without opting in to more shared memory. Measured on an RTX 5090,
-// 1M rows x 256 uint8 columns, ncu: 64 rows 16.4 -> 1.13 shared wavefronts per
-// store, 692 -> 556 us; 128 rows 32.2 -> 1.07, 1040 -> 619 us.
+// 32 consecutive columns at one row r, so column j's byte lands in 4-byte word
+// (j * stride + r) / 4, and two columns conflict when those words differ but
+// share a bank (word % 32). An unpadded stride of tile_rows bytes conflicts for
+// most knob values: 64 rows (the default) is 16 words, which puts the 32 stores
+// in two banks (16-way), and 128 rows is 32 words, one bank (32-way). Rounding
+// the stride up to an odd number of words (stride % 8 == 4, at most 6 bytes of
+// padding) puts the 32 columns in 32 different banks for every even tile_rows
+// below 382. At 382 and 384 rows the padding would take the tile past
+// kConstructTileSmemBytes, so the stride stays tile_rows (as conflicted as
+// before) and every accepted knob value still launches without opting in to
+// more shared memory. Measured on an RTX 5090, 1M rows x 256 uint8 columns,
+// ncu: 64 rows 16.4 -> 1.13 shared wavefronts per store, 692 -> 550 us;
+// 128 rows 32.2 -> 1.08, 1040 -> 619 us.
 __host__ __device__ constexpr int TileStride(int tile_rows) {
   return kTileCols * (tile_rows + (12 - tile_rows % 8) % 8) <= FalcataPlan::kConstructTileSmemBytes
            ? tile_rows + (12 - tile_rows % 8) % 8
