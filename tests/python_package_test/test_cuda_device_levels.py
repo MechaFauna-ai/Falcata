@@ -232,17 +232,18 @@ def test_device_levels_invalid_leaves_and_ties_cuda(leaves, depth):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["off", "on"])
-@pytest.mark.parametrize("reset", ["budget", "data"])
+@pytest.mark.parametrize("reset", ["budget", "data", "selective_to_bounded"])
 def test_device_levels_reset_cuda(graph, reset):
     X, y = _data(30011, 16, "regression", 64)
 
     def train(plan):
-        p = _params("regression", 63, 6, "fixedpoint", min_data_in_leaf=3, cuda_plan=plan)
+        depth = -1 if reset == "selective_to_bounded" else 6
+        p = _params("regression", 63, depth, "fixedpoint", min_data_in_leaf=3, cuda_plan=plan)
         ds = flc.Dataset(X, label=y, params=p, free_raw_data=False)
         b = flc.Booster(p, train_set=ds)
         for _ in range(4):
             b.update()
-        if reset == "budget":
+        if reset != "data":
             b.reset_parameter({"num_leaves": 511, "max_depth": 9})
             for _ in range(8):
                 b.update()

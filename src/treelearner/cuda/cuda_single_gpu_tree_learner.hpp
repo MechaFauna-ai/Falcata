@@ -472,8 +472,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // the device state reached), each its apply, its children's search and the next level's select (the unrolled
   // levels: not after the last one), a body then its flag (LaunchDeviceLevelSegmentEnd)
   void EnqueueSelectiveDeviceLevels(const CUDADeviceLevelConfig& cfg, const int first_level, const int count);
-  // cuda_plan key device_level_graph: launch the levels as a cached graph (captured on a key's first tree); false
-  // when this tree cannot use one (the caller enqueues the levels)
+  // cuda_plan key device_level_graph: launch the levels as a cached graph. Selective prefixes capture a graph once
+  // its key recurs. Return false when the caller needs to enqueue the levels directly.
   bool LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels,
                               const bool inline_all_map, const bool final_map_only, const bool body = false);
   struct DeviceLevelGraph {

@@ -4124,6 +4124,8 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   CUDASUCCESS_OR_FATAL(cudaGraphUpload(graph->exec, find_stream));
   CUDASUCCESS_OR_FATAL(cudaGraphLaunch(graph->exec, find_stream));
   if (selective) {
+    // A recurring key would have replayed under eager capture. Count it toward the same churn budget.
+    ++device_level_graph_hits_;
     selective_graph_candidates_.erase(candidate);
   }
   if (device_level_graphs_.size() >= cache_limit) {
@@ -4311,8 +4313,8 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // No intermediate readback, new DMA/kernel, plan key or speculative host readiness is introduced.
   const bool final_map_only = inline_all_map && all_rows_root && prefetch_tree_end && end_plan.final_map_only &&
     end_plan.skip_empty_tail;
-  // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
-  // pointer key, replayed on the next ones); otherwise enqueued as they are
+  // cuda_plan key device_level_graph: capture or replay the levels as one cached CUDA graph when the layout pays;
+  // otherwise enqueue the levels directly.
   bool launched = false;
   if (FalcataPlan::Get().device_level_graph && !ForestSlotShared() && !device_level_graph_disabled_) {
     launched = LaunchDeviceLevelGraph(tree, cfg, num_levels, inline_all_map, final_map_only);
