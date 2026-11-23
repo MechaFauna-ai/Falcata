@@ -939,6 +939,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> device_level_batch_slice_;
   std::vector<HybridAppliedSplit> device_level_applied_;
   std::vector<std::unique_ptr<DeviceLevelGraph>> device_level_graphs_;
+  std::vector<std::vector<const void*>> selective_graph_candidates_;
   bool device_level_graph_disabled_ = false;
   int device_level_graph_hits_ = 0;
   int device_level_graph_misses_ = 0;
