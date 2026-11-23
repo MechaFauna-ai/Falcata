@@ -2620,7 +2620,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // the classic host flow still needs them for its root descriptor. Capacity setup precedes all root enqueues.
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   const int device_levels = DeviceLevelsToRun(use_batched_level_kernels, /*batched_level_apply=*/true);
-  if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels(device_levels)) {
+  if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels(device_levels, /*record_tree=*/true)) {
     device_levels_disabled_ = true;
   }
   const bool whole_device_tree = DeviceTreeRequested() && device_levels > 0 && device_levels_ready_;
@@ -3545,25 +3545,27 @@ void CUDASingleGPUTreeLearner::DeviceTreeCatWorstCase(size_t* record_splits, siz
   *level_splits = std::min(full / 2, *record_splits);
 }
 
-bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
-  // static feature tables of the select kernel: SplitLevelBatched's per-feature metadata and the real thresholds
+bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels, const bool record_tree) {
+  // The select kernel always needs the bin metadata to partition rows. Only device tree records need real thresholds.
   std::vector<CUDAHybridGraphFeatureMeta> meta;
   cuda_data_partition_->BuildDeviceLevelFeatureMeta(&meta);
   CHECK_EQ(static_cast<int>(meta.size()), train_data_->num_features());
-  std::vector<double> real_thresholds;
-  uint32_t threshold_offset = 0;
-  for (int feature_index = 0; feature_index < train_data_->num_features(); ++feature_index) {
-    meta[feature_index].real_feature_index = train_data_->RealFeatureIndex(feature_index);
-    meta[feature_index].missing_type = static_cast<int>(train_data_->FeatureBinMapper(feature_index)->missing_type());
-    meta[feature_index].real_threshold_offset = threshold_offset;
-    const int num_bin = train_data_->FeatureBinMapper(feature_index)->num_bin();
-    for (int bin = 0; bin < num_bin; ++bin) {
-      real_thresholds.push_back(train_data_->RealThreshold(feature_index, static_cast<uint32_t>(bin)));
+  if (record_tree) {
+    std::vector<double> real_thresholds;
+    uint32_t threshold_offset = 0;
+    for (int feature_index = 0; feature_index < train_data_->num_features(); ++feature_index) {
+      meta[feature_index].real_feature_index = train_data_->RealFeatureIndex(feature_index);
+      meta[feature_index].missing_type = static_cast<int>(train_data_->FeatureBinMapper(feature_index)->missing_type());
+      meta[feature_index].real_threshold_offset = threshold_offset;
+      const int num_bin = train_data_->FeatureBinMapper(feature_index)->num_bin();
+      for (int bin = 0; bin < num_bin; ++bin) {
+        real_thresholds.push_back(train_data_->RealThreshold(feature_index, static_cast<uint32_t>(bin)));
+      }
+      threshold_offset += static_cast<uint32_t>(num_bin);
     }
-    threshold_offset += static_cast<uint32_t>(num_bin);
+    cuda_device_level_real_thresholds_.InitFromHostVector(real_thresholds);
   }
   cuda_device_level_feature_meta_.InitFromHostVector(meta);
-  cuda_device_level_real_thresholds_.InitFromHostVector(real_thresholds);
   cuda_device_level_feature_source_.Resize(static_cast<size_t>(train_data_->num_features()));
   cuda_device_level_state_.Resize(1);
   cuda_device_level_config_.Resize(1);
@@ -4144,7 +4146,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.pair_slots = hybrid_pair_slots_.RawData();
   cfg.feature_meta = cuda_device_level_feature_meta_.RawDataReadOnly();
   cfg.feature_source = cuda_device_level_feature_source_.RawDataReadOnly();
-  cfg.real_thresholds = cuda_device_level_real_thresholds_.RawDataReadOnly();
+  cfg.real_thresholds = record_split_infos ? nullptr : cuda_device_level_real_thresholds_.RawDataReadOnly();
   cfg.journal = cuda_device_level_journal_.RawData();
   cfg.max_depth = GrowthMaxDepth();
   cfg.num_leaves_budget = config_->num_leaves;
@@ -5503,7 +5505,7 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
     return false;
   }
   CHECK_EQ(levels, SelectiveUnrolledLevels());
-  if (!device_levels_ready_ && !SetupDeviceLevels(SelectiveCapacityLevels())) {
+  if (!device_levels_ready_ && !SetupDeviceLevels(SelectiveCapacityLevels(), /*record_tree=*/false)) {
     device_levels_disabled_ = true;
     return false;
   }

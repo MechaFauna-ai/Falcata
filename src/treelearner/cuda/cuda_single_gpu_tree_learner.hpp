@@ -433,7 +433,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void EnqueueDeviceBynodeChunkMasks(cudaStream_t stream, const int level, const int chunk_base, const int count);
   void JoinDeviceBynode();
   // one-time buffers and static tables of the device levels; false disables them
-  bool SetupDeviceLevels(const int num_levels);
+  bool SetupDeviceLevels(const int num_levels, const bool record_tree);
   /*! \brief pairs of the widest child search of num_levels device levels (whole tree: 2^(num_levels - 2)) */
   int DeviceLevelSearchPairs(int num_levels) const;
   /*! \brief cuda_plan key device_tree: before the first tree's level flow (again after ReleaseDeviceLevelGraphs, e.g. a
