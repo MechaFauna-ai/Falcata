@@ -9,9 +9,12 @@
 #include <Falcata/cuda/cuda_column_data.hpp>
 #include <Falcata/utils/threading.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <new>
+#include <utility>
 #include <vector>
 
 namespace Falcata {
@@ -67,6 +70,7 @@ void CUDAColumnData::InitOneNibbleColumnData(const void* in_column_data,
 }
 
 bool CUDAColumnData::TryInitDenseColumnBatches(const std::vector<const void*>& column_data) {
+  SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
   // On wide datasets the per-column cudaMalloc and pageable copy overhead can
   // dominate upload time. Keep the original encodings and pointers to each
   // column, with one device allocation and copy per group of small columns.

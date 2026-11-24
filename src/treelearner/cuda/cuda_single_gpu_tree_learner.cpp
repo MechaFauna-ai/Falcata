@@ -4170,6 +4170,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.pair_slots = hybrid_pair_slots_.RawData();
   cfg.feature_meta = cuda_device_level_feature_meta_.RawDataReadOnly();
   cfg.feature_source = cuda_device_level_feature_source_.RawDataReadOnly();
+  CHECK(record_split_infos || cuda_device_level_real_thresholds_.Size() > 0);
   cfg.real_thresholds = record_split_infos ? nullptr : cuda_device_level_real_thresholds_.RawDataReadOnly();
   cfg.journal = cuda_device_level_journal_.RawData();
   cfg.max_depth = GrowthMaxDepth();
