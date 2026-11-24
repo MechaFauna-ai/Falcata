@@ -207,7 +207,7 @@ __global__ void ReduceBlockMinMaxKernel(
 // bucket 0 = the top octave [grad_abs_max/2, grad_abs_max]; larger bucket index
 // = smaller magnitude. Resolution is concentrated near the top of the range where
 // the outlier cluster and the gap live.
-#define kMagBucketsPerOctave (128.0)
+#define kMagBucketsPerOctave (128.0f)
 
 // Per-block shared-memory histogram: threads accumulate into shared bins first
 // (cheap intra-block atomics), then one merge atomicAdd per non-empty bin to
@@ -233,7 +233,10 @@ __global__ void ComputeGradMagHistogramKernel(
     const score_t g = fabs(input_gradients[index]);
     if (g > 0.0f) {
       const score_t frac = g / grad_abs_max;  // in (0, 1]
-      int bucket = static_cast<int>(floor(-log2f(frac) * kMagBucketsPerOctave));
+      // float math: -log2f of a positive finite float lies in about [-128, 149], so multiplying by
+      // 128 is exact in float as it was in double, and the bucket is the one the former double
+      // multiply and floor gave (checked on sm_120 for all 2^32 float bit patterns of frac)
+      int bucket = static_cast<int>(floorf(-log2f(frac) * kMagBucketsPerOctave));
       if (bucket < 0) bucket = 0;
       if (bucket >= num_buckets) bucket = num_buckets - 1;
       atomicAdd(&shared_hist[bucket], 1u);
