@@ -16,9 +16,9 @@ import falcata as flc
 pytestmark = pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
 
 
-@pytest.mark.parametrize("boosting", ["rf", "gbdt"])
+@pytest.mark.parametrize("boosting, quant_mode", [("rf", "auto"), ("gbdt", "auto"), ("gbdt", "fixedpoint")])
 @pytest.mark.parametrize("cuda_plan", ["auto", "auto,forest_batched:off"])
-def test_cuda_trains_without_a_usable_feature(boosting, cuda_plan):
+def test_cuda_trains_without_a_usable_feature(boosting, quant_mode, cuda_plan):
     rng = np.random.default_rng(5)
     X = rng.standard_normal((200, 8)).astype(np.float32)
     X[rng.random(X.shape) < 0.7] = 0.0
@@ -30,6 +30,7 @@ def test_cuda_trains_without_a_usable_feature(boosting, cuda_plan):
         "bagging_freq": 1,
         "device_type": "cuda",
         "cuda_plan": cuda_plan,
+        "quant_mode": quant_mode,
         "num_leaves": 255,
         "min_data_in_leaf": 50,
         "verbose": -1,
@@ -43,6 +44,6 @@ def test_cuda_trains_without_a_usable_feature(boosting, cuda_plan):
         # (an RF stump's value after the first round is the learner's root output, which the CUDA learner does not
         # compute for a dataset without features; https://github.com/MechaFauna-ai/Falcata/pull/436 makes every RF
         # stump carry the class constant instead)
-        cpu_params = {**params, "device_type": "cpu"}
+        cpu_params = {**params, "device_type": "cpu", "quant_mode": "none"}
         cpu = flc.train(cpu_params, flc.Dataset(X[:120], y[:120], params=cpu_params), num_boost_round=10)
         np.testing.assert_allclose(booster.predict(X, deterministic=True), cpu.predict(X), rtol=1e-12)

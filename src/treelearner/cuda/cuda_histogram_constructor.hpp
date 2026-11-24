@@ -902,7 +902,7 @@ class CUDAHistogramConstructor {
   void InitDeterministicDenseScratch();
 
   void InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets);
-  static void WarmupBatchedMetadataKernel();
+  static bool WarmupBatchedMetadataKernel();
 
   /*! \brief (re)build cuda_fix_mfb_mask_ from the need-fix feature metadata */
   void InitFixMFBMask();
