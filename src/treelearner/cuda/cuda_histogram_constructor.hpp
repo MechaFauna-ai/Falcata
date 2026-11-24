@@ -426,6 +426,8 @@ class CUDAHistogramConstructor {
   }
   bool SupportsBatchedLevel() const { return BatchedLevelRefusal() == DeviceTreeReason::kNone; }
 
+  void WarmupBatchedByteHistograms(bool device_levels) const;
+
   /*! \brief whether the tree learner's per-tree column-view build can source its
    *  gather from this constructor's compact matrix (row-major-in-partition over
    *  the tree's sampled columns) instead of the full bin matrix */
@@ -900,6 +902,7 @@ class CUDAHistogramConstructor {
   void InitDeterministicDenseScratch();
 
   void InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets);
+  static void WarmupBatchedMetadataKernel();
 
   /*! \brief (re)build cuda_fix_mfb_mask_ from the need-fix feature metadata */
   void InitFixMFBMask();

@@ -368,6 +368,12 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // colmajor_direct: the bin matrix has no row-major copy yet; its view is chosen now that the split finder, the
   // data partition and the histograms are allocated, so free memory already accounts for them
   InitViewRegime("train()");
+  if (fixedpoint_quant_ && vec_num_targets_ <= 1 && !has_categorical_feature_ &&
+      nccl_communicator_ == nullptr && !forest_slot_ && config_->forcedsplits_filename.empty() &&
+      HybridGrowthUsable() && cuda_histogram_constructor_->SupportsBatchedLevel() &&
+      cuda_best_split_finder_->SupportsBatchedLevel()) {
+    cuda_histogram_constructor_->WarmupBatchedByteHistograms(FalcataPlan::Get().device_levels);
+  }
 }
 
 // colmajor_direct: what training can still allocate once the regime's view exists, the compact regime's memory

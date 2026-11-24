@@ -78,6 +78,11 @@ __global__ void MetaBatchScatterKernel(const uint8_t* __restrict__ staged, const
   }
 }
 
+void CUDAHistogramConstructor::WarmupBatchedMetadataKernel() {
+  cudaFuncAttributes attributes{};
+  CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attributes, MetaBatchScatterKernel));
+}
+
 void LaunchMetaBatchScatter(const uint8_t* staged, const MetaBatchSegments& segments) {
   if (segments.count <= 0) {
     return;
