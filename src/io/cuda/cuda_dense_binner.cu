@@ -202,6 +202,26 @@ void LaunchTyped(const void* in, bool is_row_major, int64_t in_stride,
 // knob's validation).
 constexpr int kTileCols = FalcataPlan::kConstructTileCols;
 
+// The tile's column stride in shared memory, in bytes. The fill writes a warp's
+// 32 consecutive columns at one row r, so column j's byte lands in 4-byte word
+// (j * stride + r) / 4, and two columns conflict when those words differ but
+// share a bank (word % 32). An unpadded stride of tile_rows bytes conflicts for
+// most knob values: 64 rows (the default) is 16 words, which puts the 32 stores
+// in two banks (16-way), and 128 rows is 32 words, one bank (32-way). Rounding
+// the stride up to an odd number of words (stride % 8 == 4, at most 6 bytes of
+// padding) puts the 32 columns in 32 different banks for every even tile_rows
+// below 382. At 382 and 384 rows the padding would take the tile past
+// kConstructTileSmemBytes, so the stride stays tile_rows (as conflicted as
+// before) and every accepted knob value still launches without opting in to
+// more shared memory. Measured on an RTX 5090, 1M rows x 256 uint8 columns,
+// ncu: 64 rows 16.4 -> 1.13 shared wavefronts per store, 692 -> 550 us;
+// 128 rows 32.2 -> 1.08, 1040 -> 619 us.
+__host__ __device__ constexpr int TileStride(int tile_rows) {
+  return kTileCols * (tile_rows + (12 - tile_rows % 8) % 8) <= FalcataPlan::kConstructTileSmemBytes
+           ? tile_rows + (12 - tile_rows % 8) % 8
+           : tile_rows;
+}
+
 // kFixedRows > 0: the rows per tile as a compile-time constant (the default
 // construct_tile_rows); 0: tile_rows at run time (any other knob value)
 template <typename T, int kThreads, int kFixedRows>
@@ -214,6 +234,7 @@ CUDADenseBinTileKernel(const T* __restrict__ in, int64_t in_stride, int ncol,
   T* tile = reinterpret_cast<T*>(tile_bytes);  // [column][row in block]
   const int tile_rows = kFixedRows > 0 ? kFixedRows : runtime_tile_rows;
   const int tile_pairs = tile_rows / 2;  // row pairs per block
+  const int tile_ld = TileStride(tile_rows);
   const data_size_t pair_base = static_cast<data_size_t>(blockIdx.x) * tile_pairs;
   const int col_base = static_cast<int>(blockIdx.y) * kTileCols;
   const data_size_t row_base = pair_base * 2 - static_cast<data_size_t>(parity);
@@ -226,7 +247,7 @@ CUDADenseBinTileKernel(const T* __restrict__ in, int64_t in_stride, int ncol,
     if (row >= 0 && row < rows && col < ncol) {
       v = in[static_cast<int64_t>(row) * in_stride + col];
     }
-    tile[j * tile_rows + r] = v;
+    tile[j * tile_ld + r] = v;
   }
   __syncthreads();
   for (int i = threadIdx.x; i < kTileCols * tile_pairs; i += kThreads) {
@@ -249,7 +270,7 @@ CUDADenseBinTileKernel(const T* __restrict__ in, int64_t in_stride, int ncol,
         continue;
       }
       const uint32_t enc = tables.lut[tables.col_lut_off[col] +
-                                      DeviceLutIndex<T>(tile[j * tile_rows + 2 * p + t])];
+                                      DeviceLutIndex<T>(tile[j * tile_ld + 2 * p + t])];
       if (enc != kDeviceSkipBin) {
         vals[t] = enc;
       }
@@ -289,7 +310,8 @@ void LaunchTileThreads(const void* in, int64_t in_stride, int ncol,
   const int tile_pairs = tile_rows / 2;
   const dim3 grid(static_cast<unsigned int>((pairs + tile_pairs - 1) / tile_pairs),
                   static_cast<unsigned int>((ncol + kTileCols - 1) / kTileCols));
-  const size_t smem_bytes = static_cast<size_t>(kTileCols) * static_cast<size_t>(tile_rows) * sizeof(T);
+  static_assert(sizeof(T) == 1, "TileStride pads for one-byte (int8/uint8) tiles");
+  const size_t smem_bytes = static_cast<size_t>(kTileCols) * static_cast<size_t>(TileStride(tile_rows)) * sizeof(T);
   if (tile_rows == kTileDefaultRows) {
     CUDADenseBinTileKernel<T, kThreads, kTileDefaultRows><<<grid, kThreads, smem_bytes, stream>>>(
         reinterpret_cast<const T*>(in), in_stride, ncol, rows, pairs, parity,

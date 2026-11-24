@@ -194,7 +194,8 @@ struct FalcataPlan {
   // coalesced shared-memory tile kernel (off: the per-thread gather kernel)
   bool construct_tile_bin = true;   // key: construct_tile_bin
   // key construct_tile_rows: the tile kernel's input rows per block, an even number in [2, 384] (the tile is
-  // kConstructTileCols (128) x rows bytes of shared memory, within kConstructTileSmemBytes (48 KB), the shared
+  // kConstructTileCols (128) x rows bytes of shared memory, plus up to 6 bytes of bank-conflict padding per column
+  // below 382 rows (see TileStride in cuda_dense_binner.cu), within kConstructTileSmemBytes (48 KB), the shared
   // memory every device grants a block without opt-in). The tile's 128 columns are not a knob: one 128-byte line
   // of an int8 input row, the unit its coalesced reads fetch.
   int construct_tile_rows = 64;     // key: construct_tile_rows
