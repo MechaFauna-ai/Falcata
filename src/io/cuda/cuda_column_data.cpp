@@ -7,8 +7,11 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_column_data.hpp>
+#include <Falcata/utils/threading.h>
 
 #include <cstdint>
+#include <cstring>
+#include <new>
 #include <vector>
 
 namespace Falcata {
@@ -63,6 +66,83 @@ void CUDAColumnData::InitOneNibbleColumnData(const void* in_column_data,
   out_column_data_pointer->MoveFrom(cuda_column_data, packed_bytes);
 }
 
+bool CUDAColumnData::TryInitDenseColumnBatches(const std::vector<const void*>& column_data) {
+  // On wide datasets the per-column cudaMalloc and pageable copy overhead can
+  // dominate upload time. Keep the original encodings and pointers to each
+  // column, with one device allocation and copy per group of small columns.
+  constexpr size_t kBatchBytes = size_t{16} << 20;
+  constexpr size_t kColumnAlignment = 256;  // preserve cudaMalloc alignment for each column
+  constexpr size_t kMaxColumnBytes = size_t{1} << 20;
+  if (init_skipped_per_column_alloc_ || num_data_ <= 0 || num_columns_ < 128) {
+    return false;
+  }
+
+  std::vector<size_t> column_bytes;
+  std::vector<size_t> offsets(1, 0);
+  column_bytes.reserve(num_columns_);
+  offsets.reserve(static_cast<size_t>(num_columns_) + 1);
+  for (int c = 0; c < num_columns_; ++c) {
+    const uint8_t bit_type = column_bit_type_[c];
+    if (column_data[c] == nullptr || (bit_type != 4 && bit_type != 8 && bit_type != 16 && bit_type != 32)) {
+      return false;
+    }
+    const size_t bytes = (static_cast<size_t>(num_data_) * bit_type + 7) / 8;
+    if (bytes > kMaxColumnBytes) {
+      return false;
+    }
+    column_bytes.push_back(bytes);
+    const size_t aligned_bytes = (bytes + kColumnAlignment - 1) / kColumnAlignment * kColumnAlignment;
+    offsets.push_back(offsets.back() + aligned_bytes);
+  }
+
+  std::unique_ptr<uint8_t[]> staging(new (std::nothrow) uint8_t[std::min(offsets.back(), kBatchBytes)]);
+  if (staging == nullptr) {
+    return false;
+  }
+  std::vector<int> batch_ends;
+  std::vector<std::unique_ptr<CUDAVector<uint8_t>>> batches;
+  // If a larger allocation fails, discard the batches before trying the
+  // original individual allocations. Publish the views only after all allocations succeed.
+  int first = 0;
+  while (first < num_columns_) {
+    int end = first + 1;
+    while (end < num_columns_ && offsets[end + 1] - offsets[first] <= kBatchBytes) {
+      ++end;
+    }
+    auto batch = std::make_unique<CUDAVector<uint8_t>>();
+    if (!batch->TryResizeDiscard(offsets[end] - offsets[first])) {
+      return false;
+    }
+    batches.push_back(std::move(batch));
+    batch_ends.push_back(end);
+    first = end;
+  }
+
+  first = 0;
+  for (size_t i = 0; i < batches.size(); ++i) {
+    const int end = batch_ends[i];
+    const size_t base = offsets[first];
+    Threading::For<int>(first, end, 8, [&](int, int start, int finish) {
+      for (int c = start; c < finish; ++c) {
+        uint8_t* dst = staging.get() + (offsets[c] - base);
+        std::memcpy(dst, column_data[c], column_bytes[c]);
+        std::memset(dst + column_bytes[c], 0, offsets[c + 1] - offsets[c] - column_bytes[c]);
+      }
+    });
+    uint8_t* device = batches[i]->RawData();
+    CopyFromHostToCUDADevice(device, staging.get(), offsets[end] - base, __FILE__, __LINE__);
+    for (int c = first; c < end; ++c) {
+      data_by_column_[c]->SetView(device + (offsets[c] - base), column_bytes[c]);
+      if (column_bit_type_[c] == 4) {
+        column_bit_type_[c] = kNibbleColumnBitType;
+      }
+    }
+    first = end;
+  }
+  dense_column_batches_ = std::move(batches);
+  return true;
+}
+
 void CUDAColumnData::Init(const int num_columns,
                           const std::vector<const void*>& column_data,
                           const std::vector<BinIterator*>& column_bin_iterator,
@@ -112,57 +192,59 @@ void CUDAColumnData::Init(const int num_columns,
   for (int column_index = 0; column_index < num_columns_; ++column_index) {
     data_by_column_.emplace_back(new CUDAVector<uint8_t>());
   }
-  OMP_INIT_EX();
-  #pragma omp parallel num_threads(num_threads_)
-  {
-    SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
-    #pragma omp for schedule(static)
-    for (int column_index = 0; column_index < num_columns_; ++column_index) {
-      OMP_LOOP_EX_BEGIN();
-      const int8_t bit_type = column_bit_type[column_index];
-      if (column_data[column_index] != nullptr) {
-        // is dense column
-        if (init_skipped_per_column_alloc_) {
-          // (sparse columns take the other branch and are always materialized)
-          // Adjust column_bit_type_ for 4-bit case (which expanded to 8) and skip GPU alloc.
-          if (bit_type == 4) {
-            column_bit_type_[column_index] = 8;
+  if (!TryInitDenseColumnBatches(column_data)) {
+    OMP_INIT_EX();
+    #pragma omp parallel num_threads(num_threads_)
+    {
+      SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
+      #pragma omp for schedule(static)
+      for (int column_index = 0; column_index < num_columns_; ++column_index) {
+        OMP_LOOP_EX_BEGIN();
+        const int8_t bit_type = column_bit_type[column_index];
+        if (column_data[column_index] != nullptr) {
+          // is dense column
+          if (init_skipped_per_column_alloc_) {
+            // (sparse columns take the other branch and are always materialized)
+            // Adjust column_bit_type_ for 4-bit case (which expanded to 8) and skip GPU alloc.
+            if (bit_type == 4) {
+              column_bit_type_[column_index] = 8;
+            }
+            data_by_column_[column_index] = nullptr;
+          } else if (bit_type == 4) {
+            column_bit_type_[column_index] = kNibbleColumnBitType;
+            InitOneNibbleColumnData(column_data[column_index], data_by_column_[column_index].get());
+          } else if (bit_type == 8) {
+            InitOneColumnData<false, false, uint8_t>(column_data[column_index], nullptr, data_by_column_[column_index].get());
+          } else if (bit_type == 16) {
+            InitOneColumnData<false, false, uint16_t>(column_data[column_index], nullptr, data_by_column_[column_index].get());
+          } else if (bit_type == 32) {
+            InitOneColumnData<false, false, uint32_t>(column_data[column_index], nullptr, data_by_column_[column_index].get());
+          } else {
+            Log::Fatal("Unknown column bit type %d", bit_type);
           }
-          data_by_column_[column_index] = nullptr;
-        } else if (bit_type == 4) {
-          column_bit_type_[column_index] = kNibbleColumnBitType;
-          InitOneNibbleColumnData(column_data[column_index], data_by_column_[column_index].get());
-        } else if (bit_type == 8) {
-          InitOneColumnData<false, false, uint8_t>(column_data[column_index], nullptr, data_by_column_[column_index].get());
-        } else if (bit_type == 16) {
-          InitOneColumnData<false, false, uint16_t>(column_data[column_index], nullptr, data_by_column_[column_index].get());
-        } else if (bit_type == 32) {
-          InitOneColumnData<false, false, uint32_t>(column_data[column_index], nullptr, data_by_column_[column_index].get());
         } else {
-          Log::Fatal("Unknown column bit type %d", bit_type);
+          // Sparse column: the bin iterator yields 0 for every row sitting at the
+          // feature's most-frequent bin, where the row-wise matrix carries that
+          // bin's real index. The two encodings are not interchangeable, so this
+          // buffer is built even in the skip-allocation path -- it is the only
+          // correct source for the split-apply kernels, and there are few enough
+          // sparse columns for the cost to be noise.
+          column_is_sparse_[column_index] = 1;
+          if (bit_type == 8) {
+            InitOneColumnData<true, false, uint8_t>(nullptr, column_bin_iterator[column_index], data_by_column_[column_index].get());
+          } else if (bit_type == 16) {
+            InitOneColumnData<true, false, uint16_t>(nullptr, column_bin_iterator[column_index], data_by_column_[column_index].get());
+          } else if (bit_type == 32) {
+            InitOneColumnData<true, false, uint32_t>(nullptr, column_bin_iterator[column_index], data_by_column_[column_index].get());
+          } else {
+            Log::Fatal("Unknown column bit type %d", bit_type);
+          }
         }
-      } else {
-        // Sparse column: the bin iterator yields 0 for every row sitting at the
-        // feature's most-frequent bin, where the row-wise matrix carries that
-        // bin's real index. The two encodings are not interchangeable, so this
-        // buffer is built even in the skip-allocation path -- it is the only
-        // correct source for the split-apply kernels, and there are few enough
-        // sparse columns for the cost to be noise.
-        column_is_sparse_[column_index] = 1;
-        if (bit_type == 8) {
-          InitOneColumnData<true, false, uint8_t>(nullptr, column_bin_iterator[column_index], data_by_column_[column_index].get());
-        } else if (bit_type == 16) {
-          InitOneColumnData<true, false, uint16_t>(nullptr, column_bin_iterator[column_index], data_by_column_[column_index].get());
-        } else if (bit_type == 32) {
-          InitOneColumnData<true, false, uint32_t>(nullptr, column_bin_iterator[column_index], data_by_column_[column_index].get());
-        } else {
-          Log::Fatal("Unknown column bit type %d", bit_type);
-        }
+        OMP_LOOP_EX_END();
       }
-      OMP_LOOP_EX_END();
     }
+    OMP_THROW_EX();
   }
-  OMP_THROW_EX();
   {
     // Sparse columns are the ones a per-tree compact view may not serve (their
     // encoding differs from the row matrix's), so how many there are decides
