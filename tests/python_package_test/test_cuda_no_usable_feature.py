@@ -16,7 +16,7 @@ import falcata as flc
 pytestmark = pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
 
 
-@pytest.mark.parametrize("boosting, quant_mode", [("rf", "auto"), ("gbdt", "auto"), ("gbdt", "fixedpoint")])
+@pytest.mark.parametrize(("boosting", "quant_mode"), [("rf", "auto"), ("gbdt", "auto"), ("gbdt", "fixedpoint")])
 @pytest.mark.parametrize("cuda_plan", ["auto", "auto,forest_batched:off"])
 def test_cuda_trains_without_a_usable_feature(boosting, quant_mode, cuda_plan):
     rng = np.random.default_rng(5)
