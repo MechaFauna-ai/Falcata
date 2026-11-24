@@ -2620,7 +2620,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // the classic host flow still needs them for its root descriptor. Capacity setup precedes all root enqueues.
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   const int device_levels = DeviceLevelsToRun(use_batched_level_kernels, /*batched_level_apply=*/true);
-  if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels(device_levels)) {
+  if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels(device_levels, /*record_tree=*/true)) {
     device_levels_disabled_ = true;
   }
   const bool whole_device_tree = DeviceTreeRequested() && device_levels > 0 && device_levels_ready_;
@@ -2923,6 +2923,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
 void CUDASingleGPUTreeLearner::ReleaseDeviceLevelGraphs() {
   // ResetConfig / ResetTrainingData can replace every pointer and static feature table captured by the prefix.
   device_level_graphs_.clear();
+  selective_graph_candidates_.clear();
   device_levels_ready_ = false;
   device_levels_disabled_ = false;
   selective_prefix_logged_ = false;  // a new config reports its levels again
@@ -3545,25 +3546,27 @@ void CUDASingleGPUTreeLearner::DeviceTreeCatWorstCase(size_t* record_splits, siz
   *level_splits = std::min(full / 2, *record_splits);
 }
 
-bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
-  // static feature tables of the select kernel: SplitLevelBatched's per-feature metadata and the real thresholds
+bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels, const bool record_tree) {
+  // The select kernel always needs the bin metadata to partition rows. Only device tree records need real thresholds.
   std::vector<CUDAHybridGraphFeatureMeta> meta;
   cuda_data_partition_->BuildDeviceLevelFeatureMeta(&meta);
   CHECK_EQ(static_cast<int>(meta.size()), train_data_->num_features());
-  std::vector<double> real_thresholds;
-  uint32_t threshold_offset = 0;
-  for (int feature_index = 0; feature_index < train_data_->num_features(); ++feature_index) {
-    meta[feature_index].real_feature_index = train_data_->RealFeatureIndex(feature_index);
-    meta[feature_index].missing_type = static_cast<int>(train_data_->FeatureBinMapper(feature_index)->missing_type());
-    meta[feature_index].real_threshold_offset = threshold_offset;
-    const int num_bin = train_data_->FeatureBinMapper(feature_index)->num_bin();
-    for (int bin = 0; bin < num_bin; ++bin) {
-      real_thresholds.push_back(train_data_->RealThreshold(feature_index, static_cast<uint32_t>(bin)));
+  if (record_tree) {
+    std::vector<double> real_thresholds;
+    uint32_t threshold_offset = 0;
+    for (int feature_index = 0; feature_index < train_data_->num_features(); ++feature_index) {
+      meta[feature_index].real_feature_index = train_data_->RealFeatureIndex(feature_index);
+      meta[feature_index].missing_type = static_cast<int>(train_data_->FeatureBinMapper(feature_index)->missing_type());
+      meta[feature_index].real_threshold_offset = threshold_offset;
+      const int num_bin = train_data_->FeatureBinMapper(feature_index)->num_bin();
+      for (int bin = 0; bin < num_bin; ++bin) {
+        real_thresholds.push_back(train_data_->RealThreshold(feature_index, static_cast<uint32_t>(bin)));
+      }
+      threshold_offset += static_cast<uint32_t>(num_bin);
     }
-    threshold_offset += static_cast<uint32_t>(num_bin);
+    cuda_device_level_real_thresholds_.InitFromHostVector(real_thresholds);
   }
   cuda_device_level_feature_meta_.InitFromHostVector(meta);
-  cuda_device_level_real_thresholds_.InitFromHostVector(real_thresholds);
   cuda_device_level_feature_source_.Resize(static_cast<size_t>(train_data_->num_features()));
   cuda_device_level_state_.Resize(1);
   cuda_device_level_config_.Resize(1);
@@ -3988,19 +3991,38 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       }
     }
   }
-  // a new key: capture this tree's enqueue (its host halves run now; the graph runs right after)
-  ++device_level_graph_misses_;
+  // A selective prefix can enqueue directly. Only capture a key after seeing it recur, since sampled layouts can
+  // change on every tree and would otherwise spend the miss budget capturing graphs that never replay.
+  const size_t cache_limit = cfg.whole_tree ? 256 : 32;
+  const bool selective = cfg.r1_binding != 0;
+  auto candidate = selective_graph_candidates_.end();
+  if (selective) {
+    candidate = std::find(selective_graph_candidates_.begin(), selective_graph_candidates_.end(), key);
+  }
+  const bool new_key = candidate == selective_graph_candidates_.end();
+  if (new_key) {
+    ++device_level_graph_misses_;
+  }
   const bool churning = device_level_graph_misses_ > 8 && device_level_graph_misses_ > device_level_graph_hits_;
   const bool update = FalcataPlan::Get().device_level_graph_update && !device_level_graph_update_failed_;
-  if (!cfg.whole_tree && churning) {
+  if (!cfg.whole_tree && new_key && churning) {
     // per-tree keys keep changing (e.g. a sampled feature set every tree): the plain enqueue from here on
     device_level_graph_disabled_ = true;
+    selective_graph_candidates_.clear();
     if (FalcataDebug().diag) {
       fprintf(stderr, "[hybrid-diag] device_level_graph: %d misses, %d hits: graphs off\n",
               device_level_graph_misses_, device_level_graph_hits_);
     }
     return false;
   }
+  if (selective && new_key) {
+    if (selective_graph_candidates_.size() >= cache_limit) {
+      selective_graph_candidates_.erase(selective_graph_candidates_.begin());
+    }
+    selective_graph_candidates_.push_back(std::move(key));
+    return false;
+  }
+  // Capture this tree's enqueue (its host halves run now; the graph runs right after).
   std::unique_ptr<DeviceLevelGraph> graph(new DeviceLevelGraph());
   graph->key = key;
   CUDASUCCESS_OR_FATAL(cudaStreamBeginCapture(find_stream, cudaStreamCaptureModeThreadLocal));
@@ -4101,7 +4123,11 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   CUDASUCCESS_OR_FATAL(cudaGraphInstantiate(&graph->exec, graph->graph, 0));
   CUDASUCCESS_OR_FATAL(cudaGraphUpload(graph->exec, find_stream));
   CUDASUCCESS_OR_FATAL(cudaGraphLaunch(graph->exec, find_stream));
-  const size_t cache_limit = cfg.whole_tree ? 256 : 32;
+  if (selective) {
+    // A recurring key would have replayed under eager capture. Count it toward the same churn budget.
+    ++device_level_graph_hits_;
+    selective_graph_candidates_.erase(candidate);
+  }
   if (device_level_graphs_.size() >= cache_limit) {
     device_level_graphs_.erase(device_level_graphs_.begin());
   }
@@ -4144,7 +4170,8 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.pair_slots = hybrid_pair_slots_.RawData();
   cfg.feature_meta = cuda_device_level_feature_meta_.RawDataReadOnly();
   cfg.feature_source = cuda_device_level_feature_source_.RawDataReadOnly();
-  cfg.real_thresholds = cuda_device_level_real_thresholds_.RawDataReadOnly();
+  CHECK(record_split_infos || cuda_device_level_real_thresholds_.Size() > 0);
+  cfg.real_thresholds = record_split_infos ? nullptr : cuda_device_level_real_thresholds_.RawDataReadOnly();
   cfg.journal = cuda_device_level_journal_.RawData();
   cfg.max_depth = GrowthMaxDepth();
   cfg.num_leaves_budget = config_->num_leaves;
@@ -4287,8 +4314,8 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // No intermediate readback, new DMA/kernel, plan key or speculative host readiness is introduced.
   const bool final_map_only = inline_all_map && all_rows_root && prefetch_tree_end && end_plan.final_map_only &&
     end_plan.skip_empty_tail;
-  // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
-  // pointer key, replayed on the next ones); otherwise enqueued as they are
+  // cuda_plan key device_level_graph: capture or replay the levels as one cached CUDA graph when the layout pays;
+  // otherwise enqueue the levels directly.
   bool launched = false;
   if (FalcataPlan::Get().device_level_graph && !ForestSlotShared() && !device_level_graph_disabled_) {
     launched = LaunchDeviceLevelGraph(tree, cfg, num_levels, inline_all_map, final_map_only);
@@ -5503,7 +5530,7 @@ bool CUDASingleGPUTreeLearner::TrainSelectiveDevicePrefix(CUDATree* tree, std::v
     return false;
   }
   CHECK_EQ(levels, SelectiveUnrolledLevels());
-  if (!device_levels_ready_ && !SetupDeviceLevels(SelectiveCapacityLevels())) {
+  if (!device_levels_ready_ && !SetupDeviceLevels(SelectiveCapacityLevels(), /*record_tree=*/false)) {
     device_levels_disabled_ = true;
     return false;
   }

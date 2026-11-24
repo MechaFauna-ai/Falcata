@@ -285,6 +285,8 @@ class CUDAColumnData {
   /*! \brief Upload a nibble-packed column without expanding it. */
   void InitOneNibbleColumnData(const void* in_column_data, CUDAVector<uint8_t>* out_column_data_pointer);
 
+  bool TryInitDenseColumnBatches(const std::vector<const void*>& column_data);
+
   void LaunchCopySubrowKernel(uint8_t* const* in_cuda_data_by_column);
 
   void InitColumnMetaInfo();
@@ -337,6 +339,8 @@ class CUDAColumnData {
   std::vector<uint8_t> feature_mfb_is_na_;
   CUDAVector<uint8_t*> cuda_data_by_column_;
   std::vector<int> feature_to_column_;
+  // Owns the bytes behind the column views created by the batched upload.
+  std::vector<std::unique_ptr<CUDAVector<uint8_t>>> dense_column_batches_;
   std::vector<std::unique_ptr<CUDAVector<uint8_t>>> data_by_column_;
   // Host mirror of the per-column device pointers when init_skipped_per_column_alloc_
   // is set: each entry points into the per-tree compact buffer (slot * num_data),

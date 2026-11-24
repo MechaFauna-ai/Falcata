@@ -433,7 +433,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void EnqueueDeviceBynodeChunkMasks(cudaStream_t stream, const int level, const int chunk_base, const int count);
   void JoinDeviceBynode();
   // one-time buffers and static tables of the device levels; false disables them
-  bool SetupDeviceLevels(const int num_levels);
+  bool SetupDeviceLevels(const int num_levels, const bool record_tree);
   /*! \brief pairs of the widest child search of num_levels device levels (whole tree: 2^(num_levels - 2)) */
   int DeviceLevelSearchPairs(int num_levels) const;
   /*! \brief cuda_plan key device_tree: before the first tree's level flow (again after ReleaseDeviceLevelGraphs, e.g. a
@@ -472,8 +472,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // the device state reached), each its apply, its children's search and the next level's select (the unrolled
   // levels: not after the last one), a body then its flag (LaunchDeviceLevelSegmentEnd)
   void EnqueueSelectiveDeviceLevels(const CUDADeviceLevelConfig& cfg, const int first_level, const int count);
-  // cuda_plan key device_level_graph: launch the levels as a cached graph (captured on a key's first tree); false
-  // when this tree cannot use one (the caller enqueues the levels)
+  // cuda_plan key device_level_graph: launch the levels as a cached graph. Selective prefixes capture a graph once
+  // its key recurs. Return false when the caller needs to enqueue the levels directly.
   bool LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels,
                               const bool inline_all_map, const bool final_map_only, const bool body = false);
   struct DeviceLevelGraph {
@@ -939,6 +939,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> device_level_batch_slice_;
   std::vector<HybridAppliedSplit> device_level_applied_;
   std::vector<std::unique_ptr<DeviceLevelGraph>> device_level_graphs_;
+  std::vector<std::vector<const void*>> selective_graph_candidates_;
   bool device_level_graph_disabled_ = false;
   int device_level_graph_hits_ = 0;
   int device_level_graph_misses_ = 0;
