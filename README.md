@@ -24,15 +24,16 @@ What makes it fast
   synchronized, and applied in one launch each instead of per split — turning a
   latency-bound loop into a throughput-bound one, with leaf-wise-identical
   trees.
-- **Complete device trees.** Single-GPU trees within the depth bound
-  (`2^max_depth <= num_leaves + 1`) grow level by level on the GPU (split
-  search, apply and partition, with one readback per tree). Quantized trees do
-  so at any depth (in chunks where device memory is short) and with per-node
-  feature sampling, L1 and path smoothing, categorical splits and single-tree
-  random-forest groups; non-quantized trees up to depth 11 and 2,047 leaves,
-  without categorical features, per-node sampling, L1 or path smoothing.
-  Leaf-budgeted trees stay on the device up to their first binding level;
-  multi-GPU, vector-leaf and constrained training keep their earlier routes.
+- **Complete device trees.** Eligible single-GPU trees grow level by level on
+  the GPU (split search, apply and partition, with one readback per tree).
+  Eligible are quantized trees within the depth bound
+  (`2^max_depth <= num_leaves + 1`) at any depth (in chunks where device memory
+  is short), with per-node feature sampling, L1 and path smoothing, categorical
+  splits and single-tree random-forest groups; quantized leaf-budgeted or
+  unlimited-depth trees up to their first binding level; and non-quantized
+  trees within the depth bound up to depth 11 and 2,047 leaves, without
+  categorical features, per-node sampling, L1 or path smoothing. Multi-GPU,
+  vector-leaf and constrained training keep their earlier routes.
 - **Per-tree compact column view.** With any `feature_fraction < 1`, only the
   sampled columns are materialized and gathered for histogram construction.
   The win scales with the excluded fraction: on the Numerai deep regime
@@ -119,18 +120,18 @@ for every float), and NaN, zero-as-missing and categorical splits follow the
 CPU rules, so leaf indices and feature contributions are bit-identical.
 How each output's leaf values are added depends on the mode:
 
-- **pairwise (fast)**, the default for device arrays and `device="cuda"`, and
-  with `deterministic=False`: in one fixed pairwise order (groups of 8
-  iterations in tree order, then a binary tree over the groups), so that one
-  row's trees are spread over the GPU. The order depends only on the model and
-  the iteration range: a row gets the same bits in any batch, call and GPU. It
-  differs from the CPU predictor's in-order sum by rounding only (largest
-  difference on the benchmark models about 1e-13, see docs/performance.md
-  section 8);
-- **tree order**, with `deterministic=True`, and the default when
-  `device=None` sends a numpy array to the GPU: exactly as the CPU predictor
-  adds them, so raw scores and normal predictions are bit-identical to
-  `device="cpu"`.
+- **pairwise (fast)**, for models with scalar leaves the default for device
+  arrays and `device="cuda"`, and with `deterministic=False`: in one fixed
+  pairwise order (groups of 8 iterations in tree order, then a binary tree
+  over the groups), so that one row's trees are spread over the GPU. The order
+  depends only on the model and the iteration range: a row gets the same bits
+  in any batch, call and GPU. It differs from the CPU predictor's in-order sum
+  by rounding only (largest difference on the benchmark models about 1e-13,
+  see docs/performance.md section 8);
+- **tree order**, with `deterministic=True`, the default when `device=None`
+  sends a numpy array to the GPU, and always for vector-leaf models: exactly as
+  the CPU predictor adds them, so raw scores and normal predictions are
+  bit-identical to `device="cpu"`.
 
 Normal (transformed) predictions are converted from the raw scores by the same
 host code the CPU predictor runs.

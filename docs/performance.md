@@ -239,7 +239,8 @@ on one RTX 5090, each run a fresh process that builds the Dataset, trains the ce
 the two builds interleaved; 6 pairs per workload (24 for the first and third production fits). Each value is the change
 in time, 1.2.0 against 1.1.0, as the geometric mean of the paired ratios (negative is faster). **Bold**: faster,
 significant after a Holm adjustment over all 135 gated tests. Plain: no significant change. *Italic*: inconclusive, a
-median change of +3% or more that is not significant; none of these has its 95% interval wholly above zero.
+geometric mean of paired ratios of +3% or more that is not significant; none of these has its 95% interval wholly above
+zero.
 
 - *iteration*: the steady-state time per boosting round;
 - *time to first tree*: Dataset construction, Booster creation and round 0;
@@ -275,13 +276,13 @@ verdict for them is no significant change; the fit's time to first tree and full
 The host CPUs were busy with other builds while the matrix ran, so its host-side stages (construction, prediction,
 startup, training on the CPU) were about three times noisier than in the release candidate's run, which is why 25 values
 are inconclusive (10 in that run), while the GPU-bound iteration times stayed tight. A second run of the five noisiest
-workloads with 12 pairs (the first, second and third synthetic fits, Numerai example and fraud deep) found prediction
-and time to first tree no worse than 1.1.0, except time to first tree on the 2,568- and 222-column synthetic fits: 5.3%
-and 4.4% slower as geometric means of paired ratios, inconclusive after Holm adjustment. Dataset construction on those
-two fits was 6.1% and 7.5% slower than 1.1.0's in that run, also as geometric means of paired ratios (unadjusted 95%
-intervals -2.9% to +15.9% and +0.6% to +14.8%), and also inconclusive after Holm adjustment; a check on a quiet host is
-pending. The code they run in construction is the same as in the release candidate, which measured +2.3% on the
-222-column fit in a quieter window.
+workloads with 12 pairs (the first, second and third synthetic fits, Numerai example and fraud deep) found no
+significant change or a speedup in prediction and time to first tree, except time to first tree on the 2,568- and
+222-column synthetic fits: 5.3% and 4.4% slower as geometric means of paired ratios, inconclusive after Holm adjustment.
+Dataset construction on those two fits was 6.1% and 7.5% slower than 1.1.0's in that run, also as geometric means of
+paired ratios (unadjusted 95% intervals -2.9% to +15.9% and +0.6% to +14.8%), and also inconclusive after Holm
+adjustment; a check on a quiet host is pending. The code they run in construction is the same as in the release
+candidate, which measured +2.3% on the 222-column fit in a quieter window.
 
 Memory (medians of each run's peak, in GiB): training wide data needs less device memory: the peak falls from 9.45 to
 4.14 GiB on the 2,568-column synthetic fit, from 6.35 to 3.56 GiB on the 2,000-column one and from 4.18 to 1.66 GiB on
