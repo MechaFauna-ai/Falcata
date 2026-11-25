@@ -281,8 +281,10 @@ significant change or a speedup in prediction and time to first tree, except tim
 222-column synthetic fits: 5.3% and 4.4% slower as geometric means of paired ratios, inconclusive after Holm adjustment.
 Dataset construction on those two fits was 6.1% and 7.5% slower than 1.1.0's in that run, also as geometric means of
 paired ratios (unadjusted 95% intervals -2.9% to +15.9% and +0.6% to +14.8%), and also inconclusive after Holm
-adjustment; a check on a quiet host is pending. The code they run in construction is the same as in the release
-candidate, which measured +2.3% on the 222-column fit in a quieter window.
+adjustment. A follow-up on a quieter host found no significant change in Dataset construction: on the 2,568-column
+fit +2.1% (-5.5% to +10.3%, 15 pairs, the quietest of three runs), on the 222-column fit +1.9% (-4.6% to +8.8%, 42
+pairs pooled over the runs). The code they run in construction is the same as in the release candidate, which measured
++2.3% on the 222-column fit in a quieter window.
 
 Memory (medians of each run's peak, in GiB): training wide data needs less device memory: the peak falls from 9.45 to
 4.14 GiB on the 2,568-column synthetic fit, from 6.35 to 3.56 GiB on the 2,000-column one and from 4.18 to 1.66 GiB on
