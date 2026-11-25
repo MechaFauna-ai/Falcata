@@ -1,5 +1,12 @@
 # What makes Falcata fast — and how we know
 
+**Falcata 1.2** (measured 24-25 November 2026 on `efd9f502` against the v1.1.0 tag, one RTX 5090): the steady-state time
+per boosting round is 11% to 71% lower on 13 of the 16 GPU workloads of the release speed matrix and not significantly
+different on the other three. Of the matrix's 135 gated comparisons, 42 are significantly faster, 68 show no significant
+change and 25 are inconclusive; none is a statistically significant slowdown. GPU prediction runs on Falcata's own CUDA
+predictor, faster than NVIDIA FIL's default configuration on all 113 benchmark cells with device input (median 2.84x,
+§8). Per-workload numbers: [Falcata 1.2 against 1.1.0](#falcata-12-against-110).
+
 **Falcata 1.1 (measured 21 October 2026 on `1408ee79`; release candidate `49c5622a`):** the [1.1 article](blog/falcata-1.1.md)
 and its [benchmark companion](blog/falcata-1.1/benchmarks.md) compare the release
 candidate with the 12 October master `a65d34e8` and with the launch archive below.
@@ -224,6 +231,63 @@ performance measurements.
 
 Historical benchmark reproduction therefore requires explicit
 `--set max_delta_step=0`; new benchmark runs must record their step policy.
+
+## Falcata 1.2 against 1.1.0
+
+The 1.2.0 release speed matrix: master `efd9f502` against the v1.1.0 tag (`4e532f2f`), both installed from their wheels,
+on one RTX 5090, each run a fresh process that builds the Dataset, trains the cell's rounds and predicts its test rows,
+the two builds interleaved; 6 pairs per workload (24 for the first and third production fits). Each value is the change
+in time, 1.2.0 against 1.1.0, as the geometric mean of the paired ratios (negative is faster). **Bold**: faster,
+significant after a Holm adjustment over all 135 gated tests. Plain: no significant change. *Italic*: inconclusive, a
+geometric mean of paired ratios of +3% or more that is not significant; none of these has its 95% interval wholly above
+zero.
+
+- *iteration*: the steady-state time per boosting round;
+- *time to first tree*: Dataset construction, Booster creation and round 0;
+- *full fit*: Dataset construction, Booster creation and every round of the cell;
+- *prediction*: `predict` of the test rows from a numpy array with `device=None` (1.1.0 predicted them on the CPU;
+  1.2.0 uses the GPU where its cost estimate expects it to win, §8).
+
+Startup is judged by the cumulative times. The stages inside them can move work between each other: on the 6,460-column
+production fit, 1.2.0 spends less time in Booster creation and more in round 0. The two together are an estimated 16.2%
+faster (unadjusted 95% interval -26.8% to -4.0%), but that is not significant after the Holm adjustment, so the gate's
+verdict for them is no significant change; the fit's time to first tree and full fit are significantly faster.
+
+| workload (rounds) | iteration | time to first tree | full fit | prediction |
+|---|---:|---:|---:|---:|
+| year shallow, fp32 (regression, 63 leaves / depth 6) (100) | **-30.0%** | -16.4% | -19.5% | -11.3% |
+| covtype deep, quantized (7 classes, 1023 / 10) (100) | **-11.3%** | -4.7% | -8.6% | **-91.1%** |
+| covtype shallow, non-quantized (7 classes, 63 / 6) (100) | **-28.7%** | +2.8% | **-16.2%** | **-74.8%** |
+| Numerai example, quantized (32 / 5, `feature_fraction` 0.1) (100) | -0.3% | -0.5% | -0.7% | *+10.8%* |
+| Numerai, non-quantized fp32 (32 / 5, 0.1) (100) | **-12.5%** | +1.2% | -2.2% | -2.9% |
+| Numerai h60, sparse (250 / 12, 5 bins) (60) | +0.5% | -2.5% | -1.7% | not measured |
+| higgs deep, quantized (1023 / 10) (100) | -7.2% | -10.4% | -12.8% | **-83.4%** |
+| fraud deep (1023 / 10) (200) | **-23.2%** | *+7.5%* | -11.9% | *+7.7%* |
+| synthetic 727,000 x 2,568, 5 classes (40) | **-71.0%** | *+12.7%* | -25.0% | *+20.0%* |
+| synthetic 735,000 x 2,000, 9 classes (30) | **-53.3%** | *+30.6%* | -9.0% | *+32.0%* |
+| synthetic 693,000 x 222, 16 classes (30) | **-47.3%** | *+10.0%* | -25.0% | **-73.2%** |
+| synthetic 704,000 x 63, 3 classes (150) | **-42.3%** | -10.9% | **-26.1%** | -55.4% |
+| synthetic 178,000 x 122, 5 classes (100) | **-13.8%** | -1.7% | -6.3% | **-66.4%** |
+| production 67,753 x 6,460, 6 classes (300) | **-13.9%** | **-39.4%** | **-33.3%** | -8.2% |
+| production 124,609 x 222, 16 classes (300) | **-13.7%** | -17.4% | **-13.7%** | **-94.6%** |
+| production 129,813 x 63, 3 classes (300) | **-18.5%** | -19.6% | **-20.3%** | **-60.9%** |
+| covtype shallow on the CPU (63 / 6) (50) | *+7.1%* | -9.1% | *+6.6%* | -55.5% |
+
+The host CPUs were busy with other builds while the matrix ran, so its host-side stages (construction, prediction,
+startup, training on the CPU) were about three times noisier than in the release candidate's run, which is why 25 values
+are inconclusive (10 in that run), while the GPU-bound iteration times stayed tight. A second run of the five noisiest
+workloads with 12 pairs (the first, second and third synthetic fits, Numerai example and fraud deep) found no
+significant change or a speedup in prediction and time to first tree, except time to first tree on the 2,568- and
+222-column synthetic fits: 5.3% and 4.4% slower as geometric means of paired ratios, inconclusive after Holm adjustment.
+Dataset construction on those two fits was 6.1% and 7.5% slower than 1.1.0's in that run, also as geometric means of
+paired ratios (unadjusted 95% intervals -2.9% to +15.9% and +0.6% to +14.8%), and also inconclusive after Holm
+adjustment; a check on a quiet host is pending. The code they run in construction is the same as in the release
+candidate, which measured +2.3% on the 222-column fit in a quieter window.
+
+Memory (medians of each run's peak, in GiB): training wide data needs less device memory: the peak falls from 9.45 to
+4.14 GiB on the 2,568-column synthetic fit, from 6.35 to 3.56 GiB on the 2,000-column one and from 4.18 to 1.66 GiB on
+the 6,460-column production fit, whose host peak, reached in Dataset construction, falls from 11.17 to 7.36 GiB. No
+other peak is more than 0.15 GiB above 1.1.0's except Numerai example's host peak (36.73 against 35.90 GiB, +2%).
 
 ---
 
