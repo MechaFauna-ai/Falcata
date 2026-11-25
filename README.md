@@ -24,12 +24,15 @@ What makes it fast
   synchronized, and applied in one launch each instead of per split — turning a
   latency-bound loop into a throughput-bound one, with leaf-wise-identical
   trees.
-- **Complete device trees.** Each tree grows level by level on the GPU (split
-  search, apply and partition, with one readback per tree), at any depth (in
-  chunks where device memory is short) and with per-node feature sampling,
-  non-quantized histograms, L1 and path smoothing, categorical splits and
-  single-tree random-forest groups; leaf-budgeted trees stay on the device up
-  to their first binding level.
+- **Complete device trees.** Single-GPU trees within the depth bound
+  (`2^max_depth <= num_leaves + 1`) grow level by level on the GPU (split
+  search, apply and partition, with one readback per tree). Quantized trees do
+  so at any depth (in chunks where device memory is short) and with per-node
+  feature sampling, L1 and path smoothing, categorical splits and single-tree
+  random-forest groups; non-quantized trees up to depth 11 and 2,047 leaves,
+  without categorical features, per-node sampling, L1 or path smoothing.
+  Leaf-budgeted trees stay on the device up to their first binding level;
+  multi-GPU, vector-leaf and constrained training keep their earlier routes.
 - **Per-tree compact column view.** With any `feature_fraction < 1`, only the
   sampled columns are materialized and gathered for histogram construction.
   The win scales with the excluded fraction: on the Numerai deep regime
@@ -65,7 +68,7 @@ What makes it fast
   overridable for experiments.
 - **Native GPU inference.** `Booster.predict()` scores dense rows with its own
   CUDA predictor, faster than NVIDIA FIL's default configuration on all 113
-  benchmark cells (median 2.84x; [docs/performance.md section 8](docs/performance.md#8-gpu-inference-the-native-cuda-predictor)),
+  benchmark cells with device input (median 2.84x; [docs/performance.md section 8](docs/performance.md#8-gpu-inference-the-native-cuda-predictor)),
   with an opt-in deterministic mode that gives the CPU predictor's results;
   device arrays stay on the device end to end, and `falcata.predict_many`
   scores many models in one call.
@@ -116,14 +119,18 @@ for every float), and NaN, zero-as-missing and categorical splits follow the
 CPU rules, so leaf indices and feature contributions are bit-identical.
 How each output's leaf values are added depends on the mode:
 
-- **default (fast)**: in one fixed pairwise order (groups of 8 iterations in
-  tree order, then a binary tree over the groups), so that one row's trees are
-  spread over the GPU. The order depends only on the model and the iteration
-  range: a row gets the same bits in any batch, call and GPU. It differs from
-  the CPU predictor's in-order sum by rounding only (largest difference on the
-  benchmark models about 1e-13, see docs/performance.md section 8);
-- **`deterministic=True`**: in tree order, exactly as the CPU predictor: raw
-  scores and normal predictions are bit-identical to `device="cpu"`.
+- **pairwise (fast)**, the default for device arrays and `device="cuda"`, and
+  with `deterministic=False`: in one fixed pairwise order (groups of 8
+  iterations in tree order, then a binary tree over the groups), so that one
+  row's trees are spread over the GPU. The order depends only on the model and
+  the iteration range: a row gets the same bits in any batch, call and GPU. It
+  differs from the CPU predictor's in-order sum by rounding only (largest
+  difference on the benchmark models about 1e-13, see docs/performance.md
+  section 8);
+- **tree order**, with `deterministic=True`, and the default when
+  `device=None` sends a numpy array to the GPU: exactly as the CPU predictor
+  adds them, so raw scores and normal predictions are bit-identical to
+  `device="cpu"`.
 
 Normal (transformed) predictions are converted from the raw scores by the same
 host code the CPU predictor runs.
@@ -141,10 +148,10 @@ outs = falcata.predict_many([m1, m2, m2], [X1, X2, X2], num_iteration=[None, 100
   2-D numpy array of a `device_type="cuda"` model goes to the GPU only when a
   cost estimate expects the GPU to be at least 1.3x faster and the call's device
   buffers are small (at most 256 MiB and a tenth of the free device memory);
-  it then sums in tree order (unless `deterministic=False` is passed), so the
-  result is the CPU predictor's either way. Everything else, feature
-  contributions included, uses the CPU predictor. A failure on the GPU is
-  raised, never retried on the CPU.
+  it then sums in tree order, so the result is the CPU predictor's either way
+  (`deterministic=False` makes it pairwise, which can change the last bits).
+  Everything else, including feature contributions of a host array, uses the
+  CPU predictor. A failure on the GPU is raised, never retried on the CPU.
 - `falcata.predict_many` predicts many (booster, input, iteration range) jobs
   in a few launches, each job with exactly its own `predict` result: the shape
   of a daily scoring run of thousands of small predictions.
