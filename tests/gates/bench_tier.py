@@ -12,6 +12,8 @@ Emits the lattice_results.json schema so perf_gate.py consumes it unchanged:
   python tests/gates/perf_gate.py --results bench_results.json \
       --baseline-file ~/.cache/falcata-gates/bench_baseline.json \
       --warn-pct 4 --fail-pct 8 --record
+
+perf_gate.py re-measures a regressed bench/* cell with --only <cell id>.
 """
 
 import argparse
@@ -227,14 +229,27 @@ def run_cell(cid, dataset, params, rounds):
     }
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "bench_results.json"))
-    args = ap.parse_args()
+    ap.add_argument(
+        "--only",
+        nargs="+",
+        metavar="CELL_ID",
+        choices=[cell[0] for cell in CELLS],
+        help="run only these cells (perf_gate.py re-measures a regressed cell this way)",
+    )
+    return ap
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
 
     results = {}
     t0 = time.monotonic()
     for cid, dataset, params, rounds in CELLS:
+        if args.only and cid not in args.only:
+            continue
         if dataset != "numerai-h60" and not (CACHE / dataset).exists():
             print(f"skip {cid}: cache missing {CACHE / dataset}")
             continue

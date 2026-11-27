@@ -155,28 +155,38 @@ def _validate_supervision():
         raise GPUQContextError("remeasurement supervision requires Linux procfs child tracking")
 
 
-def remeasure(cell_id):
-    """Re-run one lattice cell and return its construct+train seconds.
+def remeasure_argv(cell_id, out):
+    """Command that re-runs only cell_id through the tier defining it, writing results to out.
 
-    Returns None if the re-run cannot be done (lattice failure, missing cell);
+    bench/* cells live in bench_tier.py; every other perf-tracked cell is a lattice cell.
+    """
+    gates_dir = Path(__file__).resolve().parent
+    if cell_id.startswith("bench/"):
+        return [sys.executable, str(gates_dir / "bench_tier.py"), "--only", cell_id, "--out", str(out)]
+    return [sys.executable, str(gates_dir / "lattice.py"), "--check", "--only", cell_id]
+
+
+def remeasure(cell_id):
+    """Re-run one cell and return its construct+train seconds.
+
+    Returns None if the re-run cannot be done (tier failure, missing cell or data);
     the caller then falls back to the original timing. An unresolved timeout
     aborts the GPU job with 125; the owned process tree is stopped before returning.
     FALCATA_REMEASURE_TIMEOUT_SEC overrides the 30-minute default.
     """
     _validate_supervision()
-    gates_dir = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "results.json"
         timeout = _remeasure_timeout()
         proc = subprocess.Popen(
-            [sys.executable, str(gates_dir / "lattice.py"), "--check", "--only", cell_id],
+            remeasure_argv(cell_id, out),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             env={**os.environ, "FALCATA_GATES_RESULTS": str(out)},
         )
         try:
-            proc.communicate(timeout=timeout)
+            _, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             _stop_lattice_tree(proc)
             raise UnresolvedCUDATimeout(f"CUDA timeout remeasuring {cell_id} after {timeout}s; stop GPU job") from exc
@@ -184,14 +194,15 @@ def remeasure(cell_id):
             _stop_lattice_tree(proc)
             raise
         if proc.returncode == 125:
-            raise UnresolvedCUDATimeout("lattice reported an unresolved CUDA timeout; stop GPU job")
-        if proc.returncode != 0 or not out.exists():
-            print(f"  note {cell_id}: re-measurement unavailable, keeping original timing")
-            return None
+            raise UnresolvedCUDATimeout("tier reported an unresolved CUDA timeout; stop GPU job")
         try:
+            if proc.returncode != 0:
+                raise ValueError(f"exit {proc.returncode}")
             r = json.loads(out.read_text())["results"][cell_id]
             return round(r["construct_sec"] + r["train_sec"], 4)
-        except (KeyError, ValueError):
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            last = (stderr or "").strip().splitlines()[-1:] or [""]
+            print(f"  note {cell_id}: re-measurement unavailable ({exc!r} {last[0][:200]}), keeping original timing")
             return None
 
 
