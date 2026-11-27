@@ -63,6 +63,7 @@ ALL_KEYS = {
     "colmajor_direct": True,
     "view_pair_rule": True,
     "warp_find": True,
+    "warp_find_fp32": True,
     "row_batch": True,
     "pair_block_rows": True,
     "pair_capped_rows": True,
