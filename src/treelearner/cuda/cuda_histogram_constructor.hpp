@@ -629,6 +629,34 @@ class CUDAHistogramConstructor {
 
   void ResetConfig(const Config* config);
 
+  /*! \brief cuda_plan key partition_pack_gh: disable the persisting L2 carveout on cuda_gradients_ when quantized
+   *  level >= 1 constructs read partition-ordered gh sequentially (pinning cuda_gradients_ would strand up to 2/3
+   *  of L2 on an unused buffer). Also exposes the device's persisting L2 budget and partition count for shape gating. */
+  void SetSkipGradL2Pin(const bool skip) {
+    if (skip == skip_grad_l2_pin_) return;
+    skip_grad_l2_pin_ = skip;
+    if (skip && l2_carveout_bytes_ > 0) {
+      cudaStreamAttrValue attr{};
+      attr.accessPolicyWindow.base_ptr = nullptr;
+      attr.accessPolicyWindow.num_bytes = 0;
+      attr.accessPolicyWindow.hitRatio = 0.0f;
+      attr.accessPolicyWindow.hitProp = cudaAccessPropertyNormal;
+      attr.accessPolicyWindow.missProp = cudaAccessPropertyNormal;
+      for (int p = 0; p < kNumHistPipelines; ++p) {
+        if (pipeline_streams_[p] != nullptr) {
+          cudaStreamSetAttribute(pipeline_streams_[p], cudaStreamAttributeAccessPolicyWindow, &attr);
+        }
+      }
+      cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, 0);
+      l2_carveout_bytes_ = 0;
+      l2_window_base_ = nullptr;
+      l2_window_bytes_ = 0;
+    }
+  }
+  size_t l2_persist_budget() const { return l2_persist_budget_; }
+  int num_feature_partitions() const { return cuda_row_data_ != nullptr ? cuda_row_data_->num_feature_partitions() : 0; }
+  bool is_4bit_rowdata() const { return cuda_row_data_ != nullptr && cuda_row_data_->is_4bit_packed(); }
+
   /*! \brief cuda_plan key device_levels: the device level state the batched construct, fix/subtract and copy
    *  launches read while the learner enqueues a device-driven level (nullptr otherwise) */
   void SetDeviceLevelState(const CUDADeviceLevelState* dls, const bool whole_tree = false) {
@@ -1494,6 +1522,8 @@ class CUDAHistogramConstructor {
   /*! \brief L2 persistence carve-out (cuda_plan key l2_policy; 0 = inactive) */
   size_t l2_carveout_bytes_ = 0;
   size_t l2_max_window_bytes_ = 0;
+  size_t l2_persist_budget_ = 0;
+  bool skip_grad_l2_pin_ = false;
   /*! \brief pinned staging for async metadata uploads (grown on demand) */
   void* prefill_pinned_ = nullptr;
   size_t prefill_pinned_bytes_ = 0;

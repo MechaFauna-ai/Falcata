@@ -526,8 +526,20 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
       cuda_gradient_discretizer_->DiscretizeGradientsForPlane(
         t, num_data_, gradients_ + static_cast<size_t>(t) * num_data_, hessians_);
     }
+    const FalcataPlan& pack_plan = FalcataPlan::Get();
+    const size_t gh_bytes = static_cast<size_t>(num_data_) * sizeof(int32_t);
+    const size_t l2_budget = cuda_histogram_constructor_->l2_persist_budget();
+    const bool pack_gh_pays = pack_plan.partition_pack_gh_forced ||
+      (l2_budget == 0 || gh_bytes > l2_budget) ||
+      (!cuda_histogram_constructor_->is_4bit_rowdata() && cuda_histogram_constructor_->num_feature_partitions() >= 4);
+    const bool pack_gh = pack_plan.partition_pack_gh && pack_gh_pays && use_hybrid_growth_ &&
+      vec_num_targets_ <= 1 && nccl_communicator_ == nullptr && fp_merge_state_ == nullptr && !config_->linear_tree;
+    cuda_histogram_constructor_->SetSkipGradL2Pin(pack_gh);
     cuda_histogram_constructor_->BeforeTrain(
       reinterpret_cast<const score_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()), nullptr);
+    cuda_data_partition_->SetQuantizedGradHess(
+      pack_gh ? reinterpret_cast<const int32_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians())
+              : nullptr);
     // cuda_plan key async_tree_start: the root sums are first needed by the level prefix
     // (TrainLevelWisePrefix's EnsureRootSumsReadBack; Train reads them back itself before any other flow), so
     // the synchronous readback -- which waits for the histogram zeroing and the root sum kernels -- moves behind
@@ -553,6 +565,7 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
         cuda_gradient_discretizer_->SetNumBitsInHistogramBin<true>(0, -1, global_num_data_, 0);
       }
   } else {
+    cuda_data_partition_->SetQuantizedGradHess(nullptr);
     cuda_histogram_constructor_->BeforeTrain(gradients_, hessians_);
     // The single-sync hybrid prefix derives every root gate on-device, so the
     // synchronous root-sum readback (which would block on the histogram-buffer
@@ -3730,7 +3743,8 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     // (the apply's last block writes the children's descriptors and block map: DeviceLevelPairsBlock)
     cuda_data_partition_->LaunchDeviceLevelApply(max_splits, dls, cfg_device,
       inline_all_map && cfg.whole_tree && level + 1 == num_levels,
-      final_map_only && level + 1 == num_levels, cfg.whole_tree != 0);
+      final_map_only && level + 1 == num_levels, cfg.whole_tree != 0, /*joint_leaves=*/0,
+      /*skip_gh_scatter=*/cfg.whole_tree && level + 1 == num_levels);
     if (record_tree) {
       tree->LaunchSplitLevelKernelsDevice(max_splits, &dls->live_num_splits, cat_levels ? &cat_level : nullptr);
       CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree_stream));
