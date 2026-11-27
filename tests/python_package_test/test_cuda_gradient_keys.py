@@ -23,7 +23,7 @@ _REQUIRES_CUDA = pytest.mark.skipif(
     reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
 
-KEYS = ("gradient_fp64_lean", "softmax_registers")
+KEYS = ("gradient_fp64_lean", "softmax_registers", "softmax_fp64_lean")
 
 
 def _model_md5(params, X, y, rounds, weight=None):
@@ -123,3 +123,37 @@ def test_wide_weight_binary_training_is_deterministic_cuda(extra):
         y = (signal + rng.standard_normal(rows) > np.median(signal)).astype(float)
     md5s = {_model_md5(params, X, y, rounds=20, weight=weight) for _ in range(3)}
     assert len(md5s) == 1, md5s
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("num_class", [2, 3, 7, 12, 24, 32])
+@pytest.mark.parametrize("weighted", [False, True])
+def test_softmax_fp64_lean_extreme_confidence_and_ties_cuda(num_class, weighted):
+    """Stress softmax_fp64_lean across ties, extreme confidence (1 - p_max << 1e-5 down to < 2^-55),
+    wide sample weights, and class capacities 8 / 16 / 32: must be bit-identical to softmax_fp64_lean:off."""
+    rows, cols = 12007, 8
+    rng = np.random.default_rng(100 + num_class * 13 + int(weighted))
+    X = rng.standard_normal((rows, cols)).astype(np.float32)
+    # Strong linear separation + high learning_rate pushes 1 - p_max rapidly across 1e-4 .. 1e-18
+    logits = (
+        X[:, : min(cols, num_class)]
+        if num_class <= cols
+        else X @ rng.standard_normal((cols, num_class)).astype(np.float32)
+    )
+    y = np.argmax(logits, axis=1).astype(float)
+    weight = np.exp(rng.uniform(-6.0, 6.0, size=rows)).astype(np.float32) if weighted else None
+    params = {
+        "device_type": "cuda",
+        "objective": "multiclass",
+        "num_class": num_class,
+        "num_leaves": 31,
+        "max_depth": 6,
+        "min_data_in_leaf": 5,
+        "learning_rate": 1.2,
+        "use_quantized_grad": True,
+        "verbosity": -1,
+        "seed": 11,
+    }
+    ref = _model_md5({**params, "cuda_plan": "auto,softmax_fp64_lean:off"}, X, y, rounds=40, weight=weight)
+    lean = _model_md5({**params, "cuda_plan": "auto,softmax_fp64_lean:on"}, X, y, rounds=40, weight=weight)
+    assert lean == ref, f"num_class={num_class} weighted={weighted}"
