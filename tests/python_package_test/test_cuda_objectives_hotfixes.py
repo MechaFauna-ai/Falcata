@@ -26,8 +26,8 @@ _REQUIRES_CUDA = pytest.mark.skipif(
 )
 
 
-def _model_md5(params, X, y, rounds, *, weight=None, group=None):
-    ds = flc.Dataset(X, label=y, weight=weight, group=group, params=params)
+def _model_md5(params, X, y, rounds, *, weight=None, group=None, init_score=None):
+    ds = flc.Dataset(X, label=y, weight=weight, group=group, init_score=init_score, params=params)
     booster = flc.train(params, ds, num_boost_round=rounds)
     lines = [line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line]
     return hashlib.md5("\n".join(lines).encode()).hexdigest()
@@ -118,6 +118,94 @@ def test_poisson_lean_and_hoisted_exp_bit_identical_cuda(max_delta_step, weighte
         y,
         rounds=25,
         weight=weight,
+    )
+    assert md5_on == md5_off
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("weighted", [False, True])
+def test_poisson_extreme_init_score_and_cancellation_bit_identical_cuda(weighted):
+    """Exercise Poisson lean exp() fallback paths: |score| in {60, 85} and exact exp(score) == label cancellation."""
+    rows, cols = 4096, 8
+    rng = np.random.default_rng(71)
+    X = rng.standard_normal((rows, cols)).astype(np.float32)
+    y = rng.integers(1, 20, size=rows).astype(np.float32)
+    init_score = np.log(y.astype(np.float64))  # exact e == label cancellation on first round
+    init_score[:256] = 60.0
+    init_score[256:512] = -60.0
+    init_score[512:768] = 85.0  # outside |score| <= 80 lean gate -> fallback to libdevice exp
+    init_score[768:1024] = -85.0  # outside |score| <= 80 lean gate -> fallback to libdevice exp
+    init_score[1024:1536] = rng.uniform(-5.0, 5.0, size=512)
+    weight = rng.uniform(0.5, 2.0, size=rows).astype(np.float32) if weighted else None
+    params = {
+        "device_type": "cuda",
+        "objective": "poisson",
+        "boost_from_average": False,
+        "num_leaves": 15,
+        "max_depth": 4,
+        "min_data_in_leaf": 10,
+        "learning_rate": 0.05,
+        "use_quantized_grad": False,
+        "verbosity": -1,
+        "seed": 73,
+    }
+    base = "auto,nonquant_deterministic:on"
+    md5_on = _model_md5(
+        {**params, "cuda_plan": base},
+        X,
+        y,
+        rounds=5,
+        weight=weight,
+        init_score=init_score,
+    )
+    md5_off = _model_md5(
+        {**params, "cuda_plan": f"{base},gradient_fp64_lean:off"},
+        X,
+        y,
+        rounds=5,
+        weight=weight,
+        init_score=init_score,
+    )
+    assert md5_on == md5_off
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("objective", ["lambdarank", "rank_xendcg"])
+@pytest.mark.parametrize("quantized", [True, False])
+def test_rank_gradients_no_sync_bit_identical_cuda(objective, quantized):
+    """Verify removing redundant LaunchGetGradientsKernel syncs keeps LambdaRank and RankXENDCG bit-identical."""
+    rng = np.random.default_rng(79)
+    group = [30] * 60
+    rows, cols = sum(group), 10
+    X = rng.standard_normal((rows, cols)).astype(np.float32)
+    signal = X[:, 0] + 0.5 * X[:, 1] - 0.3 * X[:, 2] + 0.4 * rng.standard_normal(rows)
+    y = np.digitize(signal, np.quantile(signal, [0.2, 0.4, 0.6, 0.8])).astype(np.float32)
+    base_plan = "auto" if quantized else "auto,nonquant_deterministic:on"
+    params = {
+        "device_type": "cuda",
+        "objective": objective,
+        "num_leaves": 15,
+        "max_depth": 4,
+        "min_data_in_leaf": 5,
+        "learning_rate": 0.1,
+        "use_quantized_grad": quantized,
+        "deterministic": True,
+        "verbosity": -1,
+        "seed": 83,
+    }
+    md5_on = _model_md5(
+        {**params, "cuda_plan": f"{base_plan},gradients_no_sync:on"},
+        X,
+        y,
+        rounds=10,
+        group=group,
+    )
+    md5_off = _model_md5(
+        {**params, "cuda_plan": f"{base_plan},gradients_no_sync:off"},
+        X,
+        y,
+        rounds=10,
+        group=group,
     )
     assert md5_on == md5_off
 

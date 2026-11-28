@@ -16,11 +16,12 @@
 
 namespace Falcata {
 
-// Softmax over a row's num_class values in 2 global passes over cuda_softmax_buffer (1 write + 1 read) instead of 6:
-// pass 1 reads cuda_scores directly for wmax, pass 2 reads cuda_scores and writes exp(s - wmax) once to scratch while
-// accumulating wsum in class order, pass 3 reads scratch once to divide by wsum and write grad/hess with label and
-// weight hoisted outside the class loop. Class-major layout keeps consecutive rows coalesced across a warp, and double
-// math in class order preserves bit-identity with the CPU objective and the register kernel.
+// Softmax over a row's num_class values in 2 global scratch passes over cuda_softmax_buffer (1 write + 1 read) plus 2
+// reads of cuda_scores, down from 7 scratch accesses + 1 score read: pass 1 reads cuda_scores directly for wmax, pass
+// 2 reads cuda_scores and writes exp(s - wmax) once to scratch while accumulating wsum in class order, and pass 3
+// reads scratch once to divide by wsum and write grad/hess with label and weight hoisted outside the class loop.
+// Class-major layout keeps consecutive rows coalesced across a warp, and double math in class order preserves
+// bit-identity with the CPU objective and the register kernel.
 template <bool USE_WEIGHT>
 __global__ void GetGradientsKernel_MulticlassSoftmax(
   const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights,

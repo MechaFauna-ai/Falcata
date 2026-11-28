@@ -459,7 +459,10 @@ __device__ __forceinline__ bool PoissonLean(const double score, const double lab
   p = fma(p, r, 1.0);
   p = fma(p, r, 1.0);
   const double scaled = p * kPoissonLeanExp2Table[k & 63];
-  const double e = __longlong_as_double(__double_as_longlong(scaled) + (static_cast<long long>(k >> 6) << 52));  // NOLINT(runtime/int)
+  const unsigned long long e_bits =  // NOLINT(runtime/int)
+      static_cast<unsigned long long>(__double_as_longlong(scaled)) +  // NOLINT(runtime/int)
+      (static_cast<unsigned long long>(static_cast<long long>(k >> 6)) << 52);  // NOLINT(runtime/int)
+  const double e = __longlong_as_double(static_cast<long long>(e_bits));  // NOLINT(runtime/int)
   const double g_raw = e - label;
   double g = g_raw;
   double h = e * exp_max_delta_step;
@@ -497,6 +500,7 @@ void CUDARegressionPoissonLoss::LaunchComputeExpMaxDeltaStepKernel() {
     ComputeExpScalarKernel<<<1, 1>>>(max_delta_step_, cuda_block_buffer_.RawData());
     CopyFromCUDADeviceToHost<double>(&exp_max_delta_step_, cuda_block_buffer_.RawData(), 1, __FILE__, __LINE__);
   } else {
+    // Fallback for num_data == 0 (when cuda_block_buffer_ is empty and GetGradients will not run on any row).
     exp_max_delta_step_ = std::exp(max_delta_step_);
   }
 }
