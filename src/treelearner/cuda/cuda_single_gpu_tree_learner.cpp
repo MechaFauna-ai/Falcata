@@ -4180,12 +4180,16 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.state = dls;
   cfg.leaf_best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
   cfg.root_struct = cuda_smaller_leaf_splits_->GetCUDAStruct();
+  cfg.whole_tree = DeviceTreeRequested() ? 1 : 0;
   // (non-quantized trees keep the root output of the one-sync flow, which reads the root sums back only for a stump:
   // the first split records internal_value[0] = 0, as that flow and the graph loop it replaced wrote it)
+  // Only pass root-init pointers to DeviceLevelResetKernel when the tree deferred root initialization, so
+  // an already-initialized root is never overwritten even if deferred root init is decoupled from DeviceTreeRequested.
+  const bool reset_root = cfg.whole_tree && !record_split_infos && !tree->root_initialized();
   cfg.tree_leaf_value = config_->use_quantized_grad ? tree->cuda_leaf_value_ref() : nullptr;
-  cfg.tree_leaf_value_zero = (!config_->use_quantized_grad && !record_split_infos) ? tree->cuda_leaf_value_ref() : nullptr;
-  cfg.tree_leaf_weight = !record_split_infos ? tree->cuda_leaf_weight_ref() : nullptr;
-  cfg.tree_leaf_parent = !record_split_infos ? tree->cuda_leaf_parent_ref() : nullptr;
+  cfg.tree_leaf_value_zero = (reset_root && !config_->use_quantized_grad) ? tree->cuda_leaf_value_ref() : nullptr;
+  cfg.tree_leaf_weight = reset_root ? tree->cuda_leaf_weight_ref() : nullptr;
+  cfg.tree_leaf_parent = reset_root ? tree->cuda_leaf_parent_ref() : nullptr;
   cfg.leaf_num_data = cuda_data_partition_->cuda_leaf_num_data();
   cfg.leaf_data_start = cuda_data_partition_->cuda_leaf_data_start();
   cfg.tree_batch_splits = tree->hybrid_graph_batch_splits();
@@ -4199,7 +4203,6 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.journal = cuda_device_level_journal_.RawData();
   cfg.max_depth = GrowthMaxDepth();
   cfg.num_leaves_budget = config_->num_leaves;
-  cfg.whole_tree = DeviceTreeRequested() ? 1 : 0;
   cfg.construct_block_start = cuda_device_level_block_start_.RawData();
   // selective trees (record_split_infos): the levels up to the first binding level, R1 tested on the device;
   // num_levels unrolled, the buffers sized for capacity_levels (any level of the tree)
@@ -4347,7 +4350,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   if (!launched) {
     EnqueueDeviceLevels(tree, cfg, num_levels, inline_all_map, final_map_only);
   }
-  if (cfg.whole_tree && !record_split_infos) {
+  if (reset_root) {
     // DeviceLevelResetKernel wrote leaf_value[0], leaf_weight[0], and leaf_parent[0]
     // inside the device-level launch/graph.
     tree->MarkRootInitializedOnDevice();

@@ -96,7 +96,7 @@ Tree::Tree(int max_leaves, bool track_branch_features, bool is_linear,
     threshold_.reserve(n_internal);
     decision_type_.reserve(n_internal);
     split_gain_.reserve(n_internal);
-    leaf_parent_.reserve(n_internal);
+    leaf_parent_.reserve(n_leaves);
     internal_value_.reserve(n_internal);
     internal_weight_.reserve(n_internal);
     internal_count_.reserve(n_internal);

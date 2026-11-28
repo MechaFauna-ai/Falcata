@@ -85,7 +85,7 @@ struct CUDATreePooledLayout {
     take(kSplitFeatureInner, sizeof(int), false);
     take(kSplitFeature, sizeof(int), false);
     take(kLeafDepth, sizeof(int), true);
-    take(kLeafParent, sizeof(int), false);  // existing ToHost reads I, not N
+    take(kLeafParent, sizeof(int), true);
     take(kThresholdInBin, sizeof(uint32_t), false);
     take(kLeafCount, sizeof(data_size_t), true);
     take(kInternalCount, sizeof(data_size_t), false);
@@ -146,6 +146,9 @@ struct CUDATreeDeviceSlab {
     AllocateCUDAMemory<T>(&data, capacity, __FILE__, __LINE__);
   }
 
+  CUDATreeDeviceSlab(T* adopted_data, const size_t cap)
+      : data(adopted_data), capacity(cap), used(0) {}
+
   ~CUDATreeDeviceSlab() {
     DeallocateCUDAMemory<T>(&data, __FILE__, __LINE__);
   }
@@ -174,8 +177,23 @@ struct CUDATreeDeviceArena {
     const size_t aligned = (count + kAlignElems - 1) & ~(kAlignElems - 1);
     if (!current_slab || current_slab->used + aligned > current_slab->capacity) {
       const size_t cap = std::max(next_slab_elems, aligned);
-      current_slab = std::make_shared<CUDATreeDeviceSlab<T>>(cap);
-      next_slab_elems = std::min(kMaxSlabElems, next_slab_elems * 2);
+      if (cap > aligned) {
+        void* raw = nullptr;
+        const cudaError_t status = cudaMalloc(&raw, cap * sizeof(T));
+        if (status == cudaSuccess) {
+          current_slab = std::make_shared<CUDATreeDeviceSlab<T>>(reinterpret_cast<T*>(raw), cap);
+          next_slab_elems = std::min(kMaxSlabElems, next_slab_elems * 2);
+        } else if (status == cudaErrorMemoryAllocation) {
+          // Under VRAM pressure, fall back to an exact-size aligned slab instead of OOMing on geometric headroom.
+          cudaGetLastError();
+          current_slab = std::make_shared<CUDATreeDeviceSlab<T>>(aligned);
+        } else {
+          CUDASUCCESS_OR_FATAL(status);
+        }
+      } else {
+        current_slab = std::make_shared<CUDATreeDeviceSlab<T>>(aligned);
+        next_slab_elems = std::min(kMaxSlabElems, next_slab_elems * 2);
+      }
     }
     T* ptr = current_slab->data + current_slab->used;
     current_slab->used += aligned;
@@ -456,6 +474,8 @@ class CUDATree : public Tree {
   /*! \brief DeviceLevelResetKernel fused root initialization (leaf_value[0], leaf_weight[0], leaf_parent[0]);
    *  marks root initialized so no standalone InitTreeRootKernel launch is needed on the device-tree path. */
   void MarkRootInitializedOnDevice() { root_initialized_ = true; }
+
+  bool root_initialized() const { return root_initialized_; }
 
   /*! \brief Lazily launch InitTreeRootKernel if construction deferred it for DeviceLevelResetKernel. */
   void EnsureRootInitializedOnDevice() {

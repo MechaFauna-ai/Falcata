@@ -555,7 +555,7 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
     threshold_.resize(n_internal);
     decision_type_.resize(n_internal, 0);
     split_gain_.resize(n_internal);
-    leaf_parent_.resize(n_internal);
+    leaf_parent_.resize(num_leaves_size);
     leaf_value_.resize(num_leaves_size);
     leaf_weight_.resize(num_leaves_size);
     leaf_count_.resize(num_leaves_size);
@@ -572,12 +572,12 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
       CopyFromCUDADeviceToHost<double>(threshold_.data(), cuda_threshold_.RawData(), n_internal, __FILE__, __LINE__);
       CopyFromCUDADeviceToHost<int8_t>(decision_type_.data(), cuda_decision_type_.RawData(), n_internal, __FILE__, __LINE__);
       CopyFromCUDADeviceToHost<float>(split_gain_.data(), cuda_split_gain_.RawData(), n_internal, __FILE__, __LINE__);
-      CopyFromCUDADeviceToHost<int>(leaf_parent_.data(), cuda_leaf_parent_.RawData(), n_internal, __FILE__, __LINE__);
       CopyFromCUDADeviceToHost<double>(internal_value_.data(), cuda_internal_value_.RawData(), n_internal, __FILE__, __LINE__);
       CopyFromCUDADeviceToHost<double>(internal_weight_.data(), cuda_internal_weight_.RawData(), n_internal, __FILE__, __LINE__);
       CopyFromCUDADeviceToHost<data_size_t>(internal_count_.data(), cuda_internal_count_.RawData(), n_internal, __FILE__, __LINE__);
     }
     if (num_leaves_size > 0) {
+      CopyFromCUDADeviceToHost<int>(leaf_parent_.data(), cuda_leaf_parent_.RawData(), num_leaves_size, __FILE__, __LINE__);
       CopyFromCUDADeviceToHost<double>(leaf_value_.data(), cuda_leaf_value_.RawData(), num_leaves_size, __FILE__, __LINE__);
       CopyFromCUDADeviceToHost<double>(leaf_weight_.data(), cuda_leaf_weight_.RawData(), num_leaves_size, __FILE__, __LINE__);
       CopyFromCUDADeviceToHost<data_size_t>(leaf_count_.data(), cuda_leaf_count_.RawData(), num_leaves_size, __FILE__, __LINE__);
@@ -688,7 +688,7 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
     trim_if_needed(threshold_, n_internal);
     trim_if_needed(decision_type_, n_internal);
     trim_if_needed(split_gain_, n_internal);
-    trim_if_needed(leaf_parent_, n_internal);
+    trim_if_needed(leaf_parent_, n_leaves);
     trim_if_needed(internal_value_, n_internal);
     trim_if_needed(internal_weight_, n_internal);
     trim_if_needed(internal_count_, n_internal);

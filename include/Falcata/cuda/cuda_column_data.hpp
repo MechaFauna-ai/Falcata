@@ -13,6 +13,7 @@
 #include <Falcata/config.h>
 #include <Falcata/utils/openmp_wrapper.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -354,6 +355,12 @@ class CUDAColumnData {
   // True while cuda_data_by_column_ holds the original per-column allocations.
   bool original_column_view_active_ = false;
   uint64_t column_view_generation_ = 0;
+
+  // Process-wide monotonic generation prevents pointer-reuse ABA if a CUDAColumnData is destroyed and reconstructed at the same address.
+  static uint64_t NextColumnViewGeneration() {
+    static std::atomic<uint64_t> counter{0};
+    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+  }
   std::vector<const uint8_t*> packed_column_ptr_;
   std::vector<int> packed_column_stride_;
   std::vector<uint8_t> packed_column_shift_;
