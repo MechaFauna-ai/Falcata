@@ -709,6 +709,37 @@ __global__ void ZeroHistSlotsKernel(hist_t* hist, const int* slots, const size_t
   }
 }
 
+__global__ void ZeroHistSlotsDeviceKernel(hist_t* hist, const int* slots, const int* count_ptr,
+                                          const size_t slot_stride_u64, const size_t zero_words_u64) {
+  const int count = *count_ptr;
+  if (count <= 0) {
+    return;
+  }
+  for (int s = static_cast<int>(blockIdx.y); s < count; s += static_cast<int>(gridDim.y)) {
+    uint64_t* const slot = reinterpret_cast<uint64_t*>(hist) + static_cast<size_t>(slots[s]) * slot_stride_u64;
+    for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < zero_words_u64;
+         i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+      slot[i] = 0ull;
+    }
+  }
+}
+
+void CUDAHistogramConstructor::ZeroHistSlotsDevice(const int* d_slots, const int* d_count, const int max_slots,
+                                                   cudaStream_t stream) {
+  static_assert(sizeof(hist_t) == sizeof(uint64_t), "ZeroHistSlotsDeviceKernel zeroes hist_t as uint64_t");
+  const size_t slot_stride_u64 = static_cast<size_t>(2 * num_total_bin_) * static_cast<size_t>(num_hist_planes_);
+  const size_t zero_words_u64 =
+      (FalcataPlan::Get().hist_zero_quant_half && use_quantized_grad_ && num_hist_planes_ == 1)
+          ? static_cast<size_t>(num_total_bin_)
+          : slot_stride_u64;
+  constexpr int kThreads = 256;
+  const int blocks_x = static_cast<int>(
+      std::max<size_t>(1, std::min<size_t>(16, (zero_words_u64 + kThreads - 1) / kThreads)));
+  const int blocks_y = std::max(1, std::min(max_slots, 32));
+  ZeroHistSlotsDeviceKernel<<<dim3(blocks_x, blocks_y), kThreads, 0, stream>>>(
+      cuda_hist_.RawData(), d_slots, d_count, slot_stride_u64, zero_words_u64);
+}
+
 void CUDAHistogramConstructor::LaunchZeroHistSlotsKernel(const std::vector<int>& slots, const size_t slot_size) {
   static_assert(sizeof(hist_t) == 8, "ZeroHistSlotsKernel zeroes slots of doubles as 16-byte words");
   const int num_slots = static_cast<int>(slots.size());

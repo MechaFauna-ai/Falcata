@@ -979,6 +979,12 @@ struct FalcataPlan {
   // which no search, simulation or renumbering reads: bit-identical. device_tree:off: the host's selective loop for
   // the whole tree (the removed selective_device_prefix key's static first levels are gone).
   bool device_tree = true;          // key: device_tree
+  // selective trees (device_tree + device_levels, quantized, single GPU, scalar numerical leaves, num_leaves >= 128):
+  // after the dynamic R1 device levels stop at the first binding level, keep the binding levels on the device using
+  // parallel R3 (cuda_selective_r3) in a captured two-level device loop instead of reading back and running the
+  // host's two-sync selective loop per level. Same greedy order, tie-break and collapse: bit-identical. Off: the host
+  // selective loop takes over at the first binding level.
+  bool selective_r3_device = true;  // key: selective_r3_device
   // the complete device tree's lean tree end (no split-batch readback or host leaf bookkeeping, the final level's
   // inline leaf map (the map-only pass when every row is in the tree) and the one-kernel slab readback) for every
   // objective boosted on the device (binary, multiclass, ranking, L1 / quantile / MAPE renewed on the device, ...),
@@ -1170,6 +1176,7 @@ struct FalcataPlan {
     if (key == "dense_wide_hist") return &dense_wide_hist;
     if (key == "device_levels") return &device_levels;
     if (key == "device_tree") return &device_tree;
+    if (key == "selective_r3_device") return &selective_r3_device;
     if (key == "device_tree_lean_end") return &device_tree_lean_end;
     if (key == "device_bynode_masks") return &device_bynode_masks;
     if (key == "device_level_graph") return &device_level_graph;
