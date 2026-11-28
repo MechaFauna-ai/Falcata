@@ -100,7 +100,51 @@ CASES = [
         ("binary", 0.95, 70_001, 60, True, {"objective": "binary", "num_leaves": 31, "max_depth": 5}),
         id="32bit-leaf-bins",
     ),
+    pytest.param(
+        (
+            "regression",
+            0.95,
+            30_001,
+            60,
+            True,
+            {"boosting": "rf", "bagging_fraction": 0.7, "bagging_freq": 1},
+        ),
+        id="rf-shared-rowdata",
+    ),
+    pytest.param(
+        ("regression", 0.95, 40_001, 60, True, {"num_grad_quant_bins": 256}),
+        id="quant-bins-256",
+    ),
 ]
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("quant", ["stochastic", "fixedpoint"])
+def test_sparse_batched_level_bynode_bit_identical(quant):
+    """Per-node feature masks (feature_fraction_bynode) engage device_bynode_masks on sparse batched levels.
+
+    sparse_batched_level:off disables batched levels and falls back to the classic per-split loop
+    (which assigns leaf indices in greedy split order rather than level-wise order), so exact model-string
+    identity is checked against dense_rowdata:on (dense device_tree) and device_tree:off (host batched
+    sparse levels), while exact prediction identity is verified against sparse_batched_level:off.
+    """
+    X, y = _make_sparse_data(40_001, 60, 0.95, "regression", signed=True)
+    params = {**BASE, "quant_mode": quant, "feature_fraction_bynode": 0.7}
+
+    def _fit(plan):
+        p = {**params, "cuda_plan": plan}
+        bst = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=10)
+        model = re.sub(r"^\[cuda_plan: .*\]$", "", bst.model_to_string(), flags=re.MULTILINE)
+        return model, bst.predict(X)
+
+    on_model, on_pred = _fit("auto,dense_rowdata:off,sparse_batched_level:on")
+    host_model, _ = _fit("auto,dense_rowdata:off,sparse_batched_level:on,device_tree:off")
+    dense_model, _ = _fit("auto,dense_rowdata:on")
+    _, off_pred = _fit("auto,dense_rowdata:off,sparse_batched_level:off")
+
+    assert on_model == dense_model
+    assert on_model == host_model
+    np.testing.assert_array_equal(on_pred, off_pred)
 
 
 @_REQUIRES_CUDA
@@ -112,6 +156,28 @@ def test_sparse_batched_level_bit_identical(spec, quant):
     params = {"quant_mode": quant, **extra}
     on_model = _train_model_str(X, y, params, "auto,dense_rowdata:off,sparse_batched_level:on", rounds=10)
     off_model = _train_model_str(X, y, params, "auto,dense_rowdata:off,sparse_batched_level:off", rounds=10)
+    assert on_model == off_model
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("quant", ["stochastic", "fixedpoint"])
+def test_sparse_batched_level_wide_rows_bit_identical(quant):
+    """Wide sparse rows (>504 non-zeros per row in a single partition) exercise the block-strided loop."""
+    rng = np.random.default_rng(29)
+    rows, num_uniform, num_sparse = 5_001, 700, 200
+    X = np.empty((rows, num_uniform + num_sparse), dtype=np.float32)
+    X[:, :num_uniform] = rng.integers(0, 5, size=(rows, num_uniform))
+    X[:, num_uniform:] = np.where(
+        rng.random((rows, num_sparse)) < 0.95,
+        2,
+        rng.choice(np.array([0, 1, 3, 4]), size=(rows, num_sparse)),
+    )
+    y = (0.5 + 0.05 * (X[:, 0] - 2) + 0.05 * (X[:, num_uniform - 1] - 2) + 0.1 * rng.standard_normal(rows)).astype(
+        np.float32
+    )
+    params = {"quant_mode": quant, "max_bin": 15, "num_leaves": 31, "max_depth": 5}
+    on_model = _train_model_str(X, y, params, "auto,dense_rowdata:off,sparse_batched_level:on", rounds=6)
+    off_model = _train_model_str(X, y, params, "auto,dense_rowdata:off,sparse_batched_level:off", rounds=6)
     assert on_model == off_model
 
 
@@ -133,14 +199,18 @@ import hashlib, sys
 sys.path.insert(0, {here!r})
 from test_cuda_sparse_batched_level import _make_sparse_data, _train_model_str
 X, y = _make_sparse_data(40_001, 60, 0.95, "binary", signed=True)
-params = {{"objective": "binary", "quant_mode": "fixedpoint", "verbosity": 1}}
+params = {{"objective": "binary", "quant_mode": {quant_mode!r}, "verbosity": 1}}
 model = _train_model_str(X, y, params, {plan!r}, rounds=6)
 print("MODEL_MD5", hashlib.md5(model.encode()).hexdigest(), flush=True)
 """
 
 
-def _run_diag_probe(plan):
-    code = _DIAG_PROBE.format(here=os.path.dirname(os.path.abspath(__file__)), plan=plan)
+def _run_diag_probe(plan, *, quant_mode="fixedpoint"):
+    code = _DIAG_PROBE.format(
+        here=os.path.dirname(os.path.abspath(__file__)),
+        plan=plan,
+        quant_mode=quant_mode,
+    )
     env = {**os.environ, "FALCATA_DEBUG": "diag"}
     proc = subprocess.run(
         [sys.executable, "-c", code],
@@ -158,12 +228,19 @@ def _run_diag_probe(plan):
 def test_sparse_batched_level_diag_activation():
     on_log, on_md5 = _run_diag_probe("auto,dense_rowdata:off,sparse_batched_level:on")
     assert "batched_level_kernels=1" in on_log, on_log[-3000:]
-    assert "quantized construct: sparse_batched" in on_log, on_log[-3000:]
+    assert "quantized construct: sparse_batched (device levels) kernel" in on_log, on_log[-3000:]
+    assert "device_tree: complete " in on_log, on_log[-3000:]
+    assert re.search(r"device_tree: complete .*graph=1 hits=[1-9]\d*", on_log), on_log[-3000:]
     assert "sparse_layout" not in on_log, on_log[-3000:]
 
     off_log, off_md5 = _run_diag_probe("auto,dense_rowdata:off,sparse_batched_level:off")
     assert "batched_level_kernels=0" in off_log, off_log[-3000:]
     assert "quantized construct: sparse_batched" not in off_log, off_log[-3000:]
     assert "sparse_layout" in off_log, off_log[-3000:]
+
+    nonquant_log, _ = _run_diag_probe("auto,dense_rowdata:off,sparse_batched_level:on", quant_mode="none")
+    assert "batched_level_kernels=0" in nonquant_log, nonquant_log[-3000:]
+    assert "sparse_layout" in nonquant_log, nonquant_log[-3000:]
+    assert "quantized construct: sparse_batched" not in nonquant_log, nonquant_log[-3000:]
 
     assert on_md5 == off_md5

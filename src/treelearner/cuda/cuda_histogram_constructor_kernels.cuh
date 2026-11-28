@@ -5437,7 +5437,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   const int num_pairs,
   const data_size_t max_num_data_in_smaller_leaf,
   const data_size_t* level_smaller_num_data) {
-  // dense shared-memory path only (SupportsBatchedLevel() gates the rest)
+  // shared-memory path only: dense, or quantized sparse under sparse_batched_level (SupportsBatchedLevel() gates the rest)
   int grid_dim_x = 0;
   int grid_dim_y = 0;
   int block_dim_x = 0;

@@ -401,10 +401,11 @@ class CUDAHistogramConstructor {
   }
 
   /*! \brief why the batched per-level construct/fix/subtract path does not support the
-   *  current data layout (kNone: it does: dense, shared-memory histograms). The compact
+   *  current data layout (kNone: it does: dense shared-memory histograms, and quantized
+   *  sparse shared-memory histograms under cuda_plan key sparse_batched_level). The compact
    *  column view (feature_fraction sampling gathered into a dense per-tree copy) is
    *  supported through the same batched dense kernel fed with the compact pointers/dims;
-   *  it exists for 8-bit rows only (ScanCompactLayout), and 16-bit rows read the full matrix. */
+   *  it exists for 8-bit dense rows only (ScanCompactLayout), and 16-bit rows read the full matrix. */
   DeviceTreeReason BatchedLevelRefusal() const {
     if (NonquantClassicFallback()) {
       return DeviceTreeReason::kNoSharedMemory;
