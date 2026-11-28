@@ -188,22 +188,32 @@ class CUDADataPartition: public NCCLInfo {
                               const int joint_leaves = 0, const bool skip_gh_scatter = false);
 
   /*! \brief cuda_plan key partition_pack_gh: set the tree's raw quantized (grad, hess) buffer (int32 per row), or
-   *  nullptr to disable partition-ordered gh packing for this tree. Lazily allocates the ping-pong gh buffers only
-   *  when enabled, canonicalizes their parity at tree start, and marks packed gh invalid until level 0 applies. */
-  void SetQuantizedGradHess(const int32_t* raw_quant_gh) {
+   *  nullptr to disable partition-ordered gh packing for this tree. Lazily allocates the ping-pong gh buffers with
+   *  TryResizeDiscard (gracefully falling back to raw gh gathers on VRAM OOM), releases them when disabled,
+   *  canonicalizes their parity at tree start, and returns whether packing is active. */
+  bool SetQuantizedGradHess(const int32_t* raw_quant_gh) {
     cuda_raw_quant_gh_ = raw_quant_gh;
     leaf_gh_valid_ = false;
-    if (raw_quant_gh != nullptr) {
-      if (cuda_leaf_gh_.Size() < static_cast<size_t>(num_data_)) {
-        cuda_leaf_gh_.Resize(static_cast<size_t>(num_data_));
-        cuda_out_leaf_gh_.Resize(static_cast<size_t>(num_data_));
-      }
-      if (FalcataPlan::Get().index_parity_canonical &&
-          reinterpret_cast<uintptr_t>(cuda_leaf_gh_.RawData()) >
-            reinterpret_cast<uintptr_t>(cuda_out_leaf_gh_.RawData())) {
-        cuda_leaf_gh_.Swap(&cuda_out_leaf_gh_);
+    if (raw_quant_gh == nullptr) {
+      cuda_leaf_gh_.Clear();
+      cuda_out_leaf_gh_.Clear();
+      return false;
+    }
+    const size_t want = static_cast<size_t>(num_data_);
+    if (cuda_leaf_gh_.Size() < want || cuda_out_leaf_gh_.Size() < want) {
+      if (!cuda_leaf_gh_.TryResizeDiscard(want) || !cuda_out_leaf_gh_.TryResizeDiscard(want)) {
+        cuda_leaf_gh_.Clear();
+        cuda_out_leaf_gh_.Clear();
+        cuda_raw_quant_gh_ = nullptr;
+        return false;
       }
     }
+    if (FalcataPlan::Get().index_parity_canonical &&
+        reinterpret_cast<uintptr_t>(cuda_leaf_gh_.RawData()) >
+          reinterpret_cast<uintptr_t>(cuda_out_leaf_gh_.RawData())) {
+      cuda_leaf_gh_.Swap(&cuda_out_leaf_gh_);
+    }
+    return true;
   }
 
   /*! \brief cuda_plan key device_levels: after the device levels' readback: levels_applied of levels_enqueued
@@ -255,14 +265,15 @@ class CUDADataPartition: public NCCLInfo {
     key->push_back(static_cast<const void*>(cuda_out_leaf_gh_.RawDataReadOnly()));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(leaf_gh_valid_ ? 1 : 0)));
   }
-  /*! \brief cuda_plan key device_level_graph: the host half of a replayed graph's levels (one swap per level) */
-  void SwapIndexBuffers(const int times) {
+  /*! \brief cuda_plan key device_level_graph: the host half of a replayed graph's levels (one swap per level).
+   *  \p end_gh_valid is false when the final captured level skipped gh scatter (whole-tree device graphs). */
+  void SwapIndexBuffers(const int times, const bool end_gh_valid = true) {
     for (int i = 0; i < times; ++i) {
       cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
       cuda_leaf_gh_.Swap(&cuda_out_leaf_gh_);
     }
-    if (times > 0 && cuda_raw_quant_gh_ != nullptr) {
-      leaf_gh_valid_ = true;
+    if (times > 0) {
+      leaf_gh_valid_ = end_gh_valid && cuda_raw_quant_gh_ != nullptr;
     }
   }
   /*! \brief cuda_plan key index_parity_canonical: the lower-address index buffer as the main array, before the main
@@ -447,11 +458,13 @@ class CUDADataPartition: public NCCLInfo {
   data_size_t* device_level_main_indices() {
     EnsureLevelPartitioned();  // cuda_plan key final_map_only
     level_shared_gaps_valid_ = false;  // a writer outside the batched level apply
+    leaf_gh_valid_ = false;
     return cuda_data_indices_.RawData();
   }
   data_size_t* device_level_out_indices() {
     EnsureLevelPartitioned();  // cuda_plan key final_map_only
     level_shared_gaps_valid_ = false;
+    leaf_gh_valid_ = false;
     return cuda_out_data_indices_in_leaf_.RawData();
   }
 

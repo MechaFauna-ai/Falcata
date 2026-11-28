@@ -1010,9 +1010,11 @@ struct FalcataPlan {
   // cuda_data_indices_ by the batched level apply (SplitLevelBatched / LaunchDeviceLevelApply), so level >= 1
   // quantized histogram constructs read each row's packed (grad, hess) sequentially/coalesced alongside data_indices
   // instead of a dependent random gather from cuda_gradients_and_hessians[idx]. Level 0 (and classic per-split /
-  // non-eligible flows) read cuda_gradients_and_hessians[idx] as before. Under auto, engages where packing pays
-  // (raw quant gh > device persisting L2 budget, or wide >=4-partition 8-bit dense construct); explicit :on forces
-  // it at any shape, :off disables it everywhere. Same packed int32 values, same integer sums: bit-identical.
+  // non-eligible flows) read cuda_gradients_and_hessians[idx] as before. Default true means hardware-gated auto
+  // (engages on dense/pair-joint batched constructs where raw quant gh exceeds the device persisting L2 budget, or
+  // on wide >=4-partition 8-bit dense constructs); explicit :on sets partition_pack_gh_forced=true to force packing
+  // at any hybrid quantized shape, and :off disables it everywhere. Same packed int32 values, same integer sums:
+  // bit-identical.
   bool partition_pack_gh = true;    // key: partition_pack_gh
   bool partition_pack_gh_forced = false;
   // prefill the next tree's compact column view on a side stream during the

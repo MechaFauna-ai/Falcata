@@ -189,13 +189,16 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
   count_codes_ = nullptr;  // cuda_plan key forest_count_hist: the learner sets this tree's codes (SetCountCodes)
   // every tree starts on plane 0, whose hessians are the ones every consumer reads
   grad_only_plane_ = false;
-  if (FalcataPlan::Get().l2_policy && !skip_grad_l2_pin_ && l2_carveout_bytes_ == 0 && l2_persist_budget_ > 0 &&
-      gradients != nullptr) {
+  if (FalcataPlan::Get().l2_policy && !skip_grad_l2_pin_ && !l2_limit_attempted_ &&
+      l2_carveout_bytes_ == 0 && l2_persist_budget_ > 0 && gradients != nullptr) {
     const size_t needed = static_cast<size_t>(num_data_) *
       (use_quantized_grad_ ? sizeof(int32_t) : 2 * sizeof(score_t));
     const size_t want = std::min(needed, l2_persist_budget_);
-    if (want > 0 && cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want) == cudaSuccess) {
-      l2_carveout_bytes_ = want;
+    if (want > 0) {
+      l2_limit_attempted_ = true;
+      if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want) == cudaSuccess) {
+        l2_carveout_bytes_ = want;
+      }
     }
   }
   const size_t l2_window_bytes = std::min(l2_max_window_bytes_,
@@ -1557,9 +1560,11 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
         // once partition_pack_gh has decided whether cuda_gradients_ will be randomly gathered.
         const size_t needed = static_cast<size_t>(num_data_) * 2 * sizeof(score_t);
         const size_t want = std::min(needed, l2_persist_budget_);
-        if (want > 0 &&
-            cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want) == cudaSuccess) {
-          l2_carveout_bytes_ = want;
+        if (want > 0) {
+          l2_limit_attempted_ = true;
+          if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want) == cudaSuccess) {
+            l2_carveout_bytes_ = want;
+          }
         }
       }
     }

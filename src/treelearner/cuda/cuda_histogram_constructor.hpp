@@ -629,13 +629,14 @@ class CUDAHistogramConstructor {
 
   void ResetConfig(const Config* config);
 
-  /*! \brief cuda_plan key partition_pack_gh: disable the persisting L2 carveout on cuda_gradients_ when quantized
-   *  level >= 1 constructs read partition-ordered gh sequentially (pinning cuda_gradients_ would strand up to 2/3
-   *  of L2 on an unused buffer). Also exposes the device's persisting L2 budget and partition count for shape gating. */
+  /*! \brief cuda_plan key partition_pack_gh: skip reserving/pinning the persisting L2 window on cuda_gradients_
+   *  when quantized level >= 1 constructs read partition-ordered gh sequentially (pinning cuda_gradients_ would
+   *  strand up to 2/3 of L2 on an unused buffer). Clears only this learner's stream windows; never modifies the
+   *  device-global cudaLimitPersistingL2CacheSize. */
   void SetSkipGradL2Pin(const bool skip) {
     if (skip == skip_grad_l2_pin_) return;
     skip_grad_l2_pin_ = skip;
-    if (skip && l2_carveout_bytes_ > 0) {
+    if (skip && l2_window_base_ != nullptr) {
       cudaStreamAttrValue attr{};
       attr.accessPolicyWindow.base_ptr = nullptr;
       attr.accessPolicyWindow.num_bytes = 0;
@@ -647,8 +648,6 @@ class CUDAHistogramConstructor {
           cudaStreamSetAttribute(pipeline_streams_[p], cudaStreamAttributeAccessPolicyWindow, &attr);
         }
       }
-      cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, 0);
-      l2_carveout_bytes_ = 0;
       l2_window_base_ = nullptr;
       l2_window_bytes_ = 0;
     }
@@ -1524,6 +1523,7 @@ class CUDAHistogramConstructor {
   size_t l2_max_window_bytes_ = 0;
   size_t l2_persist_budget_ = 0;
   bool skip_grad_l2_pin_ = false;
+  bool l2_limit_attempted_ = false;
   /*! \brief pinned staging for async metadata uploads (grown on demand) */
   void* prefill_pinned_ = nullptr;
   size_t prefill_pinned_bytes_ = 0;

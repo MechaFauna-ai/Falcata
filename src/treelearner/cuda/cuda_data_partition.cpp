@@ -689,8 +689,9 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
   const bool do_pack_gh = cuda_raw_quant_gh_ != nullptr && !map_only && !write_leaf_map &&
     nccl_communicator_ == nullptr && use_quantized_grad_;
   if (do_pack_gh && !leaf_gh_valid_ && num_gaps > 0) {
-    // Level-0 gaps are populated from raw_quant_gh into out_leaf_gh only (not in_leaf_gh), so
-    // gap_copy_once must not assume both gh buffers already hold those gaps.
+    // A GH_MODE=1 level (leaf_gh_valid_ == false) populates gaps from raw_quant_gh into out_leaf_gh
+    // only (in_leaf_gh does not hold them), so clear level_shared_gaps_valid_ to force the next level
+    // to copy every gap before gap_copy_once may skip them.
     level_shared_gaps_valid_ = false;
   }
   LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks, num_gaps, max_gap_blocks,
@@ -876,11 +877,13 @@ void CUDADataPartition::ResetTrainingData(const Dataset* train_data, const int n
                                                HybridBitWordUnitsWorstCase()));
     cuda_data_index_to_leaf_index_.Resize(static_cast<size_t>(num_data_));
     cuda_out_data_indices_in_leaf_.Resize(static_cast<size_t>(num_data_));
-    if (cuda_leaf_gh_.Size() > 0) {
-      cuda_leaf_gh_.Resize(static_cast<size_t>(num_data_));
-      cuda_out_leaf_gh_.Resize(static_cast<size_t>(num_data_));
+    if (cuda_leaf_gh_.Size() > 0 || cuda_out_leaf_gh_.Size() > 0) {
+      // Optional ping-pong gh buffers reallocate lazily via TryResizeDiscard in SetQuantizedGradHess.
+      cuda_leaf_gh_.Clear();
+      cuda_out_leaf_gh_.Clear();
     }
   }
+  leaf_gh_valid_ = false;
   used_indices_ = nullptr;
   use_bagging_ = false;
   num_used_indices_ = 0;
