@@ -810,6 +810,28 @@ void DatasetLoader::FindBinLocal(int i, double* values, int num_values,
   }
 }
 
+void DatasetLoader::FindBinLocalFromByteCounts(int i, const int counts_256[256], bool is_signed,
+                                               double missing_sentinel, size_t total_sample_size,
+                                               data_size_t filter_cnt,
+                                               const std::vector<std::vector<double>>& forced_bin_bounds,
+                                               std::unique_ptr<BinMapper>* out) const {
+  if (ignore_features_.count(i) > 0) {
+    out->reset(nullptr);
+    return;
+  }
+  BinType bin_type = BinType::NumericalBin;
+  if (categorical_features_.count(i)) {
+    bin_type = BinType::CategoricalBin;
+    CheckNotMonotoneCategorical(i);
+  }
+  out->reset(new BinMapper());
+  const int max_bin = config_.max_bin_by_feature.empty() ? config_.max_bin : config_.max_bin_by_feature[i];
+  (*out)->FindBinFromByteCounts(counts_256, is_signed, missing_sentinel, total_sample_size,
+                                max_bin, config_.min_data_in_bin, filter_cnt,
+                                config_.feature_pre_filter, bin_type, config_.use_missing,
+                                config_.zero_as_missing, forced_bin_bounds[i]);
+}
+
 namespace {
 
 // EFB view of a SampleColumnSource: row ids are re-derived from the source one
@@ -901,20 +923,49 @@ Dataset* DatasetLoader::ConstructFromSampleSource(const SampleColumnSource& sour
   #pragma omp for schedule(guided)
   for (int i = 0; i < num_col; ++i) {
     OMP_LOOP_EX_BEGIN();
-    source.GetColumn(i, &values, &indices);
-    const int n = static_cast<int>(values.size());
-    num_per_col[i] = n;
-    FindBinLocal(i, values.data(), n, total_sample_size, filter_cnt,
-                 forced_bin_bounds, &bin_mappers[i]);
-    const BinMapper* mapper = bin_mappers[i].get();
-    if (need_masks && mapper != nullptr && !mapper->is_trivial() &&
-        mapper->GetDefaultBin() != mapper->GetMostFreqBin()) {
-      auto& mask = most_freq_masks[i];
-      mask.assign((static_cast<size_t>(n) + 63) / 64, 0);
-      const uint32_t most_freq_bin = mapper->GetMostFreqBin();
-      for (int j = 0; j < n; ++j) {
-        if (mapper->ValueToBin(values[j]) == most_freq_bin) {
-          mask[j >> 6] |= (1ULL << (j & 63));
+    int counts_256[256];
+    bool is_signed = false;
+    double missing_sentinel = std::numeric_limits<double>::quiet_NaN();
+    int num_nonzero = 0;
+    if (source.GetByteHistogram(i, counts_256, &is_signed, &missing_sentinel,
+                                &num_nonzero)) {
+      num_per_col[i] = num_nonzero;
+      FindBinLocalFromByteCounts(i, counts_256, is_signed, missing_sentinel,
+                                 total_sample_size, filter_cnt,
+                                 forced_bin_bounds, &bin_mappers[i]);
+      const BinMapper* mapper = bin_mappers[i].get();
+      if (need_masks && mapper != nullptr && !mapper->is_trivial() &&
+          mapper->GetDefaultBin() != mapper->GetMostFreqBin()) {
+        const uint32_t most_freq_bin = mapper->GetMostFreqBin();
+        uint8_t is_most_freq[256];
+        is_most_freq[0] = 0;
+        for (int b = 1; b < 256; ++b) {
+          double v = is_signed
+              ? static_cast<double>(static_cast<int8_t>(static_cast<uint8_t>(b)))
+              : static_cast<double>(static_cast<uint8_t>(b));
+          if (!std::isnan(missing_sentinel) && v == missing_sentinel) {
+            v = std::numeric_limits<double>::quiet_NaN();
+          }
+          is_most_freq[b] = (mapper->ValueToBin(v) == most_freq_bin) ? 1 : 0;
+        }
+        source.GetByteMostFreqMask(i, num_nonzero, is_most_freq, &most_freq_masks[i]);
+      }
+    } else {
+      source.GetColumn(i, &values, &indices);
+      const int n = static_cast<int>(values.size());
+      num_per_col[i] = n;
+      FindBinLocal(i, values.data(), n, total_sample_size, filter_cnt,
+                   forced_bin_bounds, &bin_mappers[i]);
+      const BinMapper* mapper = bin_mappers[i].get();
+      if (need_masks && mapper != nullptr && !mapper->is_trivial() &&
+          mapper->GetDefaultBin() != mapper->GetMostFreqBin()) {
+        auto& mask = most_freq_masks[i];
+        mask.assign((static_cast<size_t>(n) + 63) / 64, 0);
+        const uint32_t most_freq_bin = mapper->GetMostFreqBin();
+        for (int j = 0; j < n; ++j) {
+          if (mapper->ValueToBin(values[j]) == most_freq_bin) {
+            mask[j >> 6] |= (1ULL << (j & 63));
+          }
         }
       }
     }

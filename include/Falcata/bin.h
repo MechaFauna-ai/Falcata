@@ -210,6 +210,18 @@ class BinMapper {
                bool use_missing, bool zero_as_missing, const std::vector<double>& forced_upper_bounds);
 
   /*!
+  * \brief Construct feature value to bin mapper from an exact 256-bucket histogram of sampled int8/uint8 values.
+  *        Produces bit-identical bin boundaries and metadata to FindBin() on the same sample converted to double.
+  * \param counts_256 Exact counts per raw byte value (0..255); sum must equal total_sample_cnt
+  * \param is_signed True for int8_t (bytes 128..255 are -128..-1), false for uint8_t (0..255)
+  * \param missing_sentinel Nonzero missing sentinel value (or NaN when unset)
+  */
+  void FindBinFromByteCounts(const int counts_256[256], bool is_signed, double missing_sentinel,
+                             size_t total_sample_cnt, int max_bin, int min_data_in_bin, int min_split_data,
+                             bool pre_filter, BinType bin_type, bool use_missing, bool zero_as_missing,
+                             const std::vector<double>& forced_upper_bounds);
+
+  /*!
   * \brief Serializing this object to buffer
   * \param buffer The destination
   */
@@ -252,6 +264,10 @@ class BinMapper {
   }
 
  private:
+  void FindBinFromDistinct(const std::vector<double>& distinct_values, const std::vector<int>& counts,
+                           size_t total_sample_cnt, int na_cnt, int max_bin, int min_data_in_bin,
+                           int min_split_data, bool pre_filter, const std::vector<double>& forced_upper_bounds);
+
   /*! \brief Number of bins */
   int num_bin_ = 1;
   MissingType missing_type_ = MissingType::None;

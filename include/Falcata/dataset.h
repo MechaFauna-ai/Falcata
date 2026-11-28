@@ -13,6 +13,7 @@
 #include <Falcata/train_share_states.h>
 #include <Falcata/utils/byte_buffer.h>
 #include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
 #include <Falcata/utils/openmp_wrapper.h>
 #include <Falcata/utils/random.h>
 #include <Falcata/utils/text_reader.h>
@@ -60,6 +61,27 @@ class SampleColumnSource {
   virtual void GetColumnIndices(int col, std::vector<int>* indices) const {
     std::vector<double> values;
     GetColumn(col, &values, indices);
+  }
+  /*! \brief Optional O(N) 256-bucket histogram for int8/uint8 sources.
+  *          Returns true and fills `counts_256` (indexed by raw byte 0..255),
+  *          `is_signed`, `missing_sentinel`, and `num_nonzero` (count of
+  *          entries with raw byte != 0, matching GetColumn's output size).
+  *          Thread-safe. */
+  virtual bool GetByteHistogram(int /*col*/, int /*counts_256*/[256],
+                                bool* /*is_signed*/,
+                                double* /*missing_sentinel*/,
+                                int* /*num_nonzero*/) const {
+    return false;
+  }
+  /*! \brief Optional direct most-frequent-bin mask for int8/uint8 sources:
+  *          bit j is set iff the j-th nonzero entry of `col` has
+  *          `is_most_freq[raw_byte] != 0`, in the exact order GetColumn yields.
+  *          Only called when GetByteHistogram returned true. Thread-safe. */
+  virtual void GetByteMostFreqMask(int /*col*/,
+                                   int /*num_nonzero*/,
+                                   const uint8_t /*is_most_freq*/[256],
+                                   std::vector<uint64_t>* /*mask*/) const {
+    Log::Fatal("GetByteMostFreqMask not implemented");
   }
 };
 
