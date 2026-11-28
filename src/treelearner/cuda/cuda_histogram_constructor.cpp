@@ -1030,11 +1030,14 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   compact_row_bytes_ = layout.packed_part_offsets.empty() ? 0 : layout.packed_part_offsets.back();
 
   // Allocate / resize compact buffers to their upper bound once so device pointers stabilize on tree 0.
+  // Never fatally OOM on speculative upper-bound sizing: fall back cleanly to layout.data_bytes under tight VRAM.
   const size_t compact_data_bytes = layout.data_bytes;
   if (compact_data_uint8_t_.Size() < compact_data_bytes) {
-    const size_t alloc_bytes = FalcataPlan::Get().compact_prefill_dt ?
+    const size_t upper_bound = FalcataPlan::Get().compact_prefill_dt ?
       CompactBufferUpperBound(layout) : compact_data_bytes;
-    compact_data_uint8_t_.ResizeDiscard(alloc_bytes);
+    if (upper_bound <= compact_data_bytes || !compact_data_uint8_t_.TryResizeDiscard(upper_bound)) {
+      compact_data_uint8_t_.ResizeDiscard(compact_data_bytes);
+    }
   }
   if (compact_is_4bit_) {
     if (compact_packed_partition_byte_offsets_.Size() < compact_packed_part_offsets.size()) {
@@ -1686,41 +1689,62 @@ void CUDAHistogramConstructor::PrefillNextCompactView(
     }
   };
 
-  // Ensure alt compact data buffer fits (opportunistic under tight VRAM so we never OOM or force mask fallback).
-  const size_t alt_alloc_bytes = CompactBufferUpperBound(layout);
-  if (compact_data_uint8_t_alt_.Size() < layout.data_bytes) {
+  // Helper to query effective free VRAM (respecting FALCATA_DEBUG=vramfree=N test cap).
+  auto get_free_vram = [&]() {
     size_t free_b = 0, total_b = 0;
     CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_b, &total_b));
     const int64_t cap_mib = FalcataDebug().vramfree_mib;
     if (cap_mib >= 0) {
       free_b = std::min(free_b, static_cast<size_t>(cap_mib) << 20);
     }
-    constexpr size_t kPrefillHeadroom = size_t{128} << 20;
+    return free_b;
+  };
+  constexpr size_t kPrefillHeadroom = size_t{128} << 20;
+
+  // Ensure alt compact data buffer fits (opportunistic under tight VRAM so we never OOM or force mask fallback).
+  const size_t alt_upper_bytes = CompactBufferUpperBound(layout);
+  if (compact_data_uint8_t_alt_.Size() < layout.data_bytes) {
+    const size_t free_b = get_free_vram();
     const size_t avail = free_b + compact_data_uint8_t_alt_.Size();
-    if (avail < alt_alloc_bytes + kPrefillHeadroom) {
+    size_t target_bytes = 0;
+    if (avail >= alt_upper_bytes + kPrefillHeadroom) {
+      target_bytes = alt_upper_bytes;
+    } else if (avail >= layout.data_bytes + kPrefillHeadroom) {
+      target_bytes = layout.data_bytes;
+    } else {
       return;
     }
     sync_before_realloc();
-    if (!compact_data_uint8_t_alt_.TryResizeDiscard(alt_alloc_bytes)) {
-      return;
+    if (!compact_data_uint8_t_alt_.TryResizeDiscard(target_bytes)) {
+      if (target_bytes == layout.data_bytes || !compact_data_uint8_t_alt_.TryResizeDiscard(layout.data_bytes)) {
+        return;
+      }
     }
   }
 
-  // Ensure alt compact layout metadata buffers fit (pre-sized to dataset upper bound once so pointers stay fixed).
+  // Ensure alt compact layout metadata buffers fit (non-fatal TryResizeDiscard; decline prefill cleanly on OOM).
   const size_t part_cap = static_cast<size_t>(num_partitions) + 1;
   const size_t meta_cap = std::max(compact_col_meta_h.size(), 4 * static_cast<size_t>(num_total_cols));
   if ((layout.is_4bit && compact_packed_partition_byte_offsets_alt_.Size() < device_packed_offsets.size()) ||
       compact_feature_partition_column_index_offsets_alt_.Size() < compact_part_col_offsets.size() ||
       compact_column_hist_offsets_alt_.Size() < compact_col_meta_h.size()) {
+    const size_t need_meta_b =
+      (layout.is_4bit ? part_cap * sizeof(int) : 0) + part_cap * sizeof(int) + meta_cap * sizeof(uint32_t);
+    if (get_free_vram() < need_meta_b + kPrefillHeadroom) {
+      return;
+    }
     sync_before_realloc();
-    if (layout.is_4bit && compact_packed_partition_byte_offsets_alt_.Size() < device_packed_offsets.size()) {
-      compact_packed_partition_byte_offsets_alt_.Resize(part_cap);
+    if (layout.is_4bit && compact_packed_partition_byte_offsets_alt_.Size() < device_packed_offsets.size() &&
+        !compact_packed_partition_byte_offsets_alt_.TryResizeDiscard(part_cap)) {
+      return;
     }
-    if (compact_feature_partition_column_index_offsets_alt_.Size() < compact_part_col_offsets.size()) {
-      compact_feature_partition_column_index_offsets_alt_.Resize(part_cap);
+    if (compact_feature_partition_column_index_offsets_alt_.Size() < compact_part_col_offsets.size() &&
+        !compact_feature_partition_column_index_offsets_alt_.TryResizeDiscard(part_cap)) {
+      return;
     }
-    if (compact_column_hist_offsets_alt_.Size() < compact_col_meta_h.size()) {
-      compact_column_hist_offsets_alt_.Resize(meta_cap);
+    if (compact_column_hist_offsets_alt_.Size() < compact_col_meta_h.size() &&
+        !compact_column_hist_offsets_alt_.TryResizeDiscard(meta_cap)) {
+      return;
     }
   }
 
@@ -1800,15 +1824,19 @@ void CUDAHistogramConstructor::PrefillNextCompactView(
         prefill_ws_dst_byte_.Size() < static_cast<size_t>(total_word_slots)) {
       sync_before_realloc();
       if (prefill_col_src_nib_base_.Size() < static_cast<size_t>(total_compact)) {
-        prefill_col_src_nib_base_.Resize(num_total_cols);
-        prefill_col_src_stride_nib_.Resize(num_total_cols);
+        if (!prefill_col_src_nib_base_.TryResizeDiscard(num_total_cols) ||
+            !prefill_col_src_stride_nib_.TryResizeDiscard(num_total_cols)) {
+          return;
+        }
       }
       if (prefill_ws_dst_byte_.Size() < static_cast<size_t>(total_word_slots)) {
         const size_t ws_cap = std::max<size_t>(total_word_slots, num_total_cols);
-        prefill_ws_dst_byte_.Resize(ws_cap);
-        prefill_ws_dst_stride_.Resize(ws_cap);
-        prefill_ws_first_col_.Resize(ws_cap);
-        prefill_ws_ndig_.Resize(ws_cap);
+        if (!prefill_ws_dst_byte_.TryResizeDiscard(ws_cap) ||
+            !prefill_ws_dst_stride_.TryResizeDiscard(ws_cap) ||
+            !prefill_ws_first_col_.TryResizeDiscard(ws_cap) ||
+            !prefill_ws_ndig_.TryResizeDiscard(ws_cap)) {
+          return;
+        }
       }
     }
     add_pin(sizeof(size_t) * total_compact);
@@ -1866,10 +1894,11 @@ void CUDAHistogramConstructor::PrefillNextCompactView(
                                          bs_dst_byte_h, bs_dst_stride_h);
     fill_src_4bit = colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>();
 
-    // Check pair_code5 / pair_code_wide / pair_code_radix eligibility for prefilled code view!
+    // Check pair_code5 / pair_code_wide / pair_code_radix eligibility for prefilled code view
+    // (kept aligned with live LaunchCompactFill's fused_root_hist + pair_code5 gate).
     if (plan.compact_prefill_dt && allow_code5 && tiled && use_quantized_grad_ &&
-        plan.pair_code5 && plan.pair_hist && plan.pair_hist_rows && plan.colmajor_split &&
-        colmajor_bin() != nullptr && fill_src_4bit == colmajor_bin() &&
+        plan.fused_root_hist && plan.pair_code5 && plan.pair_hist && plan.pair_hist_rows &&
+        plan.colmajor_split && colmajor_bin() != nullptr && fill_src_4bit == colmajor_bin() &&
         layout.row_interleave && layout.codec == PackCodecId::kNibble4 &&
         next_host.pair_joint_total > 0 && total_byte_slots > 0 && total_byte_slots == next_host.row_bytes) {
       const DeviceLaunchLimits device_limits = CurrentDeviceLaunchLimits();
@@ -1954,22 +1983,27 @@ void CUDAHistogramConstructor::PrefillNextCompactView(
     if (need_prefill_bs || need_code5_alt) {
       sync_before_realloc();
       if (need_prefill_bs) {
-        prefill_bs_src_nib0_.Resize(slot_cap);
-        prefill_bs_src_nib1_.Resize(slot_cap);
-        prefill_bs_src_stride_nib_.Resize(slot_cap);
-        prefill_bs_dst_byte_.Resize(slot_cap);
-        prefill_bs_dst_stride_.Resize(slot_cap);
+        if (!prefill_bs_src_nib0_.TryResizeDiscard(slot_cap) ||
+            !prefill_bs_src_nib1_.TryResizeDiscard(slot_cap) ||
+            !prefill_bs_src_stride_nib_.TryResizeDiscard(slot_cap) ||
+            !prefill_bs_dst_byte_.TryResizeDiscard(slot_cap) ||
+            !prefill_bs_dst_stride_.TryResizeDiscard(slot_cap)) {
+          return;
+        }
       }
       if (need_code5_alt) {
-        if (code5_table_alt_.Size() < code_table_h.size()) {
-          code5_table_alt_.Resize(std::max(code_table_h.size(), 2 * slot_cap));
+        if (code5_table_alt_.Size() < code_table_h.size() &&
+            !code5_table_alt_.TryResizeDiscard(std::max(code_table_h.size(), 2 * slot_cap))) {
+          return;
         }
         if (code5_bs_src_nib0_alt_.Size() < static_cast<size_t>(total_byte_slots)) {
-          code5_bs_src_nib0_alt_.Resize(slot_cap);
-          code5_bs_src_nib1_alt_.Resize(slot_cap);
-          code5_bs_src_stride_nib_alt_.Resize(slot_cap);
-          code5_bs_dst_byte_alt_.Resize(slot_cap);
-          code5_bs_dst_stride_alt_.Resize(slot_cap);
+          if (!code5_bs_src_nib0_alt_.TryResizeDiscard(slot_cap) ||
+              !code5_bs_src_nib1_alt_.TryResizeDiscard(slot_cap) ||
+              !code5_bs_src_stride_nib_alt_.TryResizeDiscard(slot_cap) ||
+              !code5_bs_dst_byte_alt_.TryResizeDiscard(slot_cap) ||
+              !code5_bs_dst_stride_alt_.TryResizeDiscard(slot_cap)) {
+            return;
+          }
         }
       }
     }
@@ -2008,10 +2042,12 @@ void CUDAHistogramConstructor::PrefillNextCompactView(
     }
     if (prefill_slot_src_byte_.Size() < static_cast<size_t>(total_compact)) {
       sync_before_realloc();
-      prefill_slot_src_byte_.Resize(num_total_cols);
-      prefill_slot_src_stride_.Resize(num_total_cols);
-      prefill_slot_dst_byte_.Resize(num_total_cols);
-      prefill_slot_dst_stride_.Resize(num_total_cols);
+      if (!prefill_slot_src_byte_.TryResizeDiscard(num_total_cols) ||
+          !prefill_slot_src_stride_.TryResizeDiscard(num_total_cols) ||
+          !prefill_slot_dst_byte_.TryResizeDiscard(num_total_cols) ||
+          !prefill_slot_dst_stride_.TryResizeDiscard(num_total_cols)) {
+        return;
+      }
     }
     add_pin(sizeof(size_t) * total_compact);
     add_pin(sizeof(int) * total_compact);
@@ -2178,389 +2214,11 @@ bool CUDAHistogramConstructor::ShouldPrefillCompactData(
     return false;
   }
   // Never split a used unbagged fused_root_hist into two DRAM passes (+192 MB read on saturated device_tree);
-  // those trees overlap host+GPU metadata via PrefillMetaBatch and keep the single-pass fused fill+root-hist.
+  // those trees keep the single-pass fused fill+root-hist with zero cross-stream overhead.
   if (compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4 && use_quantized_grad_ &&
       fused_root_shape && root_is_every_row && colmajor_pad_ > 0) {
     return false;
   }
-  return true;
-}
-
-bool CUDAHistogramConstructor::PrecomputeFusedRootCompactView(
-    const std::vector<int8_t>& is_feature_used_bytree,
-    const bool want_fused_root,
-    const bool allow_code5,
-    PrefillMetaBatch* batch,
-    PrecomputedFusedCompactState* out) const {
-  if (batch == nullptr || out == nullptr || cuda_row_data_ == nullptr || view_mask_regime()) {
-    return false;
-  }
-  out->compact_eligible = false;
-  out->fused_launch = false;
-
-  CompactLayout layout;
-  if (!ScanCompactLayout(is_feature_used_bytree, &layout)) {
-    // Non-compact sampled tree (e.g., 8-bit ff=0.5 skipped by compact_dense_wide_skip):
-    // BestSplitFinder + SetFeatureUsedBytree metadata are still pre-staged and overlapped!
-    return true;
-  }
-  if (!want_fused_root || !layout.is_4bit || layout.codec != PackCodecId::kNibble4 ||
-      !use_quantized_grad_ || !FalcataPlan::Get().fused_root_hist) {
-    return false;
-  }
-
-  const std::vector<int>& src_part_col_offsets = cuda_row_data_->host_feature_partition_column_index_offsets();
-  const std::vector<int>& compact_part_col_offsets = layout.part_col_offsets;
-  const std::vector<int>& src_local_col_for_compact_h = layout.src_local_col;
-  const std::vector<int>& partition_for_compact_h = layout.partition_for_slot;
-  const std::vector<int>& compact_packed_part_offsets = layout.packed_part_offsets;
-  const int num_partitions = layout.num_partitions;
-  const int total_compact = layout.total_compact;
-  const data_size_t num_data = cuda_row_data_->num_data();
-
-  if (compact_data_uint8_t_.Size() < layout.data_bytes || !compact_partition_hist_offsets_uploaded_) {
-    return false;
-  }
-
-  std::vector<uint32_t> compact_col_meta_h;
-  BuildCompactMetaHost(layout, &out->src_cols_host, &out->slot_byte_host,
-                       &out->slot_stride_host, &out->slot_col_host,
-                       &compact_col_meta_h, &out->pair_joint_max,
-                       &out->pair_joint_total, &out->max_compact_per_p);
-  out->is_4bit = layout.is_4bit;
-  out->codec = layout.codec;
-  out->row_interleave = layout.row_interleave;
-  out->row_bytes = compact_packed_part_offsets.empty() ? 0 : compact_packed_part_offsets.back();
-  out->total_compact = total_compact;
-
-  std::vector<int> device_packed_offsets = compact_packed_part_offsets;
-  if (layout.row_interleave) {
-    device_packed_offsets[0] = -compact_packed_part_offsets[num_partitions];
-  }
-  if (compact_packed_partition_byte_offsets_.Size() < device_packed_offsets.size() ||
-      compact_feature_partition_column_index_offsets_.Size() < compact_part_col_offsets.size() ||
-      compact_column_hist_offsets_.Size() < compact_col_meta_h.size()) {
-    return false;
-  }
-
-  const std::vector<int>& src_packed_offsets = cuda_row_data_->host_packed_partition_byte_offsets();
-  int total_byte_slots = 0;
-  for (int p = 0; p < num_partitions; ++p) {
-    const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_col_offsets[p];
-    total_byte_slots += (used_in_p + 1) >> 1;
-  }
-  std::vector<size_t> bs_src_nib0_h(total_byte_slots);
-  std::vector<size_t> bs_src_nib1_h(total_byte_slots);
-  std::vector<int> bs_src_stride_nib_h(total_byte_slots);
-  std::vector<size_t> bs_dst_byte_h(total_byte_slots);
-  std::vector<int> bs_dst_stride_h(total_byte_slots);
-  int byte_slot = 0;
-  for (int p = 0; p < num_partitions; ++p) {
-    const int compact_part_start = compact_part_col_offsets[p];
-    const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
-    const int dst_packed_width = layout.row_interleave ? compact_packed_part_offsets[num_partitions] :
-      compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
-    const size_t dst_part_byte = layout.row_interleave ? static_cast<size_t>(compact_packed_part_offsets[p]) :
-      static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
-    const size_t src_part_nib = static_cast<size_t>(src_packed_offsets[p]) * static_cast<size_t>(num_data) * 2;
-    const int src_stride_nib = (src_packed_offsets[p + 1] - src_packed_offsets[p]) * 2;
-    for (int m = 0; m < ((used_in_p + 1) >> 1); ++m) {
-      const int s0 = compact_part_start + 2 * m;
-      if (colmajor_pad_ > 0) {
-        const size_t c0 = static_cast<size_t>(src_part_col_offsets[p]) +
-          static_cast<size_t>(src_local_col_for_compact_h[s0]);
-        bs_src_nib0_h[byte_slot] = c0 * colmajor_pad_;
-        bs_src_nib1_h[byte_slot] = (2 * m + 1) < used_in_p ?
-          (static_cast<size_t>(src_part_col_offsets[p]) +
-           static_cast<size_t>(src_local_col_for_compact_h[s0 + 1])) * colmajor_pad_ :
-          ~static_cast<size_t>(0);
-        bs_src_stride_nib_h[byte_slot] = 1;
-      } else {
-        bs_src_nib0_h[byte_slot] = src_part_nib + static_cast<size_t>(src_local_col_for_compact_h[s0]);
-        bs_src_nib1_h[byte_slot] = (2 * m + 1) < used_in_p ?
-          src_part_nib + static_cast<size_t>(src_local_col_for_compact_h[s0 + 1]) :
-          ~static_cast<size_t>(0);
-        bs_src_stride_nib_h[byte_slot] = src_stride_nib;
-      }
-      bs_dst_byte_h[byte_slot] = dst_part_byte + static_cast<size_t>(m);
-      bs_dst_stride_h[byte_slot] = dst_packed_width;
-      ++byte_slot;
-    }
-  }
-  CHECK_EQ(byte_slot, total_byte_slots);
-  if (!CompactFill4BitTiledEligible(bs_src_nib0_h, bs_src_nib1_h, bs_src_stride_nib_h,
-                                    bs_dst_byte_h, bs_dst_stride_h)) {
-    return false;
-  }
-
-  const std::vector<uint32_t>& src_col_hist_offsets = cuda_row_data_->host_column_hist_offsets();
-  const std::vector<uint32_t>& part_hist_offsets = cuda_row_data_->host_partition_hist_offsets();
-  std::vector<int> col_first_bin(total_compact);
-  std::vector<int> col_span(total_compact);
-  std::vector<int> meta(2 * static_cast<size_t>(total_byte_slots));
-  std::vector<int> bin_pos;
-  bin_pos.reserve(static_cast<size_t>(num_total_bin_));
-  int max_span = 0;
-  for (int s = 0; s < total_compact; ++s) {
-    const int p = partition_for_compact_h[s];
-    const int c = src_part_col_offsets[p] + src_local_col_for_compact_h[s];
-    const uint32_t part_span = part_hist_offsets[p + 1] - part_hist_offsets[p];
-    const uint32_t col_end = (c + 1 < src_part_col_offsets[p + 1]) ? src_col_hist_offsets[c + 1] : part_span;
-    const int span = static_cast<int>(col_end) - static_cast<int>(src_col_hist_offsets[c]);
-    if (span <= 0 || span > 16) {
-      return false;
-    }
-    max_span = std::max(max_span, span);
-    col_span[s] = span;
-    col_first_bin[s] = static_cast<int>(bin_pos.size());
-    for (int b = 0; b < span; ++b) {
-      bin_pos.push_back(static_cast<int>(part_hist_offsets[p] + src_col_hist_offsets[c] + b));
-    }
-  }
-  int slot = 0;
-  for (int p = 0; p < num_partitions; ++p) {
-    const int compact_part_start = compact_part_col_offsets[p];
-    const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
-    for (int m = 0; m < ((used_in_p + 1) >> 1); ++m) {
-      meta[2 * slot] = col_first_bin[compact_part_start + 2 * m];
-      meta[2 * slot + 1] = (2 * m + 1) < used_in_p ? col_first_bin[compact_part_start + 2 * m + 1] : -1;
-      ++slot;
-    }
-  }
-  CHECK_EQ(slot, total_byte_slots);
-  const int num_local_bins = static_cast<int>(bin_pos.size());
-  if (num_local_bins >= 0xffff) {
-    return false;
-  }
-  meta.insert(meta.end(), bin_pos.begin(), bin_pos.end());
-
-  if (cuda_bs_src_nib0_.Size() < static_cast<size_t>(total_byte_slots) ||
-      fused_root_meta_.Size() < meta.size() ||
-      fused_root_scratch_.Size() < static_cast<size_t>(num_total_bin_)) {
-    return false;
-  }
-
-  bool word_prefetch = FalcataPlan::Get().root_hist_prefetch && colmajor_pad_ > 0 && colmajor_pad_ % 8 == 0 &&
-                       reinterpret_cast<uintptr_t>(colmajor_bin_.RawDataReadOnly()) % 4 == 0;
-  for (int i = 0; word_prefetch && i < total_byte_slots; ++i) {
-    word_prefetch = bs_src_nib0_h[i] % colmajor_pad_ == 0 &&
-                    (bs_src_nib1_h[i] == ~static_cast<size_t>(0) || bs_src_nib1_h[i] % colmajor_pad_ == 0);
-  }
-  const uint8_t* fill_src = colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() :
-    (colmajor_direct_ ? full_view_.RawDataReadOnly() : cuda_row_data_->GetBin<uint8_t>());
-  const DeviceLaunchLimits device_limits = CurrentDeviceLaunchLimits();
-  const FalcataPlan& plan = FalcataPlan::Get();
-  bool code5 = allow_code5 && plan.pair_code5 && plan.pair_hist &&
-               plan.pair_hist_rows && plan.colmajor_split &&
-               colmajor_bin() != nullptr && fill_src == colmajor_bin() &&
-               !(plan.compact_prefill && !plan.compact_prefill_dt) &&
-               layout.row_interleave && layout.codec == PackCodecId::kNibble4 &&
-               out->pair_joint_total > 0 && total_byte_slots > 0 && total_byte_slots == out->row_bytes &&
-               static_cast<size_t>(out->pair_joint_total) * sizeof(int32_t) <= device_limits.shared_bytes_per_block &&
-               total_byte_slots <= device_limits.max_threads_per_block;
-  std::vector<uint8_t> code_table_h(code5 ? total_byte_slots : 0);
-  for (int k = 0; code5 && k < total_byte_slots; ++k) {
-    code5 = bs_dst_byte_h[k] == static_cast<size_t>(k) && bs_dst_stride_h[k] == total_byte_slots;
-  }
-  int max_cells = 0;
-  bool odd_hi_ok = true;
-  std::vector<uint8_t> slot_cells_h(code5 ? total_byte_slots : 0, 1);
-  for (int p = 0, k = 0; code5 && p < num_partitions; ++p) {
-    const int compact_part_start = compact_part_col_offsets[p];
-    const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
-    for (int m = 0; m < ((used_in_p + 1) >> 1); ++m, ++k) {
-      const bool has_hi = (2 * m + 1) < used_in_p;
-      const int lo_span = col_span[compact_part_start + 2 * m];
-      const int hi_span = has_hi ? col_span[compact_part_start + 2 * m + 1] : 1;
-      max_cells = std::max(max_cells, lo_span * hi_span);
-      slot_cells_h[k] = static_cast<uint8_t>(std::min(255, lo_span * hi_span));
-      if (!((k % 6) % 2 == 0 || hi_span <= 7)) {
-        odd_hi_ok = false;
-      }
-      code_table_h[k] = static_cast<uint8_t>(hi_span | (has_hi ? 32 : 0));
-    }
-  }
-  int code_bits = 0;
-  if (code5 && max_cells <= 32 && odd_hi_ok) {
-    code_bits = 5;
-  } else if (code5 && plan.pair_code_wide && max_cells <= 64) {
-    code_bits = 6;
-    if (plan.pair_code_radix &&
-        4 * Code5RowWords(total_byte_slots, 6) < total_byte_slots &&
-        Code5RowWords(total_byte_slots, kCodeRadix) < Code5RowWords(total_byte_slots, 6)) {
-      bool halves_fit = true;
-      for (int h = 0; halves_fit && 3 * h < total_byte_slots; ++h) {
-        uint32_t cells = 1;
-        for (int j = 3 * h; j < std::min(3 * h + 3, total_byte_slots); ++j) {
-          cells *= slot_cells_h[j];
-        }
-        halves_fit = cells <= kCodeRadixHalfCells;
-      }
-      if (halves_fit) {
-        code_bits = kCodeRadix;
-      }
-    }
-  }
-  code5 = code_bits > 0;
-  const int code_row_words = Code5RowWords(total_byte_slots, code5 ? code_bits : 5);
-  const size_t code_view_words = static_cast<size_t>(num_data) * static_cast<size_t>(code_row_words);
-  code5 = code5 && code_view_words * sizeof(uint32_t) <
-                   static_cast<size_t>(total_byte_slots) * static_cast<size_t>(num_data) &&
-          code_view_words * sizeof(uint32_t) <= compact_data_uint8_t_.Size();
-  if (code5) {
-    if (code_bits == kCodeRadix) {
-      std::vector<uint8_t> interleaved(2 * static_cast<size_t>(total_byte_slots));
-      for (int k = 0; k < total_byte_slots; ++k) {
-        interleaved[2 * static_cast<size_t>(k)] = code_table_h[k];
-        interleaved[2 * static_cast<size_t>(k) + 1] = slot_cells_h[k];
-      }
-      code_table_h.swap(interleaved);
-    }
-    if (code5_table_.Size() < code_table_h.size() ||
-        code5_bs_src_nib0_.Size() < static_cast<size_t>(total_byte_slots)) {
-      return false;
-    }
-  }
-
-  // Stage all compact + fill + fused-root + code5 metadata into the single pinned PrefillMetaBatch!
-  if (!batch->AddTyped(const_cast<int*>(compact_packed_partition_byte_offsets_.RawDataReadOnly()),
-                       device_packed_offsets.data(), device_packed_offsets.size()) ||
-      !batch->AddTyped(const_cast<int*>(compact_feature_partition_column_index_offsets_.RawDataReadOnly()),
-                       compact_part_col_offsets.data(), compact_part_col_offsets.size()) ||
-      !batch->AddTyped(const_cast<uint32_t*>(compact_column_hist_offsets_.RawDataReadOnly()),
-                       compact_col_meta_h.data(), compact_col_meta_h.size()) ||
-      !batch->AddTyped(const_cast<size_t*>(cuda_bs_src_nib0_.RawDataReadOnly()),
-                       bs_src_nib0_h.data(), total_byte_slots) ||
-      !batch->AddTyped(const_cast<size_t*>(cuda_bs_src_nib1_.RawDataReadOnly()),
-                       bs_src_nib1_h.data(), total_byte_slots) ||
-      !batch->AddTyped(const_cast<int*>(cuda_bs_src_stride_nib_.RawDataReadOnly()),
-                       bs_src_stride_nib_h.data(), total_byte_slots) ||
-      !batch->AddTyped(const_cast<size_t*>(cuda_bs_dst_byte_.RawDataReadOnly()),
-                       bs_dst_byte_h.data(), total_byte_slots) ||
-      !batch->AddTyped(const_cast<int*>(cuda_bs_dst_stride_.RawDataReadOnly()),
-                       bs_dst_stride_h.data(), total_byte_slots) ||
-      !batch->AddTyped(const_cast<int*>(fused_root_meta_.RawDataReadOnly()),
-                       meta.data(), meta.size())) {
-    return false;
-  }
-  if (code5) {
-    if (!batch->AddTyped(const_cast<uint8_t*>(code5_table_.RawDataReadOnly()),
-                         code_table_h.data(), code_table_h.size()) ||
-        !batch->AddTyped(const_cast<size_t*>(code5_bs_src_nib0_.RawDataReadOnly()),
-                         bs_src_nib0_h.data(), total_byte_slots) ||
-        !batch->AddTyped(const_cast<size_t*>(code5_bs_src_nib1_.RawDataReadOnly()),
-                         bs_src_nib1_h.data(), total_byte_slots) ||
-        !batch->AddTyped(const_cast<int*>(code5_bs_src_stride_nib_.RawDataReadOnly()),
-                         bs_src_stride_nib_h.data(), total_byte_slots) ||
-        !batch->AddTyped(const_cast<size_t*>(code5_bs_dst_byte_.RawDataReadOnly()),
-                         bs_dst_byte_h.data(), total_byte_slots) ||
-        !batch->AddTyped(const_cast<int*>(code5_bs_dst_stride_.RawDataReadOnly()),
-                         bs_dst_stride_h.data(), total_byte_slots)) {
-      return false;
-    }
-  }
-
-  out->compact_eligible = true;
-  out->fused_launch = true;
-  out->total_byte_slots = total_byte_slots;
-  out->num_local_bins = num_local_bins;
-  out->max_span = max_span;
-  out->word_prefetch = word_prefetch;
-  out->code5 = code5;
-  out->code_bits = code5 ? code_bits : 5;
-  out->code_row_words = code_row_words;
-  out->fill_src = fill_src;
-  return true;
-}
-
-bool CUDAHistogramConstructor::ApplyPrecomputedFusedRootCompactView(PrecomputedFusedCompactState* pre) {
-  use_compact_view_ = false;
-  fused_root_ready_ = false;
-  code5_valid_ = false;
-  nibble_pending_ = false;
-  full_view_used_ = false;
-  compact_view_from_prefill_ = false;
-  prefill_valid_ = false;
-  if (!pre->compact_eligible) {
-    if (colmajor_direct_) {
-      EnsureFullView("a tree without a compact view");
-    }
-    return false;
-  }
-  compact_src_cols_host_.swap(pre->src_cols_host);
-  compact_slot_byte_host_.swap(pre->slot_byte_host);
-  compact_slot_stride_host_.swap(pre->slot_stride_host);
-  compact_slot_col_host_.swap(pre->slot_col_host);
-  compact_is_4bit_ = pre->is_4bit;
-  compact_codec_ = pre->codec;
-  compact_pair_joint_max_ = pre->pair_joint_max;
-  compact_pair_joint_total_ = pre->pair_joint_total;
-  compact_row_interleave_ = pre->row_interleave;
-  compact_row_bytes_ = pre->row_bytes;
-  max_num_compact_cols_per_partition_ = pre->max_compact_per_p;
-  num_compact_columns_ = pre->total_compact;
-  EnsureCompactPartitionHistOffsets();
-
-  const data_size_t num_data = cuda_row_data_->num_data();
-  const FalcataPlan& plan = FalcataPlan::Get();
-  bool code5_written = false;
-  const bool fused_root = LaunchFillCompactData4BitTiledRootHistKernel(
-    cuda_stream_,
-    colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
-    compact_data_uint8_t_.RawData(),
-    cuda_bs_src_nib0_.RawData(),
-    cuda_bs_src_nib1_.RawData(),
-    cuda_bs_dst_byte_.RawData(),
-    cuda_bs_dst_stride_.RawData(),
-    pre->total_byte_slots,
-    num_data,
-    fused_root_meta_.RawData(),
-    reinterpret_cast<const uint32_t*>(fused_root_meta_.RawData() +
-                                      2 * static_cast<size_t>(pre->total_byte_slots)),
-    pre->num_local_bins,
-    plan.root_hist_slot_major ? pre->max_span : 0,
-    plan.root_hist_tile_stride,
-    plan.root_hist_run_copy,
-    pre->word_prefetch,
-    pre->word_prefetch && plan.root_hist_l2_prefetch,
-    65534 / std::max(1, num_grad_quant_bins_),
-    reinterpret_cast<const int32_t*>(cuda_gradients_),
-    fused_root_request_16bit_,
-    fused_root_scratch_.RawData(),
-    static_cast<size_t>(num_total_bin_) * sizeof(hist_t),
-    pre->code5 ? reinterpret_cast<uint32_t*>(compact_data_uint8_t_.RawData()) : nullptr,
-    pre->code5 ? code5_table_.RawDataReadOnly() : nullptr,
-    pre->code_row_words,
-    pre->code5 ? pre->code_bits : 0,
-    &code5_written);
-  if (fused_root) {
-    fused_root_ready_ = !fused_root_code_view_only_;
-    fused_root_bits16_ = fused_root_request_16bit_;
-    code5_valid_ = code5_written;
-    code5_row_words_ = pre->code_row_words;
-    code5_bits_ = pre->code5 ? pre->code_bits : 5;
-    nibble_pending_ = code5_valid_;
-    nibble_pending_slots_ = pre->total_byte_slots;
-    nibble_pending_src_ = pre->fill_src;
-    nibble_pending_stream_ = cuda_stream_;
-  } else {
-    LaunchFillCompactData4BitKernel(
-      cuda_stream_,
-      colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
-      compact_data_uint8_t_.RawData(),
-      cuda_bs_src_nib0_.RawData(),
-      cuda_bs_src_nib1_.RawData(),
-      cuda_bs_src_stride_nib_.RawData(),
-      cuda_bs_dst_byte_.RawData(),
-      cuda_bs_dst_stride_.RawData(),
-      pre->total_byte_slots,
-      num_data,
-      /*tiled=*/true);
-  }
-  if (!AsyncTreeStart()) {
-    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
-  }
-  use_compact_view_ = true;
   return true;
 }
 
@@ -3204,8 +2862,9 @@ size_t CUDAHistogramConstructor::CompactViewGrowthBytes() const {
   const size_t bound = (static_cast<size_t>(num_compact_columns_) + num_partitions + 1) / 2 *
                        static_cast<size_t>(num_data_);
   auto growth = [bound](size_t current) { return bound > current ? bound - current : 0; };
+  const FalcataPlan& plan = FalcataPlan::Get();
   return growth(compact_data_uint8_t_.Size()) +
-         (FalcataPlan::Get().compact_prefill ? growth(compact_data_uint8_t_alt_.Size()) : 0);
+         ((plan.compact_prefill || plan.compact_prefill_dt) ? growth(compact_data_uint8_t_alt_.Size()) : 0);
 }
 
 size_t CUDAHistogramConstructor::BitChangeScratchGrowthBytes(const int max_pairs) const {

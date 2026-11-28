@@ -793,39 +793,11 @@ class CUDAHistogramConstructor {
                                       PrecomputedFeatureState* out) const;
   void ApplyPrecomputedSetFeatureUsedBytree(const PrecomputedFeatureState& pre);
 
-  struct PrecomputedFusedCompactState {
-    bool compact_eligible = false;
-    bool fused_launch = false;
-    std::vector<int> src_cols_host;
-    std::vector<size_t> slot_byte_host;
-    std::vector<int> slot_stride_host;
-    std::vector<int> slot_col_host;
-    int pair_joint_max = 0;
-    int pair_joint_total = 0;
-    bool row_interleave = false;
-    int row_bytes = 0;
-    int max_compact_per_p = 0;
-    int total_compact = 0;
-    bool is_4bit = false;
-    PackCodecId codec = PackCodecId::kNibble4;
-    int total_byte_slots = 0;
-    int num_local_bins = 0;
-    int max_span = 0;
-    bool word_prefetch = false;
-    bool code5 = false;
-    int code_bits = 5;
-    int code_row_words = 0;
-    const uint8_t* fill_src = nullptr;
-  };
-  bool PrecomputeFusedRootCompactView(const std::vector<int8_t>& is_feature_used_bytree,
-                                      bool want_fused_root,
-                                      bool allow_code5,
-                                      PrefillMetaBatch* batch,
-                                      PrecomputedFusedCompactState* out) const;
-  bool ApplyPrecomputedFusedRootCompactView(PrecomputedFusedCompactState* pre);
-
   /*! \brief Whether GPU compact data prefill into compact_data_uint8_t_alt_ avoids splitting a used fused root hist. */
   bool ShouldPrefillCompactData(bool root_is_every_row, bool fused_root_shape) const;
+
+  /*! \brief Whether the alt compact buffer has been allocated (so a swap may hand a live buffer back to alt). */
+  bool has_alt_compact_buffer() const { return compact_data_uint8_t_alt_.Size() > 0; }
 
   cudaStream_t prefetch_stream() const { return prefetch_stream_; }
 

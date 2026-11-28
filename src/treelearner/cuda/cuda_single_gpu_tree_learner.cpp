@@ -463,14 +463,11 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   WholeMapOnlyFaultCheckpoint(this, WholeMapOnlyFaultPoint::BeforeRootReuse);
 #endif
   prefill_launched_this_tree_ = false;
-  if (col_sampler_.need_reset_bytree()) {
+  {
     const FalcataPlan& plan = FalcataPlan::Get();
-    const bool fused_root_shape = plan.fused_root_hist && config_->use_quantized_grad &&
-      use_hybrid_growth_ && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr;
-    if (plan.compact_prefill ||
-        (plan.compact_prefill_dt &&
-         cuda_histogram_constructor_->ShouldPrefillCompactData(
-           !cuda_data_partition_->use_bagging(), fused_root_shape))) {
+    if (cuda_histogram_constructor_->compact_view_active() &&
+        (plan.compact_prefill ||
+         (plan.compact_prefill_dt && cuda_histogram_constructor_->has_alt_compact_buffer()))) {
       // Record an event on stream 0 after the previous tree's UpdateScore / OOB / GetGradients so
       // the next tree's prefill into *_alt_ buffers waits on the GPU without a host sync.
       cuda_histogram_constructor_->RecordPrevTreeDone();
@@ -603,9 +600,6 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     // cuda_plan key forest_batched: the forest trainer drew this tree's sample in tree order
     col_sampler_.SetByTreeSample(forest_next_sample_);
     forest_next_sample_ready_ = false;
-  } else if (next_tree_col_sample_ready_) {
-    // the previous Train() already drew this tree's column sample (prefill)
-    next_tree_col_sample_ready_ = false;
   } else {
     col_sampler_.ResetByTree();
   }
@@ -634,15 +628,12 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
       use_hybrid_growth_ && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr;
     const bool root_is_every_row = !cuda_data_partition_->use_bagging() && root_num_data == num_data_;
     const bool bagged_code_view = FalcataPlan::Get().bagged_code_view && cuda_data_partition_->use_bagging();
-    const bool want_fused_root = fused_root_shape && root_is_every_row;
     const bool allow_code5 = !BuildsOneByteSplitView();
     const std::vector<int8_t>& bytree_mask = col_sampler_.is_feature_used_bytree();
     const bool use_prefill_meta = prefill_meta_ready_ &&
       FalcataPlan::Get().compact_prefill_dt && AsyncTreeStart() &&
       !cuda_histogram_constructor_->view_mask_regime() &&
-      prefill_meta_bitmap_ == bytree_mask &&
-      (!prefill_meta_has_fused_compact_ ||
-       (prefill_meta_want_fused_root_ == want_fused_root && prefill_meta_allow_code5_ == allow_code5));
+      prefill_meta_bitmap_ == bytree_mask;
     prefill_meta_ready_ = false;
     if (use_prefill_meta) {
       // Cross-tree overlapped metadata hit: H2D already completed on prefetch_stream_ during the previous tree.
@@ -656,11 +647,7 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
         config_->use_quantized_grad && cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0) <= 16,
         !root_is_every_row);
       cuda_histogram_constructor_->AllowCode5View(allow_code5);
-      if (prefill_meta_has_fused_compact_) {
-        cuda_histogram_constructor_->ApplyPrecomputedFusedRootCompactView(&prefill_hist_compact_state_);
-      } else {
-        cuda_histogram_constructor_->BuildCompactView(bytree_mask);
-      }
+      cuda_histogram_constructor_->BuildCompactView(bytree_mask);
       cuda_histogram_constructor_->RequestFusedRootHist(false, false);
     } else {
       // cuda_plan key tree_meta_batch: the uploads from here to the compact fill go out as one copy and one scatter
@@ -719,7 +706,6 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
 
 void CUDASingleGPUTreeLearner::InvalidatePrefillMeta() {
   prefill_meta_ready_ = false;
-  prefill_meta_has_fused_compact_ = false;
   prefill_meta_batch_.Drain();
   col_sampler_.InvalidatePeek();
   static_packed_view_active_ = false;
@@ -776,18 +762,13 @@ void CUDASingleGPUTreeLearner::MaybePrefillNextCompactView() {
                       prefill_next_mask_, &prefill_meta_batch_, &prefill_hist_feature_state_);
     if (ok && prefill_meta_batch_.SubmitAsync(cuda_histogram_constructor_->prefetch_stream())) {
       prefill_meta_ready_ = true;
-      prefill_meta_has_fused_compact_ = false;
-      prefill_meta_want_fused_root_ = false;
-      prefill_meta_allow_code5_ = allow_code5;
       prefill_meta_bitmap_ = prefill_next_mask_;
     } else {
       prefill_meta_batch_.AbortPrepare();
     }
   }
 
-  const bool prefill_code5 = allow_code5 && config_->use_quantized_grad &&
-    use_hybrid_growth_ && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr &&
-    (root_is_every_row || bagged_code_view);
+  const bool prefill_code5 = allow_code5 && fused_root_shape && (root_is_every_row || bagged_code_view);
   cuda_histogram_constructor_->PrefillNextCompactView(prefill_next_mask_, prefill_code5);
   prefill_launched_this_tree_ = true;
 }
@@ -927,6 +908,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
         static_packed_view_active_ = true;
         static_packed_view_sig_ = ssig;
         static_packed_view_k_ = -1;
+        compact_col_signature_ = 0;
         col_view_generation_seen_ = col_data->column_view_generation();
         return;
       } else if (can_static_packed8 && full_or_row != nullptr) {
@@ -964,6 +946,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
             static_packed_view_active_ = true;
             static_packed_view_sig_ = ssig;
             static_packed_view_k_ = sampled_feats;
+            compact_col_signature_ = 0;
             col_view_generation_seen_ = col_data->column_view_generation();
             return;
           }
@@ -7139,7 +7122,6 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
   }
   // training data changed: the predrawn column sample and any prefilled
   // compact view belong to the old data / re-seeded sampler
-  next_tree_col_sample_ready_ = false;
   InvalidatePrefillMeta();
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   ReleaseDeviceLevelGraphs();  // captured buffer pointers may have changed
@@ -7227,7 +7209,6 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   SyncHistFP32();
   // config changed: SerialTreeLearner::ResetConfig re-seeded the column
   // sampler, so the predrawn sample / prefilled view are stale
-  next_tree_col_sample_ready_ = false;
   InvalidatePrefillMeta();
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   ReleaseDeviceLevelGraphs();  // captured buffer pointers / budgets may have changed

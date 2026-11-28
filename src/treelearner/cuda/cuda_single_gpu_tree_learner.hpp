@@ -713,13 +713,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // Cross-tree overlapped metadata pre-staging (cuda_plan key compact_prefill_dt)
   PrefillMetaBatch prefill_meta_batch_;
   bool prefill_meta_ready_ = false;
-  bool prefill_meta_has_fused_compact_ = false;
-  bool prefill_meta_want_fused_root_ = false;
-  bool prefill_meta_allow_code5_ = false;
   std::vector<int8_t> prefill_meta_bitmap_;
   CUDABestSplitFinder::PrecomputedBeforeTrain prefill_finder_state_;
   CUDAHistogramConstructor::PrecomputedFeatureState prefill_hist_feature_state_;
-  CUDAHistogramConstructor::PrecomputedFusedCompactState prefill_hist_compact_state_;
   // Static all-columns packed view + cached DeviceLevelFeatureSource generation
   bool static_packed_view_active_ = false;
   uint64_t static_packed_view_sig_ = 0;
@@ -833,9 +829,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // Outlier-robust gradient scale within fixed-point mode (default ON when
   // fixedpoint_quant_ is on; disabled by cuda_plan=auto,robust_scale:off).
   bool fixedpoint_robust_scale_ = false;
-  // Compact-view prefill: the previous Train() already drew this tree's
-  // column sample (BeforeTrain must not draw again; cuda_plan compact_prefill)
-  bool next_tree_col_sample_ready_ = false;
 
   /*! \brief quantized training: the batched construct's saturation floor for this device (160 x SM count / 170,
    *  clamped to [10, 5120]; 0 = the plan's value), see Init */
