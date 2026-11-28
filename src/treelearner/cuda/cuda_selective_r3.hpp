@@ -68,11 +68,14 @@ struct CUDASelectiveR3State {
   int num_freed;      // leaves pushed onto the free list, in push order
   int num_apply;      // records created for selected frontier candidates
   int error;          // 1: a right child past num_leaves - 1, 2: record capacity, 3: more live records than the
-                      // budget (rebuild), 4: a NaN gain (parallel kernel: its integer keys would not order it as the host)
+                      // budget (rebuild), 4: a NaN gain (parallel kernel: its integer keys would not order it as the
+                      // host), 5: R1 handoff sanity check failed (journal error flag or split count past budget)
   // parallel R3 only
-  int resumes;        // merges that ran best-first from a tie the merge's fixed order resolved differently
-  int resume_at;      // the level's first such pop (-1: the merge was exact)
-  int rounds;         // merges that rebuilt the order from the records (0: the order was kept from the last level)
+  int resumes;          // merges that ran best-first from a tie the merge's fixed order resolved differently
+  int resume_at;        // the level's first such pop (-1: the merge was exact)
+  int rounds;           // merges that rebuilt the order from the records (0: the order was kept from the last level)
+  int total_resumes;    // cumulative resumes across live R3 levels of a tree
+  int total_displaced;  // cumulative displaced (freed) splits across live R3 levels of a tree
 };
 
 /*! \brief the parallel R3's order, kept on the device across the levels of a tree */
@@ -190,8 +193,8 @@ void LaunchSelectiveR3SeedFromR1(const CUDASelectiveR3Config& config, const CUDA
  *  descriptors + device level state update), capturable in a CUDA graph */
 bool LaunchSelectiveR3Live(const CUDASelectiveR3Config& config, cudaStream_t stream);
 
-/*! \brief live device-driven selective R3: write mapped pinned body-end flag [0..5] = {continue, levels_applied,
- *  num_records, num_order, num_allocated, error} */
+/*! \brief live device-driven selective R3: write mapped pinned body-end flag [0..7] = {continue, levels_applied,
+ *  num_records, num_order, num_allocated, error, total_resumes, total_displaced} */
 void LaunchSelectiveR3BodyEnd(const CUDASelectiveR3Config& config, const CUDADeviceLevelConfig* dl_cfg, int* flag,
                               cudaStream_t stream);
 

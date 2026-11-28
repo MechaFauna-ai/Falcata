@@ -1138,6 +1138,8 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
     cfg.apply_right[ci] = right;
   }
   error = __syncthreads_or(error == 1) ? 1 : error;
+  // Quantized WarpFindBest / FindBestSplits rejects NaN via strict gain comparisons against best_gain and
+  // min_gain_to_split, so leaf_best never marks a NaN split is_valid=true; error==4 remains a defensive guard.
   error = s_nan != 0 ? 4 : error;
   const int new_num_allocated = pre_num_allocated + max(num_created - nf, 0);
   if (tid == 0) {
@@ -1153,6 +1155,10 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
     st->resumes = resumes;
     st->resume_at = resume_at < budget ? resume_at : -1;
     st->rounds = rounds;
+    if constexpr (kLive) {
+      st->total_resumes += resumes;
+      st->total_displaced += num_freed;
+    }
     ps->n = num_order;
     ps->parity = parity ^ 1;
     ps->valid = error == 0;
@@ -1337,6 +1343,23 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3SeedFromR1Kernel(con
   const int* journal = dl.journal;
   const int levels_applied = journal[0];
   const int num_splits = journal[1];
+  const int journal_err = journal[2];
+  // Preserve R1's gated-regime / bounds checks without an extra host readback: flag error=5 and stop the body loop.
+  if (journal_err != 0 || levels_applied < 0 || num_splits < 0 || num_splits > cfg.budget ||
+      num_splits > cfg.record_capacity) {
+    if (tid == 0) {
+      *cfg.state = CUDASelectiveR3State{};
+      cfg.state->error = 5;
+      dls->done = 1;
+      dls->live_splits = 0;
+      dls->live_num_splits = 0;
+      dls->live_cat_splits = 0;
+      dls->total_flat_blocks = 0;
+      dls->num_gaps = 0;
+      dls->gap_flat_blocks = 0;
+    }
+    return;
+  }
   if (tid == 0) {
     s_first_last = num_splits;
   }
@@ -1424,6 +1447,8 @@ __global__ void SelectiveR3BodyEndKernel(const CUDASelectiveR3Config cfg, const 
     flag[3] = st->num_order;
     flag[4] = st->num_allocated;
     flag[5] = st->error;
+    flag[6] = st->total_resumes;
+    flag[7] = st->total_displaced;
     flag[0] = dls->done != 0 ? 0 : 1;
   }
 }

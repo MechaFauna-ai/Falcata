@@ -10,6 +10,7 @@ tiny trees (``num_leaves < 128``) must keep the device R3 loop off.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,8 @@ _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
     reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
+
+_DIAG_RE = re.compile(r"selective_r3_device: complete .*?displaced=(\d+) resumes=(\d+) graph_hits=(\d+)")
 
 _TRAIN = (
     "import hashlib, json, sys, numpy as np, falcata as flc\n"
@@ -48,8 +51,15 @@ def _run_diag(X, y, params, rounds):
             check=True,
         )
     info = json.loads(proc.stdout.strip().splitlines()[-1])
-    r3_complete = sum(1 for line in proc.stderr.splitlines() if "selective_r3_device: complete" in line)
-    return info["md5"], info["trees"], r3_complete
+    matches = [_DIAG_RE.search(line) for line in proc.stderr.splitlines()]
+    found = [m for m in matches if m is not None]
+    stats = {
+        "r3_complete": len(found),
+        "displaced": sum(int(m.group(1)) for m in found),
+        "resumes": sum(int(m.group(2)) for m in found),
+        "graph_hits": max((int(m.group(3)) for m in found), default=0),
+    }
+    return info["md5"], info["trees"], stats
 
 
 def _make_dataset(kind):
@@ -229,12 +239,18 @@ def test_selective_r3_device_bit_identity_and_activation_cuda(name, kind, extra,
         "seed": 42,
         **extra,
     }
-    md5_off, trees_off, r3_off = _run_diag(X, y, {**base, "cuda_plan": "auto,selective_r3_device:off"}, rounds)
-    md5_on, trees_on, r3_on = _run_diag(X, y, {**base, "cuda_plan": "auto,selective_r3_device:on"}, rounds)
+    md5_off, trees_off, stats_off = _run_diag(X, y, {**base, "cuda_plan": "auto,selective_r3_device:off"}, rounds)
+    md5_on, trees_on, stats_on = _run_diag(X, y, {**base, "cuda_plan": "auto,selective_r3_device:on"}, rounds)
     assert md5_on == md5_off, f"{name}: md5 mismatch on={md5_on} off={md5_off}"
     assert trees_on == trees_off
-    assert r3_off == 0, f"{name}: selective_r3_device fired with key off ({r3_off})"
+    assert stats_off["r3_complete"] == 0, f"{name}: selective_r3_device fired with key off ({stats_off})"
     if expect_r3:
-        assert r3_on > 0, f"{name}: expected selective_r3_device: complete diag lines, got 0"
+        assert stats_on["r3_complete"] > 0, f"{name}: expected selective_r3_device: complete diag lines, got 0"
+        if "feature_fraction" not in extra:
+            assert stats_on["graph_hits"] > 0, f"{name}: expected CUDA graph replay hits, got {stats_on}"
+        if name in ("unbounded_255", "bagging_fixedpoint_255", "multiclass_255"):
+            assert stats_on["displaced"] > 0, f"{name}: expected displaced splits, got {stats_on}"
+        if name in ("tie_binary_255", "tie_quant3_255"):
+            assert stats_on["resumes"] > 0, f"{name}: expected exact tie-break resumes, got {stats_on}"
     else:
-        assert r3_on == 0, f"{name}: expected selective_r3_device gate off for num_leaves<128, got {r3_on}"
+        assert stats_on["r3_complete"] == 0, f"{name}: expected gate off for num_leaves<128, got {stats_on}"

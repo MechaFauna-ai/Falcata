@@ -469,6 +469,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // cuda_plan key selective_r3_device: live device-driven parallel R3 loop for binding selective levels
   bool SelectiveR3DeviceUsable() const;
   bool EnsureSelectiveR3LiveBuffers(int num_leaves, int min_record_capacity);
+  void ReleaseSelectiveR3LiveBuffers();
   void GrowSelectiveR3LiveRecords(int new_record_capacity, int current_num_records, cudaStream_t stream);
   CUDASelectiveR3Config BuildSelectiveR3LiveConfig(const CUDADeviceLevelConfig* dl_cfg_device) const;
   void EnqueueSelectiveR3Body(const CUDADeviceLevelConfig& dl_cfg, const CUDASelectiveR3Config& r3_cfg,
@@ -942,6 +943,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool selective_device_boundary_ = false;
   // ---- cuda_plan key selective_r3_device: live device-driven parallel R3 buffers ----
   bool selective_r3_completed_ = false;
+  bool r3_live_oom_ = false;
   char* r3_live_device_blob_ = nullptr;
   char* r3_live_par_state_ = nullptr;
   CUDAVector<CUDASplitInfo> r3_live_rec_info_;
