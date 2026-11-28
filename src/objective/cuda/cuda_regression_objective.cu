@@ -145,9 +145,10 @@ __global__ void AddPredictionAndGetGradientsKernel_Regression_Vec2(
   score_t* __restrict__ cuda_out_hessians) {
   PdlWaitForProducer();
   PdlLaunchDependents();
-  const data_size_t pair_idx = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
-  const data_size_t base = pair_idx * 2;
-  if (base + 1 < num_data) {
+  const size_t pair_idx = static_cast<size_t>(blockDim.x) * blockIdx.x + threadIdx.x;
+  const size_t base = pair_idx * 2;
+  const size_t n = static_cast<size_t>(num_data);
+  if (base + 1 < n) {
     const int2 leaf = reinterpret_cast<const int2*>(cuda_data_index_to_leaf_index)[pair_idx];
     double2 s = reinterpret_cast<const double2*>(cuda_scores)[pair_idx];
     s.x += __ldg(&cuda_leaf_value[leaf.x]);
@@ -160,7 +161,7 @@ __global__ void AddPredictionAndGetGradientsKernel_Regression_Vec2(
     ComputeRegFusedGradHess<LOSS, USE_WEIGHT>(s.y, lbl.y, w.y, param, &g.y, &h.y);
     reinterpret_cast<float2*>(cuda_out_gradients)[pair_idx] = g;
     reinterpret_cast<float2*>(cuda_out_hessians)[pair_idx] = h;
-  } else if (base < num_data) {
+  } else if (base < n) {
     const int leaf = cuda_data_index_to_leaf_index[base];
     const double s = cuda_scores[base] + __ldg(&cuda_leaf_value[leaf]);
     cuda_scores[base] = s;
@@ -218,8 +219,8 @@ bool LaunchFusedRegressionScoreGrad(
   if (IsAligned8(cuda_data_index_to_leaf_index) && IsAligned16(cuda_scores) &&
       IsAligned8(cuda_labels) && IsAligned8(cuda_gradients) && IsAligned8(cuda_hessians) &&
       (cuda_weights == nullptr || IsAligned8(cuda_weights))) {
-    const data_size_t num_pairs = (num_data + 1) / 2;
-    const int num_blocks = CUDABlockCount(num_pairs, kFusedScoreGradBlockSize);
+    const size_t num_pairs = (static_cast<size_t>(num_data) + 1) / 2;
+    const unsigned int num_blocks = static_cast<unsigned int>((num_pairs + kFusedScoreGradBlockSize - 1) / kFusedScoreGradBlockSize);
     LaunchLevelChainKernel(
       pdl,
       cuda_weights == nullptr ? AddPredictionAndGetGradientsKernel_Regression_Vec2<LOSS, false>
@@ -334,9 +335,10 @@ __global__ void GetGradientsKernel_RegressionL2_Vec2(
   score_t* __restrict__ cuda_out_gradients,
   score_t* __restrict__ cuda_out_hessians) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
-  const data_size_t pair_idx = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
-  const data_size_t base = pair_idx * 2;
-  if (base + 1 < num_data) {
+  const size_t pair_idx = static_cast<size_t>(blockDim.x) * blockIdx.x + threadIdx.x;
+  const size_t base = pair_idx * 2;
+  const size_t n = static_cast<size_t>(num_data);
+  if (base + 1 < n) {
     const double2 s = reinterpret_cast<const double2*>(cuda_scores)[pair_idx];
     const float2 lbl = reinterpret_cast<const float2*>(cuda_labels)[pair_idx];
     const float2 w = USE_WEIGHT ? reinterpret_cast<const float2*>(cuda_weights)[pair_idx] : make_float2(1.0f, 1.0f);
@@ -345,7 +347,7 @@ __global__ void GetGradientsKernel_RegressionL2_Vec2(
     ComputeRegressionL2GradHess<USE_WEIGHT>(s.y, lbl.y, w.y, &g.y, &h.y);
     reinterpret_cast<float2*>(cuda_out_gradients)[pair_idx] = g;
     reinterpret_cast<float2*>(cuda_out_hessians)[pair_idx] = h;
-  } else if (base < num_data) {
+  } else if (base < n) {
     const label_t w = USE_WEIGHT ? cuda_weights[base] : static_cast<label_t>(1.0f);
     score_t g, h;
     ComputeRegressionL2GradHess<USE_WEIGHT>(cuda_scores[base], cuda_labels[base], w, &g, &h);
@@ -362,8 +364,8 @@ void CUDARegressionL2loss::LaunchGetGradientsKernel(const double* score, score_t
 #if !defined(SCORE_T_USE_DOUBLE) && !defined(LABEL_T_USE_DOUBLE)
   if (IsAligned16(score) && IsAligned8(cuda_labels_) && IsAligned8(gradients) && IsAligned8(hessians) &&
       (cuda_weights_ == nullptr || IsAligned8(cuda_weights_))) {
-    const data_size_t num_pairs = (num_data_ + 1) / 2;
-    const int num_blocks = CUDABlockCount(num_pairs, kFusedScoreGradBlockSize);
+    const size_t num_pairs = (static_cast<size_t>(num_data_) + 1) / 2;
+    const unsigned int num_blocks = static_cast<unsigned int>((num_pairs + kFusedScoreGradBlockSize - 1) / kFusedScoreGradBlockSize);
     if (cuda_weights_ == nullptr) {
       GetGradientsKernel_RegressionL2_Vec2<false><<<num_blocks, kFusedScoreGradBlockSize>>>(
         score, cuda_labels_, nullptr, num_data_, gradients, hessians);

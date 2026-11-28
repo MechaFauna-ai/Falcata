@@ -418,9 +418,10 @@ __global__ void AddPredictionAndGetGradientsKernel_BinaryLogloss_Vec2(
   const bool lean) {
   PdlWaitForProducer();
   PdlLaunchDependents();
-  const data_size_t pair_idx = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
-  const data_size_t base = pair_idx * 2;
-  if (base + 1 < num_data) {
+  const size_t pair_idx = static_cast<size_t>(blockDim.x) * blockIdx.x + threadIdx.x;
+  const size_t base = pair_idx * 2;
+  const size_t n = static_cast<size_t>(num_data);
+  if (base + 1 < n) {
     const int2 leaf = reinterpret_cast<const int2*>(cuda_data_index_to_leaf_index)[pair_idx];
     double2 s = reinterpret_cast<const double2*>(cuda_scores)[pair_idx];
     s.x += __ldg(&cuda_leaf_value[leaf.x]);
@@ -435,7 +436,7 @@ __global__ void AddPredictionAndGetGradientsKernel_BinaryLogloss_Vec2(
       s.y, lbl.y, cuda_label_weights, w.y, sigmoid, lean, &g.y, &h.y);
     reinterpret_cast<float2*>(cuda_out_gradients)[pair_idx] = g;
     reinterpret_cast<float2*>(cuda_out_hessians)[pair_idx] = h;
-  } else if (base < num_data) {
+  } else if (base < n) {
     const int leaf = cuda_data_index_to_leaf_index[base];
     const double s = cuda_scores[base] + __ldg(&cuda_leaf_value[leaf]);
     cuda_scores[base] = s;
@@ -522,8 +523,8 @@ bool CUDABinaryLogloss::LaunchAddPredictionToScoreAndGetGradients(
   if (BinaryIsAligned8(cuda_data_index_to_leaf_index) && BinaryIsAligned16(cuda_scores) &&
       BinaryIsAligned8(cuda_label_) && BinaryIsAligned8(cuda_gradients) && BinaryIsAligned8(cuda_hessians) &&
       (!use_weight || BinaryIsAligned8(cuda_weights_))) {
-    const data_size_t num_pairs = (num_data_ + 1) / 2;
-    const int num_blocks = (num_pairs + kFusedBinaryScoreGradBlockSize - 1) / kFusedBinaryScoreGradBlockSize;
+    const size_t num_pairs = (static_cast<size_t>(num_data_) + 1) / 2;
+    const unsigned int num_blocks = static_cast<unsigned int>((num_pairs + kFusedBinaryScoreGradBlockSize - 1) / kFusedBinaryScoreGradBlockSize);
     auto kernel =
       !use_label_weight
         ? (!use_weight ? AddPredictionAndGetGradientsKernel_BinaryLogloss_Vec2<false, false>

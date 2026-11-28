@@ -26,15 +26,16 @@ __global__ void AddScoreConstantVec2Kernel(
   const double val,
   const data_size_t num_data,
   double* score) {
-  const data_size_t pair_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
-  const data_size_t base = pair_index * 2;
-  if (base + 1 < num_data) {
+  const size_t pair_index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t base = pair_index * 2;
+  const size_t n = static_cast<size_t>(num_data);
+  if (base + 1 < n) {
     double2* vec_score = reinterpret_cast<double2*>(score);
     double2 v = vec_score[pair_index];
     v.x += val;
     v.y += val;
     vec_score[pair_index] = v;
-  } else if (base < num_data) {
+  } else if (base < n) {
     score[base] += val;
   }
 }
@@ -46,12 +47,12 @@ void CUDAScoreUpdater::LaunchAddScoreConstantKernel(const double val, const size
   double* dst = cuda_score_.RawData() + offset;
   Log::Debug("Adding init score = %lf", val);
   if ((reinterpret_cast<uintptr_t>(dst) & 0xfu) == 0) {
-    const data_size_t num_pairs = (num_data_ + 1) / 2;
+    const size_t num_pairs = (static_cast<size_t>(num_data_) + 1) / 2;
     const int threads = 256;
-    const int num_blocks = (num_pairs + threads - 1) / threads;
+    const unsigned int num_blocks = static_cast<unsigned int>((num_pairs + threads - 1) / threads);
     AddScoreConstantVec2Kernel<<<num_blocks, threads>>>(val, num_data_, dst);
   } else {
-    const int num_blocks = (num_data_ + num_threads_per_block_ - 1) / num_threads_per_block_;
+    const unsigned int num_blocks = static_cast<unsigned int>((static_cast<size_t>(num_data_) + num_threads_per_block_ - 1) / num_threads_per_block_);
     AddScoreConstantKernel<<<num_blocks, num_threads_per_block_>>>(val, num_data_, dst);
   }
 }
@@ -70,15 +71,16 @@ __global__ void MultiplyScoreConstantVec2Kernel(
   const double val,
   const data_size_t num_data,
   double* score) {
-  const data_size_t pair_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
-  const data_size_t base = pair_index * 2;
-  if (base + 1 < num_data) {
+  const size_t pair_index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t base = pair_index * 2;
+  const size_t n = static_cast<size_t>(num_data);
+  if (base + 1 < n) {
     double2* vec_score = reinterpret_cast<double2*>(score);
     double2 v = vec_score[pair_index];
     v.x *= val;
     v.y *= val;
     vec_score[pair_index] = v;
-  } else if (base < num_data) {
+  } else if (base < n) {
     score[base] *= val;
   }
 }
@@ -89,12 +91,12 @@ void CUDAScoreUpdater::LaunchMultiplyScoreConstantKernel(const double val, const
   }
   double* dst = cuda_score_.RawData() + offset;
   if ((reinterpret_cast<uintptr_t>(dst) & 0xfu) == 0) {
-    const data_size_t num_pairs = (num_data_ + 1) / 2;
+    const size_t num_pairs = (static_cast<size_t>(num_data_) + 1) / 2;
     const int threads = 256;
-    const int num_blocks = (num_pairs + threads - 1) / threads;
+    const unsigned int num_blocks = static_cast<unsigned int>((num_pairs + threads - 1) / threads);
     MultiplyScoreConstantVec2Kernel<<<num_blocks, threads>>>(val, num_data_, dst);
   } else {
-    const int num_blocks = (num_data_ + num_threads_per_block_ - 1) / num_threads_per_block_;
+    const unsigned int num_blocks = static_cast<unsigned int>((static_cast<size_t>(num_data_) + num_threads_per_block_ - 1) / num_threads_per_block_);
     MultiplyScoreConstantKernel<<<num_blocks, num_threads_per_block_>>>(val, num_data_, dst);
   }
 }

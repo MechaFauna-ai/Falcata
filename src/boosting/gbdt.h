@@ -786,6 +786,8 @@ class GBDT : public GBDTBase {
   mutable CUDAVector<double> cuda_score_;
   /*! \brief cuda_plan key score_grad_fuse: true when the previous UpdateScore fused next-round GetGradients */
   bool fused_gradients_ready_ = false;
+  /*! \brief cuda_plan key score_grad_fuse: whether FALCATA_DEBUG=diag already logged fusion activation */
+  bool score_grad_fuse_diag_logged_ = false;
   #endif  // USE_CUDA
 
   /*! \brief Number of training data */

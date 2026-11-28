@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <memory>
 #include <queue>
@@ -335,6 +336,7 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
   }
   #ifdef USE_CUDA
   fused_gradients_ready_ = false;
+  score_grad_fuse_diag_logged_ = false;
   #endif  // USE_CUDA
 }
 
@@ -943,6 +945,11 @@ void GBDT::UpdateScore(const Tree* tree, const int cur_tree_id) {
           gradients_pointer_, hessians_pointer_)) {
     fused_gradients_ready_ = true;
     score_updated = true;
+    if (FalcataDebug().diag && !score_grad_fuse_diag_logged_) {
+      fprintf(stderr, "[gbdt-diag] score_grad_fuse: fused AddPredictionToScore+GetGradients (%s)\n",
+              objective_function_->GetName());
+      score_grad_fuse_diag_logged_ = true;
+    }
   }
   #endif  // USE_CUDA
   // update training score
@@ -1227,6 +1234,10 @@ double GBDT::GetLowerBoundValue() const {
 
 void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction* objective_function,
                              const std::vector<const Metric*>& training_metrics) {
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  score_grad_fuse_diag_logged_ = false;
+  #endif  // USE_CUDA
   if (leaf_value_dim_ > 1) {
     Log::Fatal(
         "Continuing training from a vector-leaf model is not supported by the "
@@ -1322,9 +1333,6 @@ void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction*
   } else {
     tree_learner_->ResetIsConstantHessian(is_constant_hessian_);
   }
-  #ifdef USE_CUDA
-  fused_gradients_ready_ = false;
-  #endif  // USE_CUDA
 }
 
 #ifdef USE_CUDA
@@ -1348,6 +1356,10 @@ void GBDT::OnBoostingOnGPUChanged(bool train_data_changes) {
 #endif  // USE_CUDA
 
 void GBDT::ResetConfig(const Config* config) {
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  score_grad_fuse_diag_logged_ = false;
+  #endif  // USE_CUDA
   auto new_config = std::unique_ptr<Config>(new Config(*config));
   if (!new_config->forcedsplits_filename.empty() &&
       (tree_learner_ == nullptr || train_data_ == nullptr)) {
@@ -1431,9 +1443,6 @@ void GBDT::ResetConfig(const Config* config) {
     }
   }
   config_.reset(new_config.release());
-  #ifdef USE_CUDA
-  fused_gradients_ready_ = false;
-  #endif  // USE_CUDA
 }
 
 void GBDT::ResetGradientBuffers() {

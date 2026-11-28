@@ -12,7 +12,10 @@ ResetTrainingData, dataset field mutation, RefitTree, and non-fused modes
 """
 
 import hashlib
+import json
 import os
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -135,6 +138,8 @@ def test_score_grad_fuse_objectives_bit_identical_cuda(objective, extra, quantiz
         "auto,async_tree_start:off",
         "auto,gradients_no_sync:off",
         "auto,gradient_fp64_lean:off",
+        "auto,pdl_level_chain:off",
+        "auto,compact_prefill:on",
     ],
 )
 def test_score_grad_fuse_plan_combinations_cuda(plan_prefix):
@@ -151,6 +156,8 @@ def test_score_grad_fuse_plan_combinations_cuda(plan_prefix):
             "verbosity": -1,
             "seed": 5,
         }
+        if "compact_prefill:on" in plan_prefix:
+            params["feature_fraction"] = 0.7
         md5_on, _, _ = _train_md5(
             {**params, "cuda_plan": f"{plan_prefix},score_grad_fuse:on"},
             X,
@@ -335,6 +342,7 @@ def test_score_grad_fuse_init_score_and_no_bfa_cuda():
             {"boosting_type": "rf", "bagging_fraction": 0.7, "bagging_freq": 1},
         ),
         ("regression", {"linear_tree": True, "use_quantized_grad": False}),
+        ("regression", {"data_sample_strategy": "goss", "top_rate": 0.2, "other_rate": 0.1}),
         ("multiclass", {"num_class": 4}),
     ],
 )
@@ -357,3 +365,212 @@ def test_score_grad_fuse_non_fused_modes_bit_identical_cuda(objective, extra):
     md5_on, _, _ = _train_md5({**params, "cuda_plan": f"{base},score_grad_fuse:on"}, X, y, rounds=12)
     md5_off, _, _ = _train_md5({**params, "cuda_plan": f"{base},score_grad_fuse:off"}, X, y, rounds=12)
     assert md5_on == md5_off
+
+
+def _run_diag_probe(objective, extra_params):
+    X, y, _ = _make_data(objective, rows=1003, cols=10, seed=61)
+    params = {
+        "device_type": "cuda",
+        "objective": objective,
+        "num_leaves": 15,
+        "max_depth": 4,
+        "min_data_in_leaf": 10,
+        "learning_rate": 0.15,
+        "use_quantized_grad": extra_params.get("use_quantized_grad", True),
+        "verbosity": -1,
+        "seed": 11,
+        **extra_params,
+    }
+    ds = flc.Dataset(X, label=y, params=params)
+    flc.train(params, ds, num_boost_round=4)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("objective", "extra", "expect_fused"),
+    [
+        ("regression", {"cuda_plan": "auto,score_grad_fuse:on"}, True),
+        ("regression_l1", {"cuda_plan": "auto,score_grad_fuse:on"}, True),
+        ("huber", {"alpha": 0.8, "cuda_plan": "auto,score_grad_fuse:on"}, True),
+        ("quantile", {"alpha": 0.4, "cuda_plan": "auto,score_grad_fuse:on"}, True),
+        ("binary", {"cuda_plan": "auto,score_grad_fuse:on"}, True),
+        ("regression", {"cuda_plan": "auto,score_grad_fuse:off"}, False),
+        ("binary", {"cuda_plan": "auto,score_grad_fuse:off"}, False),
+        (
+            "regression",
+            {"bagging_fraction": 0.7, "bagging_freq": 1, "cuda_plan": "auto,score_grad_fuse:on"},
+            False,
+        ),
+        (
+            "regression",
+            {"boosting_type": "dart", "drop_rate": 0.2, "cuda_plan": "auto,score_grad_fuse:on"},
+            False,
+        ),
+        (
+            "regression",
+            {
+                "boosting_type": "rf",
+                "bagging_fraction": 0.7,
+                "bagging_freq": 1,
+                "cuda_plan": "auto,score_grad_fuse:on",
+            },
+            False,
+        ),
+        ("multiclass", {"num_class": 4, "cuda_plan": "auto,score_grad_fuse:on"}, False),
+        (
+            "regression",
+            {"linear_tree": True, "use_quantized_grad": False, "cuda_plan": "auto,score_grad_fuse:on"},
+            False,
+        ),
+    ],
+)
+def test_score_grad_fuse_diag_activation_cuda(objective, extra, expect_fused):
+    code = (
+        "import json, runpy, sys; runpy.run_path(sys.argv[1])['_run_diag_probe'](sys.argv[2], json.loads(sys.argv[3]))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, __file__, objective, json.dumps(extra)],
+        env={**os.environ, "FALCATA_DEBUG": "diag"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    marker = "score_grad_fuse: fused AddPredictionToScore+GetGradients"
+    if expect_fused:
+        assert marker in result.stderr, result.stderr
+    else:
+        assert marker not in result.stderr, result.stderr
+
+
+@_REQUIRES_CUDA
+def test_score_grad_fuse_custom_fobj_cuda():
+    X, y, _ = _make_data("regression", rows=2003, cols=8, seed=67)
+
+    def custom_l2(preds, train_data):
+        labels = train_data.get_label()
+        grad = preds - labels
+        hess = np.ones_like(grad)
+        return grad, hess
+
+    def run(fuse_val):
+        params = {
+            "device_type": "cuda",
+            "objective": "regression",
+            "num_leaves": 15,
+            "max_depth": 4,
+            "min_data_in_leaf": 10,
+            "learning_rate": 0.15,
+            "use_quantized_grad": True,
+            "cuda_plan": f"auto,score_grad_fuse:{fuse_val}",
+            "verbosity": -1,
+            "seed": 17,
+        }
+        ds = flc.Dataset(X, label=y, params=params)
+        booster = flc.Booster(params, ds)
+        # First train built-in rounds (arms fused_gradients_ready_), then switch to custom fobj.
+        for _ in range(3):
+            booster.update()
+        booster.reset_parameter({"objective": "none"})
+        for _ in range(4):
+            booster.update(fobj=custom_l2)
+        return _model_md5(booster)
+
+    assert run("on") == run("off")
+
+
+@_REQUIRES_CUDA
+def test_score_grad_fuse_set_init_score_mutation_cuda():
+    X, y, rng = _make_data("regression", rows=2005, cols=8, seed=71)
+    init1 = rng.normal(0.0, 0.3, size=len(y)).astype(np.float64)
+    init2 = rng.normal(0.5, 0.4, size=len(y)).astype(np.float64)
+
+    def run(fuse_val):
+        params = {
+            "device_type": "cuda",
+            "objective": "regression",
+            "num_leaves": 15,
+            "max_depth": 4,
+            "min_data_in_leaf": 10,
+            "learning_rate": 0.15,
+            "use_quantized_grad": True,
+            "cuda_plan": f"auto,score_grad_fuse:{fuse_val}",
+            "verbosity": -1,
+            "seed": 23,
+        }
+        ds = flc.Dataset(X, label=y, init_score=init1.copy(), params=params)
+        booster = flc.Booster(params, ds)
+        for _ in range(4):
+            booster.update()
+        ds.set_init_score(init2)
+        for _ in range(4):
+            booster.update()
+        return _model_md5(booster)
+
+    assert run("on") == run("off")
+
+
+@_REQUIRES_CUDA
+def test_score_grad_fuse_stump_tree_cuda():
+    X, y, _ = _make_data("regression", rows=1003, cols=8, seed=73)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "num_leaves": 15,
+        "max_depth": 4,
+        "min_data_in_leaf": 5000,
+        "learning_rate": 0.15,
+        "use_quantized_grad": True,
+        "verbosity": -1,
+        "seed": 29,
+    }
+    md5_on, _, _ = _train_md5({**params, "cuda_plan": "auto,score_grad_fuse:on"}, X, y, rounds=5)
+    md5_off, _, _ = _train_md5({**params, "cuda_plan": "auto,score_grad_fuse:off"}, X, y, rounds=5)
+    assert md5_on == md5_off
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("objective", ["regression", "binary"])
+def test_score_grad_fuse_nonquant_deterministic_lifecycle_cuda(objective):
+    # Non-quantized deterministic training avoids gradient quantization noise so any
+    # 1-ULP score/gradient divergence surfaces directly in the trained trees.
+    X, y, rng = _make_data(objective, rows=4007, cols=10, seed=79)
+    X_tr, y_tr = X[:3005], y[:3005]
+    X_va, y_va = X[3005:], y[3005:]
+    w_tr = rng.uniform(0.5, 2.0, size=len(y_tr)).astype(np.float32)
+
+    def run(fuse_val):
+        params = {
+            "device_type": "cuda",
+            "objective": objective,
+            "quant_mode": "none",
+            "deterministic": True,
+            "num_leaves": 31,
+            "max_depth": 5,
+            "min_data_in_leaf": 10,
+            "learning_rate": 0.25,
+            "cuda_plan": f"auto,nonquant_deterministic:on,score_grad_fuse:{fuse_val}",
+            "verbosity": -1,
+            "seed": 31,
+        }
+        ds_tr = flc.Dataset(X_tr, label=y_tr.copy(), params=params)
+        ds_va = flc.Dataset(X_va, label=y_va, reference=ds_tr, params=params)
+        booster = flc.Booster(params, ds_tr)
+        booster.add_valid(ds_va, "valid")
+        for _ in range(4):
+            booster.update()
+        booster.rollback_one_iter()
+        for _ in range(3):
+            booster.update()
+        booster.reset_parameter({"learning_rate": 0.1})
+        for _ in range(3):
+            booster.update()
+        ds_tr.set_weight(w_tr)
+        for _ in range(3):
+            booster.update()
+        eval_va = booster.eval_valid()
+        return _model_md5(booster), eval_va
+
+    md5_on, eval_on = run("on")
+    md5_off, eval_off = run("off")
+    assert md5_on == md5_off
+    assert eval_on == eval_off
