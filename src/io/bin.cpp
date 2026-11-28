@@ -493,6 +493,108 @@ void BinMapper::FindBin(const double* sample_values, int num_sample_values, size
     distinct_values.push_back(0.0f);
     counts.push_back(zero_cnt);
   }
+  FindBinFromDistinct(distinct_values, counts, total_sample_cnt, na_cnt, max_bin,
+                      min_data_in_bin, min_split_data, pre_filter, forced_upper_bounds);
+}
+
+void BinMapper::FindBinFromByteCounts(const int counts_256[256], bool is_signed, double missing_sentinel,
+                                      size_t total_sample_cnt, int max_bin, int min_data_in_bin,
+                                      int min_split_data, bool pre_filter, BinType bin_type,
+                                      bool use_missing, bool zero_as_missing,
+                                      const std::vector<double>& forced_upper_bounds) {
+  // Match ExpandSampleColumn + ApplyMissingSentinelToSample: zero is excluded
+  // from sample_values before sentinel rewriting, so byte 0 is never a sentinel.
+  int sentinel_bucket = -1;
+  if (!std::isnan(missing_sentinel)) {
+    for (int b = 1; b < 256; ++b) {
+      const double v = is_signed
+          ? static_cast<double>(static_cast<int8_t>(static_cast<uint8_t>(b)))
+          : static_cast<double>(static_cast<uint8_t>(b));
+      if (v == missing_sentinel) {
+        sentinel_bucket = b;
+        break;
+      }
+    }
+  }
+
+  size_t sum_counts = 0;
+  for (int b = 0; b < 256; ++b) {
+    sum_counts += static_cast<size_t>(counts_256[b]);
+  }
+  CHECK_EQ(sum_counts, total_sample_cnt);
+
+  const int raw_nonzero_cnt = static_cast<int>(total_sample_cnt) - counts_256[0];
+  const int raw_na_cnt = sentinel_bucket >= 0 ? counts_256[sentinel_bucket] : 0;
+  const int non_na_cnt = raw_nonzero_cnt - raw_na_cnt;
+
+  int na_cnt = 0;
+  if (!use_missing) {
+    missing_type_ = MissingType::None;
+  } else if (zero_as_missing) {
+    missing_type_ = MissingType::Zero;
+  } else {
+    if (non_na_cnt == raw_nonzero_cnt) {
+      missing_type_ = MissingType::None;
+    } else {
+      missing_type_ = MissingType::NaN;
+      na_cnt = raw_na_cnt;
+    }
+  }
+
+  bin_type_ = bin_type;
+  default_bin_ = 0;
+  most_freq_bin_ = 0;
+  const int zero_cnt = static_cast<int>(total_sample_cnt - static_cast<size_t>(non_na_cnt) - static_cast<size_t>(na_cnt));
+
+  std::vector<double> distinct_values;
+  std::vector<int> counts;
+  distinct_values.reserve(256);
+  counts.reserve(256);
+
+  // Negatives first (int8 bytes 128..255 correspond to -128..-1 in ascending order).
+  if (is_signed) {
+    for (int b = 128; b < 256; ++b) {
+      if (b != sentinel_bucket && counts_256[b] > 0) {
+        distinct_values.push_back(static_cast<double>(static_cast<int8_t>(static_cast<uint8_t>(b))));
+        counts.push_back(counts_256[b]);
+      }
+    }
+  }
+  const bool has_neg = !distinct_values.empty();
+  const int pos_end = is_signed ? 128 : 256;
+  bool has_pos = false;
+  for (int b = 1; b < pos_end; ++b) {
+    if (b != sentinel_bucket && counts_256[b] > 0) {
+      has_pos = true;
+      break;
+    }
+  }
+
+  // Exact match to FindBin: insert (0.0, zero_cnt) whenever there are no non-zero
+  // non-NaN values, whenever both negative and positive values exist (even if
+  // zero_cnt == 0), or whenever zero_cnt > 0.
+  if ((!has_neg && !has_pos) || (has_neg && has_pos) || (zero_cnt > 0)) {
+    distinct_values.push_back(0.0);
+    counts.push_back(zero_cnt);
+  }
+
+  for (int b = 1; b < pos_end; ++b) {
+    if (b != sentinel_bucket && counts_256[b] > 0) {
+      distinct_values.push_back(static_cast<double>(b));
+      counts.push_back(counts_256[b]);
+    }
+  }
+
+  FindBinFromDistinct(distinct_values, counts, total_sample_cnt, na_cnt, max_bin,
+                      min_data_in_bin, min_split_data, pre_filter, forced_upper_bounds);
+}
+
+void BinMapper::FindBinFromDistinct(const std::vector<double>& distinct_values,
+                                    const std::vector<int>& counts,
+                                    size_t total_sample_cnt, int na_cnt,
+                                    int max_bin, int min_data_in_bin,
+                                    int min_split_data, bool pre_filter,
+                                    const std::vector<double>& forced_upper_bounds) {
   min_val_ = distinct_values.front();
   max_val_ = distinct_values.back();
   std::vector<int> cnt_in_bin;  // count of data points in each bin.

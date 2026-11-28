@@ -213,7 +213,36 @@ class PinnedStagingPool {
     }
     void* ptr = nullptr;
     CUDASUCCESS_OR_FATAL(cudaHostAlloc(&ptr, static_cast<size_t>(bytes),
-                                       cudaHostAllocDefault));
+                                       cudaHostAllocPortable));
+    if (pooled) {
+      capacity_[static_cast<uint8_t*>(ptr)] = bytes;
+    }
+    return static_cast<uint8_t*>(ptr);
+  }
+
+  // non-fatal best-fit acquire for callers with a pageable fallback
+  uint8_t* TryAcquire(int64_t bytes, bool pooled) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (pooled) {
+      size_t best = free_.size();
+      for (size_t i = 0; i < free_.size(); ++i) {
+        const int64_t cap = capacity_.at(free_[i]);
+        if (cap >= bytes && (best == free_.size() || cap < capacity_.at(free_[best]))) {
+          best = i;
+        }
+      }
+      if (best < free_.size()) {
+        uint8_t* ptr = free_[best];
+        free_[best] = free_.back();
+        free_.pop_back();
+        return ptr;
+      }
+    }
+    void* ptr = nullptr;
+    if (cudaHostAlloc(&ptr, static_cast<size_t>(bytes), cudaHostAllocPortable) != cudaSuccess) {
+      cudaGetLastError();
+      return nullptr;
+    }
     if (pooled) {
       capacity_[static_cast<uint8_t*>(ptr)] = bytes;
     }
@@ -242,6 +271,15 @@ class PinnedStagingPool {
 };
 
 }  // anonymous namespace
+
+uint8_t* TryAcquirePinnedStaging(size_t bytes) {
+  return PinnedStagingPool::Get().TryAcquire(
+      static_cast<int64_t>(bytes), FalcataPlan::Get().construct_staging_pool);
+}
+
+void ReleasePinnedStaging(uint8_t* ptr) {
+  PinnedStagingPool::Get().Release(ptr);
+}
 
 CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
                                                  int ncol,

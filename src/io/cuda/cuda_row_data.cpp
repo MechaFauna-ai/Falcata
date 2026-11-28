@@ -20,6 +20,8 @@
 #include <utility>
 #include <vector>
 
+#include "cuda_dense_binner.hpp"
+
 namespace Falcata {
 
 namespace {
@@ -796,38 +798,219 @@ void CUDARowData::UploadDense4BitColumnsColMajor(uint8_t* dst, const int col_beg
                                                  const size_t column_stride) const {
   CHECK(dense_4bit_columns_only_);
   CHECK(0 <= col_begin && col_begin <= col_end && col_end <= feature_partition_column_index_offsets_.back());
+  if (col_begin == col_end) {
+    return;
+  }
   // A 4-bit Dataset column is (num_data + 1) / 2 bytes, two rows per byte, even row in the low nibble: exactly one
-  // column of the layout, and consecutive columns are contiguous in it. Columns of 1 MiB or more are copied
-  // straight from the Dataset; smaller ones, and every 8-bit column (nibble-packed here), are gathered on the host
-  // into runs of up to 16 MiB first, because each pageable copy has a fixed cost of tens of microseconds.
+  // column of the layout, and consecutive columns are contiguous in it.
+  // - Columns smaller than 1 MiB (and any 8-bit columns, which must be nibble-packed on host) are staged into two
+  //   pinned 32 MiB slabs borrowed from the shared staging pool, copying 128 KiB slices in parallel with OpenMP
+  //   while cudaMemcpyAsync DMA-transfers the other slab on a non-blocking copy stream.
+  // - Large 4-bit columns (>= 1 MiB) are already contiguous and large enough to saturate driver H2D pipelines without
+  //   a host-to-host staging copy, so they are issued directly via cudaMemcpyAsync on the same non-blocking stream.
+  // Small uploads (< 2 MiB) or pinned-alloc failure fall back cleanly to synchronous pageable staging.
   const size_t column_bytes = colmajor_column_bytes();
   const size_t stride = column_stride == 0 ? column_bytes : column_stride;
   CHECK_GE(stride, column_bytes);
+  const int total_cols = col_end - col_begin;
+  const size_t total_bytes = static_cast<size_t>(total_cols) * stride;
+  const int num_threads = std::max(1, OMP_NUM_THREADS());
+  auto out_of = [&](int c) { return dst + static_cast<size_t>(c - col_begin) * stride; };
+
+  auto pack_column_slice = [&](int c, size_t byte_off, size_t byte_len, uint8_t* out) {
+    if (dense_column_bit_types_[c] == 4) {
+      std::memcpy(out, reinterpret_cast<const uint8_t*>(dense_column_data_[c]) + byte_off, byte_len);
+    } else {
+      const uint8_t* in = reinterpret_cast<const uint8_t*>(dense_column_data_[c]);
+      for (size_t i = 0; i < byte_len; ++i) {
+        const data_size_t row = static_cast<data_size_t>(2 * (byte_off + i));
+        const uint8_t hi = row + 1 < num_data_ ? static_cast<uint8_t>(in[row + 1] & 0xf) : 0;
+        out[i] = static_cast<uint8_t>((in[row] & 0xf) | (hi << 4));
+      }
+    }
+  };
+
+  auto pack_batch_columns = [&](int c0, int batch_cols, uint8_t* slab_out) {
+    constexpr size_t kSliceBytes = size_t{128} << 10;
+    if (batch_cols < 2 * num_threads && column_bytes > kSliceBytes) {
+      const int slices_per_col = static_cast<int>((column_bytes + kSliceBytes - 1) / kSliceBytes);
+      const int total_slices = batch_cols * slices_per_col;
+      #pragma omp parallel for num_threads(num_threads) schedule(dynamic, 1)
+      for (int s = 0; s < total_slices; ++s) {
+        const int col_idx = s / slices_per_col;
+        const int slice_idx = s % slices_per_col;
+        const int c = c0 + col_idx;
+        const size_t off = static_cast<size_t>(slice_idx) * kSliceBytes;
+        const size_t len = std::min(kSliceBytes, column_bytes - off);
+        uint8_t* col_out = slab_out + static_cast<size_t>(col_idx) * stride;
+        pack_column_slice(c, off, len, col_out + off);
+        if (slice_idx == slices_per_col - 1 && stride > column_bytes) {
+          std::memset(col_out + column_bytes, 0, stride - column_bytes);
+        }
+      }
+    } else {
+      #pragma omp parallel for num_threads(num_threads) schedule(dynamic, 1)
+      for (int i = 0; i < batch_cols; ++i) {
+        const int c = c0 + i;
+        uint8_t* col_out = slab_out + static_cast<size_t>(i) * stride;
+        pack_column_slice(c, 0, column_bytes, col_out);
+        if (stride > column_bytes) {
+          std::memset(col_out + column_bytes, 0, stride - column_bytes);
+        }
+      }
+    }
+  };
+
   constexpr size_t kDirectCopyBytes = size_t{1} << 20;
+  constexpr size_t kMinPinnedUploadBytes = size_t{2} << 20;
+  constexpr size_t kSlabBytes = size_t{32} << 20;
+  auto is_direct_col = [&](int c) {
+    return dense_column_bit_types_[c] == 4 && column_bytes >= kDirectCopyBytes;
+  };
+  if (total_bytes >= kMinPinnedUploadBytes) {
+    bool needs_staging = false;
+    for (int c = col_begin; c < col_end; ++c) {
+      if (!is_direct_col(c)) {
+        needs_staging = true;
+        break;
+      }
+    }
+    uint8_t* slabs[2] = {nullptr, nullptr};
+    cudaStream_t copy_stream = nullptr;
+    cudaEvent_t done[2] = {nullptr, nullptr};
+    bool async_ok = cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) == cudaSuccess;
+    if (async_ok && needs_staging) {
+      slabs[0] = TryAcquirePinnedStaging(kSlabBytes);
+      if (slabs[0] != nullptr) {
+        slabs[1] = TryAcquirePinnedStaging(kSlabBytes);
+      }
+      async_ok = slabs[0] != nullptr && slabs[1] != nullptr &&
+                 cudaEventCreateWithFlags(&done[0], cudaEventDisableTiming) == cudaSuccess &&
+                 cudaEventCreateWithFlags(&done[1], cudaEventDisableTiming) == cudaSuccess;
+    }
+    if (!async_ok) {
+      cudaGetLastError();
+      for (int b = 0; b < 2; ++b) {
+        if (done[b] != nullptr) {
+          cudaEventDestroy(done[b]);
+        }
+      }
+      if (copy_stream != nullptr) {
+        cudaStreamDestroy(copy_stream);
+      }
+      ReleasePinnedStaging(slabs[0]);
+      ReleasePinnedStaging(slabs[1]);
+    } else {
+      auto cleanup = [&]() {
+        if (copy_stream != nullptr) {
+          cudaStreamSynchronize(copy_stream);
+        }
+        for (int b = 0; b < 2; ++b) {
+          if (done[b] != nullptr) {
+            cudaEventDestroy(done[b]);
+            done[b] = nullptr;
+          }
+        }
+        if (copy_stream != nullptr) {
+          cudaStreamDestroy(copy_stream);
+          copy_stream = nullptr;
+        }
+        ReleasePinnedStaging(slabs[0]);
+        ReleasePinnedStaging(slabs[1]);
+        slabs[0] = nullptr;
+        slabs[1] = nullptr;
+      };
+      try {
+        bool in_flight[2] = {false, false};
+        int buf = 0;
+        const int cols_fit = static_cast<int>(kSlabBytes / stride);
+        auto upload_staged_range = [&](int r_begin, int r_end) {
+          if (cols_fit >= 1) {
+            for (int c = r_begin; c < r_end; ) {
+              if (in_flight[buf]) {
+                CUDASUCCESS_OR_FATAL(cudaEventSynchronize(done[buf]));
+                in_flight[buf] = false;
+              }
+              const int batch_cols = std::min(r_end - c, cols_fit);
+              pack_batch_columns(c, batch_cols, slabs[buf]);
+              CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(out_of(c), slabs[buf],
+                                                   static_cast<size_t>(batch_cols) * stride,
+                                                   cudaMemcpyHostToDevice, copy_stream));
+              CUDASUCCESS_OR_FATAL(cudaEventRecord(done[buf], copy_stream));
+              in_flight[buf] = true;
+              buf ^= 1;
+              c += batch_cols;
+            }
+          } else {
+            // Single column exceeds kSlabBytes (>64M rows): stream slices through the 2 pinned slabs.
+            constexpr size_t kSliceBytes = size_t{128} << 10;
+            for (int c = r_begin; c < r_end; ++c) {
+              for (size_t byte_off = 0; byte_off < column_bytes; byte_off += kSlabBytes) {
+                if (in_flight[buf]) {
+                  CUDASUCCESS_OR_FATAL(cudaEventSynchronize(done[buf]));
+                  in_flight[buf] = false;
+                }
+                const size_t chunk = std::min(kSlabBytes, column_bytes - byte_off);
+                const int num_slices = static_cast<int>((chunk + kSliceBytes - 1) / kSliceBytes);
+                #pragma omp parallel for num_threads(num_threads) schedule(dynamic, 1)
+                for (int s = 0; s < num_slices; ++s) {
+                  const size_t local_off = static_cast<size_t>(s) * kSliceBytes;
+                  const size_t len = std::min(kSliceBytes, chunk - local_off);
+                  pack_column_slice(c, byte_off + local_off, len, slabs[buf] + local_off);
+                }
+                CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(out_of(c) + byte_off, slabs[buf], chunk,
+                                                     cudaMemcpyHostToDevice, copy_stream));
+                CUDASUCCESS_OR_FATAL(cudaEventRecord(done[buf], copy_stream));
+                in_flight[buf] = true;
+                buf ^= 1;
+              }
+              if (stride > column_bytes) {
+                CUDASUCCESS_OR_FATAL(cudaMemsetAsync(out_of(c) + column_bytes, 0,
+                                                     stride - column_bytes, copy_stream));
+              }
+            }
+          }
+        };
+        for (int c = col_begin; c < col_end; ) {
+          if (is_direct_col(c)) {
+            CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(out_of(c), dense_column_data_[c], column_bytes,
+                                                 cudaMemcpyHostToDevice, copy_stream));
+            ++c;
+          } else {
+            const int run_start = c;
+            while (c < col_end && !is_direct_col(c)) {
+              ++c;
+            }
+            upload_staged_range(run_start, c);
+          }
+        }
+        CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(copy_stream));
+      } catch (...) {
+        cleanup();
+        throw;
+      }
+      cleanup();
+      return;
+    }
+  }
+
+  // Fallback for small uploads or when pinned staging cannot be allocated.
   const size_t gather_bytes = std::max(size_t{16} << 20, stride);
   std::unique_ptr<uint8_t[]> gather;
   std::vector<int> run_columns;
-  auto out_of = [&](int c) { return dst + static_cast<size_t>(c - col_begin) * stride; };
   auto flush_run = [&]() {
     if (run_columns.empty()) return;
     if (gather == nullptr) gather.reset(new uint8_t[gather_bytes]);
-    Threading::For<int>(0, static_cast<int>(run_columns.size()), 1, [&](int, int start, int end) {
-      for (int i = start; i < end; ++i) {
-        const int c = run_columns[i];
-        uint8_t* out = gather.get() + static_cast<size_t>(i) * stride;
+    const int n_run = static_cast<int>(run_columns.size());
+    #pragma omp parallel for num_threads(num_threads) schedule(static)
+    for (int i = 0; i < n_run; ++i) {
+      const int c = run_columns[i];
+      uint8_t* out = gather.get() + static_cast<size_t>(i) * stride;
+      if (stride > column_bytes) {
         std::memset(out + column_bytes, 0, stride - column_bytes);
-        if (dense_column_bit_types_[c] == 4) {
-          std::memcpy(out, dense_column_data_[c], column_bytes);
-        } else {
-          const uint8_t* in = reinterpret_cast<const uint8_t*>(dense_column_data_[c]);
-          for (size_t b = 0; b < column_bytes; ++b) {
-            const data_size_t row = static_cast<data_size_t>(2 * b);
-            const uint8_t hi = row + 1 < num_data_ ? static_cast<uint8_t>(in[row + 1] & 0xf) : 0;
-            out[b] = static_cast<uint8_t>((in[row] & 0xf) | (hi << 4));
-          }
-        }
       }
-    });
+      pack_column_slice(c, 0, column_bytes, out);
+    }
     CopyFromHostToCUDADevice<uint8_t>(out_of(run_columns.front()), gather.get(), run_columns.size() * stride,
                                       __FILE__, __LINE__);
     run_columns.clear();

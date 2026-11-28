@@ -1618,6 +1618,295 @@ static void ApplyMissingSentinelToSample(
   }
 }
 
+namespace {
+
+// One column of the bin-construction sample, expanded exactly as the dense
+// samplers (SampleDenseSmallInt / SampleDenseFloat followed by
+// ApplyMissingSentinelToSample) expand it: the kept values in sample order as
+// double, NaN kept, (near) zeros skipped, a declared sentinel turned into NaN.
+template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
+inline bool SampleCellKept(T value) {
+  if (IS_FLOAT) {
+    const double v = static_cast<double>(value);
+    return std::fabs(v) > kZeroThreshold || std::isnan(v);
+  } else if (IS_FLOAT16) {
+    return (static_cast<uint16_t>(value) & 0x7FFF) != 0;  // not +-0
+  } else {
+    return value != 0;
+  }
+}
+
+template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
+inline double SampleCellValue(T value) {
+  if (IS_FLOAT16) {
+    return static_cast<double>(HalfBitsToFloat(static_cast<uint16_t>(value)));
+  }
+  return static_cast<double>(value);
+}
+
+template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
+void ExpandSampleColumn(const T* col, int n, double sentinel,
+                        std::vector<double>* values, std::vector<int>* indices) {
+  values->clear();
+  indices->clear();
+  for (int i = 0; i < n; ++i) {
+    if (SampleCellKept<T, IS_FLOAT16, IS_FLOAT>(col[i])) {
+      values->push_back(SampleCellValue<T, IS_FLOAT16, IS_FLOAT>(col[i]));
+      indices->push_back(i);
+    }
+  }
+  if (!std::isnan(sentinel)) {
+    for (auto& value : *values) {
+      if (value == sentinel) {
+        value = std::numeric_limits<double>::quiet_NaN();
+      }
+    }
+  }
+}
+
+template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
+void SampleColumnIndices(const T* col, int n, std::vector<int>* indices) {
+  indices->clear();
+  for (int i = 0; i < n; ++i) {
+    if (SampleCellKept<T, IS_FLOAT16, IS_FLOAT>(col[i])) {
+      indices->push_back(i);
+    }
+  }
+}
+
+// Column-major raw sample block (sample_cnt values per column, in the input's
+// element type). Columns are expanded on demand (or histogrammed directly in
+// O(N) over 256 buckets for int8/uint8), avoiding multi-GB double expansion
+// and radix sorting across all columns at once.
+class SampleBlockSource : public Falcata::SampleColumnSource {
+ public:
+  SampleBlockSource(const uint8_t* block, int data_type, int64_t elem_size,
+                    int sample_cnt, int ncol, double sentinel)
+      : block_(block), data_type_(data_type), elem_size_(elem_size),
+        sample_cnt_(sample_cnt), ncol_(ncol), sentinel_(sentinel) {}
+
+  int num_col() const override { return ncol_; }
+
+  bool GetByteHistogram(int col, int counts_256[256], bool* is_signed,
+                        double* missing_sentinel,
+                        int* num_nonzero) const override {
+    if (data_type_ != C_API_DTYPE_INT8 && data_type_ != C_API_DTYPE_UINT8) {
+      return false;
+    }
+    const uint8_t* p = static_cast<const uint8_t*>(Column(col));
+    int c0[256] = {0};
+    int c1[256] = {0};
+    int c2[256] = {0};
+    int c3[256] = {0};
+    int r = 0;
+    for (; r + 4 <= sample_cnt_; r += 4) {
+      ++c0[p[r]];
+      ++c1[p[r + 1]];
+      ++c2[p[r + 2]];
+      ++c3[p[r + 3]];
+    }
+    for (; r < sample_cnt_; ++r) {
+      ++c0[p[r]];
+    }
+    for (int b = 0; b < 256; ++b) {
+      counts_256[b] = c0[b] + c1[b] + c2[b] + c3[b];
+    }
+    *is_signed = (data_type_ == C_API_DTYPE_INT8);
+    *missing_sentinel = sentinel_;
+    *num_nonzero = sample_cnt_ - counts_256[0];
+    return true;
+  }
+
+  void GetByteMostFreqMask(int col, int num_nonzero,
+                           const uint8_t is_most_freq[256],
+                           std::vector<uint64_t>* mask) const override {
+    const uint8_t* p = static_cast<const uint8_t*>(Column(col));
+    mask->assign((static_cast<size_t>(num_nonzero) + 63) / 64, 0);
+    int j = 0;
+    for (int r = 0; r < sample_cnt_; ++r) {
+      const uint8_t b = p[r];
+      if (b != 0) {
+        if (is_most_freq[b] != 0) {
+          (*mask)[j >> 6] |= (1ULL << (j & 63));
+        }
+        ++j;
+      }
+    }
+  }
+
+  void GetColumn(int col, std::vector<double>* values,
+                 std::vector<int>* indices) const override {
+    const void* c = Column(col);
+    switch (data_type_) {
+      case C_API_DTYPE_INT8:
+        ExpandSampleColumn<int8_t, false, false>(static_cast<const int8_t*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      case C_API_DTYPE_INT16:
+        ExpandSampleColumn<int16_t, false, false>(static_cast<const int16_t*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      case C_API_DTYPE_UINT8:
+        ExpandSampleColumn<uint8_t, false, false>(static_cast<const uint8_t*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      case C_API_DTYPE_UINT16:
+        ExpandSampleColumn<uint16_t, false, false>(static_cast<const uint16_t*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      case C_API_DTYPE_FLOAT16:
+        ExpandSampleColumn<uint16_t, true, false>(static_cast<const uint16_t*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      case C_API_DTYPE_FLOAT32:
+        ExpandSampleColumn<float, false, true>(static_cast<const float*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+      default:
+        ExpandSampleColumn<double, false, true>(static_cast<const double*>(c), sample_cnt_, sentinel_, values, indices);
+        break;
+    }
+  }
+
+  void GetColumnIndices(int col, std::vector<int>* indices) const override {
+    const void* c = Column(col);
+    switch (data_type_) {
+      case C_API_DTYPE_INT8:
+        SampleColumnIndices<int8_t, false, false>(static_cast<const int8_t*>(c), sample_cnt_, indices);
+        break;
+      case C_API_DTYPE_INT16:
+        SampleColumnIndices<int16_t, false, false>(static_cast<const int16_t*>(c), sample_cnt_, indices);
+        break;
+      case C_API_DTYPE_UINT8:
+        SampleColumnIndices<uint8_t, false, false>(static_cast<const uint8_t*>(c), sample_cnt_, indices);
+        break;
+      case C_API_DTYPE_UINT16:
+        SampleColumnIndices<uint16_t, false, false>(static_cast<const uint16_t*>(c), sample_cnt_, indices);
+        break;
+      case C_API_DTYPE_FLOAT16:
+        SampleColumnIndices<uint16_t, true, false>(static_cast<const uint16_t*>(c), sample_cnt_, indices);
+        break;
+      case C_API_DTYPE_FLOAT32:
+        SampleColumnIndices<float, false, true>(static_cast<const float*>(c), sample_cnt_, indices);
+        break;
+      default:
+        SampleColumnIndices<double, false, true>(static_cast<const double*>(c), sample_cnt_, indices);
+        break;
+    }
+  }
+
+ private:
+  const void* Column(int col) const {
+    return block_ + static_cast<size_t>(col) * sample_cnt_ * elem_size_;
+  }
+  const uint8_t* block_;
+  const int data_type_;
+  const int64_t elem_size_;
+  const int sample_cnt_;
+  const int ncol_;
+  const double sentinel_;
+};
+
+#ifdef USE_CUDA
+// Parallel cache-blocked transpose of a row-major (sample_cnt x ncol) byte
+// block into a column-major (ncol x sample_cnt) byte block.
+void TransposeByteRowsToColMajor(const uint8_t* src, int sample_cnt, int ncol,
+                                 uint8_t* dst) {
+  if (sample_cnt <= 0 || ncol <= 0) {
+    return;
+  }
+  constexpr int kTile = 64;
+  const int num_row_tiles = (sample_cnt + kTile - 1) / kTile;
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  for (int rt = 0; rt < num_row_tiles; ++rt) {
+    const int r0 = rt * kTile;
+    const int r_end = std::min(r0 + kTile, sample_cnt);
+    for (int c0 = 0; c0 < ncol; c0 += kTile) {
+      const int c_end = std::min(c0 + kTile, ncol);
+      for (int c = c0; c < c_end; ++c) {
+        uint8_t* col_dst = dst + static_cast<size_t>(c) * sample_cnt + r0;
+        for (int r = r0; r < r_end; ++r) {
+          col_dst[r - r0] = src[static_cast<size_t>(r) * ncol + c];
+        }
+      }
+    }
+  }
+}
+#endif  // USE_CUDA
+
+// Gathers sampled rows of 1-byte dense host matrices directly into a
+// column-major (ncol x sample_cnt) byte block without expanding to double.
+void GatherHostByteSampleBlockColMajor(const void** data,
+                                       const std::vector<int32_t>& sample_indices,
+                                       const int32_t* nrow, int32_t ncol,
+                                       const int* is_row_major,
+                                       uint8_t* dst) {
+  const int sample_cnt = static_cast<int>(sample_indices.size());
+  if (sample_cnt <= 0 || ncol <= 0) {
+    return;
+  }
+  std::vector<int> mat_of(sample_cnt);
+  std::vector<int32_t> row_of(sample_cnt);
+  int offset = 0;
+  int mat_idx = 0;
+  bool all_row_major = true;
+  for (int i = 0; i < sample_cnt; ++i) {
+    const int32_t idx = sample_indices[i];
+    while ((idx - offset) >= nrow[mat_idx]) {
+      offset += nrow[mat_idx];
+      ++mat_idx;
+    }
+    mat_of[i] = mat_idx;
+    row_of[i] = idx - offset;
+    if (!is_row_major[mat_idx]) {
+      all_row_major = false;
+    }
+  }
+  if (all_row_major) {
+    // Copy a small tile of rows into thread-local L2 memory, then transpose
+    // into contiguous per-column slices in dst.
+    int tile_rows = std::min(256, std::max(1, (512 * 1024) / std::max<int>(ncol, 1)));
+    if (tile_rows >= 64) {
+      tile_rows = (tile_rows / 64) * 64;
+    }
+    const int num_tiles = (sample_cnt + tile_rows - 1) / tile_rows;
+    #pragma omp parallel num_threads(OMP_NUM_THREADS())
+    {
+      std::vector<uint8_t> tile(static_cast<size_t>(tile_rows) * static_cast<size_t>(ncol));
+      #pragma omp for schedule(static)
+      for (int t = 0; t < num_tiles; ++t) {
+        const int r0 = t * tile_rows;
+        const int r_cnt = std::min(tile_rows, sample_cnt - r0);
+        for (int r = 0; r < r_cnt; ++r) {
+          const uint8_t* mat = static_cast<const uint8_t*>(data[mat_of[r0 + r]]);
+          std::memcpy(tile.data() + static_cast<size_t>(r) * ncol,
+                      mat + static_cast<size_t>(row_of[r0 + r]) * ncol,
+                      static_cast<size_t>(ncol));
+        }
+        constexpr int kColStrip = 32;
+        for (int c0 = 0; c0 < ncol; c0 += kColStrip) {
+          const int c_end = std::min(c0 + kColStrip, ncol);
+          for (int c = c0; c < c_end; ++c) {
+            uint8_t* col_dst = dst + static_cast<size_t>(c) * sample_cnt + r0;
+            for (int r = 0; r < r_cnt; ++r) {
+              col_dst[r] = tile[static_cast<size_t>(r) * ncol + c];
+            }
+          }
+        }
+      }
+    }
+  } else {
+    #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+    for (int col = 0; col < ncol; ++col) {
+      uint8_t* col_dst = dst + static_cast<size_t>(col) * sample_cnt;
+      for (int i = 0; i < sample_cnt; ++i) {
+        const int m = mat_of[i];
+        const uint8_t* mat = static_cast<const uint8_t*>(data[m]);
+        const size_t r = static_cast<size_t>(row_of[i]);
+        col_dst[i] = is_row_major[m]
+            ? mat[r * ncol + col]
+            : mat[static_cast<size_t>(nrow[m]) * col + r];
+      }
+    }
+  }
+}
+
+}  // namespace
+
 // CSC_RowIterator walks a column's stored rows in order and returns 0 for a row it has passed, so row
 // indices that are not strictly increasing within a column (unsorted, or a row stored twice) were read as
 // different values without any error: training and prediction silently used the wrong matrix.
@@ -2089,51 +2378,60 @@ int FLC_DatasetCreateFromMats(int32_t nmat,
     // sample data first
     auto sample_indices = CreateSampleIndices(total_nrow, config);
     int sample_cnt = static_cast<int>(sample_indices.size());
-    std::vector<std::vector<double>> sample_values(ncol);
-    std::vector<std::vector<int>> sample_idx(ncol);
-
-    if (data_type == C_API_DTYPE_INT8) {
-      SampleDenseSmallInt<int8_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_INT16) {
-      SampleDenseSmallInt<int16_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_UINT8) {
-      SampleDenseSmallInt<uint8_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_UINT16) {
-      SampleDenseSmallInt<uint16_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_FLOAT16) {
-      SampleDenseSmallInt<uint16_t, true>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_FLOAT32) {
-      SampleDenseFloat<float>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_FLOAT64) {
-      SampleDenseFloat<double>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+    DatasetLoader loader(config, nullptr, 1, nullptr);
+    if (data_type == C_API_DTYPE_INT8 || data_type == C_API_DTYPE_UINT8) {
+      // Compact 1-byte column-major sample block + O(N) 256-bucket counting FindBin:
+      // avoids multi-GB double expansion and radix sort while keeping identical bins.
+      const size_t block_bytes = static_cast<size_t>(sample_cnt) * static_cast<size_t>(ncol);
+      std::unique_ptr<uint8_t[]> sample_block(new uint8_t[block_bytes]);
+      GatherHostByteSampleBlockColMajor(data, sample_indices, nrow, ncol, is_row_major,
+                                        sample_block.get());
+      const SampleBlockSource source(sample_block.get(), data_type, /*elem_size=*/1,
+                                     sample_cnt, ncol, missing_sentinel);
+      ret.reset(loader.ConstructFromSampleSource(source, static_cast<size_t>(sample_cnt),
+                                                 total_nrow, total_nrow));
     } else {
-      int offset = 0;
-      int j = 0;
-      for (size_t i = 0; i < sample_indices.size(); ++i) {
-        auto idx = sample_indices[i];
-        while ((idx - offset) >= nrow[j]) {
-          offset += nrow[j];
-          ++j;
-        }
+      std::vector<std::vector<double>> sample_values(ncol);
+      std::vector<std::vector<int>> sample_idx(ncol);
 
-        auto row = get_row_fun[j](static_cast<int>(idx - offset));
-        for (size_t k = 0; k < row.size(); ++k) {
-          if (std::fabs(row[k]) > kZeroThreshold || std::isnan(row[k])) {
-            sample_values[k].emplace_back(row[k]);
-            sample_idx[k].emplace_back(static_cast<int>(i));
+      if (data_type == C_API_DTYPE_INT16) {
+        SampleDenseSmallInt<int16_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+      } else if (data_type == C_API_DTYPE_UINT16) {
+        SampleDenseSmallInt<uint16_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+      } else if (data_type == C_API_DTYPE_FLOAT16) {
+        SampleDenseSmallInt<uint16_t, true>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+      } else if (data_type == C_API_DTYPE_FLOAT32) {
+        SampleDenseFloat<float>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+      } else if (data_type == C_API_DTYPE_FLOAT64) {
+        SampleDenseFloat<double>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+      } else {
+        int offset = 0;
+        int j = 0;
+        for (size_t i = 0; i < sample_indices.size(); ++i) {
+          auto idx = sample_indices[i];
+          while ((idx - offset) >= nrow[j]) {
+            offset += nrow[j];
+            ++j;
+          }
+
+          auto row = get_row_fun[j](static_cast<int>(idx - offset));
+          for (size_t k = 0; k < row.size(); ++k) {
+            if (std::fabs(row[k]) > kZeroThreshold || std::isnan(row[k])) {
+              sample_values[k].emplace_back(row[k]);
+              sample_idx[k].emplace_back(static_cast<int>(i));
+            }
           }
         }
       }
+      ApplyMissingSentinelToSample(missing_sentinel, &sample_values);
+      ret.reset(loader.ConstructFromSampleData(Vector2Ptr<double>(&sample_values).data(),
+                                               Vector2Ptr<int>(&sample_idx).data(),
+                                               ncol,
+                                               VectorSize<double>(sample_values).data(),
+                                               sample_cnt,
+                                               total_nrow,
+                                               total_nrow));
     }
-    ApplyMissingSentinelToSample(missing_sentinel, &sample_values);
-    DatasetLoader loader(config, nullptr, 1, nullptr);
-    ret.reset(loader.ConstructFromSampleData(Vector2Ptr<double>(&sample_values).data(),
-                                             Vector2Ptr<int>(&sample_idx).data(),
-                                             ncol,
-                                             VectorSize<double>(sample_values).data(),
-                                             sample_cnt,
-                                             total_nrow,
-                                             total_nrow));
   } else {
     CheckReferenceColumns(reinterpret_cast<const Dataset*>(reference), ncol, "The matrix");
     ret.reset(new Dataset(total_nrow));
@@ -2414,39 +2712,46 @@ int FLC_DatasetCreateFromMatDevice(const void* data,
     CUDAGatherSampleRowsToHost(data, elem_size, is_row_major != 0, nrow, ncol,
                                sample_indices.data(), sample_cnt,
                                sample_block.data());
-    std::vector<std::vector<double>> sample_values(ncol);
-    std::vector<std::vector<int>> sample_idx(ncol);
-    const void* block = sample_block.data();
-    int32_t block_nrow = sample_cnt;
-    int block_row_major = 1;
-    std::vector<int32_t> identity(sample_cnt);
-    for (int i = 0; i < sample_cnt; ++i) {
-      identity[i] = i;
-    }
-    if (data_type == C_API_DTYPE_INT8) {
-      SampleDenseSmallInt<int8_t>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_INT16) {
-      SampleDenseSmallInt<int16_t>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_UINT8) {
-      SampleDenseSmallInt<uint8_t>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_UINT16) {
-      SampleDenseSmallInt<uint16_t>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_FLOAT16) {
-      SampleDenseSmallInt<uint16_t, true>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
-    } else if (data_type == C_API_DTYPE_FLOAT32) {
-      SampleDenseFloat<float>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
-    } else {
-      SampleDenseFloat<double>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
-    }
-    ApplyMissingSentinelToSample(missing_sentinel, &sample_values);
     DatasetLoader loader(config, nullptr, 1, nullptr);
-    ret.reset(loader.ConstructFromSampleData(Vector2Ptr<double>(&sample_values).data(),
-                                             Vector2Ptr<int>(&sample_idx).data(),
-                                             ncol,
-                                             VectorSize<double>(sample_values).data(),
-                                             sample_cnt,
-                                             nrow,
-                                             nrow));
+    if (data_type == C_API_DTYPE_INT8 || data_type == C_API_DTYPE_UINT8) {
+      std::unique_ptr<uint8_t[]> col_block(
+          new uint8_t[static_cast<size_t>(sample_cnt) * static_cast<size_t>(ncol)]);
+      TransposeByteRowsToColMajor(sample_block.data(), sample_cnt, ncol, col_block.get());
+      std::vector<uint8_t>().swap(sample_block);
+      const SampleBlockSource source(col_block.get(), data_type, /*elem_size=*/1,
+                                     sample_cnt, ncol, missing_sentinel);
+      ret.reset(loader.ConstructFromSampleSource(source, static_cast<size_t>(sample_cnt),
+                                                 nrow, nrow));
+    } else {
+      std::vector<std::vector<double>> sample_values(ncol);
+      std::vector<std::vector<int>> sample_idx(ncol);
+      const void* block = sample_block.data();
+      int32_t block_nrow = sample_cnt;
+      int block_row_major = 1;
+      std::vector<int32_t> identity(sample_cnt);
+      for (int i = 0; i < sample_cnt; ++i) {
+        identity[i] = i;
+      }
+      if (data_type == C_API_DTYPE_INT16) {
+        SampleDenseSmallInt<int16_t>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+      } else if (data_type == C_API_DTYPE_UINT16) {
+        SampleDenseSmallInt<uint16_t>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+      } else if (data_type == C_API_DTYPE_FLOAT16) {
+        SampleDenseSmallInt<uint16_t, true>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+      } else if (data_type == C_API_DTYPE_FLOAT32) {
+        SampleDenseFloat<float>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+      } else {
+        SampleDenseFloat<double>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+      }
+      ApplyMissingSentinelToSample(missing_sentinel, &sample_values);
+      ret.reset(loader.ConstructFromSampleData(Vector2Ptr<double>(&sample_values).data(),
+                                               Vector2Ptr<int>(&sample_idx).data(),
+                                               ncol,
+                                               VectorSize<double>(sample_values).data(),
+                                               sample_cnt,
+                                               nrow,
+                                               nrow));
+    }
   } else {
     CheckReferenceColumns(reinterpret_cast<const Dataset*>(reference), ncol, "The matrix");
     ret.reset(new Dataset(nrow));
@@ -2503,141 +2808,6 @@ Dataset::DenseBinnerDType DenseBinnerDTypeFromCApi(int data_type) {
       return Dataset::DenseBinnerDType::kFloat16Bits;
   }
 }
-
-// One column of the bin-construction sample, expanded exactly as the dense
-// samplers (SampleDenseSmallInt / SampleDenseFloat followed by
-// ApplyMissingSentinelToSample) expand it: the kept values in sample order as
-// double, NaN kept, (near) zeros skipped, a declared sentinel turned into NaN.
-template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
-inline bool SampleCellKept(T value) {
-  if (IS_FLOAT) {
-    const double v = static_cast<double>(value);
-    return std::fabs(v) > kZeroThreshold || std::isnan(v);
-  } else if (IS_FLOAT16) {
-    return (static_cast<uint16_t>(value) & 0x7FFF) != 0;  // not +-0
-  } else {
-    return value != 0;
-  }
-}
-
-template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
-inline double SampleCellValue(T value) {
-  if (IS_FLOAT16) {
-    return static_cast<double>(HalfBitsToFloat(static_cast<uint16_t>(value)));
-  }
-  return static_cast<double>(value);
-}
-
-template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
-void ExpandSampleColumn(const T* col, int n, double sentinel,
-                        std::vector<double>* values, std::vector<int>* indices) {
-  values->clear();
-  indices->clear();
-  for (int i = 0; i < n; ++i) {
-    if (SampleCellKept<T, IS_FLOAT16, IS_FLOAT>(col[i])) {
-      values->push_back(SampleCellValue<T, IS_FLOAT16, IS_FLOAT>(col[i]));
-      indices->push_back(i);
-    }
-  }
-  if (!std::isnan(sentinel)) {
-    for (auto& value : *values) {
-      if (value == sentinel) {
-        value = std::numeric_limits<double>::quiet_NaN();
-      }
-    }
-  }
-}
-
-template <typename T, bool IS_FLOAT16, bool IS_FLOAT>
-void SampleColumnIndices(const T* col, int n, std::vector<int>* indices) {
-  indices->clear();
-  for (int i = 0; i < n; ++i) {
-    if (SampleCellKept<T, IS_FLOAT16, IS_FLOAT>(col[i])) {
-      indices->push_back(i);
-    }
-  }
-}
-
-// The streaming builder's sample as it is gathered: the raw sampled cells,
-// column-major (sample_cnt values per column, in the input's element type).
-// Columns are expanded on demand, so the bin mappers are built with threads x
-// one expanded column on the host instead of 12 more bytes per sampled cell
-// for all columns at once.
-class SampleBlockSource : public Falcata::SampleColumnSource {
- public:
-  SampleBlockSource(const uint8_t* block, int data_type, int64_t elem_size,
-                    int sample_cnt, int ncol, double sentinel)
-      : block_(block), data_type_(data_type), elem_size_(elem_size),
-        sample_cnt_(sample_cnt), ncol_(ncol), sentinel_(sentinel) {}
-
-  int num_col() const override { return ncol_; }
-
-  void GetColumn(int col, std::vector<double>* values,
-                 std::vector<int>* indices) const override {
-    const void* c = Column(col);
-    switch (data_type_) {
-      case C_API_DTYPE_INT8:
-        ExpandSampleColumn<int8_t, false, false>(static_cast<const int8_t*>(c), sample_cnt_, sentinel_, values, indices);
-        break;
-      case C_API_DTYPE_INT16:
-        ExpandSampleColumn<int16_t, false, false>(static_cast<const int16_t*>(c), sample_cnt_, sentinel_, values, indices);
-        break;
-      case C_API_DTYPE_UINT8:
-        ExpandSampleColumn<uint8_t, false, false>(static_cast<const uint8_t*>(c), sample_cnt_, sentinel_, values, indices);
-        break;
-      case C_API_DTYPE_UINT16:
-        ExpandSampleColumn<uint16_t, false, false>(static_cast<const uint16_t*>(c), sample_cnt_, sentinel_, values, indices);
-        break;
-      case C_API_DTYPE_FLOAT16:
-        ExpandSampleColumn<uint16_t, true, false>(static_cast<const uint16_t*>(c), sample_cnt_, sentinel_, values, indices);
-        break;
-      case C_API_DTYPE_FLOAT32:
-        ExpandSampleColumn<float, false, true>(static_cast<const float*>(c), sample_cnt_, sentinel_, values, indices);
-        break;
-      default:
-        ExpandSampleColumn<double, false, true>(static_cast<const double*>(c), sample_cnt_, sentinel_, values, indices);
-        break;
-    }
-  }
-
-  void GetColumnIndices(int col, std::vector<int>* indices) const override {
-    const void* c = Column(col);
-    switch (data_type_) {
-      case C_API_DTYPE_INT8:
-        SampleColumnIndices<int8_t, false, false>(static_cast<const int8_t*>(c), sample_cnt_, indices);
-        break;
-      case C_API_DTYPE_INT16:
-        SampleColumnIndices<int16_t, false, false>(static_cast<const int16_t*>(c), sample_cnt_, indices);
-        break;
-      case C_API_DTYPE_UINT8:
-        SampleColumnIndices<uint8_t, false, false>(static_cast<const uint8_t*>(c), sample_cnt_, indices);
-        break;
-      case C_API_DTYPE_UINT16:
-        SampleColumnIndices<uint16_t, false, false>(static_cast<const uint16_t*>(c), sample_cnt_, indices);
-        break;
-      case C_API_DTYPE_FLOAT16:
-        SampleColumnIndices<uint16_t, true, false>(static_cast<const uint16_t*>(c), sample_cnt_, indices);
-        break;
-      case C_API_DTYPE_FLOAT32:
-        SampleColumnIndices<float, false, true>(static_cast<const float*>(c), sample_cnt_, indices);
-        break;
-      default:
-        SampleColumnIndices<double, false, true>(static_cast<const double*>(c), sample_cnt_, indices);
-        break;
-    }
-  }
-
- private:
-  const void* Column(int col) const {
-    return block_ + static_cast<size_t>(col) * sample_cnt_ * elem_size_;
-  }
-  const uint8_t* block_;
-  const int data_type_;
-  const int64_t elem_size_;
-  const int sample_cnt_;
-  const int ncol_;
-  const double sentinel_;
-};
 
 // Copies the given chunk-local rows of a host chunk into the column-major
 // sample block at sample positions [pos, pos + rows.size()).

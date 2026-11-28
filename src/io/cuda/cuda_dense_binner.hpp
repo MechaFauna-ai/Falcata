@@ -70,6 +70,12 @@ void LaunchCUDADenseBinTileKernel(const void* in, int dtype_code,
                                   const CUDADenseBinnerTables& tables,
                                   uint8_t* out, cudaStream_t stream);
 
+// Shared non-fatal pinned staging pool (backed by PinnedStagingPool in
+// cuda_dense_binner.cpp): returns nullptr on allocation failure so callers
+// can fall back cleanly to pageable staging.
+uint8_t* TryAcquirePinnedStaging(size_t bytes);
+void ReleasePinnedStaging(uint8_t* ptr);
+
 /*!
  * \brief One device dense-binning session over a Dataset whose bin mappers
  *        are already constructed. Created by Dataset::GPUDenseBinnerBegin

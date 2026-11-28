@@ -81,6 +81,13 @@ class DatasetLoader {
                     const std::vector<std::vector<double>>& forced_bin_bounds,
                     std::unique_ptr<BinMapper>* out) const;
 
+  /*! \brief Bin mapper of local column i from its exact 256-bucket byte histogram */
+  void FindBinLocalFromByteCounts(int i, const int counts_256[256], bool is_signed,
+                                  double missing_sentinel, size_t total_sample_size,
+                                  data_size_t filter_cnt,
+                                  const std::vector<std::vector<double>>& forced_bin_bounds,
+                                  std::unique_ptr<BinMapper>* out) const;
+
   void ConstructBinMappersFromTextData(int rank, int num_machines, const std::vector<std::string>& sample_data, const Parser* parser, Dataset* dataset);
 
   /*! \brief Extract local features from memory */
