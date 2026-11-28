@@ -401,10 +401,11 @@ class CUDAHistogramConstructor {
   }
 
   /*! \brief why the batched per-level construct/fix/subtract path does not support the
-   *  current data layout (kNone: it does: dense, shared-memory histograms). The compact
+   *  current data layout (kNone: it does: dense shared-memory histograms, and quantized
+   *  sparse shared-memory histograms under cuda_plan key sparse_batched_level). The compact
    *  column view (feature_fraction sampling gathered into a dense per-tree copy) is
    *  supported through the same batched dense kernel fed with the compact pointers/dims;
-   *  it exists for 8-bit rows only (ScanCompactLayout), and 16-bit rows read the full matrix. */
+   *  it exists for 8-bit dense rows only (ScanCompactLayout), and 16-bit rows read the full matrix. */
   DeviceTreeReason BatchedLevelRefusal() const {
     if (NonquantClassicFallback()) {
       return DeviceTreeReason::kNoSharedMemory;
@@ -412,7 +413,8 @@ class CUDAHistogramConstructor {
     if (cuda_row_data_ == nullptr) {
       return DeviceTreeReason::kEmptyTaskList;  // no row data was built: no feature to search
     }
-    if (cuda_row_data_->is_sparse()) {
+    if (cuda_row_data_->is_sparse() &&
+        (!use_quantized_grad_ || !FalcataPlan::Get().sparse_batched_level)) {
       return DeviceTreeReason::kSparseLayout;
     }
     if (cuda_row_data_->NumLargeBinPartition() != 0) {
@@ -474,10 +476,11 @@ class CUDAHistogramConstructor {
   std::string BatchedLevelGateDiag() const {
     char buf[256];
     snprintf(buf, sizeof(buf),
-             "hist: row_data=%d sparse=%d large_bin_parts=%d compact_view=%d "
+             "hist: row_data=%d sparse=%d sparse_batched=%d large_bin_parts=%d compact_view=%d "
              "bit_type=%d",
              static_cast<int>(cuda_row_data_ != nullptr),
              cuda_row_data_ != nullptr ? static_cast<int>(cuda_row_data_->is_sparse()) : -1,
+             static_cast<int>(use_quantized_grad_ && FalcataPlan::Get().sparse_batched_level),
              cuda_row_data_ != nullptr ? cuda_row_data_->NumLargeBinPartition() : -1,
              static_cast<int>(use_compact_view_),
              cuda_row_data_ != nullptr ? cuda_row_data_->bit_type() : -1);
@@ -663,7 +666,10 @@ class CUDAHistogramConstructor {
     key->push_back(static_cast<const void*>(cuda_gradients_hessians_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_is_column_used_bytree_.RawDataReadOnly()));
+    key->push_back(any_feature_unused_bytree_ ? static_cast<const void*>(cuda_bin_used_bytree_.RawDataReadOnly()) : nullptr);
     key->push_back(any_feature_unused_bytree_ ? this : nullptr);
+    key->push_back(cuda_row_data_ != nullptr && cuda_row_data_->is_sparse() ?
+      reinterpret_cast<const void*>(static_cast<uintptr_t>(1)) : nullptr);
     // quantized subtract scratch, baked into the captured subtract/copy params (presized by
     // EnsureDeviceLevelCapacity)
     key->push_back(use_quantized_grad_ ?

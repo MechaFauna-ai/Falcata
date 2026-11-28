@@ -109,6 +109,7 @@ ALL_KEYS = {
     "pair_block_map": True,
     "dense_level_row_blocks": True,
     "dense_block_map": True,
+    "sparse_batched_level": True,
     "dense_wide_hist": True,
     "final_map_only": True,
     "final_readback_first": True,
