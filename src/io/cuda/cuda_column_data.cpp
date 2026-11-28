@@ -266,7 +266,7 @@ void CUDAColumnData::Init(const int num_columns,
   original_column_bit_type_ = column_bit_type_;
   cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
   original_column_view_active_ = !init_skipped_per_column_alloc_;
-  ++column_view_generation_;
+  column_view_generation_ = NextColumnViewGeneration();
   InitColumnMetaInfo();
 }
 
@@ -301,7 +301,7 @@ void CUDAColumnData::InitViewOf(const CUDAColumnData* source) {
   SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
   cuda_data_by_column_.InitFromHostVector(OriginalColumnPointers());
   original_column_view_active_ = !init_skipped_per_column_alloc_;
-  ++column_view_generation_;
+  column_view_generation_ = NextColumnViewGeneration();
   InitColumnMetaInfo();
 }
 
@@ -382,7 +382,7 @@ void CUDAColumnData::CopySubrow(
     }
     cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
     original_column_view_active_ = !init_skipped_per_column_alloc_;
-    ++column_view_generation_;
+    column_view_generation_ = NextColumnViewGeneration();
     InitColumnMetaInfo();
     cur_subset_buffer_size_ = num_used_indices;
   } else {
@@ -445,7 +445,7 @@ void CUDAColumnData::SetCompactColumnView(const std::vector<int>& column_to_comp
   cuda_column_bit_type_.InitFromHostVector(column_bit_type_);
   packed_column_view_active_ = false;
   original_column_view_active_ = false;
-  ++column_view_generation_;
+  column_view_generation_ = NextColumnViewGeneration();
 }
 
 void CUDAColumnData::RestoreOriginalColumnView() {
@@ -461,7 +461,7 @@ void CUDAColumnData::RestoreOriginalColumnView() {
   cuda_column_bit_type_.InitFromHostVector(column_bit_type_);
   packed_column_view_active_ = false;
   original_column_view_active_ = true;
-  ++column_view_generation_;
+  column_view_generation_ = NextColumnViewGeneration();
 }
 
 void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_to_compact_slot,
@@ -521,7 +521,7 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
   compact_column_host_view_.assign(num_columns_, nullptr);
   packed_column_view_active_ = true;
   original_column_view_active_ = false;
-  ++column_view_generation_;
+  column_view_generation_ = NextColumnViewGeneration();
 }
 
 void CUDAColumnData::EnsurePackedViewOnDevice() {
@@ -562,6 +562,7 @@ void CUDAColumnData::ResizeWhenCopySubrow(const data_size_t num_used_indices) {
   }
   OMP_THROW_EX();
   cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
+  column_view_generation_ = NextColumnViewGeneration();
 }
 
 void CUDAColumnData::InitMissingFlagSnapshots() {

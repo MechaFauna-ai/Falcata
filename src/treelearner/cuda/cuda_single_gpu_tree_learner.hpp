@@ -932,6 +932,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<CUDAHybridGraphFeatureSource> cuda_device_level_feature_source_;
   CUDAVector<double> cuda_device_level_real_thresholds_;
   std::vector<CUDAHybridGraphFeatureSource> host_device_level_feature_source_;
+  const CUDAColumnData* device_level_feature_source_col_data_ = nullptr;
+  uint64_t device_level_feature_source_gen_ = 0;
+  bool device_level_feature_source_valid_ = false;
   cudaEvent_t device_level_select_event_ = nullptr;
   std::vector<int> device_level_batch_info_;
   // the last device levels' applied splits per level (from the journal's level tags)
@@ -1041,6 +1044,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<uint8_t> cuda_tree_pool_buffer_;
   // reusable growth buffers for the categorical split record of the tree being grown (see CUDATreeCatArena)
   CUDATreeCatArena cuda_tree_cat_arena_;
+  // persistent blocking stream borrowed by CUDATree instances during tree growth (zero per-tree stream create/destroy)
+  cudaStream_t cuda_tree_stream_ = nullptr;
+  // chunked refcounted device arena for retained per-tree cuda_leaf_value_ slices
+  CUDATreeLeafArena cuda_tree_leaf_arena_;
+  // previous tree's final leaf count, used to pre-reserve CUDATree host vectors during BeforeTrain() overlap
+  int last_tree_num_leaves_ = 0;
   // whether BeforeTrain deferred the root-sum readback (single-sync flow); the
   // readback (plus the root leaf-output init) then happens lazily in
   // EnsureRootSumsReadBack on the paths that need host root sums

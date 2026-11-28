@@ -261,6 +261,10 @@ struct CUDADeviceLevelConfig {
    *  split (tree_leaf_value nullptr: not seeded, the non-quantized tree's internal_value[0] stays 0) */
   const CUDALeafSplitsStruct* root_struct;
   double* tree_leaf_value;
+  /*! \brief non-quantized device-tree root init: zeroes leaf_value[0] in DeviceLevelResetKernel */
+  double* tree_leaf_value_zero;
+  double* tree_leaf_weight;
+  int* tree_leaf_parent;
   const data_size_t* leaf_num_data;
   const data_size_t* leaf_data_start;
   CUDATreeBatchSplit* tree_batch_splits;

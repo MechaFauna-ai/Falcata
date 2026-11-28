@@ -710,7 +710,7 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
   bool should_continue = false;
   for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
     const size_t offset = static_cast<size_t>(cur_tree_id) * num_data_;
-    std::unique_ptr<Tree> new_tree(new Tree(2, false, false));
+    std::unique_ptr<Tree> new_tree;
     if (class_need_train_[cur_tree_id] && train_data_->num_features() > 0) {
       auto grad = gradients + offset;
       auto hess = hessians + offset;
@@ -725,6 +725,9 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
       }
       bool is_first_tree = models_.size() < static_cast<size_t>(num_tree_per_iteration_);
       new_tree.reset(tree_learner_->Train(grad, hess, is_first_tree));
+    }
+    if (!new_tree) {
+      new_tree.reset(new Tree(2, false, false));
     }
 
     if (new_tree->num_leaves() > 1) {
@@ -800,10 +803,13 @@ bool GBDT::VectorTrainOneIter() {
   // subset through the partition's index list)
   data_sample_strategy_->Bagging(iter_, tree_learner_.get(), gradients_.data(), hessians_.data());
 
-  std::unique_ptr<Tree> new_tree(new Tree(2, false, false, leaf_value_dim_));
+  std::unique_ptr<Tree> new_tree;
   if (train_data_->num_features() > 0) {
     const bool is_first_tree = models_.empty();
     new_tree.reset(tree_learner_->Train(gradients, hessians, is_first_tree));
+  }
+  if (!new_tree) {
+    new_tree.reset(new Tree(2, false, false, leaf_value_dim_));
   }
 
   bool should_continue = false;
