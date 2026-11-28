@@ -186,6 +186,10 @@ class CUDARegressionPoissonLoss : public CUDARegressionObjectiveInterface<Regres
   double LaunchCalcInitScoreKernel(const int class_id) const override;
 
   void LaunchCheckLabelKernel() const;
+
+  void LaunchComputeExpMaxDeltaStepKernel();
+
+  double exp_max_delta_step_ = 1.0;
 };
 
 

@@ -21,8 +21,15 @@ CUDAMulticlassSoftmax::~CUDAMulticlassSoftmax() {}
 
 void CUDAMulticlassSoftmax::Init(const Metadata& metadata, data_size_t num_data) {
   CUDAObjectiveInterface<MulticlassSoftmax>::Init(metadata, num_data);
-  cuda_softmax_buffer_.Resize(static_cast<size_t>(num_data) * static_cast<size_t>(num_class_));
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  cuda_softmax_buffer_.Clear();
+}
+
+double* CUDAMulticlassSoftmax::EnsureSoftmaxBuffer(const data_size_t num_rows) const {
+  const size_t needed = static_cast<size_t>(num_rows) * static_cast<size_t>(num_class_);
+  if (cuda_softmax_buffer_.Size() < needed) {
+    cuda_softmax_buffer_.ResizeDiscard(needed);
+  }
+  return cuda_softmax_buffer_.RawData();
 }
 
 

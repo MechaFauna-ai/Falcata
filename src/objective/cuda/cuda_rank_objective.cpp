@@ -51,6 +51,8 @@ void CUDALambdarankNDCG::Init(const Metadata& metadata, data_size_t num_data) {
   }
   cuda_discount_.InitFromHostVector(discount);
   lambda_tables_.discount = cuda_discount_.RawData();
+  const int device_index = GetCUDADevice(__FILE__, __LINE__);
+  CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&device_warp_size_, cudaDevAttrWarpSize, device_index));
 }
 
 

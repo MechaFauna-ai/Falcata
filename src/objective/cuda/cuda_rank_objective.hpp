@@ -112,6 +112,9 @@ class CUDALambdarankNDCG: public CUDALambdaRankObjectiveInterface<LambdarankNDCG
   // When true, the gradient kernel runs on a deterministic code path that
   // avoids order-dependent atomicAdd_block accumulation.
   bool deterministic_ = false;
+
+  // Cached once in Init() to avoid calling cudaGetDeviceProperties per iteration.
+  int device_warp_size_ = 32;
 };
 
 
