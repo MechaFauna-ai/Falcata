@@ -183,44 +183,44 @@ void LaunchInterleaveGradHessKernel(
 void LaunchNonquantFixedScale(const score_t* gradients, const score_t* hessians, const data_size_t n,
                               const bool absmax_ready, uint32_t* absmax_bits, int* scale, double* inv_scale);
 
+void LaunchPrescaleNonquantFixedGH(const score_t* gradients, const score_t* hessians, const int* fixed_scale,
+                                   const data_size_t n, longlong2* fixed_gh);
+
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;
   cuda_hessians_ = hessians;
   count_codes_ = nullptr;  // cuda_plan key forest_count_hist: the learner sets this tree's codes (SetCountCodes)
   // every tree starts on plane 0, whose hessians are the ones every consumer reads
   grad_only_plane_ = false;
-  const size_t l2_window_bytes = std::min(l2_max_window_bytes_,
-    static_cast<size_t>(num_data_) * (use_quantized_grad_ ? sizeof(int32_t) : 2 * sizeof(score_t)));
-  if (l2_carveout_bytes_ > 0 && gradients != nullptr &&
-      (gradients != l2_window_base_ || l2_window_bytes != l2_window_bytes_)) {
-    // Pin the per-row gradient buffer (quant: packed int32 grad/hess pairs read
-    // once per level per row through data_indices gather) as L2-persisting on
-    // every construct stream. One window per stream is the API limit; the
-    // gradient buffer is the highest-reuse scatter target. A stream keeps its window until it is set again, so it is
-    // set only when the buffer changes (a forest's slot grows every tree of a class from the same column).
-    l2_window_base_ = gradients;
-    l2_window_bytes_ = l2_window_bytes;
-    cudaStreamAttrValue attr{};
-    const size_t bytes = l2_window_bytes;
-    attr.accessPolicyWindow.base_ptr = const_cast<score_t*>(gradients);
-    attr.accessPolicyWindow.num_bytes = bytes;
-    attr.accessPolicyWindow.hitRatio =
-      bytes > l2_carveout_bytes_ ? static_cast<float>(l2_carveout_bytes_) / bytes : 1.0f;
-    attr.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
-    attr.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
-    for (int p = 0; p < kNumHistPipelines; ++p) {
-      CUDASUCCESS_OR_FATAL(cudaStreamSetAttribute(pipeline_streams_[p], cudaStreamAttributeAccessPolicyWindow, &attr));
-    }
-  }
   // interleave (gradient, hessian) into float2 pairs for the dense construct
   // kernels (one scattered 32B sector per row instead of two). Launched on the
   // legacy default stream, so it orders before the construct kernels on the
   // (blocking) histogram streams; a trivial streaming kernel (~0.05ms at 5M rows).
   gh_interleave_valid_ = false;
+  nq_fixed_prescale_valid_ = false;
   // cuda_plan key nonquant_deterministic: the fixed-point batched construct scales this tree's gradients and
   // hessians by powers of two from their max |value| (the interleave pass below collects it when it runs, else
   // LaunchNonquantFixedScale does); same legacy-stream ordering
   const bool nq_fixed = !use_quantized_grad_ && NonquantFixedActive() && gradients != nullptr && hessians != nullptr;
+  bool nq_prescale = nq_fixed && FalcataPlan::Get().nonquant_fixed_prescale && num_data_ > 0;
+  if (nq_prescale) {
+    // Release the 8 B/row float2 interleave buffer before allocating the 16 B/row prescaled buffer so peak VRAM
+    // never holds both simultaneously; gracefully fall back to per-row scaling if device memory is tight.
+    cuda_gradients_hessians_.Clear();
+    if (cuda_nonquant_fixed_gh_.Size() < static_cast<size_t>(num_data_)) {
+      if (!cuda_nonquant_fixed_gh_.TryResizeDiscard(static_cast<size_t>(num_data_))) {
+        if (!nq_fixed_prescale_oom_warned_) {
+          nq_fixed_prescale_oom_warned_ = true;
+          Log::Warning("nonquant_fixed_prescale: unable to allocate %zu MiB for prescaled gradients; "
+                       "falling back to per-row scaling",
+                       ToMiB(static_cast<size_t>(num_data_) * sizeof(longlong2)));
+        }
+        nq_prescale = false;
+      }
+    }
+  } else if (cuda_nonquant_fixed_gh_.Size() > 0) {
+    cuda_nonquant_fixed_gh_.Clear();
+  }
   if (nq_fixed) {
     if (nq_scale_.Size() < 2) {
       nq_scale_.Resize(2);
@@ -229,7 +229,9 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
     }
     CUDASUCCESS_OR_FATAL(cudaMemsetAsync(nq_absmax_bits_.RawData(), 0, 2 * sizeof(uint32_t), 0));
   }
-  if (!use_quantized_grad_ && GHInterleaveEnabled() && num_hist_planes_ == 1 &&
+  // When nq_prescale is active, the fixed-point construct reads cuda_nonquant_fixed_gh_ instead of float2 pairs,
+  // so skip writing cuda_gradients_hessians_ (LaunchNonquantFixedScale computes absmax directly from gradients/hessians).
+  if (!use_quantized_grad_ && !nq_prescale && GHInterleaveEnabled() && num_hist_planes_ == 1 &&
       gradients != nullptr && hessians != nullptr) {
     if (cuda_gradients_hessians_.Size() < static_cast<size_t>(num_data_)) {
       cuda_gradients_hessians_.Resize(static_cast<size_t>(num_data_));
@@ -242,6 +244,43 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
   if (nq_fixed) {
     LaunchNonquantFixedScale(gradients, hessians, num_data_, gh_interleave_valid_, nq_absmax_bits_.RawData(),
                              nq_scale_.RawData(), nq_inv_scale_.RawData());
+    if (nq_prescale) {
+      LaunchPrescaleNonquantFixedGH(gradients, hessians, nq_scale_.RawDataReadOnly(), num_data_,
+                                    cuda_nonquant_fixed_gh_.RawData());
+      nq_fixed_prescale_valid_ = true;
+      if (FalcataDebug().diag && !nq_fixed_prescale_diag_logged_) {
+        nq_fixed_prescale_diag_logged_ = true;
+        fprintf(stderr, "[hybrid-diag] nonquant_fixed_prescale: active (%d rows, %zu MiB)\n",
+                num_data_, ToMiB(static_cast<size_t>(num_data_) * sizeof(longlong2)));
+      }
+    }
+  }
+  const void* l2_target = nq_fixed_prescale_valid_
+      ? static_cast<const void*>(cuda_nonquant_fixed_gh_.RawDataReadOnly())
+      : static_cast<const void*>(gradients);
+  const size_t l2_elem_bytes = use_quantized_grad_ ? sizeof(int32_t)
+      : (nq_fixed_prescale_valid_ ? sizeof(longlong2) : 2 * sizeof(score_t));
+  const size_t l2_window_bytes = std::min(l2_max_window_bytes_, static_cast<size_t>(num_data_) * l2_elem_bytes);
+  if (l2_carveout_bytes_ > 0 && l2_target != nullptr &&
+      (l2_target != l2_window_base_ || l2_window_bytes != l2_window_bytes_)) {
+    // Pin the per-row gradient buffer (quant: packed int32 grad/hess pairs, or nonquant_fixed_prescale: pre-scaled
+    // longlong2 pairs read once per level per row through data_indices gather) as L2-persisting on
+    // every construct stream. One window per stream is the API limit; the
+    // gradient buffer is the highest-reuse scatter target. A stream keeps its window until it is set again, so it is
+    // set only when the buffer changes (a forest's slot grows every tree of a class from the same column).
+    l2_window_base_ = l2_target;
+    l2_window_bytes_ = l2_window_bytes;
+    cudaStreamAttrValue attr{};
+    const size_t bytes = l2_window_bytes;
+    attr.accessPolicyWindow.base_ptr = const_cast<void*>(l2_target);
+    attr.accessPolicyWindow.num_bytes = bytes;
+    attr.accessPolicyWindow.hitRatio =
+      bytes > l2_carveout_bytes_ ? static_cast<float>(l2_carveout_bytes_) / bytes : 1.0f;
+    attr.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
+    attr.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
+    for (int p = 0; p < kNumHistPipelines; ++p) {
+      CUDASUCCESS_OR_FATAL(cudaStreamSetAttribute(pipeline_streams_[p], cudaStreamAttributeAccessPolicyWindow, &attr));
+    }
   }
   // async memset on the legacy default stream: the construct kernels on the
   // (blocking) histogram streams implicitly order after it, so no device sync

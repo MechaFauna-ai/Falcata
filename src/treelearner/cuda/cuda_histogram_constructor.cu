@@ -1945,8 +1945,12 @@ void CUDAHistogramConstructor::InitNonquantFixed() {
   // of assuming the compiler/architecture keeps their size constant (the histogram itself is dynamic shared memory).
   cudaFuncAttributes attrs;
   CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attrs,
-    CUDAConstructHistogramDenseBatchedKernel<uint8_t, nq_fixed_t, SP_SHARED_HIST_SIZE, false, false, true>));
-  const size_t need = static_cast<size_t>(max_bins) * 2 * sizeof(nq_fixed_t) + attrs.sharedSizeBytes;
+    CUDAConstructHistogramDenseBatchedKernel<uint8_t, nq_fixed_t, SP_SHARED_HIST_SIZE, false, false, true, false>));
+  cudaFuncAttributes attrs_prescale;
+  CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attrs_prescale,
+    CUDAConstructHistogramDenseBatchedKernel<uint8_t, nq_fixed_t, SP_SHARED_HIST_SIZE, false, false, false, true>));
+  const size_t static_shared = std::max(attrs.sharedSizeBytes, attrs_prescale.sharedSizeBytes);
+  const size_t need = static_cast<size_t>(max_bins) * 2 * sizeof(nq_fixed_t) + static_shared;
   int shared_limit = 0;
   const int device = gpu_device_id_ < 0 ? 0 : gpu_device_id_;
   if (cudaDeviceGetAttribute(&shared_limit, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
@@ -2028,6 +2032,37 @@ void LaunchNonquantFixedScale(const score_t* gradients, const score_t* hessians,
     NonquantFixedAbsMaxKernel<<<std::max(blocks, 1), kThreads, 0, 0>>>(gradients, hessians, n, absmax_bits);
   }
   NonquantFixedScaleKernel<<<1, 1, 0, 0>>>(absmax_bits, lg_n, scale, inv_scale);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
+__global__ void PrescaleNonquantFixedGHKernel(
+  const score_t* __restrict__ gradients,
+  const score_t* __restrict__ hessians,
+  const int* __restrict__ fixed_scale,
+  const data_size_t n,
+  longlong2* __restrict__ fixed_gh) {
+  using ll_t = decltype(longlong2::x);
+  static_assert(sizeof(ll_t) == sizeof(int64_t) && sizeof(nq_fixed_t) == 8 && alignof(longlong2) == 16,
+                "longlong2 must pack two 64-bit fixed-point addends with 16-byte alignment");
+  const int scale_g = fixed_scale[0];
+  const int scale_h = fixed_scale[1];
+  const int64_t n64 = static_cast<int64_t>(n);
+  const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
+  for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < n64; i += stride) {
+    const int64_t g = NonquantFixedAddend(static_cast<float>(gradients[i]), scale_g);
+    const int64_t h = NonquantFixedAddend(static_cast<float>(hessians[i]), scale_h);
+    fixed_gh[i] = make_longlong2(static_cast<ll_t>(g), static_cast<ll_t>(h));
+  }
+}
+
+void LaunchPrescaleNonquantFixedGH(const score_t* gradients, const score_t* hessians, const int* fixed_scale,
+                                   const data_size_t n, longlong2* fixed_gh) {
+  if (n <= 0) {
+    return;
+  }
+  constexpr int kThreads = 256;
+  const int blocks = static_cast<int>(std::min<int64_t>(65535, (static_cast<int64_t>(n) + kThreads - 1) / kThreads));
+  PrescaleNonquantFixedGHKernel<<<std::max(blocks, 1), kThreads, 0, 0>>>(gradients, hessians, fixed_scale, n, fixed_gh);
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
