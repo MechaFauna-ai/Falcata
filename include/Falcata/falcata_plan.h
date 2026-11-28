@@ -313,6 +313,14 @@ struct FalcataPlan {
   // groups, wider tasks one per warp (see WarpFindBest); a dataset mixing
   // both runs them in one launch, the narrow tasks first.
   bool warp_find = true;            // key: warp_find
+  // warp_find under cuda_precision=fp32: route eligible quantized levels to an all-fp32 instantiation of the warp
+  // split finder (direct fp32 gains with no fp64 survivor rounds or shared-memory compaction, 32-bit reduction, and
+  // fp32 child outputs/gains to avoid 1/64-rate fp64 divisions on consumer GPUs, while keeping per-leaf double
+  // parameters/ridge/min-gain setup) instead of falling back to the block-per-task fp32 kernel. FP64-only warp-finder
+  // keys (find_prune_fp32, find_select_int, find_compact_survivors, find_prune_sure) are ignored under
+  // warp_find_fp32. Off restores the block-per-task fp32 kernel. Covered by unit tests for internal tier determinism
+  // and held-out metric parity against fp64 and warp_find_fp32:off.
+  bool warp_find_fp32 = true;       // key: warp_find_fp32
   // warp_find's wide tier (tasks of more than 8 scan positions, one warp each): WarpFindBest's per-task runtime
   // PPL choice is 2 slots per lane up to 64 positions, 4 up to 128, else 8, instead of PPL=8 (<= 256) for every
   // width, so a 40-bin task runs the 2-slot unrolled prefix/prune/gain loop instead of the 8-slot one. Powers of
@@ -1090,6 +1098,7 @@ struct FalcataPlan {
     if (key == "view_pair_rule") return &view_pair_rule;
     if (key == "tiled_fill") return &tiled_fill;
     if (key == "warp_find") return &warp_find;
+    if (key == "warp_find_fp32") return &warp_find_fp32;
     if (key == "warp_find_mid_ppl") return &warp_find_mid_ppl;
     if (key == "find_prune_fp32") return &find_prune_fp32;
     if (key == "find_select_int") return &find_select_int;

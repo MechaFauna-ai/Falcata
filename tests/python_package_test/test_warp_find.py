@@ -224,7 +224,14 @@ def _finder_kernels(kind, categorical, params, rounds=2):
         pytest.param("dense", False, {"objective": "binary"}, "warp (tier: wide)", id="binary"),
         pytest.param("dense", False, {"objective": "multiclass", "num_class": 3}, "warp (tier: wide)", id="multiclass"),
         pytest.param("dense", False, {"cuda_plan": "auto,warp_find:off"}, "block", id="warp_find-off"),
-        pytest.param("dense", False, {"cuda_precision": "fp32"}, "block", id="fp32-gain"),
+        pytest.param("dense", False, {"cuda_precision": "fp32"}, "warp (tier: wide)", id="fp32-gain"),
+        pytest.param(
+            "dense",
+            False,
+            {"cuda_precision": "fp32", "cuda_plan": "auto,warp_find_fp32:off"},
+            "block",
+            id="fp32-gain-warp-off",
+        ),
         pytest.param("dense", True, {}, "block", id="categorical"),
     ],
 )

@@ -499,7 +499,8 @@ class CUDABestSplitFinder {
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_order_used_ ? 1 : 0)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_num_narrow_used_)));
     key->push_back(static_cast<const void*>(cuda_warp_find_order_.RawDataReadOnly()));
-    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_split_block_cap_)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(
+      FalcataFP32GainEnabled() ? warp_find_split_block_cap_fp32_ : warp_find_split_block_cap_)));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_order_pad_)));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_narrow_mixed_direction_ ? 1 : 0)));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(level_node_max_tasks_)));
@@ -797,6 +798,7 @@ class CUDABestSplitFinder {
   // the occupancy API's blocks per SM), computed at the first wide launch; a launch whose blocks times four fit
   // runs each wide task on the four warps of one block
   int warp_find_split_block_cap_ = -1;
+  int warp_find_split_block_cap_fp32_ = -1;
   // the all-tasks launch order is on the device (a sampled tree's order overwrites it)
   bool warp_find_order_all_tasks_ = false;
   // cuda_plan key find_group_direction: the narrow tasks have both scan directions (a column with missing values)
