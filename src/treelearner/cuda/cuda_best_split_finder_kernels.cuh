@@ -2032,7 +2032,8 @@ __global__ void FindBestSplitsForLeafKernel(
   const double smaller_leaf_constraint_min,
   const double smaller_leaf_constraint_max,
   const double larger_leaf_constraint_min,
-  const double larger_leaf_constraint_max) {
+  const double larger_leaf_constraint_max,
+  const bool cat_prefix_fast) {
   const double leaf_constraint_min = IS_LARGER ? larger_leaf_constraint_min : smaller_leaf_constraint_min;
   const double leaf_constraint_max = IS_LARGER ? larger_leaf_constraint_max : smaller_leaf_constraint_max;
   const unsigned int task_index = blockIdx.x;
@@ -2093,7 +2094,8 @@ __global__ void FindBestSplitsForLeafKernel(
         /*sum_gradients_hessians_total=*/0,
         // output parameters
         out,
-        CatMonotoneBounds{leaf_constraint_min, leaf_constraint_max});
+        CatMonotoneBounds{leaf_constraint_min, leaf_constraint_max},
+        cat_prefix_fast);
     } else {
       if (!task->reverse) {
         FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T, USE_MC>(
@@ -2209,7 +2211,8 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
   const data_size_t global_num_data_in_larger_leaf,
   // CEGB
   const double* cuda_task_cegb_penalty,
-  const double cegb_tradeoff_times_penalty_split) {
+  const double cegb_tradeoff_times_penalty_split,
+  const bool cat_prefix_fast) {
   // Hessian-quantum ridge. A child's integer hessian sum is known only to O(1)
   // quanta: a row whose hessian is a fraction of one quantum contributes it as
   // an occasional whole quantum (fixedpoint error feedback, stochastic
@@ -2264,7 +2267,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
           min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
           cat_smooth, cat_l2, max_cat_threshold, min_data_per_group, cat_random_search,
           parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
-          sum_gradients_hessians, out);
+          sum_gradients_hessians, out, CatMonotoneBounds{-DBL_MAX, DBL_MAX}, cat_prefix_fast);
       } else {
         const CatHistReaderQuant32 hist_reader{
           reinterpret_cast<const int64_t*>(hist_base) + task->hist_offset,
@@ -2275,7 +2278,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
           min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
           cat_smooth, cat_l2, max_cat_threshold, min_data_per_group, cat_random_search,
           parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
-          sum_gradients_hessians, out);
+          sum_gradients_hessians, out, CatMonotoneBounds{-DBL_MAX, DBL_MAX}, cat_prefix_fast);
       }
     } else {
       if (!task->reverse) {
@@ -3462,15 +3465,18 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBest
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[1], hist_subtract_done_events_[active_hist_pipeline_], 0));
   }
   if (!use_global_memory_) {
+    const bool cat_prefix_fast = FalcataPlan::Get().warp_find_mixed_cat;
     if (is_smaller_leaf_valid) {
       if (use_monotone_constraints_) {
         FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T, true>
           <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>
-          (is_feature_used_by_smaller_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
+          (is_feature_used_by_smaller_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS,
+           FindBestSplitsForLeafKernel_CONSTRAINT_ARGS, cat_prefix_fast);
       } else {
         FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T, false>
           <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>
-          (is_feature_used_by_smaller_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
+          (is_feature_used_by_smaller_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS,
+           FindBestSplitsForLeafKernel_CONSTRAINT_ARGS, cat_prefix_fast);
       }
     }
     // No device sync here: the larger-leaf launch below waits on subtract_done_event via
@@ -3479,11 +3485,13 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBest
       if (use_monotone_constraints_) {
         FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T, true>
           <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[1]>>>
-          (is_feature_used_by_larger_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
+          (is_feature_used_by_larger_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS,
+           FindBestSplitsForLeafKernel_CONSTRAINT_ARGS, cat_prefix_fast);
       } else {
         FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T, false>
           <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[1]>>>
-          (is_feature_used_by_larger_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
+          (is_feature_used_by_larger_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS,
+           FindBestSplitsForLeafKernel_CONSTRAINT_ARGS, cat_prefix_fast);
       }
     }
   } else {
@@ -3573,7 +3581,8 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBest
     global_num_data_in_smaller_leaf, \
     global_num_data_in_larger_leaf, \
     cegb_use_ ? cuda_task_cegb_penalty_.RawData() : nullptr, \
-    cegb_tradeoff_times_penalty_split_
+    cegb_tradeoff_times_penalty_split_, \
+    FalcataPlan::Get().warp_find_mixed_cat
 
 template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
 void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernelInner2(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS) {

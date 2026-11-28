@@ -87,6 +87,7 @@ ALL_KEYS = {
     "find_compact_survivors": True,
     "find_split_small": True,
     "find_group_direction": True,
+    "warp_find_mixed_cat": True,
     "sync_copy_batched": True,
     "fix_subtract_fused": True,
     "fix_subtract_masked": True,
