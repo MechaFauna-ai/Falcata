@@ -77,6 +77,16 @@ void CUDADataPartition::Init() {
   level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
   pending_device_level_role_undo_ = false;
   level_partition_pending_ = false;  // cuda_plan key final_map_only
+  {
+    int device = 0;
+    int l2 = 0;
+    if (cudaGetDevice(&device) == cudaSuccess &&
+        cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, device) == cudaSuccess) {
+      l2_cache_bytes_ = static_cast<size_t>(std::max(l2, 0));
+    } else {
+      (void)cudaGetLastError();
+    }
+  }
   // allocate CUDA memory
   cuda_data_indices_.Resize(static_cast<size_t>(num_data_));
   cuda_leaf_data_start_.Resize(static_cast<size_t>(num_leaves_));

@@ -1333,6 +1333,7 @@ __global__ void FindBestSplitsForLevelKernel(
   CUDASplitInfo* cuda_best_split_info,
   const bool use_desc_counts,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: fix / subtract histograms are complete and visible
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs exits before any read
   // (stale descriptors)
@@ -2102,6 +2103,7 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
   const CUDADeviceLevelState* dls,
   const CUDADeviceLevelConfig* select_cfg) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the find kernel's slots are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: select / gen-bit may get resident while sync drains
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
   }
@@ -2196,14 +2198,15 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
       device_level_state_
   // non-quantized L1 / path smoothing keep the per-pair search (BatchedLevelRefusal): only the plain variant exists
   CHECK(lambda_l1_ <= 0.0f && !use_smoothing_);
+  const bool pdl = PdlGraphChainEnabled();
   if (FalcataFP32GainEnabled()) {
-    FindBestSplitsForLevelKernel<false, false, false, float>
-      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
-        FindBestSplitsForLevelKernel_ARGS);
+    LaunchLevelChainKernel(pdl, FindBestSplitsForLevelKernel<false, false, false, float>,
+      grid_dim, dim3(NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER), 0, cuda_streams_[0],
+      FindBestSplitsForLevelKernel_ARGS);
   } else {
-    FindBestSplitsForLevelKernel<false, false, false, double>
-      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
-        FindBestSplitsForLevelKernel_ARGS);
+    LaunchLevelChainKernel(pdl, FindBestSplitsForLevelKernel<false, false, false, double>,
+      grid_dim, dim3(NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER), 0, cuda_streams_[0],
+      FindBestSplitsForLevelKernel_ARGS);
   }
   #undef FindBestSplitsForLevelKernel_ARGS
 }
@@ -2800,6 +2803,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   const bool prune_sure,
   CUDASplitInfo* cuda_best_split_info,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: fix / subtract / copy histograms are complete and visible
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // find_compact_survivors (wide units only): each warp's survivor list, at most 256 prefix values (8 bytes each at
   // most) and their positions (one byte each)
@@ -2988,13 +2992,14 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       task_order, pair_descs, num_pairs, min_data_in_leaf_, min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_, \
       max_delta_step_, grad_scale, hess_scale, hessian_ridge_quanta_, mid_ppl, prune_fp32, select_int, \
       compact_survivors, prune_sure, cuda_best_split_info_.RawData(), device_level_state_
+    const bool pdl = PdlGraphChainEnabled();
     if (num_wide == 0) {
-      FindBestSplitsDiscretizedForLevelWarpKernel<false><<<static_cast<unsigned int>((warps + 3) / 4), 128, 0,
-                                                           cuda_streams_[0]>>>(
+      LaunchLevelChainKernel(pdl, FindBestSplitsDiscretizedForLevelWarpKernel<false>,
+        dim3(static_cast<unsigned int>((warps + 3) / 4)), dim3(128), 0, cuda_streams_[0],
         FindBestSplitsDiscretizedForLevelWarpKernel_ARGS);
     } else {
-      FindBestSplitsDiscretizedForLevelWarpKernel<true><<<static_cast<unsigned int>((warps + 3) / 4), 128, 0,
-                                                          cuda_streams_[0]>>>(
+      LaunchLevelChainKernel(pdl, FindBestSplitsDiscretizedForLevelWarpKernel<true>,
+        dim3(static_cast<unsigned int>((warps + 3) / 4)), dim3(128), 0, cuda_streams_[0],
         FindBestSplitsDiscretizedForLevelWarpKernel_ARGS);
     }
     #undef FindBestSplitsDiscretizedForLevelWarpKernel_ARGS

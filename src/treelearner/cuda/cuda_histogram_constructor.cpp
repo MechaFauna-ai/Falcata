@@ -2157,8 +2157,11 @@ void CUDAHistogramConstructor::SubtractHistogramsForLevel(
     LaunchSubtractHistogramBatchedKernel(pair_descs, num_pairs, any_pair_needs_bit_change_copy);
   }
   // the best split finder's batched find kernel waits on this event before reading
-  // any of this level's histograms (construct/fix/subtract are stream-ordered here)
-  CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
+  // any of this level's histograms (construct/fix/subtract are stream-ordered here;
+  // under device_levels, histogram and finder share find_stream so no event hand-off is needed)
+  if (device_level_state_ == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
+  }
 }
 
 void CUDAHistogramConstructor::InitFixMFBMask() {

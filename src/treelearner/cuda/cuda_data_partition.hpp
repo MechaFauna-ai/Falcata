@@ -320,6 +320,22 @@ class CUDADataPartition: public NCCLInfo {
    *  every reader of leaf index windows after a batched level calls it first */
   void EnsureLevelPartitioned();
 
+  /*! \brief cuda_plan key device_tree_map_clear: whether the complete device tree's final inline apply runs the
+   *  pre-apply cudaMemsetAsync warm clear on cuda_data_index_to_leaf_index_ */
+  bool ShouldWarmClearDeviceLevelLeafMap() const {
+    const int mode = FalcataPlan::Get().device_tree_map_clear;
+    if (mode == FalcataPlan::kDeviceTreeMapClearOn) {
+      return true;
+    }
+    if (mode == FalcataPlan::kDeviceTreeMapClearOff) {
+      return false;
+    }
+    // auto: warm-clear only when the leaf map falls in (L2/8, L2/2], where avoiding DRAM RFO beats the
+    // non-PDL memset barrier while the map still fits in L2 alongside the final apply's working set.
+    const size_t map_bytes = static_cast<size_t>(num_data_) * sizeof(int);
+    return l2_cache_bytes_ > 0 && map_bytes > l2_cache_bytes_ / 8 && map_bytes <= l2_cache_bytes_ / 2;
+  }
+
   /*! \brief Selective grow-then-prune: rewrite the data-index-to-leaf-index
    *  entries of the given collapsed subtree windows to their target leaves.
    *  Enqueued on cuda_streams_[0] (ordered before the next batched apply and,
@@ -800,6 +816,8 @@ class CUDADataPartition: public NCCLInfo {
   bool pending_device_level_role_undo_ = false;
   /*! \brief cuda_plan key leaf_map_no_zero: see SetLeafMapZeroDead */
   bool leaf_map_zero_dead_ = false;
+  /*! \brief device L2 cache size in bytes (queried in Init; used by device_tree_map_clear:auto) */
+  size_t l2_cache_bytes_ = 0;
   int pending_num_splits_ = 0;
   int pending_num_gaps_ = 0;
   int pending_max_gap_blocks_ = 0;

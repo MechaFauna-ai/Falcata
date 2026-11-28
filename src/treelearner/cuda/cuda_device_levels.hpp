@@ -355,6 +355,8 @@ void LaunchDeviceLevelPairs(const CUDADeviceLevelConfig& config, const int level
 void LaunchDeviceLevelCatBitsets(const CUDADeviceLevelConfig& config, const int max_splits, cudaStream_t stream);
 /*! \brief zero the state and the journal header before a tree's first device level (on \p stream) */
 void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_leaves, cudaStream_t stream);
+/*! \brief cuda_plan key pdl_graph_chain: whether device-level programmatic dependent launch is active on this GPU */
+bool DeviceLevelPdlGraphChainEnabled();
 
 /*! \brief cuda_plan key device_bynode_masks: the per-node feature masks of a complete device tree, drawn on the device.
  *  A node's mask is ColSampler::GetByNodeKeyed's sample for the node's key (the generator seeded by the high half of

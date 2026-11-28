@@ -1291,6 +1291,8 @@ __device__ __forceinline__ void ConstructHistogramDenseBatchedBody(
   const bool hist_fp32,
   const int* fixed_scale,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: apply / pairs descriptors are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: convert / fix / subtract may get resident
   // the fixed-point table (8 bytes per item over the float table's partitions: up to 96 KB) is dynamic shared
   // memory sized to the widest partition (NqFixedSmem); the float / double tables stay static
   constexpr bool kFixed = std::is_same<HIST_TYPE, nq_fixed_t>::value;
@@ -2560,6 +2562,9 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const data_size_t host_min_rows_per_thread,
   const DenseBlockPrefix block_prefix,
   const CUDADeviceLevelState* dls) {
+  if constexpr (DL) {
+    PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: apply / pairs descriptors are complete and visible
+  }
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
   // budget shared with the non-quantized kernels, so the int32 array holds half
@@ -3312,6 +3317,9 @@ __device__ __forceinline__ void PairJointBatchedBlock(FALCATA_PAIR_JOINT_BATCHED
 template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false, bool EPILOGUE_FLAT = false,
           int CODE_BITS = 5, bool DL = false>  // NOLINT(whitespace/indent_namespace)
 __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
+  if constexpr (DL) {
+    PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: apply / pairs descriptors are complete and visible
+  }
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   extern __shared__ int32_t shared_joint[];
   if constexpr (DL) {
@@ -5639,11 +5647,13 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
 #undef FALCATA_PAIR_JOINT_LAUNCH_ARGS
       } else if (compact_is_4bit_) {
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
+        const bool dense_pdl = dense_dls != nullptr && PdlGraphChainEnabled();
 #define FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PACKT) \
         for (const DenseLaunchChunk& dense_chunk : dense_chunks) \
-        (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT, true> : \
-                                CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT, false>) \
-          <<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>( \
+        LaunchLevelChainKernel(dense_pdl, \
+          dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT, true> : \
+                                 CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT, false>, \
+          dense_chunk.grid, block_dim, 0, cuda_stream_, \
           pair_descs + dense_chunk.pair_base, \
           reinterpret_cast<const int32_t*>(cuda_gradients_), \
           reinterpret_cast<const BIN_TYPE*>(NibbleViewData()), \
@@ -5678,10 +5688,12 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
 #undef FALCATA_LAUNCH_BATCHED_COMPACT_QUANT
       } else {
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
+        const bool dense_pdl = dense_dls != nullptr && PdlGraphChainEnabled();
         for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
-        (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, true> :
-                                 CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, false>)
-          <<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
+        LaunchLevelChainKernel(dense_pdl,
+          dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, true> :
+                                 CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, false>,
+          dense_chunk.grid, block_dim, 0, cuda_stream_,
           pair_descs + dense_chunk.pair_base,
           reinterpret_cast<const int32_t*>(cuda_gradients_),
           reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
@@ -5700,10 +5712,12 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       }
     } else if (cuda_row_data_->is_4bit_packed()) {
       DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
+      const bool dense_pdl = dense_dls != nullptr && PdlGraphChainEnabled();
       for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
-      (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackNibble4, true> :
-                               CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackNibble4, false>)
-        <<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
+      LaunchLevelChainKernel(dense_pdl,
+        dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackNibble4, true> :
+                               CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackNibble4, false>,
+        dense_chunk.grid, block_dim, 0, cuda_stream_,
         pair_descs + dense_chunk.pair_base,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
         RowMajorBin<BIN_TYPE>(),
@@ -5721,10 +5735,12 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       }
     } else {
       DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
+      const bool dense_pdl = dense_dls != nullptr && PdlGraphChainEnabled();
       for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
-      (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, true> :
-                               CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, false>)
-        <<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
+      LaunchLevelChainKernel(dense_pdl,
+        dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, true> :
+                               CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, false>,
+        dense_chunk.grid, block_dim, 0, cuda_stream_,
         pair_descs + dense_chunk.pair_base,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
         RowMajorBin<BIN_TYPE>(),
@@ -5763,10 +5779,11 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // compact data holds only the tree's sampled columns, so no per-column
     // feature mask is needed (mirrors the per-pair compact launch). Few-bin
     // datasets take the register-accumulation body (see USE_REG_BINS).
+    const bool nq_pdl = nq_dls != nullptr && PdlGraphChainEnabled();
     if (construct_reg_bins_) {
       if (compact_is_4bit_) {
-        CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, true, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, true, USE_GH2>)), cuda_stream_>>>(
+        auto* kernel = &CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, true, USE_GH2>;
+        LaunchLevelChainKernel(nq_pdl, kernel, grid_dim, block_dim, NqFixedSmem(reinterpret_cast<const void*>(kernel)), cuda_stream_,
           pair_descs,
           cuda_gradients_, cuda_hessians_,
           USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
@@ -5789,8 +5806,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           hist_fp32_,
           nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls);
       } else {
-        CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, false, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, false, USE_GH2>)), cuda_stream_>>>(
+        auto* kernel = &CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, false, USE_GH2>;
+        LaunchLevelChainKernel(nq_pdl, kernel, grid_dim, block_dim, NqFixedSmem(reinterpret_cast<const void*>(kernel)), cuda_stream_,
           pair_descs,
           cuda_gradients_, cuda_hessians_,
           USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
@@ -5815,8 +5832,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       }
     } else {
       if (compact_is_4bit_) {
-        CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, true, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, true, USE_GH2>)), cuda_stream_>>>(
+        auto* kernel = &CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, true, USE_GH2>;
+        LaunchLevelChainKernel(nq_pdl, kernel, grid_dim, block_dim, NqFixedSmem(reinterpret_cast<const void*>(kernel)), cuda_stream_,
           pair_descs,
           cuda_gradients_, cuda_hessians_,
           USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
@@ -5839,8 +5856,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           hist_fp32_,
           nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls);
       } else {
-        CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2>)), cuda_stream_>>>(
+        auto* kernel = &CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2>;
+        LaunchLevelChainKernel(nq_pdl, kernel, grid_dim, block_dim, NqFixedSmem(reinterpret_cast<const void*>(kernel)), cuda_stream_,
           pair_descs,
           cuda_gradients_, cuda_hessians_,
           USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
@@ -5865,8 +5882,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       }
     }
   } else if (cuda_row_data_->is_4bit_packed()) {
-    CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, true, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, true, USE_GH2>)), cuda_stream_>>>(
+    auto* kernel = &CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, true, USE_GH2>;
+    LaunchLevelChainKernel(nq_dls != nullptr && PdlGraphChainEnabled(), kernel, grid_dim, block_dim,
+      NqFixedSmem(reinterpret_cast<const void*>(kernel)), cuda_stream_,
       pair_descs,
       cuda_gradients_, cuda_hessians_,
       USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
@@ -5889,8 +5907,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       hist_fp32_,
       nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls);
   } else {
-    CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2>)), cuda_stream_>>>(
+    auto* kernel = &CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2>;
+    LaunchLevelChainKernel(nq_dls != nullptr && PdlGraphChainEnabled(), kernel, grid_dim, block_dim,
+      NqFixedSmem(reinterpret_cast<const void*>(kernel)), cuda_stream_,
       pair_descs,
       cuda_gradients_, cuda_hessians_,
       USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,

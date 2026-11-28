@@ -9,6 +9,7 @@
 #ifdef USE_CUDA
 
 #include "cuda_single_gpu_tree_learner.hpp"
+#include "cuda_pdl_launch.hpp"
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
 #include <Falcata/falcata_plan.h>
@@ -412,6 +413,8 @@ __global__ void BatchConstructCatBitsetsKernel(
 // patches SplitLevelBatched's descriptors: the most frequent bin's membership (bin 0 never), read over the
 // descriptor's bin-range cap (the arena region's length there; the slab's words past it are not read)
 __global__ void DeviceLevelCatBitsetsKernel(const CUDADeviceLevelConfig cfg) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: select's cat list and descriptors are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: gen-bit may get resident while bitsets drain
   const int c = static_cast<int>(blockIdx.x);
   if (c >= cfg.state->live_cat_splits) {
     return;
@@ -436,7 +439,8 @@ __global__ void DeviceLevelCatBitsetsKernel(const CUDADeviceLevelConfig cfg) {
 }
 
 void LaunchDeviceLevelCatBitsets(const CUDADeviceLevelConfig& config, const int max_splits, cudaStream_t stream) {
-  DeviceLevelCatBitsetsKernel<<<max_splits, 128, 0, stream>>>(config);
+  LaunchLevelChainKernel(PdlGraphChainEnabled(), DeviceLevelCatBitsetsKernel, dim3(max_splits), dim3(128), 0, stream,
+                         config);
 }
 
 void CUDASingleGPUTreeLearner::LaunchBatchConstructCatBitsetsKernel(const int num_cat_splits) {
