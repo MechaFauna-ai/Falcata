@@ -20,6 +20,11 @@ namespace Falcata {
 class Bin;
 class Dataset;
 
+// Fixed tile column widths for the 16-bit and float32 tile kernels
+// (128 bytes = 1 cache line per input row; shared with host grid.y check).
+constexpr int kCUDADenseBinTileColsI16 = 64;
+constexpr int kCUDADenseBinTileColsF32 = 32;
+
 // per-column metadata for the on-device float/double binning
 // (replicates BinMapper::ValueToBin + FeatureGroup::EncodeBinForPush)
 struct CUDADenseBinnerColMeta {

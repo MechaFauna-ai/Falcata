@@ -50,6 +50,7 @@ ALL_KEYS = {
     "construct_staging_pool": True,
     "construct_h2d_overlap": True,
     "construct_tile_bin": True,
+    "construct_tile_bin_f32": True,
     "efb_precheck": True,
     "batch_reghist": True,
     "gh_interleave": True,

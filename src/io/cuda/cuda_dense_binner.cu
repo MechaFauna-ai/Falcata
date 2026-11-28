@@ -421,7 +421,7 @@ void LaunchTileTyped(const void* in, int64_t in_stride, int ncol,
 //   writing [j * 66 + r] into 32 distinct banks (0 bank conflicts).
 // - Phase 2: each warp owns one column (32 row pairs), reading both rows of a
 //   pair as one aligned 32-bit word from 32 distinct banks (0 bank conflicts).
-constexpr int kI16TileCols = 64;
+constexpr int kI16TileCols = kCUDADenseBinTileColsI16;
 constexpr int kI16TileRows = 64;
 constexpr int kI16TilePairs = kI16TileRows / 2;
 constexpr int kI16TileLd = kI16TileRows + 2;  // 66 elements = 33 words (odd)
@@ -538,10 +538,10 @@ void LaunchTileI16Typed(const void* in, int64_t in_stride, int ncol,
 //   Every lane in the warp shares the same column metadata and bounds:
 //   - r_init <= 32: bounds kept in 1 register/lane, searched via __shfl_sync
 //   - 32 < r_init <= 256: bounds staged once into per-warp shared s_ub[warp_id]
-//   - r_init > 256: bounds read via __ldg from global/L1.
+//   - r_init > 256: bounds read from L1-cached global memory.
 //   For 4-bit packed output (width == 0), adjacent even/odd lanes combine via
 //   __shfl_down_sync; all 32 lanes stay convergent through warp primitives.
-constexpr int kF32TileCols = 32;
+constexpr int kF32TileCols = kCUDADenseBinTileColsF32;
 constexpr int kF32TileRows = 128;
 constexpr int kF32TilePairs = kF32TileRows / 2;
 constexpr int kF32TileLd = kF32TileCols + 1;  // 33 floats (odd)
@@ -576,7 +576,7 @@ __device__ __forceinline__ void WriteTileF32WarpChunk(
   }
 }
 
-__global__ void __launch_bounds__(kF32TileThreads, 4)
+__global__ void __launch_bounds__(kF32TileThreads, 3)
 CUDADenseBinTileF32Kernel(const float* __restrict__ in, int64_t in_stride,
                           int ncol, data_size_t rows, data_size_t pairs,
                           int parity, CUDADenseBinnerTables tables,
@@ -675,6 +675,9 @@ CUDADenseBinTileF32Kernel(const float* __restrict__ in, int64_t in_stride,
                               pairs, r_base, lane);
       }
     } else if (r_init <= kF32SmemMaxBounds) {
+      // WAR barrier: all lanes of the warp must finish reading warp_ub from
+      // any previous column before overwriting s_ub[warp_id].
+      __syncwarp();
       for (int idx = lane; idx < r_init; idx += 32) {
         warp_ub[idx] = ub[idx];
       }
@@ -736,6 +739,7 @@ void LaunchTileF32(const void* in, int64_t in_stride, int ncol,
                    data_size_t rows, data_size_t pairs, int parity,
                    const CUDADenseBinnerTables& tables, uint8_t* out,
                    cudaStream_t stream) {
+  CHECK(tables.bounds_f32 != nullptr);
   const dim3 grid(
       static_cast<unsigned int>((pairs + kF32TilePairs - 1) / kF32TilePairs),
       static_cast<unsigned int>((ncol + kF32TileCols - 1) / kF32TileCols));

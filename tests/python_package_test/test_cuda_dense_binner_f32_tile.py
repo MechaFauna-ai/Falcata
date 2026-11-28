@@ -2,18 +2,21 @@
 
 Verifies that enabling construct_tile_bin_f32 produces 100% byte-identical Dataset
 binaries and identical trained models vs both construct_tile_bin_f32:off (double
-bounds, non-tiled kernel) and gpu_construct:off (host binning path) across:
+bounds, non-tiled kernel) and gpu_construct:off (host binning path), while
+explicitly asserting via the Falcata logger that the GPU dense binner actually ran:
   - IEEE-754 float32 edge values (NaNs, +-0, +-inf, subnormals, +-FLT_MAX,
     values straddling double bin boundaries, forced non-float32 double bounds)
-  - All three float32 binary-search tiers: r_init <= 32 (warp shuffle),
-    32 < r_init <= 256 (per-warp shared bounds), r_init > 256 (global/L1)
+  - Exact binary-search tier boundaries: r_init in {31, 32, 33, 255, 256, 257}
+    (<=32 warp shuffle, 33..256 per-warp shared bounds, >256 global/L1)
   - 4-bit, 8-bit, and 16-bit group bin widths
   - zero_as_missing, use_missing, categorical columns, trivial/dropped columns
   - Row-major (tile kernel), col-major (f32-bounds chunk kernel), multi-column EFB groups
-  - Chunked construction with odd start rows (parity == 1)
+  - Multi-chunk device construction with odd start rows (parity == 1) via
+    __cuda_array_interface__ chunks (FLC_DatasetDeviceBuilderPushChunk) for float32 & int16
   - int16, uint16, and float16 tiled 64x64 LUT binning
 """
 
+import ctypes
 import json
 import os
 import re
@@ -34,7 +37,7 @@ BASE_PARAMS = {
     "num_leaves": 15,
     "max_depth": 5,
     "learning_rate": 0.1,
-    "verbosity": -1,
+    "verbosity": 2,
     "seed": 7,
     "num_threads": 4,
     "quant_mode": "stochastic",
@@ -42,7 +45,100 @@ BASE_PARAMS = {
 }
 
 
-def _build_binary(X, y, params, path, categorical_feature="auto"):
+class _Capture:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, msg):
+        self.lines.append(str(msg))
+
+    def warning(self, msg):
+        self.lines.append(str(msg))
+
+
+@pytest.fixture
+def captured_log():
+    previous = (
+        flc.basic._LOGGER,
+        flc.basic._INFO_METHOD_NAME,
+        flc.basic._WARNING_METHOD_NAME,
+    )
+    capture = _Capture()
+    flc.register_logger(capture)
+    yield capture
+    flc.register_logger(*previous)
+
+
+class _CudaDeviceArray:
+    """Minimal __cuda_array_interface__ buffer backed by cudaMalloc for device-chunk tests."""
+
+    _cudart = None
+
+    @classmethod
+    def _rt(cls):
+        if cls._cudart is None:
+            rt = ctypes.CDLL("libcudart.so")
+            rt.cudaMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
+            rt.cudaMalloc.restype = ctypes.c_int
+            rt.cudaFree.argtypes = [ctypes.c_void_p]
+            rt.cudaFree.restype = ctypes.c_int
+            rt.cudaMemcpy.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.c_int,
+            ]
+            rt.cudaMemcpy.restype = ctypes.c_int
+            rt.cudaDeviceSynchronize.argtypes = []
+            rt.cudaDeviceSynchronize.restype = ctypes.c_int
+            cls._cudart = rt
+        return cls._cudart
+
+    def __init__(self, arr: np.ndarray):
+        arr = np.ascontiguousarray(arr)
+        rt = self._rt()
+        ptr = ctypes.c_void_p()
+        rc = rt.cudaMalloc(ctypes.byref(ptr), arr.nbytes)
+        if rc != 0:
+            raise RuntimeError(f"cudaMalloc({arr.nbytes}) failed: {rc}")
+        rc = rt.cudaMemcpy(ptr, ctypes.c_void_p(arr.ctypes.data), arr.nbytes, 1)
+        if rc != 0:
+            rt.cudaFree(ptr)
+            raise RuntimeError(f"cudaMemcpy H2D failed: {rc}")
+        rt.cudaDeviceSynchronize()
+        self._ptr = ptr
+        self._shape = arr.shape
+        self._typestr = arr.dtype.str
+        self._strides = arr.strides
+
+    @property
+    def __cuda_array_interface__(self):
+        return {
+            "shape": self._shape,
+            "typestr": self._typestr,
+            "data": (self._ptr.value, False),
+            "strides": self._strides,
+            "version": 3,
+        }
+
+    def free(self):
+        if self._ptr is not None and self._ptr.value:
+            self._rt().cudaFree(self._ptr)
+            self._ptr = None
+
+
+def _build_binary(
+    X,
+    y,
+    params,
+    path,
+    *,
+    captured_log=None,
+    expect_gpu_binner=None,
+    categorical_feature="auto",
+):
+    if captured_log is not None:
+        captured_log.lines.clear()
     ds = flc.Dataset(
         X,
         label=y,
@@ -51,12 +147,18 @@ def _build_binary(X, y, params, path, categorical_feature="auto"):
         free_raw_data=False,
     )
     ds.construct()
+    if captured_log is not None and expect_gpu_binner is not None:
+        ran = any("GPU construct: binned" in line for line in captured_log.lines)
+        assert ran is expect_gpu_binner, (
+            f"expected GPU binner={expect_gpu_binner}, got {ran} "
+            f"(plan={params.get('cuda_plan')}, logs={captured_log.lines[-5:]})"
+        )
     ds.save_binary(path)
     return ds, path.read_bytes()
 
 
 def _train_trees(params, ds, rounds=4):
-    model = flc.train(params, ds, num_boost_round=rounds).model_to_string()
+    model = flc.train({**params, "verbosity": -1}, ds, num_boost_round=rounds).model_to_string()
     return re.sub(r"^\[cuda_plan: .*\]$", "", model, flags=re.MULTILINE).split("\nparameters:")[0]
 
 
@@ -139,6 +241,7 @@ def test_construct_tile_bin_f32_key_parses():
             **BASE_PARAMS,
             "device_type": "cpu",
             "quant_mode": "none",
+            "verbosity": -1,
             "cuda_plan": f"auto,construct_tile_bin_f32:{good}",
         }
         flc.Dataset(X, label=y, params=p).construct()
@@ -146,6 +249,7 @@ def test_construct_tile_bin_f32_key_parses():
         **BASE_PARAMS,
         "device_type": "cpu",
         "quant_mode": "none",
+        "verbosity": -1,
         "cuda_plan": "auto,construct_tile_bin_f32:maybe",
     }
     with pytest.raises(flc.basic.FalcataError, match="cuda_plan: bad value"):
@@ -155,20 +259,36 @@ def test_construct_tile_bin_f32_key_parses():
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("max_bin", [5, 15, 31, 63, 255, 511])
 @pytest.mark.parametrize("zero_as_missing", [False, True])
-def test_f32_tile_edges_and_tiers_bit_identical_cuda(max_bin, zero_as_missing, tmp_path):
+def test_f32_tile_edges_and_tiers_bit_identical_cuda(max_bin, zero_as_missing, tmp_path, captured_log):
     """Covers all 3 binary-search tiers (<=32 shuffle, <=256 smem, >256 global),
     4/8/16-bit output widths, trivial columns, NaNs/subnormals/+-0/+-inf/ULP boundaries,
-    and zero_as_missing."""
+    and zero_as_missing, verifying GPU binner activation."""
     X, y = _edge_float32_matrix(rows=1027, ncol=70, seed=max_bin + int(zero_as_missing))
     base = {**BASE_PARAMS, "max_bin": max_bin, "zero_as_missing": zero_as_missing}
-    ds_on, blob_on = _build_binary(X, y, {**base, "cuda_plan": "auto"}, tmp_path / "on.bin")
+    ds_on, blob_on = _build_binary(
+        X,
+        y,
+        {**base, "cuda_plan": "auto"},
+        tmp_path / "on.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
+    )
     ds_off, blob_off = _build_binary(
         X,
         y,
         {**base, "cuda_plan": "auto,construct_tile_bin_f32:off"},
         tmp_path / "off.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
     )
-    ds_host, blob_host = _build_binary(X, y, {**base, "cuda_plan": "auto,gpu_construct:off"}, tmp_path / "host.bin")
+    ds_host, blob_host = _build_binary(
+        X,
+        y,
+        {**base, "cuda_plan": "auto,gpu_construct:off"},
+        tmp_path / "host.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=False,
+    )
     assert blob_on == blob_off, f"max_bin={max_bin}, zam={zero_as_missing}: tile_f32 != f32_off"
     assert blob_on == blob_host, f"max_bin={max_bin}, zam={zero_as_missing}: tile_f32 != host"
     if max_bin <= 255:
@@ -179,10 +299,69 @@ def test_f32_tile_edges_and_tiers_bit_identical_cuda(max_bin, zero_as_missing, t
 
 
 @_REQUIRES_CUDA
-def test_f32_forced_double_boundaries_bit_identical_cuda(tmp_path):
+def test_f32_exact_tier_boundaries_bit_identical_cuda(tmp_path, captured_log):
+    """Explicitly hits exact binary-search tier boundaries r_init in {31, 32, 33, 255, 256, 257},
+    both without NaN (missing_is_nan=0) and with NaN (missing_is_nan=1), spanning >32 columns
+    so warps reuse s_ub[warp_id] across multiple columns."""
+    rng = np.random.default_rng(2026)
+    rows = 1200
+    target_r_inits = [31, 32, 33, 255, 256, 257]
+    cols = []
+    # Repeat across 36 columns (4+ columns per warp) with and without NaNs
+    for idx in range(36):
+        r_init = target_r_inits[idx % len(target_r_inits)]
+        with_nan = (idx // len(target_r_inits)) % 2 == 1
+        # Distinct non-NaN values including 0.0 -> num_bin = r_init + 1 (or +2 with NaN)
+        n_distinct = r_init + 1
+        vals = np.arange(0, n_distinct, dtype=np.float32)
+        col = np.resize(vals, rows).copy()
+        if with_nan:
+            col[-5:] = np.float32(np.nan)
+        rng.shuffle(col)
+        cols.append(col)
+    X = np.ascontiguousarray(np.column_stack(cols), dtype=np.float32)
+    y = rng.standard_normal(rows).astype(np.float32)
+
+    params = {**BASE_PARAMS, "max_bin": 511, "min_data_in_bin": 1}
+    ds_on, b_on = _build_binary(
+        X,
+        y,
+        {**params, "cuda_plan": "auto"},
+        tmp_path / "tier_on.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
+    )
+    # Confirm exact bin counts actually landed on all 6 target r_init values
+    num_bins = [ds_on.feature_num_bin(i) for i in range(len(target_r_inits) * 2)]
+    # First 6 columns have missing_is_nan=0 -> num_bin == r_init + 1
+    assert num_bins[:6] == [r + 1 for r in target_r_inits]
+    # Next 6 columns have missing_is_nan=1 -> num_bin == r_init + 2
+    assert num_bins[6:12] == [r + 2 for r in target_r_inits]
+
+    _, b_off = _build_binary(
+        X,
+        y,
+        {**params, "cuda_plan": "auto,construct_tile_bin_f32:off"},
+        tmp_path / "tier_off.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
+    )
+    _, b_host = _build_binary(
+        X,
+        y,
+        {**params, "cuda_plan": "auto,gpu_construct:off"},
+        tmp_path / "tier_host.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=False,
+    )
+    assert b_on == b_off == b_host
+
+
+@_REQUIRES_CUDA
+def test_f32_forced_double_boundaries_bit_identical_cuda(tmp_path, captured_log):
     """Explicit double bin upper bounds that are NOT representable in float32,
     including out-of-float32-range finite doubles (+-1e100), subnormal-straddling
-    doubles (+-1e-300, +-0.75*2^-149), and exact midpoints between adjacent float32s."""
+    doubles (+-1e-300, +-0.25/0.5/0.75*2^-149), and exact midpoints between adjacent float32s."""
     f32_info = np.finfo(np.float32)
     tiny = np.float32(f32_info.smallest_subnormal)
     fmax = np.float32(f32_info.max)
@@ -221,37 +400,56 @@ def test_f32_forced_double_boundaries_bit_identical_cuda(tmp_path):
         X[:, c] = vals[rng.integers(0, len(vals), size=rows)]
     y = rng.standard_normal(rows).astype(np.float32)
 
-    forced_bounds = [
-        -1e100,
-        float(-fmax),
-        float(np.nextafter(np.float64(-fmax), np.float64(-np.inf))),
-        -1e-300,
-        -0.75 * float(tiny),
-        -0.25 * float(tiny),
-        0.0,
-        1e-300,
-        0.25 * float(tiny),
-        0.75 * float(tiny),
-        0.1,  # double 0.1 != float32(0.1)
-        1.0 - 2.0**-25,
-        1.0 + 2.0**-24,  # exact midpoint between 1.0f and nextafterf(1.0f, 2.0f)
-        float(np.nextafter(np.float64(fmax), np.float64(0.0))),
-        float(fmax),
-        1e100,
-    ]
-    forced_bounds = sorted(set(forced_bounds))
+    forced_bounds = sorted(
+        {
+            -1e100,
+            float(np.nextafter(np.float64(-fmax), np.float64(-np.inf))),
+            float(-fmax),
+            -1e-300,
+            -0.75 * float(tiny),
+            -0.5 * float(tiny),
+            -0.25 * float(tiny),
+            0.0,
+            1e-300,
+            0.25 * float(tiny),
+            0.5 * float(tiny),
+            0.75 * float(tiny),
+            0.1,  # double 0.1 != float32(0.1)
+            1.0 - 2.0**-25,
+            1.0 + 2.0**-24,  # exact midpoint between 1.0f and nextafterf(1.0f, 2.0f)
+            float(np.nextafter(np.float64(fmax), np.float64(0.0))),
+            float(fmax),
+            1e100,
+        }
+    )
     forced_json = tmp_path / "forced_bins.json"
     forced_json.write_text(json.dumps([{"feature": c, "bin_upper_bound": forced_bounds} for c in range(36)]))
 
     params = {**BASE_PARAMS, "max_bin": 63, "forcedbins_filename": str(forced_json)}
-    _, blob_on = _build_binary(X, y, {**params, "cuda_plan": "auto"}, tmp_path / "on.bin")
+    _, blob_on = _build_binary(
+        X,
+        y,
+        {**params, "cuda_plan": "auto"},
+        tmp_path / "on.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
+    )
     _, blob_off = _build_binary(
         X,
         y,
         {**params, "cuda_plan": "auto,construct_tile_bin_f32:off"},
         tmp_path / "off.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
     )
-    _, blob_host = _build_binary(X, y, {**params, "cuda_plan": "auto,gpu_construct:off"}, tmp_path / "host.bin")
+    _, blob_host = _build_binary(
+        X,
+        y,
+        {**params, "cuda_plan": "auto,gpu_construct:off"},
+        tmp_path / "host.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=False,
+    )
     assert blob_on == blob_off
     assert blob_on == blob_host
 
@@ -259,26 +457,42 @@ def test_f32_forced_double_boundaries_bit_identical_cuda(tmp_path):
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(("rows", "ncol"), [(1, 1), (3, 13), (127, 32), (128, 33), (129, 65)])
 @pytest.mark.parametrize("order", ["C", "F"])
-def test_f32_shapes_and_orders_bit_identical_cuda(rows, ncol, order, tmp_path):
+def test_f32_shapes_and_orders_bit_identical_cuda(rows, ncol, order, tmp_path, captured_log):
     """Small, unaligned, tile-boundary, and Fortran-order shapes."""
     X, y = _edge_float32_matrix(rows=rows, ncol=max(ncol, 2), seed=rows * 17 + ncol)
     X = X[:, :ncol]
     X = np.asfortranarray(X) if order == "F" else np.ascontiguousarray(X)
-    params = {**BASE_PARAMS, "max_bin": 15}
-    _, blob_on = _build_binary(X, y, {**params, "cuda_plan": "auto"}, tmp_path / "on.bin")
+    params = {**BASE_PARAMS, "max_bin": 15, "min_data_in_leaf": 1}
+    _, blob_on = _build_binary(
+        X,
+        y,
+        {**params, "cuda_plan": "auto"},
+        tmp_path / "on.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=(rows >= 3),
+    )
     _, blob_off = _build_binary(
         X,
         y,
         {**params, "cuda_plan": "auto,construct_tile_bin_f32:off"},
         tmp_path / "off.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=(rows >= 3),
     )
-    _, blob_host = _build_binary(X, y, {**params, "cuda_plan": "auto,gpu_construct:off"}, tmp_path / "host.bin")
+    _, blob_host = _build_binary(
+        X,
+        y,
+        {**params, "cuda_plan": "auto,gpu_construct:off"},
+        tmp_path / "host.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=False,
+    )
     assert blob_on == blob_off
     assert blob_on == blob_host
 
 
 @_REQUIRES_CUDA
-def test_f32_categorical_and_efb_multi_col_group_bit_identical_cuda(tmp_path):
+def test_f32_categorical_and_efb_multi_col_group_bit_identical_cuda(tmp_path, captured_log):
     """Categorical float32 columns in tile kernel + EFB-bundled sparse float32 columns
     exercising the non-tiled CUDADenseBinChunkKernel with USE_F32_BOUNDS=true."""
     rng = np.random.default_rng(99)
@@ -300,20 +514,32 @@ def test_f32_categorical_and_efb_multi_col_group_bit_identical_cuda(tmp_path):
     y = rng.standard_normal(rows).astype(np.float32)
 
     params = {**BASE_PARAMS, "max_bin": 63, "enable_bundle": False}
-    _, b_on = _build_binary(X, y, {**params, "cuda_plan": "auto"}, tmp_path / "cat_on.bin", cats)
+    _, b_on = _build_binary(
+        X,
+        y,
+        {**params, "cuda_plan": "auto"},
+        tmp_path / "cat_on.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
+        categorical_feature=cats,
+    )
     _, b_off = _build_binary(
         X,
         y,
         {**params, "cuda_plan": "auto,construct_tile_bin_f32:off"},
         tmp_path / "cat_off.bin",
-        cats,
+        captured_log=captured_log,
+        expect_gpu_binner=True,
+        categorical_feature=cats,
     )
     _, b_host = _build_binary(
         X,
         y,
         {**params, "cuda_plan": "auto,gpu_construct:off"},
         tmp_path / "cat_host.bin",
-        cats,
+        captured_log=captured_log,
+        expect_gpu_binner=False,
+        categorical_feature=cats,
     )
     assert b_on == b_off == b_host
 
@@ -328,52 +554,96 @@ def test_f32_categorical_and_efb_multi_col_group_bit_identical_cuda(tmp_path):
         "enable_bundle": True,
         "max_conflict_rate": 0.0,
     }
-    _, e_on = _build_binary(X_efb, y, {**params_efb, "cuda_plan": "auto"}, tmp_path / "efb_on.bin")
+    _, e_on = _build_binary(
+        X_efb,
+        y,
+        {**params_efb, "cuda_plan": "auto"},
+        tmp_path / "efb_on.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
+    )
     _, e_off = _build_binary(
         X_efb,
         y,
         {**params_efb, "cuda_plan": "auto,construct_tile_bin_f32:off"},
         tmp_path / "efb_off.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
     )
     _, e_host = _build_binary(
         X_efb,
         y,
         {**params_efb, "cuda_plan": "auto,gpu_construct:off"},
         tmp_path / "efb_host.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=False,
     )
     assert e_on == e_off == e_host
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("dtype", [np.float32, np.int16])
 @pytest.mark.parametrize("max_bin", [15, 255])
-def test_f32_chunked_odd_parity_bit_identical_cuda(max_bin, tmp_path):
-    """Multi-chunk construction with odd chunk boundaries (parity == 1) matches
-    single-chunk and host construction byte-for-byte."""
-    X, y = _edge_float32_matrix(rows=777, ncol=40, seed=42 + max_bin)
-    chunks = [X[:137], X[137:290], X[290:513], X[513:]]  # odd start rows 137, 513
-    params = {**BASE_PARAMS, "max_bin": max_bin}
+def test_device_chunked_odd_parity_bit_identical_cuda(dtype, max_bin, tmp_path, captured_log):
+    """True GPU multi-chunk construction with odd start rows (parity == 1) via
+    list of __cuda_array_interface__ chunks (FLC_DatasetDeviceBuilderPushChunk)
+    matches single-matrix and host construction byte-for-byte for both float32 & int16."""
+    rows, ncol = 777, 70
+    if dtype == np.float32:
+        X, y = _edge_float32_matrix(rows=rows, ncol=ncol, seed=42 + max_bin)
+    else:
+        rng = np.random.default_rng(42 + max_bin)
+        X = np.ascontiguousarray(rng.integers(-5000, 5000, size=(rows, ncol), dtype=np.int16))
+        X[:, 2] = 42  # trivial column
+        y = rng.standard_normal(rows).astype(np.float32)
 
-    _, b_single = _build_binary(X, y, {**params, "cuda_plan": "auto"}, tmp_path / "single.bin")
-    _, b_chunks_on = _build_binary(chunks, y, {**params, "cuda_plan": "auto"}, tmp_path / "chunks_on.bin")
-    _, b_chunks_off = _build_binary(
-        chunks,
-        y,
-        {**params, "cuda_plan": "auto,construct_tile_bin_f32:off"},
-        tmp_path / "chunks_off.bin",
-    )
-    _, b_chunks_host = _build_binary(
-        chunks,
-        y,
-        {**params, "cuda_plan": "auto,gpu_construct:off"},
-        tmp_path / "chunks_host.bin",
-    )
-    assert b_single == b_chunks_on == b_chunks_off == b_chunks_host
+    # Odd chunk boundaries: start rows 0, 137 (odd!), 290 (even), 513 (odd!)
+    splits = [X[:137], X[137:290], X[290:513], X[513:]]
+    dev_chunks = [_CudaDeviceArray(c) for c in splits]
+    params = {**BASE_PARAMS, "max_bin": max_bin}
+    try:
+        _, b_single = _build_binary(
+            X,
+            y,
+            {**params, "cuda_plan": "auto"},
+            tmp_path / "single.bin",
+            captured_log=captured_log,
+            expect_gpu_binner=True,
+        )
+        _, b_chunks_on = _build_binary(
+            dev_chunks,
+            y,
+            {**params, "cuda_plan": "auto"},
+            tmp_path / "chunks_on.bin",
+            captured_log=captured_log,
+            expect_gpu_binner=True,
+        )
+        _, b_chunks_off = _build_binary(
+            dev_chunks,
+            y,
+            {**params, "cuda_plan": "auto,construct_tile_bin_f32:off"},
+            tmp_path / "chunks_off.bin",
+            captured_log=captured_log,
+            expect_gpu_binner=True,
+        )
+        _, b_host = _build_binary(
+            X,
+            y,
+            {**params, "cuda_plan": "auto,gpu_construct:off"},
+            tmp_path / "host.bin",
+            captured_log=captured_log,
+            expect_gpu_binner=False,
+        )
+    finally:
+        for dc in dev_chunks:
+            dc.free()
+    assert b_single == b_chunks_on == b_chunks_off == b_host
 
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("dtype", [np.int16, np.uint16, np.float16])
 @pytest.mark.parametrize("max_bin", [15, 255])
-def test_16bit_tile_bit_identical_cuda(dtype, max_bin, tmp_path):
+def test_16bit_tile_bit_identical_cuda(dtype, max_bin, tmp_path, captured_log):
     """Row-major int16/uint16/float16 tiled 64x64 LUT kernel matches off and host paths."""
     rng = np.random.default_rng(55 + max_bin)
     rows, ncol = 1029, 75  # > 64 cols (multiple tiles), odd rows
@@ -395,14 +665,30 @@ def test_16bit_tile_bit_identical_cuda(dtype, max_bin, tmp_path):
     y = rng.standard_normal(rows).astype(np.float32)
 
     params = {**BASE_PARAMS, "max_bin": max_bin}
-    ds_on, b_on = _build_binary(X, y, {**params, "cuda_plan": "auto"}, tmp_path / "on.bin")
+    ds_on, b_on = _build_binary(
+        X,
+        y,
+        {**params, "cuda_plan": "auto"},
+        tmp_path / "on.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
+    )
     ds_off, b_off = _build_binary(
         X,
         y,
         {**params, "cuda_plan": "auto,construct_tile_bin_f32:off"},
         tmp_path / "off.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=True,
     )
-    ds_host, b_host = _build_binary(X, y, {**params, "cuda_plan": "auto,gpu_construct:off"}, tmp_path / "host.bin")
+    ds_host, b_host = _build_binary(
+        X,
+        y,
+        {**params, "cuda_plan": "auto,gpu_construct:off"},
+        tmp_path / "host.bin",
+        captured_log=captured_log,
+        expect_gpu_binner=False,
+    )
     assert b_on == b_off == b_host
     assert _train_trees({**params, "cuda_plan": "auto"}, ds_on) == _train_trees(
         {**params, "cuda_plan": "auto,construct_tile_bin_f32:off"}, ds_off

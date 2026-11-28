@@ -478,6 +478,29 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
       cat_bins.push_back(0);
     }
   }
+  // tile kernel eligibility (every group one column, and column-tile grid.y
+  // fits CUDA's 65535 limit): int8/uint8 under construct_tile_bin, plus
+  // float32 and int16/uint16/fp16 under construct_tile_bin && construct_tile_bin_f32
+  const int dtype_code = DTypeCode(dtype);
+  bool single_col_groups = true;
+  for (const auto& cols : group_col_sub) {
+    single_col_groups = single_col_groups && cols.size() == 1;
+  }
+  const bool is_tile_i8 = (dtype_code == 2 || dtype_code == 4);
+  const bool is_tile_i16 = (dtype_code == 3 || dtype_code == 5);
+  const bool is_tile_f32 = (dtype_code == 0);
+  const int tile_cols = is_tile_i8
+                            ? FalcataPlan::kConstructTileCols
+                            : (is_tile_i16 ? kCUDADenseBinTileColsI16
+                                           : kCUDADenseBinTileColsF32);
+  const bool tile_grid_y_fits =
+      (static_cast<int64_t>(ncol) + tile_cols - 1) / tile_cols <= 65535;
+  const bool tiled =
+      FalcataPlan::Get().construct_tile_bin && single_col_groups &&
+      tile_grid_y_fits &&
+      (is_tile_i8 ||
+       (FalcataPlan::Get().construct_tile_bin_f32 &&
+        (is_tile_i16 || is_tile_f32)));
   // chunk sizing and device memory budget
   const int64_t elem_size = DTypeSize(dtype);
   const int64_t row_bytes = static_cast<int64_t>(ncol) * elem_size;
@@ -490,7 +513,9 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
       static_cast<int64_t>(col_meta.size() * sizeof(CUDADenseBinnerColMeta)) +
       static_cast<int64_t>((group_cols.size() + group_col_ptr.size() +
                             group_pair_off.size()) * sizeof(int64_t)) +
-      static_cast<int64_t>(group_width_u8.size());
+      static_cast<int64_t>(group_width_u8.size()) +
+      (tiled ? static_cast<int64_t>(ncol) * static_cast<int64_t>(sizeof(int))
+             : 0);
   if (gpu_device_id_ >= 0) {
     SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
   }
@@ -523,7 +548,7 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
   ctx->num_threads_ = OMP_NUM_THREADS();
   ctx->verify_ = verify;
   ctx->h2d_overlap_ = FalcataPlan::Get().construct_h2d_overlap;
-  ctx->dtype_code_ = DTypeCode(dtype);
+  ctx->dtype_code_ = dtype_code;
   ctx->elem_size_ = elem_size;
   ctx->row_bytes_ = row_bytes;
   ctx->group_width_ = std::move(group_width);
@@ -543,19 +568,7 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
                                         ctx->group_pair_off_.data(),
                                         ctx->group_pair_off_.size(), __FILE__,
                                         __LINE__);
-  // tile kernel (every group one column): int8/uint8 under construct_tile_bin,
-  // plus float32 and int16/uint16/fp16 under construct_tile_bin && construct_tile_bin_f32
-  bool single_col_groups = true;
-  for (const auto& cols : group_col_sub) {
-    single_col_groups = single_col_groups && cols.size() == 1;
-  }
-  const bool is_tile_i8 = (ctx->dtype_code_ == 2 || ctx->dtype_code_ == 4);
-  const bool is_tile_i16 = (ctx->dtype_code_ == 3 || ctx->dtype_code_ == 5);
-  const bool is_tile_f32 = (ctx->dtype_code_ == 0);
-  ctx->tiled_ = FalcataPlan::Get().construct_tile_bin && single_col_groups &&
-                (is_tile_i8 ||
-                 (FalcataPlan::Get().construct_tile_bin_f32 &&
-                  (is_tile_i16 || is_tile_f32)));
+  ctx->tiled_ = tiled;
   if (ctx->tiled_) {
     ctx->tile_rows_ = FalcataPlan::Get().construct_tile_rows;
     ctx->tile_threads_ = FalcataPlan::Get().construct_tile_threads;
