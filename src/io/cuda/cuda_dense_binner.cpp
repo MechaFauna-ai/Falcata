@@ -135,8 +135,35 @@ double LutIndexToValue(Dataset::DenseBinnerDType dtype, int64_t v) {
 
 // float/double binning: the category->bin tables of all categorical columns
 // together hold at most this many entries (one per category id below each
-// column's largest; larger ids leave the dataset to the host path)
+// column's largest; larger ids leave the dataset to the host path).
+// Kept <= 2^24 so every column's cat_size is exactly representable in float32.
 constexpr int64_t kMaxCategoryTableEntries = int64_t{1} << 24;
+static_assert(kMaxCategoryTableEntries <= (int64_t{1} << 24),
+              "DeviceCategoryToBinFloat requires cat_size <= 2^24 for exact float32 comparison");
+
+// Largest float32 f such that for every non-NaN float32 x,
+// (static_cast<double>(x) <= d) iff (x <= f).
+// NaN maps to quiet_NaN so both comparisons remain false for all x.
+float FloatThresholdBelow(double d) {
+  if (std::isnan(d)) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+  if (d == std::numeric_limits<double>::infinity()) {
+    return std::numeric_limits<float>::infinity();
+  }
+  const double flt_max = static_cast<double>(std::numeric_limits<float>::max());
+  if (d >= flt_max) {
+    return std::numeric_limits<float>::max();
+  }
+  if (d < -flt_max) {
+    return -std::numeric_limits<float>::infinity();
+  }
+  float f = static_cast<float>(d);
+  if (static_cast<double>(f) > d) {
+    f = std::nextafter(f, -std::numeric_limits<float>::infinity());
+  }
+  return f;
+}
 
 // bytes each value of a group's dense bin occupies; 0 means 4-bit packed
 int GroupElemWidth(uint8_t bit_type) {
@@ -358,8 +385,12 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
   std::vector<uint32_t> lut;
   std::vector<int64_t> col_lut_off;
   std::vector<double> bounds;
+  std::vector<float> bounds_f32;
   std::vector<uint32_t> cat_bins;
   std::vector<CUDADenseBinnerColMeta> col_meta;
+  const bool use_f32_bounds = !use_lut &&
+                              dtype == Dataset::DenseBinnerDType::kFloat32 &&
+                              FalcataPlan::Get().construct_tile_bin_f32;
   const int64_t lut_size = DTypeLutSize(dtype);
   std::vector<std::pair<int, int>> used_cols;  // (column, feature index)
   for (int fidx = 0; fidx < num_features_; ++fidx) {
@@ -399,7 +430,8 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
       const int fidx = cf.second;
       const BinMapper* mapper = FeatureBinMapper(fidx);
       CUDADenseBinnerColMeta meta;
-      meta.bounds_offset = static_cast<int64_t>(bounds.size());
+      meta.bounds_offset = static_cast<int64_t>(
+          use_f32_bounds ? bounds_f32.size() : bounds.size());
       meta.cat_offset = static_cast<int64_t>(cat_bins.size());
       meta.num_bin = mapper->num_bin();
       meta.cat_size = 0;
@@ -422,12 +454,24 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
         }
       } else {
         const std::vector<double>& ub = mapper->bin_upper_bound();
-        bounds.insert(bounds.end(), ub.begin(), ub.end());
+        if (use_f32_bounds) {
+          const size_t start = bounds_f32.size();
+          bounds_f32.resize(start + ub.size());
+          for (size_t k = 0; k < ub.size(); ++k) {
+            bounds_f32[start + k] = FloatThresholdBelow(ub[k]);
+          }
+        } else {
+          bounds.insert(bounds.end(), ub.begin(), ub.end());
+        }
       }
       col_meta[cf.first] = meta;
     }
     // keep the device uploads well-defined
-    if (bounds.empty()) {
+    if (use_f32_bounds) {
+      if (bounds_f32.empty()) {
+        bounds_f32.push_back(0.0f);
+      }
+    } else if (bounds.empty()) {
       bounds.push_back(0.0);
     }
     if (cat_bins.empty()) {
@@ -441,6 +485,7 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
       static_cast<int64_t>(lut.size() * sizeof(uint32_t)) +
       static_cast<int64_t>(col_lut_off.size() * sizeof(int64_t)) +
       static_cast<int64_t>(bounds.size() * sizeof(double)) +
+      static_cast<int64_t>(bounds_f32.size() * sizeof(float)) +
       static_cast<int64_t>(cat_bins.size() * sizeof(uint32_t)) +
       static_cast<int64_t>(col_meta.size() * sizeof(CUDADenseBinnerColMeta)) +
       static_cast<int64_t>((group_cols.size() + group_col_ptr.size() +
@@ -498,14 +543,19 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
                                         ctx->group_pair_off_.data(),
                                         ctx->group_pair_off_.size(), __FILE__,
                                         __LINE__);
-  // tile kernel (int8/uint8 LUT, every group one column): the group of each column
+  // tile kernel (every group one column): int8/uint8 under construct_tile_bin,
+  // plus float32 and int16/uint16/fp16 under construct_tile_bin && construct_tile_bin_f32
   bool single_col_groups = true;
   for (const auto& cols : group_col_sub) {
     single_col_groups = single_col_groups && cols.size() == 1;
   }
-  ctx->tiled_ = FalcataPlan::Get().construct_tile_bin && use_lut &&
-                single_col_groups &&
-                (ctx->dtype_code_ == 2 || ctx->dtype_code_ == 4);
+  const bool is_tile_i8 = (ctx->dtype_code_ == 2 || ctx->dtype_code_ == 4);
+  const bool is_tile_i16 = (ctx->dtype_code_ == 3 || ctx->dtype_code_ == 5);
+  const bool is_tile_f32 = (ctx->dtype_code_ == 0);
+  ctx->tiled_ = FalcataPlan::Get().construct_tile_bin && single_col_groups &&
+                (is_tile_i8 ||
+                 (FalcataPlan::Get().construct_tile_bin_f32 &&
+                  (is_tile_i16 || is_tile_f32)));
   if (ctx->tiled_) {
     ctx->tile_rows_ = FalcataPlan::Get().construct_tile_rows;
     ctx->tile_threads_ = FalcataPlan::Get().construct_tile_threads;
@@ -525,8 +575,14 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
                                           col_lut_off.size(), __FILE__,
                                           __LINE__);
   } else {
-    InitCUDAMemoryFromHostMemory<double>(&ctx->d_bounds_, bounds.data(),
-                                         bounds.size(), __FILE__, __LINE__);
+    if (use_f32_bounds) {
+      InitCUDAMemoryFromHostMemory<float>(&ctx->d_bounds_f32_,
+                                          bounds_f32.data(), bounds_f32.size(),
+                                          __FILE__, __LINE__);
+    } else {
+      InitCUDAMemoryFromHostMemory<double>(&ctx->d_bounds_, bounds.data(),
+                                           bounds.size(), __FILE__, __LINE__);
+    }
     InitCUDAMemoryFromHostMemory<uint32_t>(&ctx->d_cat_bins_, cat_bins.data(),
                                            cat_bins.size(), __FILE__,
                                            __LINE__);
@@ -541,6 +597,7 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
   ctx->tables_.lut = ctx->d_lut_;
   ctx->tables_.col_lut_off = ctx->d_col_lut_off_;
   ctx->tables_.bounds = ctx->d_bounds_;
+  ctx->tables_.bounds_f32 = ctx->d_bounds_f32_;
   ctx->tables_.cat_bins = ctx->d_cat_bins_;
   ctx->tables_.col_meta = ctx->d_col_meta_;
   // staging ring: H2D on its own stream (construct_h2d_overlap; else on the
@@ -827,6 +884,9 @@ CUDADenseBinnerCtx::~CUDADenseBinnerCtx() {
   }
   if (d_bounds_ != nullptr) {
     DeallocateCUDAMemory<double>(&d_bounds_, __FILE__, __LINE__);
+  }
+  if (d_bounds_f32_ != nullptr) {
+    DeallocateCUDAMemory<float>(&d_bounds_f32_, __FILE__, __LINE__);
   }
   if (d_cat_bins_ != nullptr) {
     DeallocateCUDAMemory<uint32_t>(&d_cat_bins_, __FILE__, __LINE__);
