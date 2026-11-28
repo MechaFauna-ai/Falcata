@@ -3236,13 +3236,15 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
   const uint32_t whole_row_joint, \
   const data_size_t level_min_rows_per_thread, \
   const PairJointBlockPrefix block_prefix, \
-  const CUDADeviceLevelState* dls
+  const CUDADeviceLevelState* dls, \
+  const CUDADeviceTreeGraphParams* graph_params
 
 #define FALCATA_PAIR_JOINT_BATCHED_ARGS \
   pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full, \
   feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf, \
   min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total, \
-  num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_prefix, dls
+  num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_prefix, dls, \
+  graph_params
 
 template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false, bool EPILOGUE_FLAT = false,
           int CODE_BITS = 5>  // NOLINT(whitespace/indent_namespace)
@@ -3322,6 +3324,12 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
     if (total == 0) {
       return;
     }
+    const int eff_num_compact_columns = graph_params != nullptr ? graph_params->num_compact_columns : num_compact_columns;
+    const int eff_per_pair_min_grid = graph_params != nullptr ? graph_params->per_pair_min_grid : per_pair_min_grid_dim_y;
+    const int eff_per_pair_min_rows = graph_params != nullptr ? graph_params->per_pair_min_rows : min_rows_per_thread;
+    const int eff_num_grad_quant_bins = graph_params != nullptr ? graph_params->num_grad_quant_bins : num_grad_quant_bins;
+    const int eff_whole_row_partitions = graph_params != nullptr ? graph_params->whole_row_partitions : whole_row_partitions;
+    const uint32_t eff_whole_row_joint = graph_params != nullptr ? graph_params->whole_row_joint : whole_row_joint;
     const data_size_t level_min_rows = dls->construct_min_rows;
     const bool direct = total <= static_cast<int>(gridDim.y);
     __shared__ int s_block_row;
@@ -3344,10 +3352,11 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
       }
       const int pair = DeviceLevelBlockPair(dls, vb);
       PairJointBatchedBlock<ALL_ROWS, BATCH, CODE5, WORDS, FLAT, EPILOGUE_FLAT, CODE_BITS>(
-        pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full,
+        pair_descs, cuda_gradients_and_hessians, data, column_meta, eff_num_compact_columns, column_hist_offsets_full,
         feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf,
-        min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total,
-        num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows, block_prefix, dls, shared_joint,
+        min_sum_hessian_in_leaf, eff_per_pair_min_grid, eff_per_pair_min_rows, saturation_floor_total,
+        eff_num_grad_quant_bins, eff_whole_row_partitions, eff_whole_row_joint, level_min_rows, block_prefix, dls,
+        graph_params, shared_joint,
         static_cast<unsigned int>(pair), vb - dls->construct_block_start[pair], dls->construct_grid_y,
         dls->live_pairs);
       if (direct) {
@@ -3465,7 +3474,7 @@ inline int PairJointResidentWarps(const int threads) {
 using PairJointKernelFn = void (*)(const CUDAHybridPairDescriptor*, const int32_t*, const uint8_t*, const uint32_t*,
                                    int, const uint32_t*, const int*, const int*, data_size_t, data_size_t, double, int,
                                    int, int, int, int, uint32_t, data_size_t, PairJointBlockPrefix,
-                                   const CUDADeviceLevelState*);
+                                   const CUDADeviceLevelState*, const CUDADeviceTreeGraphParams*);
 
 struct PairJointCappedBuild {
   PairJointKernelFn gather;
@@ -5110,7 +5119,8 @@ __global__ void __launch_bounds__(512) FixSubtractUsedFeaturesBatchedKernel(
   const int num_total_bin,
   const CUDAHybridPairDescriptor* pair_descs,
   hist_t* num_bit_change_buffer,
-  const CUDADeviceLevelState* dls);
+  const CUDADeviceLevelState* dls,
+  const CUDADeviceTreeGraphParams* graph_params = nullptr);
 
 __global__ void ConvertFixedHistBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
@@ -5210,6 +5220,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   // (the non-quantized dense kernel takes the same block map: cuda_plan key device_tree)
   const CUDADeviceLevelState* nq_dls = use_quantized_grad_ ? nullptr : dense_dls;
   if (nq_dls != nullptr) {
+    if (use_compact_view_ && device_tree_graph_params_ != nullptr) {
+      BucketDenseCompactBlockDim(0, &block_dim_x, &block_dim_y);
+      block_dim = dim3(block_dim_x, block_dim_y);
+    }
     // the block rows DeviceLevelPairsKernel mapped (DeviceLevelConstructShape) are this launch's
     CUDADeviceLevelConstructShape shape;
     DeviceLevelConstructShape(&shape);
@@ -5596,7 +5610,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           whole_rows ? static_cast<uint32_t>(compact_pair_joint_total_) : 0u, \
           pair_min_rows_per_thread, \
           block_prefix, \
-          static_cast<const CUDADeviceLevelState*>(nullptr)
+          static_cast<const CUDADeviceLevelState*>(nullptr), \
+          static_cast<const CUDADeviceTreeGraphParams*>(nullptr)
 #define FALCATA_LAUNCH_PAIR_JOINT_DATA(KERNEL, DATA) \
         KERNEL<<<launch_grid_dim, pair_block_dim, pair_smem_bytes, cuda_stream_>>>(FALCATA_PAIR_JOINT_LAUNCH_ARGS(DATA))
         // a whole-row block does the work of grid_dim.x partition blocks and zeroes / flushes all their joint
@@ -5637,65 +5652,82 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
 #undef FALCATA_LAUNCH_PAIR_JOINT
 #undef FALCATA_LAUNCH_PAIR_JOINT_DATA
 #undef FALCATA_PAIR_JOINT_LAUNCH_ARGS
-      } else if (compact_is_4bit_) {
-        DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
-#define FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PACKT) \
-        for (const DenseLaunchChunk& dense_chunk : dense_chunks) \
-        (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT, true> : \
-                                CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT, false>) \
-          <<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>( \
-          pair_descs + dense_chunk.pair_base, \
-          reinterpret_cast<const int32_t*>(cuda_gradients_), \
-          reinterpret_cast<const BIN_TYPE*>(NibbleViewData()), \
-          compact_column_hist_offsets_.RawData(), \
-          cuda_row_data_->cuda_partition_hist_offsets(), \
-          compact_feature_partition_column_index_offsets_.RawData(), \
-          compact_packed_partition_byte_offsets_.RawData(), \
-          num_data_, \
-          nullptr, \
-          nullptr, \
-          static_cast<data_size_t>(min_data_in_leaf_), \
-          min_sum_hessian_in_leaf_, \
-          FalcataPlan::Get().row_batch, \
-          dense_min_rows_per_thread, dense_chunk.prefix, dense_dls)
-        switch (compact_codec_) {
-          case PackCodecId::kBit3x32:
-            FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackBit3x32);
-            break;
-          case PackCodecId::kRadix5x32:
-            FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackRadix5x32);
-            break;
-          case PackCodecId::kRadix6x32:
-            FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackRadix6x32);
-            break;
-          case PackCodecId::kRadix7x32:
-            FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackRadix7x32);
-            break;
-          default:
-            FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackNibble4);
-            break;
-        }
-#undef FALCATA_LAUNCH_BATCHED_COMPACT_QUANT
       } else {
-        DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
-        for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
-        (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, true> :
-                                 CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, false>)
-          <<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
-          pair_descs + dense_chunk.pair_base,
-          reinterpret_cast<const int32_t*>(cuda_gradients_),
-          reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
-          compact_column_hist_offsets_.RawData(),
-          cuda_row_data_->cuda_partition_hist_offsets(),
-          compact_feature_partition_column_index_offsets_.RawData(),
-          nullptr,
-          num_data_,
-          nullptr,
-          nullptr,
-          static_cast<data_size_t>(min_data_in_leaf_),
-          min_sum_hessian_in_leaf_,
-          FalcataPlan::Get().row_batch,
-          dense_min_rows_per_thread, dense_chunk.prefix, dense_dls);
+        dim3 launch_block_dim = block_dim;
+        if (dense_dls != nullptr) {
+          if (device_tree_graph_params_ != nullptr) {
+            int bx = 0;
+            int by = 0;
+            BucketDenseCompactBlockDim(num_grad_quant_bins_, &bx, &by);
+            launch_block_dim = dim3(bx, by);
+          }
+          // Match the block shape DeviceLevelPairsKernel mapped via DeviceLevelConstructShape.
+          CUDADeviceLevelConstructShape shape;
+          DeviceLevelConstructShape(&shape);
+          CHECK_EQ(shape.pair_mode, 0);
+          CHECK_EQ(shape.block_x, static_cast<int>(launch_block_dim.x));
+          CHECK_EQ(shape.block_y, static_cast<int>(launch_block_dim.y));
+        }
+        if (compact_is_4bit_) {
+          DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
+#define FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PACKT) \
+          for (const DenseLaunchChunk& dense_chunk : dense_chunks) \
+          (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT, true> : \
+                                  CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT, false>) \
+            <<<dense_chunk.grid, launch_block_dim, 0, cuda_stream_>>>( \
+            pair_descs + dense_chunk.pair_base, \
+            reinterpret_cast<const int32_t*>(cuda_gradients_), \
+            reinterpret_cast<const BIN_TYPE*>(NibbleViewData()), \
+            compact_column_hist_offsets_.RawData(), \
+            cuda_row_data_->cuda_partition_hist_offsets(), \
+            compact_feature_partition_column_index_offsets_.RawData(), \
+            compact_packed_partition_byte_offsets_.RawData(), \
+            num_data_, \
+            nullptr, \
+            nullptr, \
+            static_cast<data_size_t>(min_data_in_leaf_), \
+            min_sum_hessian_in_leaf_, \
+            FalcataPlan::Get().row_batch, \
+            dense_min_rows_per_thread, dense_chunk.prefix, dense_dls)
+          switch (compact_codec_) {
+            case PackCodecId::kBit3x32:
+              FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackBit3x32);
+              break;
+            case PackCodecId::kRadix5x32:
+              FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackRadix5x32);
+              break;
+            case PackCodecId::kRadix6x32:
+              FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackRadix6x32);
+              break;
+            case PackCodecId::kRadix7x32:
+              FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackRadix7x32);
+              break;
+            default:
+              FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackNibble4);
+              break;
+          }
+#undef FALCATA_LAUNCH_BATCHED_COMPACT_QUANT
+        } else {
+          DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
+          for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
+          (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, true> :
+                                   CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, false>)
+            <<<dense_chunk.grid, launch_block_dim, 0, cuda_stream_>>>(
+            pair_descs + dense_chunk.pair_base,
+            reinterpret_cast<const int32_t*>(cuda_gradients_),
+            reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
+            compact_column_hist_offsets_.RawData(),
+            cuda_row_data_->cuda_partition_hist_offsets(),
+            compact_feature_partition_column_index_offsets_.RawData(),
+            nullptr,
+            num_data_,
+            nullptr,
+            nullptr,
+            static_cast<data_size_t>(min_data_in_leaf_),
+            min_sum_hessian_in_leaf_,
+            FalcataPlan::Get().row_batch,
+            dense_min_rows_per_thread, dense_chunk.prefix, dense_dls);
+          }
         }
       }
     } else if (cuda_row_data_->is_4bit_packed()) {

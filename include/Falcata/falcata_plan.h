@@ -1000,6 +1000,12 @@ struct FalcataPlan {
   // set every tree): the new capture updates the least recently used cached exec in place (cudaGraphExecUpdate)
   // instead of a new instantiation; a refused update (topology change) instantiates as before. Bit-identical.
   bool device_level_graph_update = true;  // key: device_level_graph_update
+  // device_level_graph: move per-tree-varying runtime scalars (active task/narrow/wide/compact counts, joint table
+  // sizes, quantization ridge) into a device-side params block uploaded once per tree with CUDADeviceLevelConfig,
+  // pass CUDADeviceLevelConfig by device pointer to the select/reset/pairs/cat-bitset kernels, and bucket dynamic
+  // shared memory and grid/block sizes to coarse upper bounds so feature-sampled trees hit one cached graph instead
+  // of churning captures/updates every tree. Bit-identical.
+  bool device_graph_indirect = true;  // key: device_graph_indirect
   // each tree starts with the index buffers in one canonical role (the lower address is the main array): a tree of odd
   // depth swaps the two buffers an odd number of times, so the next tree's graph key (which holds both pointers) would
   // alternate and every graph layout would be captured twice. Unbagged trees swap before the identity fill rewrites
@@ -1174,6 +1180,7 @@ struct FalcataPlan {
     if (key == "device_bynode_masks") return &device_bynode_masks;
     if (key == "device_level_graph") return &device_level_graph;
     if (key == "device_level_graph_update") return &device_level_graph_update;
+    if (key == "device_graph_indirect") return &device_graph_indirect;
     if (key == "index_parity_canonical") return &index_parity_canonical;
     return nullptr;
   }

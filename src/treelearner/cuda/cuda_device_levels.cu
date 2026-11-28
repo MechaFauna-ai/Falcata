@@ -29,7 +29,7 @@ namespace Falcata {
 
 namespace {
 
-__global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const int num_leaves) {
+__device__ __forceinline__ void DeviceLevelResetBody(const CUDADeviceLevelConfig& cfg, const int num_leaves) {
   CUDADeviceLevelState* st = cfg.state;
   if (threadIdx.x == 0) {
     if (cfg.whole_tree && cfg.tree_leaf_value != nullptr) {
@@ -65,6 +65,14 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
   }
 }
 
+__global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const int num_leaves) {
+  DeviceLevelResetBody(cfg, num_leaves);
+}
+
+__global__ void DeviceLevelResetIndirectKernel(const CUDADeviceLevelConfig* cfg_ptr, const int num_leaves) {
+  DeviceLevelResetBody(*cfg_ptr, num_leaves);
+}
+
 // One level's host decisions between its search and its apply (cuda_device_levels.cuh), as a launch of its own where
 // the level's sync does not run them in its last block (the prefix's root level, or every level when the sync kernel
 // is not the used-task one). MAX_SPLITS: kDeviceLevelMaxPairs for the prefix (never binding: DeviceLevelSelectBlockFast,
@@ -81,11 +89,40 @@ __global__ void DeviceLevelSelectKernel(const CUDADeviceLevelConfig cfg, const i
   }
 }
 
+template <int MAX_SPLITS, bool GLOBAL = false>
+__global__ void DeviceLevelSelectIndirectKernel(const CUDADeviceLevelConfig* cfg_ptr, const int level) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the level sync's leaf entries are complete and visible
+  __shared__ CUDADeviceLevelConfig s_cfg;
+  static_assert(sizeof(CUDADeviceLevelConfig) % sizeof(uint64_t) == 0, "the config is copied as 8-byte words");
+  constexpr int kCfgWords = static_cast<int>(sizeof(CUDADeviceLevelConfig) / sizeof(uint64_t));
+  for (int w = static_cast<int>(threadIdx.x); w < kCfgWords; w += static_cast<int>(blockDim.x)) {
+    reinterpret_cast<uint64_t*>(&s_cfg)[w] = reinterpret_cast<const uint64_t*>(cfg_ptr)[w];
+  }
+  __syncthreads();
+  if constexpr (GLOBAL || MAX_SPLITS == kDeviceTreeSharedSplits) {
+    DeviceLevelSelectBlock<MAX_SPLITS, GLOBAL>(s_cfg, level);
+  } else {
+    DeviceLevelSelectBlockFast<MAX_SPLITS>(s_cfg, level);
+  }
+}
+
 // The children's search descriptors of the level just applied (DeviceLevelPairsBlock, cuda_device_levels.cuh), as a
 // launch of its own where the apply does not run it beside its partition
 __global__ void DeviceLevelPairsKernel(const CUDADeviceLevelConfig cfg, const int level) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the apply's counts and child structs are complete and visible
   DeviceLevelPairsBlock(cfg, level);
+}
+
+__global__ void DeviceLevelPairsIndirectKernel(const CUDADeviceLevelConfig* cfg_ptr, const int level) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the apply's counts and child structs are complete and visible
+  __shared__ CUDADeviceLevelConfig s_cfg;
+  static_assert(sizeof(CUDADeviceLevelConfig) % sizeof(uint64_t) == 0, "the config is copied as 8-byte words");
+  constexpr int kCfgWords = static_cast<int>(sizeof(CUDADeviceLevelConfig) / sizeof(uint64_t));
+  for (int w = static_cast<int>(threadIdx.x); w < kCfgWords; w += static_cast<int>(blockDim.x)) {
+    reinterpret_cast<uint64_t*>(&s_cfg)[w] = reinterpret_cast<const uint64_t*>(cfg_ptr)[w];
+  }
+  __syncthreads();
+  DeviceLevelPairsBlock(s_cfg, level);
 }
 
 // The end of a selective segment: whether the select after its last level applied splits (and the counts)
@@ -95,6 +132,15 @@ __global__ void DeviceLevelSegmentEndKernel(const CUDADeviceLevelConfig cfg, int
     flag[2] = cfg.journal[1];
     flag[3] = cfg.journal[3];
     flag[0] = cfg.state->done != 0 ? 0 : 1;
+  }
+}
+
+__global__ void DeviceLevelSegmentEndIndirectKernel(const CUDADeviceLevelConfig* cfg_ptr, int* flag) {
+  if (threadIdx.x == 0) {
+    flag[1] = cfg_ptr->journal[0];
+    flag[2] = cfg_ptr->journal[1];
+    flag[3] = cfg_ptr->journal[3];
+    flag[0] = cfg_ptr->state->done != 0 ? 0 : 1;
   }
 }
 
@@ -243,16 +289,35 @@ void LaunchDeviceBynodeLevelMasks(const CUDADeviceBynodeConfig& config, const CU
     config, state, apply_descs, level, chunk_base);
 }
 
-void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_leaves, cudaStream_t stream) {
-  DeviceLevelResetKernel<<<1, 32, 0, stream>>>(config, num_leaves);
+void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_leaves, cudaStream_t stream,
+                            const CUDADeviceLevelConfig* cfg_device) {
+  if (cfg_device != nullptr) {
+    DeviceLevelResetIndirectKernel<<<1, 32, 0, stream>>>(cfg_device, num_leaves);
+  } else {
+    DeviceLevelResetKernel<<<1, 32, 0, stream>>>(config, num_leaves);
+  }
 }
 
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
-                             cudaStream_t stream, const int max_leaves) {
+                             cudaStream_t stream, const int max_leaves, const CUDADeviceLevelConfig* cfg_device) {
   // the select holds MAX_SPLITS splits of 2 * MAX_SPLITS leaves: the register-batched block kDeviceLevelMaxPairs
   // (nonbinding levels only), the shared block kDeviceTreeSharedSplits, the global one config.select_capacity
   const int leaves = max_leaves > 0 ? max_leaves : 2 * max_splits;
   // cuda_plan key pdl_level_chain: a programmatic dependent of the level sync launched just before on this stream
+  if (cfg_device != nullptr) {
+    if (leaves > 2 * kDeviceTreeSharedSplits) {
+      LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectIndirectKernel<kDeviceTreeSharedSplits, true>,
+                             dim3(1), dim3(DeviceLevelThreads(max_splits)), 0, stream, cfg_device, level);
+    } else if (config.whole_tree || leaves > 2 * kDeviceLevelMaxPairs || max_splits > kDeviceLevelMaxPairs) {
+      LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectIndirectKernel<kDeviceTreeSharedSplits>,
+                             dim3(1), dim3(DeviceLevelThreads(max_splits)), 0, stream, cfg_device, level);
+    } else {
+      LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectIndirectKernel<kDeviceLevelMaxPairs>,
+                             dim3(1), dim3(std::min(DeviceLevelThreads(max_splits), kDeviceLevelFastSelectThreads)),
+                             0, stream, cfg_device, level);
+    }
+    return;
+  }
   if (leaves > 2 * kDeviceTreeSharedSplits) {
     // a level wider than the shared select: the same select over global scratch (DeviceLevelBitonicSortGlobal)
     LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel<kDeviceTreeSharedSplits, true>, dim3(1),
@@ -269,16 +334,26 @@ void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int leve
   }
 }
 
-void LaunchDeviceLevelSegmentEnd(const CUDADeviceLevelConfig& config, int* flag, cudaStream_t stream) {
+void LaunchDeviceLevelSegmentEnd(const CUDADeviceLevelConfig& config, int* flag, cudaStream_t stream,
+                                 const CUDADeviceLevelConfig* cfg_device) {
   // a plain launch: it starts after every kernel before it on the stream completed (the select's state is final)
-  DeviceLevelSegmentEndKernel<<<1, 32, 0, stream>>>(config, flag);
+  if (cfg_device != nullptr) {
+    DeviceLevelSegmentEndIndirectKernel<<<1, 32, 0, stream>>>(cfg_device, flag);
+  } else {
+    DeviceLevelSegmentEndKernel<<<1, 32, 0, stream>>>(config, flag);
+  }
 }
 
 void LaunchDeviceLevelPairs(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
-                            cudaStream_t stream) {
+                            cudaStream_t stream, const CUDADeviceLevelConfig* cfg_device) {
   // cuda_plan key pdl_level_chain: a programmatic dependent of the apply's partition kernel launched just before
-  LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelPairsKernel, dim3(1), dim3(DeviceLevelThreads(max_splits)),
-                         0, stream, config, level);
+  if (cfg_device != nullptr) {
+    LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelPairsIndirectKernel, dim3(1),
+                           dim3(DeviceLevelThreads(max_splits)), 0, stream, cfg_device, level);
+  } else {
+    LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelPairsKernel, dim3(1),
+                           dim3(DeviceLevelThreads(max_splits)), 0, stream, config, level);
+  }
 }
 
 }  // namespace Falcata

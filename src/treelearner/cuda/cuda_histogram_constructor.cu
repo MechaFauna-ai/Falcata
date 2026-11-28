@@ -1283,7 +1283,8 @@ __global__ void __launch_bounds__(512) FixSubtractUsedFeaturesBatchedKernel(
   const int num_total_bin,
   const CUDAHybridPairDescriptor* pair_descs,
   hist_t* num_bit_change_buffer,
-  const CUDADeviceLevelState* dls) {
+  const CUDADeviceLevelState* dls,
+  const CUDADeviceTreeGraphParams* graph_params) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the construct's histograms are complete and visible
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.x)) {
     return;  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
@@ -1299,7 +1300,8 @@ __global__ void __launch_bounds__(512) FixSubtractUsedFeaturesBatchedKernel(
   const bool larger_exists = larger->leaf_index >= 0;
   const bool copy_changed = desc->larger_leaf_index >= 0 && parent_num_bits > 16 && larger_num_bits <= 16;
   const int u = static_cast<int>(threadIdx.x);
-  const uint2 item = u < num_used_features ? reinterpret_cast<const uint2*>(used_feature_info)[u] : make_uint2(0u, 0u);
+  const int active_used_features = graph_params != nullptr ? graph_params->num_used_feature_info : num_used_features;
+  const uint2 item = u < active_used_features ? reinterpret_cast<const uint2*>(used_feature_info)[u] : make_uint2(0u, 0u);
   int32_t* buffer = reinterpret_cast<int32_t*>(num_bit_change_buffer) +
     static_cast<size_t>(blockIdx.x) * static_cast<size_t>(num_total_bin);
   const uint32_t span = item.y & 0xffu;  // 0 for threads past the sampled features
@@ -2121,6 +2123,18 @@ bool CUDAHistogramConstructor::DeviceLevelConstructSupported() {
   return SupportsBatchedLevel();
 }
 
+void CUDAHistogramConstructor::FillDeviceTreeGraphParams(
+    CUDADeviceTreeGraphParams* params,
+    const CUDADeviceLevelConstructShape& shape) const {
+  params->num_compact_columns = num_compact_columns_;
+  params->whole_row_joint = shape.whole_row_joint;
+  params->num_used_feature_info = num_used_feature_info_;
+  params->per_pair_min_grid = shape.per_pair_min_grid;
+  params->per_pair_min_rows = shape.per_pair_min_rows;
+  params->whole_row_partitions = shape.whole_row_partitions;
+  params->num_grad_quant_bins = use_quantized_grad_ ? num_grad_quant_bins_ : 0;
+}
+
 void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstructShape* shape) {
   std::memset(shape, 0, sizeof(*shape));
   // LaunchConstructHistogramBatchedKernelInner0's tree-constant decisions for a multi-pair level that holds fewer
@@ -2141,9 +2155,13 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
   shape->block_x = block_dim_x;
   const int bins = use_quantized_grad_ ? num_grad_quant_bins_ : 0;
   const FalcataPlan& plan = FalcataPlan::Get();
+  const bool indirect = UseDeviceGraphIndirect();
   if (!use_quantized_grad_ || !(use_compact_view_ && compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4 && plan.pair_hist &&
         compact_pair_joint_max_ > 0 && compact_pair_joint_max_ * sizeof(int32_t) <= 48 * 1024 &&
         (cc + 1) / 2 * block_dim_y <= PairJointMaxThreadsPerBlock())) {
+    if (indirect && use_compact_view_) {
+      BucketDenseCompactBlockDim(bins, &shape->block_x, &shape->block_y);
+    }
     return;  // the dense batched kernel
   }
   shape->pair_mode = 1;
@@ -2164,31 +2182,39 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
     }
     pair_y = y;
   }
+  const size_t max_smem = CurrentDeviceLaunchLimits().shared_bytes_per_block;
+  // Leave a 2 KB margin below the 48 KB default dynamic SMEM limit for static shared memory (e.g. s_block_row)
+  // and driver reserve; exact sizes already above 46 KB are returned unrounded (never shrunk).
+  const size_t smem_bucket_cap = std::min<size_t>(46 * 1024, max_smem);
   const size_t pair_smem_bytes =
     static_cast<size_t>(whole_rows ? compact_pair_joint_total_ : compact_pair_joint_max_) * sizeof(int32_t);
+  const size_t launch_pair_smem_bytes = indirect ?
+    BucketDeviceLevelSmemBytes(pair_smem_bytes, smem_bucket_cap) : pair_smem_bytes;
   // (the host keeps the default shape where the capped grid passes CUDA's y limit; a device level strides its
   // block rows over a fixed launch, so it has no such limit)
   const int capped_y = whole_rows && plan.pair_capped_rows ?
-    PairJointCappedRows(compact_row_bytes_, pair_smem_bytes, pair_y, bins) : 0;
+    PairJointCappedRows(compact_row_bytes_, launch_pair_smem_bytes, pair_y, bins) : 0;
   if (capped_y > 0) {
     pair_y = capped_y;
   }
   const size_t code5_flat_smem_bytes = pair_smem_bytes + Code5DummyCells(code5_bits_) * sizeof(int32_t);
-  const bool code5_flat = plan.pair_code5_flat && code5_flat_smem_bytes <= CurrentDeviceLaunchLimits().shared_bytes_per_block;
+  const bool code5_flat = plan.pair_code5_flat && code5_flat_smem_bytes <= max_smem;
   const size_t code5_word_smem_bytes = code5_flat ? code5_flat_smem_bytes : pair_smem_bytes;
+  const size_t launch_code5_word_smem_bytes = indirect ?
+    BucketDeviceLevelSmemBytes(code5_word_smem_bytes, smem_bucket_cap) : code5_word_smem_bytes;
   const bool code5_tall = plan.pair_code5_slots && plan.pair_code5_tall;
   const bool code5_epilogue_flat = code5_flat && plan.pair_code5_epilogue;
   int code5_word_rows = 0;
   if (whole_rows && code5_valid_ && plan.pair_code5 && plan.pair_code5_words &&
       Code5RowWords(compact_row_bytes_, code5_bits_) == code5_row_words_) {
     const PairJointCode5WordShape word_shape = PairJointCode5WordShapeFor(
-      code5_row_words_, code5_word_smem_bytes, bins, code5_flat, code5_tall, code5_epilogue_flat, code5_bits_);
+      code5_row_words_, launch_code5_word_smem_bytes, bins, code5_flat, code5_tall, code5_epilogue_flat, code5_bits_);
     code5_word_rows = word_shape.rows;
     if (code5_word_rows > 0) {
       pair_y = code5_word_rows;
       shape->kernel_kind = 4;
       shape->block_x = code5_row_words_;
-      shape->smem_bytes = static_cast<int>(code5_word_smem_bytes);
+      shape->smem_bytes = static_cast<int>(launch_code5_word_smem_bytes);
       shape->code5_flat = code5_flat ? 1 : 0;
       shape->code5_epilogue_flat = code5_epilogue_flat ? 1 : 0;
       if (plan.pair_code5_slots && word_shape.device_slots > 0) {
@@ -2201,13 +2227,20 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
   }
   if (code5_word_rows == 0) {
     shape->block_x = whole_rows ? compact_row_bytes_ : (cc + 1) / 2;
-    shape->smem_bytes = static_cast<int>(pair_smem_bytes);
+    shape->smem_bytes = static_cast<int>(launch_pair_smem_bytes);
     const PairJointKernelFn code5_kernel = capped_y > 0 ? PairJointCapped().gather_code5 :
       CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, true>;
     const bool code5 = whole_rows && code5_valid_ && plan.pair_code5 && code5_bits_ == 5 &&
       Code5RowWords(compact_row_bytes_) == code5_row_words_ &&
       shape->block_x * pair_y <= PairJointCode5MaxThreads(code5_kernel);
     shape->kernel_kind = code5 ? (capped_y > 0 ? 3 : 2) : (capped_y > 0 ? 1 : 0);
+    if (indirect && whole_rows) {
+      const int bucket_x = ((shape->block_x + 7) / 8) * 8;
+      const int max_t = code5 ? PairJointCode5MaxThreads(code5_kernel) : std::min(1024, PairJointMaxThreadsPerBlock());
+      if (bucket_x * pair_y <= max_t) {
+        shape->block_x = bucket_x;
+      }
+    }
   }
   shape->block_y = pair_y;
   shape->grid_x = whole_rows ? 1 : grid_dim_x;
@@ -2250,27 +2283,30 @@ void CUDAHistogramConstructor::LaunchDeviceLevelPairJoint(const CUDAHybridPairDe
     // The slotted whole-tree code-word path needs no more physical workers than its known resident capacity.
     grid_y = std::min(grid_y, sh.slot_device_slots);
   }
+  const CUDADeviceTreeGraphParams* gp = device_tree_graph_params_;
+  const bool indirect = gp != nullptr;
   kernel<<<dim3(grid_x, grid_y, 1), dim3(sh.block_x, sh.block_y), static_cast<size_t>(sh.smem_bytes), cuda_stream_>>>(
     pair_descs,
     reinterpret_cast<const int32_t*>(cuda_gradients_),
     data,
     compact_column_hist_offsets_.RawData(),
-    num_compact_columns_,
+    indirect ? 0 : num_compact_columns_,
     cuda_row_data_->cuda_partition_hist_offsets(),
     compact_feature_partition_column_index_offsets_.RawData(),
     compact_packed_partition_byte_offsets_.RawData(),
     num_data_,
     static_cast<data_size_t>(min_data_in_leaf_),
     min_sum_hessian_in_leaf_,
-    sh.per_pair_min_grid,
-    sh.per_pair_min_rows,
+    indirect ? 0 : sh.per_pair_min_grid,
+    indirect ? 0 : sh.per_pair_min_rows,
     BatchConstructSaturationFloor(),
-    use_quantized_grad_ ? num_grad_quant_bins_ : 0,
-    sh.whole_row_partitions,
-    sh.whole_row_joint,
+    indirect ? 0 : (use_quantized_grad_ ? num_grad_quant_bins_ : 0),
+    indirect ? 0 : sh.whole_row_partitions,
+    indirect ? 0u : sh.whole_row_joint,
     static_cast<data_size_t>(0),
     PairJointBlockPrefix{},
-    device_level_state_);
+    device_level_state_,
+    gp);
   CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());  // a new launch shape: its launch errors surface
 }
 
@@ -2377,16 +2413,18 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
     if (any_feature_unused_bytree_ && used_feature_info_ok_ &&
         FalcataPlan::Get().fix_subtract_fused) {
       // cuda_plan key fix_subtract_fused: fix + subtract of the sampled features, one block per pair
-      const int threads = std::max(32, (num_used_feature_info_ + 31) / 32 * 32);  // <= 512 (host gate)
+      const bool indirect = dls != nullptr && device_tree_graph_params_ != nullptr;
+      const int threads = FixSubtractUsedFeaturesThreads(indirect);  // <= 512 (host gate)
       // cuda_plan key pdl_level_chain: a programmatic dependent of the construct launched just before
       LaunchLevelChainKernel(PdlLevelChainEnabled(), FixSubtractUsedFeaturesBatchedKernel, dim3(num_pairs),
         dim3(threads), 0, cuda_stream_,
         cuda_used_feature_info_.RawDataReadOnly(),
-        num_used_feature_info_,
+        indirect ? 0 : num_used_feature_info_,
         num_total_bin_,
         pair_descs,
         hist_buffer_for_num_bit_change_.RawData(),
-        dls);
+        dls,
+        indirect ? device_tree_graph_params_ : nullptr);
       fused_fix_subtract = true;  // the kernel also did CopyChangedNumBitHistogramBatchedKernel's copies
       fix_route = "fused";
       fix_grid_x = 1;

@@ -40,16 +40,22 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   const score_t* hess_scale,
   const double hessian_ridge_quanta,
   CUDASplitInfo* cuda_best_split_info,
-  const CUDADeviceLevelState* dls) {
+  const CUDADeviceLevelState* dls,
+  const CUDADeviceTreeGraphParams* graph_params = nullptr) {
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs exits before any read
   // (stale descriptors)
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
+  if (graph_params != nullptr && node_tasks == nullptr && used_task_indices != nullptr &&
+      static_cast<int>(blockIdx.x) >= graph_params->num_used_tasks) {
+    return;
+  }
   // the tree learner's hessian-quantum ridge (see the per-leaf discretized
   // kernel for the noise argument)
-  const double lambda_l2 = hessian_ridge_quanta > 0.0 ?
-    lambda_l2_in + hessian_ridge_quanta * static_cast<double>(*hess_scale) : lambda_l2_in;
+  const double active_ridge = graph_params != nullptr ? graph_params->hessian_ridge_quanta : hessian_ridge_quanta;
+  const double lambda_l2 = active_ridge > 0.0 ?
+    lambda_l2_in + active_ridge * static_cast<double>(*hess_scale) : lambda_l2_in;
   const unsigned int pair_index = blockIdx.y;
   const bool is_larger = (blockIdx.z == 1);
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
@@ -177,6 +183,7 @@ template <bool USE_L1, bool USE_SMOOTHING>
 void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner(
   const dim3 grid_dim, const bool compact_tasks, const CUDAHybridPairDescriptor* pair_descs,
   const score_t* grad_scale, const score_t* hess_scale) {
+  const bool indirect = device_level_state_ != nullptr && device_tree_graph_params_ != nullptr;
   #define FindBestSplitsDiscretizedForLevelKernel_ARGS \
       cuda_is_feature_used_bytree_.RawData(), \
       LevelNodeMaskTable(), \
@@ -199,10 +206,11 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner(
       min_data_per_group_, \
       grad_scale, \
       hess_scale, \
-      hessian_ridge_quanta_, \
+      indirect ? 0.0 : hessian_ridge_quanta_, \
       cuda_best_split_info_.RawData(), \
       \
-      device_level_state_
+      device_level_state_, \
+      indirect ? device_tree_graph_params_ : nullptr
   if (FalcataFP32GainEnabled()) {
     FindBestSplitsDiscretizedForLevelKernel<false, USE_L1, USE_SMOOTHING, float>
       <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(

@@ -253,7 +253,29 @@ inline bool DeviceTreeCatRecordFitsInt(const size_t record_splits, const size_t 
   return record_splits == 0 || (stride <= kMaxWords / record_splits && inner_stride <= kMaxWords / record_splits);
 }
 
-/*! \brief static inputs of the select and pairs kernels (by value) */
+/*! \brief cuda_plan key device_graph_indirect: per-tree runtime scalars read from device memory by captured
+ *  device-level kernels, so tree-to-tree feature-sample variations do not churn DeviceLevelGraphKey.
+ *  Embedded in CUDADeviceLevelConfig and uploaded once per tree before LaunchDeviceLevelGraph. */
+struct alignas(16) CUDADeviceTreeGraphParams {
+  // histogram construct & fused fix/subtract
+  int num_compact_columns;
+  uint32_t whole_row_joint;
+  int num_used_feature_info;
+  int per_pair_min_grid;
+  int per_pair_min_rows;
+  int whole_row_partitions;
+  int num_grad_quant_bins;
+  // split finder & used-task sync
+  int num_used_tasks;
+  int warp_num_narrow;
+  int warp_num_wide;
+  int pad0_[2];
+  uint64_t warp_split_max_blocks;
+  double hessian_ridge_quanta;
+};
+static_assert(sizeof(CUDADeviceTreeGraphParams) == 64, "CUDADeviceTreeGraphParams fits one 64-byte cache line");
+
+/*! \brief static inputs of the select and pairs kernels (by value, or by device pointer under device_graph_indirect) */
 struct CUDADeviceLevelConfig {
   CUDADeviceLevelState* state;
   const CUDASplitInfo* leaf_best_split_info;
@@ -322,6 +344,8 @@ struct CUDADeviceLevelConfig {
   int r1_binding;
   /*! \brief categorical datasets (complete device tree only) */
   CUDADeviceLevelCatConfig cat;
+  /*! \brief cuda_plan key device_graph_indirect: per-tree runtime scalars for captured level kernels */
+  CUDADeviceTreeGraphParams tree_params;
 };
 
 /*! \brief most threads of the standalone register-batched select (DeviceLevelSelectBlockFast: 2 * kDeviceLevelMaxPairs
@@ -338,23 +362,28 @@ inline int DeviceLevelThreads(const int max_splits) {
 
 /*! \brief DeviceLevelSelectKernel on \p stream for level \p level (defined in cuda_device_levels.cu); level < 0: the
  *  level the state reached (a relaunched body). max_splits and max_leaves (0: 2 * max_splits), the most splits and
- *  leaves of the level, pick the select's capacity (register-batched, shared or global) */
+ *  leaves of the level, pick the select's capacity (register-batched, shared or global). When \p cfg_device is
+ *  non-null (cuda_plan key device_graph_indirect), the kernel reads the uploaded device config via pointer. */
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
-                             cudaStream_t stream, const int max_leaves = 0);
+                             cudaStream_t stream, const int max_leaves = 0,
+                             const CUDADeviceLevelConfig* cfg_device = nullptr);
 /*! \brief selective trees: the end of a launched segment on \p stream (a relaunched body, or the unrolled levels when
  *  the device selects the level after them), its flag in mapped pinned host memory (\p flag, the device alias): [0] 1 while the tree continues (the select of the next level applied splits), 0 once a select
  *  stopped; [1] levels applied, [2] splits, [3] journal[3] (the stop was the first binding level) */
-void LaunchDeviceLevelSegmentEnd(const CUDADeviceLevelConfig& config, int* flag, cudaStream_t stream);
+void LaunchDeviceLevelSegmentEnd(const CUDADeviceLevelConfig& config, int* flag, cudaStream_t stream,
+                                 const CUDADeviceLevelConfig* cfg_device = nullptr);
 /*! \brief DeviceLevelPairsKernel on \p stream for the children of level \p level */
 void LaunchDeviceLevelPairs(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
-                            cudaStream_t stream);
+                            cudaStream_t stream, const CUDADeviceLevelConfig* cfg_device = nullptr);
 /*! \brief categorical datasets: the level's categorical bitsets (BatchConstructCatBitsetsKernel's body, one block per
  *  categorical split the select listed, at the level's worst-case grid of \p max_splits blocks) and, from the inner
  *  bitset, the default directions of their apply descriptors (HybridBuildCatBitsetArenaKernel's patch); after the
  *  select, before the apply and the tree record (defined in cuda_single_gpu_tree_learner.cu) */
-void LaunchDeviceLevelCatBitsets(const CUDADeviceLevelConfig& config, const int max_splits, cudaStream_t stream);
+void LaunchDeviceLevelCatBitsets(const CUDADeviceLevelConfig& config, const int max_splits, cudaStream_t stream,
+                                 const CUDADeviceLevelConfig* cfg_device = nullptr);
 /*! \brief zero the state and the journal header before a tree's first device level (on \p stream) */
-void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_leaves, cudaStream_t stream);
+void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_leaves, cudaStream_t stream,
+                            const CUDADeviceLevelConfig* cfg_device = nullptr);
 
 /*! \brief cuda_plan key device_bynode_masks: the per-node feature masks of a complete device tree, drawn on the device.
  *  A node's mask is ColSampler::GetByNodeKeyed's sample for the node's key (the generator seeded by the high half of
