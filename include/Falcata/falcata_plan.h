@@ -887,6 +887,23 @@ struct FalcataPlan {
   // min/max (minmax_warp) and the discretize kernel take row 0's hessian for every row instead of reading the whole
   // hessian array (5.5 M floats, twice per tree on numerai). Same value in the same expressions: bit-identical.
   bool const_hess_reads = true;     // key: const_hess_reads
+  // unweighted constant-hessian CUDA regression objectives (L2, MultiL2, L1, Huber, Quantile): after the first
+  // GetGradients call fills the hessian buffer with 1.0f, subsequent calls on the same buffer skip rewriting
+  // cuda_out_hessians[i] = 1.0f for every row (nothing mutates the device hessian buffer). Same values: bit-identical.
+  bool const_hess_no_write = true;  // key: const_hess_no_write
+  // fixed-point outlier-robust gradient scale (robust_scale): run the magnitude histogram and bucket scan
+  // asynchronously on the default stream with PDL chaining and in-kernel histogram reset (no synchronous cudaMemset
+  // or intermediate device syncs), using a grid-stride shared-memory histogram kernel. Same integer counts and scale:
+  // bit-identical.
+  bool robust_scale_async = true;   // key: robust_scale_async
+  // unbagged scalar single-GPU quantized trees: fuse the root-leaf per-chunk int64 gradient/hessian sums (and plane
+  // scale snapshot) into DiscretizeGradientsKernel (same 1024-row chunks and exact int64 * score_t expressions),
+  // skipping CUDAInitValuesChunkWarpKernel and PDL-chaining straight into CUDAInitValuesKernel4. Bit-identical.
+  bool discretize_root_sums = true;  // key: discretize_root_sums
+  // quantized CUDA objectives (L2, L1, Huber, Quantile, BinaryLogloss, MulticlassSoftmax, MulticlassOVA): compute the
+  // 1024-row block min/max partials inside GetGradientsKernel (same warp/cross-warp reduction tree as
+  // ReduceMinMaxKernel) and hand them to CUDAGradientDiscretizer, skipping ReduceMinMaxChunkWarpKernel. Bit-identical.
+  bool grad_minmax_fuse = true;     // key: grad_minmax_fuse
   // histogram pool zeroing at the tree start: after a tree whose level prefix ended on a final level that completed
   // it (skip_empty_tail ran no tail), only the slots of the leaves that existed before that level can hold sums --
   // the slots the final level hands its new children are never written (no histogram is built after it) -- so the
@@ -1161,6 +1178,10 @@ struct FalcataPlan {
     if (key == "gradients_no_sync") return &gradients_no_sync;
     if (key == "tree_end_prealloc") return &tree_end_prealloc;
     if (key == "const_hess_reads") return &const_hess_reads;
+    if (key == "const_hess_no_write") return &const_hess_no_write;
+    if (key == "robust_scale_async") return &robust_scale_async;
+    if (key == "discretize_root_sums") return &discretize_root_sums;
+    if (key == "grad_minmax_fuse") return &grad_minmax_fuse;
     if (key == "dirty_final_slots") return &dirty_final_slots;
     if (key == "hist_zero_quant_half") return &hist_zero_quant_half;
     if (key == "final_map_only") return &final_map_only;

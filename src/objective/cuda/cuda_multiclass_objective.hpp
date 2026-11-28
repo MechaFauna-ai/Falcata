@@ -66,6 +66,13 @@ class CUDAMulticlassOVA: public CUDAObjectiveInterface<MulticlassOVA> {
 
   bool IsCUDAObjective() const override { return true; }
 
+  bool GetPrecomputedGradMinMax(int class_id, ObjectiveFunction::CUDAPrecomputedGradMinMax* out) const override {
+    if (class_id < 0 || class_id >= static_cast<int>(cuda_binary_loss_.size())) {
+      return false;
+    }
+    return cuda_binary_loss_[class_id]->GetPrecomputedGradMinMax(0, out);
+  }
+
  private:
   void LaunchGetGradientsKernel(const double* /*scores*/, score_t* /*gradients*/, score_t* /*hessians*/) const {}
 

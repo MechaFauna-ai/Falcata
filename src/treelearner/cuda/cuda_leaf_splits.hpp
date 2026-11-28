@@ -152,9 +152,15 @@ class CUDALeafSplits: public NCCLInfo {
     const data_size_t* cuda_bagging_data_indices,
     const data_size_t* cuda_data_indices_in_leaf, const data_size_t num_used_indices,
     hist_t* cuda_hist_in_leaf, double* root_sum_gradients, double* root_sum_hessians,
-    const score_t* grad_scale, const score_t* hess_scale, const bool defer_root_sum_readback = false);
+    const score_t* grad_scale, const score_t* hess_scale, const bool defer_root_sum_readback = false,
+    const bool precomputed_chunk_sums = false);
 
   void InitValues();
+
+  double* cuda_sum_of_gradients_buffer() { return cuda_sum_of_gradients_buffer_.RawData(); }
+  double* cuda_sum_of_hessians_buffer() { return cuda_sum_of_hessians_buffer_.RawData(); }
+  int64_t* cuda_sum_of_gradients_hessians_buffer() { return cuda_sum_of_gradients_hessians_buffer_.RawData(); }
+  int num_blocks_init_from_gradients() const { return num_blocks_init_from_gradients_; }
 
   const CUDALeafSplitsStruct* GetCUDAStruct() const { return cuda_struct_.RawDataReadOnly(); }
 
@@ -314,7 +320,8 @@ class CUDALeafSplits: public NCCLInfo {
     const data_size_t num_used_indices,
     hist_t* cuda_hist_in_leaf,
     const score_t* grad_scale,
-    const score_t* hess_scale);
+    const score_t* hess_scale,
+    const bool precomputed_chunk_sums);
 
   // Host memory
   data_size_t num_data_;

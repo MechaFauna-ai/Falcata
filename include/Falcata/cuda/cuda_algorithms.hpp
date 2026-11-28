@@ -257,6 +257,80 @@ __device__ __forceinline__ T ShuffleReduceMin(T value, T* shared_mem_buffer, con
 template <typename VAL_T, typename REDUCE_T>
 void ShuffleReduceMinGlobal(const VAL_T* values, size_t n, REDUCE_T* block_buffer);
 
+// Block-wide min/max reduction over 1024 threads matching ReduceMinMaxKernel's exact
+// warp-tree and cross-warp-tree operand order (ShuffleReduceMinWarp / ShuffleReduceMaxWarp).
+__device__ __forceinline__ void ReduceBlockGradHessMinMax(
+    score_t g_min, score_t g_max, score_t h_min, score_t h_max,
+    score_t* s_gmin, score_t* s_gmax, score_t* s_hmin, score_t* s_hmax,
+    score_t* out_gmin, score_t* out_gmax, score_t* out_hmin, score_t* out_hmax,
+    const int block_slot) {
+  const uint32_t lane = threadIdx.x % warpSize;
+  const uint32_t warp_id = threadIdx.x / warpSize;
+  const data_size_t warp_len = min(static_cast<data_size_t>(warpSize),
+                                   static_cast<data_size_t>(blockDim.x) - static_cast<data_size_t>(warp_id * warpSize));
+  g_min = ShuffleReduceMinWarp<score_t>(g_min, warp_len);
+  g_max = ShuffleReduceMaxWarp<score_t>(g_max, warp_len);
+  h_min = ShuffleReduceMinWarp<score_t>(h_min, warp_len);
+  h_max = ShuffleReduceMaxWarp<score_t>(h_max, warp_len);
+  if (lane == 0) {
+    s_gmin[warp_id] = g_min;
+    s_gmax[warp_id] = g_max;
+    s_hmin[warp_id] = h_min;
+    s_hmax[warp_id] = h_max;
+  }
+  __syncthreads();
+  const data_size_t num_warps = static_cast<data_size_t>((blockDim.x + warpSize - 1) / warpSize);
+  if (warp_id == 0) {
+    g_min = static_cast<data_size_t>(lane) < num_warps ? s_gmin[lane] : s_gmin[0];
+    g_max = static_cast<data_size_t>(lane) < num_warps ? s_gmax[lane] : static_cast<score_t>(0);
+    h_min = static_cast<data_size_t>(lane) < num_warps ? s_hmin[lane] : s_hmin[0];
+    h_max = static_cast<data_size_t>(lane) < num_warps ? s_hmax[lane] : static_cast<score_t>(0);
+    g_min = ShuffleReduceMinWarp<score_t>(g_min, num_warps);
+    g_max = ShuffleReduceMaxWarp<score_t>(g_max, num_warps);
+    h_min = ShuffleReduceMinWarp<score_t>(h_min, num_warps);
+    h_max = ShuffleReduceMaxWarp<score_t>(h_max, num_warps);
+    if (lane == 0) {
+      out_gmin[block_slot] = g_min;
+      out_gmax[block_slot] = g_max;
+      out_hmin[block_slot] = h_min;
+      out_hmax[block_slot] = h_max;
+    }
+  }
+}
+
+// Constant-hessian specialization of ReduceBlockGradHessMinMax: reduces gradients only and writes
+// the known finite constant hessian (e.g. 1.0f) directly to both hessian block partials.
+__device__ __forceinline__ void ReduceBlockGradMinMaxConstHess(
+    score_t g_min, score_t g_max, const score_t const_h,
+    score_t* s_gmin, score_t* s_gmax,
+    score_t* out_gmin, score_t* out_gmax, score_t* out_hmin, score_t* out_hmax,
+    const int block_slot) {
+  const uint32_t lane = threadIdx.x % warpSize;
+  const uint32_t warp_id = threadIdx.x / warpSize;
+  const data_size_t warp_len = min(static_cast<data_size_t>(warpSize),
+                                   static_cast<data_size_t>(blockDim.x) - static_cast<data_size_t>(warp_id * warpSize));
+  g_min = ShuffleReduceMinWarp<score_t>(g_min, warp_len);
+  g_max = ShuffleReduceMaxWarp<score_t>(g_max, warp_len);
+  if (lane == 0) {
+    s_gmin[warp_id] = g_min;
+    s_gmax[warp_id] = g_max;
+  }
+  __syncthreads();
+  const data_size_t num_warps = static_cast<data_size_t>((blockDim.x + warpSize - 1) / warpSize);
+  if (warp_id == 0) {
+    g_min = static_cast<data_size_t>(lane) < num_warps ? s_gmin[lane] : s_gmin[0];
+    g_max = static_cast<data_size_t>(lane) < num_warps ? s_gmax[lane] : static_cast<score_t>(0);
+    g_min = ShuffleReduceMinWarp<score_t>(g_min, num_warps);
+    g_max = ShuffleReduceMaxWarp<score_t>(g_max, num_warps);
+    if (lane == 0) {
+      out_gmin[block_slot] = g_min;
+      out_gmax[block_slot] = g_max;
+      out_hmin[block_slot] = const_h;
+      out_hmax[block_slot] = const_h;
+    }
+  }
+}
+
 // Whether data index a precedes data index b in the total order the bitonic arg sorts build when STABLE: by value
 // in the final direction (ASCENDING), ties by ascending data index -- the order std::stable_sort produces. Without
 // STABLE it is the plain value comparison the sorts always used.

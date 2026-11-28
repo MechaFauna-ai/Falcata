@@ -134,6 +134,26 @@ class ObjectiveFunction {
 
   #ifdef USE_CUDA
   /*!
+  * \brief Per-1024-row block min/max partials produced by a CUDA objective's
+  * GetGradients kernel (cuda_plan key grad_minmax_fuse) so CUDAGradientDiscretizer
+  * can skip its full-dataset ReduceMinMax pass.
+  */
+  struct CUDAPrecomputedGradMinMax {
+    const score_t* grad_min_blocks = nullptr;
+    const score_t* grad_max_blocks = nullptr;
+    const score_t* hess_min_blocks = nullptr;
+    const score_t* hess_max_blocks = nullptr;
+    const score_t* for_gradients = nullptr;
+    const score_t* for_hessians = nullptr;
+    data_size_t num_data = 0;
+    int num_blocks = 0;
+  };
+
+  virtual bool GetPrecomputedGradMinMax(int /*class_id*/, CUDAPrecomputedGradMinMax* /*out*/) const {
+    return false;
+  }
+
+  /*!
   * \brief Convert output for CUDA version
   */
   virtual const double* ConvertOutputCUDA(data_size_t /*num_data*/, const double* input, double* /*output*/) const {

@@ -83,29 +83,209 @@ const double* CUDARegressionL2loss::LaunchConvertOutputCUDAKernel(const data_siz
   }
 }
 
-template <bool USE_WEIGHT>
+template <bool USE_WEIGHT, bool WRITE_HESS = true, bool FUSE_MINMAX = false>
 __global__ void GetGradientsKernel_RegressionL2(const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights, const data_size_t num_data,
-  score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  score_t* cuda_out_gradients, score_t* cuda_out_hessians,
+  score_t* out_grad_min = nullptr, score_t* out_grad_max = nullptr,
+  score_t* out_hess_min = nullptr, score_t* out_hess_max = nullptr) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
+  score_t g_min = kMaxScore;
+  score_t g_max = kMinScore;
+  score_t h_min = kMaxScore;
+  score_t h_max = kMinScore;
   if (data_index < num_data) {
     if (!USE_WEIGHT) {
-      cuda_out_gradients[data_index] = static_cast<score_t>(cuda_scores[data_index] - cuda_labels[data_index]);
-      cuda_out_hessians[data_index] = 1.0f;
+      const score_t g = static_cast<score_t>(cuda_scores[data_index] - cuda_labels[data_index]);
+      cuda_out_gradients[data_index] = g;
+      if (WRITE_HESS) {
+        cuda_out_hessians[data_index] = 1.0f;
+      }
+      if (FUSE_MINMAX) {
+        g_min = g;
+        g_max = g;
+      }
     } else {
       const score_t weight = static_cast<score_t>(cuda_weights[data_index]);
-      cuda_out_gradients[data_index] = static_cast<score_t>(cuda_scores[data_index] - cuda_labels[data_index]) * weight;
+      const score_t g = static_cast<score_t>(cuda_scores[data_index] - cuda_labels[data_index]) * weight;
+      cuda_out_gradients[data_index] = g;
       cuda_out_hessians[data_index] = weight;
+      if (FUSE_MINMAX) {
+        g_min = g;
+        g_max = g;
+        h_min = weight;
+        h_max = weight;
+      }
+    }
+  }
+  if (FUSE_MINMAX) {
+    if (!USE_WEIGHT) {
+      __shared__ score_t s_gmin[WARPSIZE];
+      __shared__ score_t s_gmax[WARPSIZE];
+      ReduceBlockGradMinMaxConstHess(g_min, g_max, 1.0f, s_gmin, s_gmax,
+                                     out_grad_min, out_grad_max, out_hess_min, out_hess_max,
+                                     static_cast<int>(blockIdx.x));
+    } else {
+      __shared__ score_t s_gmin[WARPSIZE];
+      __shared__ score_t s_gmax[WARPSIZE];
+      __shared__ score_t s_hmin[WARPSIZE];
+      __shared__ score_t s_hmax[WARPSIZE];
+      ReduceBlockGradHessMinMax(g_min, g_max, h_min, h_max, s_gmin, s_gmax, s_hmin, s_hmax,
+                                out_grad_min, out_grad_max, out_hess_min, out_hess_max,
+                                static_cast<int>(blockIdx.x));
     }
   }
 }
 
+#if !defined(__HIP_PLATFORM_AMD__)
+// cuda_plan key grad_minmax_fuse: one 256-thread block (8 warps, 4 rows/thread) per 1024-row chunk.
+// Saturates all SMs from ~250k rows up while keeping 6 blocks/SM (100% occupancy on sm_120) so the
+// 8-warp shared min/max reduction never stalls the SM.
+template <bool USE_WEIGHT, bool WRITE_HESS>
+__global__ void GetGradientsChunk256Kernel_RegressionL2(
+  const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights,
+  const data_size_t num_data,
+  score_t* cuda_out_gradients, score_t* cuda_out_hessians,
+  score_t* out_grad_min, score_t* out_grad_max,
+  score_t* out_hess_min, score_t* out_hess_max) {
+  PdlLaunchDependents();
+  constexpr int kThreads = 256;
+  constexpr int kRowsPerThread = GET_GRADIENTS_BLOCK_SIZE_REGRESSION / kThreads;  // 4
+  constexpr int kNumWarps = kThreads / WARPSIZE;  // 8
+  const int chunk = static_cast<int>(blockIdx.x);
+  const data_size_t chunk_start = static_cast<data_size_t>(chunk) * GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  const bool full_chunk = chunk_start + GET_GRADIENTS_BLOCK_SIZE_REGRESSION <= num_data;
+  score_t g_min = kMaxScore;
+  score_t g_max = kMinScore;
+  score_t h_min = kMaxScore;
+  score_t h_max = kMinScore;
+#pragma unroll
+  for (int k = 0; k < kRowsPerThread; ++k) {
+    const data_size_t data_index = chunk_start + static_cast<data_size_t>(k * kThreads + threadIdx.x);
+    if (full_chunk || data_index < num_data) {
+      if (!USE_WEIGHT) {
+        const score_t g = static_cast<score_t>(cuda_scores[data_index] - cuda_labels[data_index]);
+        cuda_out_gradients[data_index] = g;
+        if (WRITE_HESS) {
+          cuda_out_hessians[data_index] = 1.0f;
+        }
+        g_min = min(g_min, g);
+        g_max = max(g_max, g);
+      } else {
+        const score_t weight = static_cast<score_t>(cuda_weights[data_index]);
+        const score_t g = static_cast<score_t>(cuda_scores[data_index] - cuda_labels[data_index]) * weight;
+        cuda_out_gradients[data_index] = g;
+        cuda_out_hessians[data_index] = weight;
+        g_min = min(g_min, g);
+        g_max = max(g_max, g);
+        h_min = min(h_min, weight);
+        h_max = max(h_max, weight);
+      }
+    }
+  }
+  __shared__ score_t s_gmin[kNumWarps];
+  __shared__ score_t s_gmax[kNumWarps];
+  __shared__ score_t s_hmin[USE_WEIGHT ? kNumWarps : 1];
+  __shared__ score_t s_hmax[USE_WEIGHT ? kNumWarps : 1];
+  const uint32_t lane = threadIdx.x % WARPSIZE;
+  const uint32_t warp_id = threadIdx.x / WARPSIZE;
+  g_min = ShuffleReduceMinWarp<score_t>(g_min, WARPSIZE);
+  g_max = ShuffleReduceMaxWarp<score_t>(g_max, WARPSIZE);
+  if (USE_WEIGHT) {
+    h_min = ShuffleReduceMinWarp<score_t>(h_min, WARPSIZE);
+    h_max = ShuffleReduceMaxWarp<score_t>(h_max, WARPSIZE);
+  }
+  if (lane == 0) {
+    s_gmin[warp_id] = g_min;
+    s_gmax[warp_id] = g_max;
+    if (USE_WEIGHT) {
+      s_hmin[warp_id] = h_min;
+      s_hmax[warp_id] = h_max;
+    }
+  }
+  __syncthreads();
+  if (warp_id == 0) {
+    g_min = lane < kNumWarps ? s_gmin[lane] : s_gmin[0];
+    g_max = lane < kNumWarps ? s_gmax[lane] : s_gmax[0];
+    if (USE_WEIGHT) {
+      h_min = lane < kNumWarps ? s_hmin[lane] : s_hmin[0];
+      h_max = lane < kNumWarps ? s_hmax[lane] : s_hmax[0];
+    }
+    for (int offset = kNumWarps / 2; offset > 0; offset >>= 1) {
+      const score_t og_min = __shfl_down_sync(0xffffffff, g_min, offset);
+      const score_t og_max = __shfl_down_sync(0xffffffff, g_max, offset);
+      g_min = min(g_min, og_min);
+      g_max = max(g_max, og_max);
+      if (USE_WEIGHT) {
+        const score_t oh_min = __shfl_down_sync(0xffffffff, h_min, offset);
+        const score_t oh_max = __shfl_down_sync(0xffffffff, h_max, offset);
+        h_min = min(h_min, oh_min);
+        h_max = max(h_max, oh_max);
+      }
+    }
+    if (lane == 0) {
+      out_grad_min[chunk] = g_min;
+      out_grad_max[chunk] = g_max;
+      out_hess_min[chunk] = USE_WEIGHT ? h_min : 1.0f;
+      out_hess_max[chunk] = USE_WEIGHT ? h_max : 1.0f;
+    }
+  }
+}
+#endif  // !defined(__HIP_PLATFORM_AMD__)
+
 void CUDARegressionL2loss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
   const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
+  const bool fuse_minmax = FalcataPlan::Get().grad_minmax_fuse && FalcataPlan::Get().quant_training && num_data_ > 0;
+  if (fuse_minmax) {
+    score_t* mm = PreparePrecomputedGradMinMax(gradients, hessians, num_data_, num_blocks, 1);
+    score_t* g_min = mm;
+    score_t* g_max = mm + num_blocks;
+    score_t* h_min = mm + 2 * num_blocks;
+    score_t* h_max = mm + 3 * num_blocks;
+#if !defined(__HIP_PLATFORM_AMD__)
+    constexpr int kChunk256Threads = 256;
+    if (cuda_weights_ == nullptr) {
+      const bool skip_hess = SkipConstantHessianWrite(hessians, static_cast<size_t>(num_data_));
+      if (skip_hess) {
+        GetGradientsChunk256Kernel_RegressionL2<false, false><<<num_blocks, kChunk256Threads>>>(
+          score, cuda_labels_, nullptr, num_data_, gradients, hessians, g_min, g_max, h_min, h_max);
+      } else {
+        GetGradientsChunk256Kernel_RegressionL2<false, true><<<num_blocks, kChunk256Threads>>>(
+          score, cuda_labels_, nullptr, num_data_, gradients, hessians, g_min, g_max, h_min, h_max);
+      }
+    } else {
+      GetGradientsChunk256Kernel_RegressionL2<true, true><<<num_blocks, kChunk256Threads>>>(
+        score, cuda_labels_, cuda_weights_, num_data_, gradients, hessians, g_min, g_max, h_min, h_max);
+    }
+#else
+    if (cuda_weights_ == nullptr) {
+      const bool skip_hess = SkipConstantHessianWrite(hessians, static_cast<size_t>(num_data_));
+      if (skip_hess) {
+        GetGradientsKernel_RegressionL2<false, false, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+          score, cuda_labels_, nullptr, num_data_, gradients, hessians, g_min, g_max, h_min, h_max);
+      } else {
+        GetGradientsKernel_RegressionL2<false, true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+          score, cuda_labels_, nullptr, num_data_, gradients, hessians, g_min, g_max, h_min, h_max);
+      }
+    } else {
+      GetGradientsKernel_RegressionL2<true, true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, cuda_weights_, num_data_, gradients, hessians, g_min, g_max, h_min, h_max);
+    }
+#endif
+    return;
+  }
   if (cuda_weights_ == nullptr) {
-    GetGradientsKernel_RegressionL2<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, nullptr, num_data_, gradients, hessians);
+    const bool skip_hess = SkipConstantHessianWrite(hessians, static_cast<size_t>(num_data_));
+    if (skip_hess) {
+      GetGradientsKernel_RegressionL2<false, false, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, nullptr, num_data_, gradients, hessians);
+    } else {
+      GetGradientsKernel_RegressionL2<false, true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, nullptr, num_data_, gradients, hessians);
+    }
   } else {
-    GetGradientsKernel_RegressionL2<true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, cuda_weights_, num_data_, gradients, hessians);
+    GetGradientsKernel_RegressionL2<true, true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+      score, cuda_labels_, cuda_weights_, num_data_, gradients, hessians);
   }
 }
 
@@ -113,7 +293,7 @@ void CUDARegressionL2loss::LaunchGetGradientsKernel(const double* score, score_t
 // One thread per row, looping over the targets on the grid's y axis: the column-major element of target k is at
 // k * num_data + row (64-bit, since num_data * num_target can exceed INT32_MAX), and the row's weight is read once
 // instead of recovered with a per-element modulo.
-template <bool USE_WEIGHT>
+template <bool USE_WEIGHT, bool WRITE_HESS = true>
 __global__ void GetGradientsKernel_MultiRegressionL2(const double* cuda_scores, const label_t* cuda_labels,
   const label_t* cuda_weights, const data_size_t num_data, const int num_target,
   score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
@@ -128,7 +308,9 @@ __global__ void GetGradientsKernel_MultiRegressionL2(const double* cuda_scores, 
     const size_t index = MultiTargetElementIndex(k, num_data, row);
     if (!USE_WEIGHT) {
       cuda_out_gradients[index] = static_cast<score_t>(cuda_scores[index] - cuda_labels[index]);
-      cuda_out_hessians[index] = 1.0f;
+      if (WRITE_HESS) {
+        cuda_out_hessians[index] = 1.0f;
+      }
     } else {
       cuda_out_gradients[index] = static_cast<score_t>(cuda_scores[index] - cuda_labels[index]) * weight;
       cuda_out_hessians[index] = weight;
@@ -143,10 +325,17 @@ void CUDAMultiRegressionL2::LaunchGetGradientsKernel(const double* score, score_
   const int num_blocks = MultiTargetRowBlocks(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
   const dim3 grid(static_cast<unsigned int>(num_blocks), static_cast<unsigned int>(std::min(num_target_, 65535)));
   if (cuda_weights_ == nullptr) {
-    GetGradientsKernel_MultiRegressionL2<false><<<grid, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
-      score, cuda_labels_, nullptr, num_data_, num_target_, gradients, hessians);
+    const bool skip_hess = SkipConstantHessianWrite(
+      hessians, static_cast<size_t>(num_data_) * static_cast<size_t>(num_target_));
+    if (skip_hess) {
+      GetGradientsKernel_MultiRegressionL2<false, false><<<grid, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, nullptr, num_data_, num_target_, gradients, hessians);
+    } else {
+      GetGradientsKernel_MultiRegressionL2<false, true><<<grid, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, nullptr, num_data_, num_target_, gradients, hessians);
+    }
   } else {
-    GetGradientsKernel_MultiRegressionL2<true><<<grid, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+    GetGradientsKernel_MultiRegressionL2<true, true><<<grid, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
       score, cuda_labels_, cuda_weights_, num_data_, num_target_, gradients, hessians);
   }
 }
@@ -168,31 +357,98 @@ double CUDARegressionL1loss::LaunchCalcInitScoreKernel(const int /*class_id*/) c
   return static_cast<label_t>(percentile_result);
 }
 
-template <bool USE_WEIGHT>
+template <bool USE_WEIGHT, bool WRITE_HESS = true, bool FUSE_MINMAX = false>
 __global__ void GetGradientsKernel_RegressionL1(const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights, const data_size_t num_data,
-  score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  score_t* cuda_out_gradients, score_t* cuda_out_hessians,
+  score_t* out_grad_min = nullptr, score_t* out_grad_max = nullptr,
+  score_t* out_hess_min = nullptr, score_t* out_hess_max = nullptr) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
+  score_t g_min = kMaxScore;
+  score_t g_max = kMinScore;
+  score_t h_min = kMaxScore;
+  score_t h_max = kMinScore;
   if (data_index < num_data) {
     if (!USE_WEIGHT) {
       const double diff = cuda_scores[data_index] - static_cast<double>(cuda_labels[data_index]);
-      cuda_out_gradients[data_index] = static_cast<score_t>((diff > 0.0f) - (diff < 0.0f));
-      cuda_out_hessians[data_index] = 1.0f;
+      const score_t g = static_cast<score_t>((diff > 0.0f) - (diff < 0.0f));
+      cuda_out_gradients[data_index] = g;
+      if (WRITE_HESS) {
+        cuda_out_hessians[data_index] = 1.0f;
+      }
+      if (FUSE_MINMAX) {
+        g_min = g;
+        g_max = g;
+      }
     } else {
       const double diff = cuda_scores[data_index] - static_cast<double>(cuda_labels[data_index]);
       const score_t weight = static_cast<score_t>(cuda_weights[data_index]);
-      cuda_out_gradients[data_index] = static_cast<score_t>((diff > 0.0f) - (diff < 0.0f)) * weight;
+      const score_t g = static_cast<score_t>((diff > 0.0f) - (diff < 0.0f)) * weight;
+      cuda_out_gradients[data_index] = g;
       cuda_out_hessians[data_index] = weight;
+      if (FUSE_MINMAX) {
+        g_min = g;
+        g_max = g;
+        h_min = weight;
+        h_max = weight;
+      }
+    }
+  }
+  if (FUSE_MINMAX) {
+    if (!USE_WEIGHT) {
+      __shared__ score_t s_gmin[WARPSIZE];
+      __shared__ score_t s_gmax[WARPSIZE];
+      ReduceBlockGradMinMaxConstHess(g_min, g_max, 1.0f, s_gmin, s_gmax,
+                                     out_grad_min, out_grad_max, out_hess_min, out_hess_max,
+                                     static_cast<int>(blockIdx.x));
+    } else {
+      __shared__ score_t s_gmin[WARPSIZE];
+      __shared__ score_t s_gmax[WARPSIZE];
+      __shared__ score_t s_hmin[WARPSIZE];
+      __shared__ score_t s_hmax[WARPSIZE];
+      ReduceBlockGradHessMinMax(g_min, g_max, h_min, h_max, s_gmin, s_gmax, s_hmin, s_hmax,
+                                out_grad_min, out_grad_max, out_hess_min, out_hess_max,
+                                static_cast<int>(blockIdx.x));
     }
   }
 }
 
 void CUDARegressionL1loss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
   const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
+  const bool fuse_minmax = FalcataPlan::Get().grad_minmax_fuse && FalcataPlan::Get().quant_training && num_data_ > 0;
+  if (fuse_minmax) {
+    score_t* mm = PreparePrecomputedGradMinMax(gradients, hessians, num_data_, num_blocks, 1);
+    score_t* g_min = mm;
+    score_t* g_max = mm + num_blocks;
+    score_t* h_min = mm + 2 * num_blocks;
+    score_t* h_max = mm + 3 * num_blocks;
+    if (cuda_weights_ == nullptr) {
+      const bool skip_hess = SkipConstantHessianWrite(hessians, static_cast<size_t>(num_data_));
+      if (skip_hess) {
+        GetGradientsKernel_RegressionL1<false, false, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+          score, cuda_labels_, nullptr, num_data_, gradients, hessians, g_min, g_max, h_min, h_max);
+      } else {
+        GetGradientsKernel_RegressionL1<false, true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+          score, cuda_labels_, nullptr, num_data_, gradients, hessians, g_min, g_max, h_min, h_max);
+      }
+    } else {
+      GetGradientsKernel_RegressionL1<true, true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, cuda_weights_, num_data_, gradients, hessians, g_min, g_max, h_min, h_max);
+    }
+    return;
+  }
   if (cuda_weights_ == nullptr) {
-    GetGradientsKernel_RegressionL1<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, nullptr, num_data_, gradients, hessians);
+    const bool skip_hess = SkipConstantHessianWrite(hessians, static_cast<size_t>(num_data_));
+    if (skip_hess) {
+      GetGradientsKernel_RegressionL1<false, false, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, nullptr, num_data_, gradients, hessians);
+    } else {
+      GetGradientsKernel_RegressionL1<false, true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, nullptr, num_data_, gradients, hessians);
+    }
   } else {
-    GetGradientsKernel_RegressionL1<true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, cuda_weights_, num_data_, gradients, hessians);
+    GetGradientsKernel_RegressionL1<true, true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+      score, cuda_labels_, cuda_weights_, num_data_, gradients, hessians);
   }
 }
 
@@ -274,41 +530,110 @@ void CUDARegressionL1loss::LaunchRenewTreeOutputCUDAKernel(
 }
 
 
-template <bool USE_WEIGHT>
+template <bool USE_WEIGHT, bool WRITE_HESS = true, bool FUSE_MINMAX = false>
 __global__ void GetGradientsKernel_Huber(const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights, const data_size_t num_data,
-  const double alpha, score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  const double alpha, score_t* cuda_out_gradients, score_t* cuda_out_hessians,
+  score_t* out_grad_min = nullptr, score_t* out_grad_max = nullptr,
+  score_t* out_hess_min = nullptr, score_t* out_hess_max = nullptr) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
+  score_t g_min = kMaxScore;
+  score_t g_max = kMinScore;
+  score_t h_min = kMaxScore;
+  score_t h_max = kMinScore;
   if (data_index < num_data) {
     if (!USE_WEIGHT) {
       const double diff = cuda_scores[data_index] - static_cast<double>(cuda_labels[data_index]);
+      score_t g;
       if (fabs(diff) <= alpha) {
-        cuda_out_gradients[data_index] = static_cast<score_t>(diff);
+        g = static_cast<score_t>(diff);
       } else {
         const score_t sign = static_cast<score_t>((diff > 0.0f) - (diff < 0.0f));
-        cuda_out_gradients[data_index] = static_cast<score_t>(sign * alpha);
+        g = static_cast<score_t>(sign * alpha);
       }
-      cuda_out_hessians[data_index] = 1.0f;
+      cuda_out_gradients[data_index] = g;
+      if (WRITE_HESS) {
+        cuda_out_hessians[data_index] = 1.0f;
+      }
+      if (FUSE_MINMAX) {
+        g_min = g;
+        g_max = g;
+      }
     } else {
       const double diff = cuda_scores[data_index] - static_cast<double>(cuda_labels[data_index]);
       const score_t weight = static_cast<score_t>(cuda_weights[data_index]);
+      score_t g;
       if (fabs(diff) <= alpha) {
-        cuda_out_gradients[data_index] = static_cast<score_t>(diff) * weight;
+        g = static_cast<score_t>(diff) * weight;
       } else {
         const score_t sign = static_cast<score_t>((diff > 0.0f) - (diff < 0.0f));
-        cuda_out_gradients[data_index] = static_cast<score_t>(sign * alpha) * weight;
+        g = static_cast<score_t>(sign * alpha) * weight;
       }
+      cuda_out_gradients[data_index] = g;
       cuda_out_hessians[data_index] = weight;
+      if (FUSE_MINMAX) {
+        g_min = g;
+        g_max = g;
+        h_min = weight;
+        h_max = weight;
+      }
+    }
+  }
+  if (FUSE_MINMAX) {
+    if (!USE_WEIGHT) {
+      __shared__ score_t s_gmin[WARPSIZE];
+      __shared__ score_t s_gmax[WARPSIZE];
+      ReduceBlockGradMinMaxConstHess(g_min, g_max, 1.0f, s_gmin, s_gmax,
+                                     out_grad_min, out_grad_max, out_hess_min, out_hess_max,
+                                     static_cast<int>(blockIdx.x));
+    } else {
+      __shared__ score_t s_gmin[WARPSIZE];
+      __shared__ score_t s_gmax[WARPSIZE];
+      __shared__ score_t s_hmin[WARPSIZE];
+      __shared__ score_t s_hmax[WARPSIZE];
+      ReduceBlockGradHessMinMax(g_min, g_max, h_min, h_max, s_gmin, s_gmax, s_hmin, s_hmax,
+                                out_grad_min, out_grad_max, out_hess_min, out_hess_max,
+                                static_cast<int>(blockIdx.x));
     }
   }
 }
 
 void CUDARegressionHuberLoss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
   const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
+  const bool fuse_minmax = FalcataPlan::Get().grad_minmax_fuse && FalcataPlan::Get().quant_training && num_data_ > 0;
+  if (fuse_minmax) {
+    score_t* mm = PreparePrecomputedGradMinMax(gradients, hessians, num_data_, num_blocks, 1);
+    score_t* g_min = mm;
+    score_t* g_max = mm + num_blocks;
+    score_t* h_min = mm + 2 * num_blocks;
+    score_t* h_max = mm + 3 * num_blocks;
+    if (cuda_weights_ == nullptr) {
+      const bool skip_hess = SkipConstantHessianWrite(hessians, static_cast<size_t>(num_data_));
+      if (skip_hess) {
+        GetGradientsKernel_Huber<false, false, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+          score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians, g_min, g_max, h_min, h_max);
+      } else {
+        GetGradientsKernel_Huber<false, true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+          score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians, g_min, g_max, h_min, h_max);
+      }
+    } else {
+      GetGradientsKernel_Huber<true, true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, cuda_weights_, num_data_, alpha_, gradients, hessians, g_min, g_max, h_min, h_max);
+    }
+    return;
+  }
   if (cuda_weights_ == nullptr) {
-    GetGradientsKernel_Huber<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians);
+    const bool skip_hess = SkipConstantHessianWrite(hessians, static_cast<size_t>(num_data_));
+    if (skip_hess) {
+      GetGradientsKernel_Huber<false, false, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians);
+    } else {
+      GetGradientsKernel_Huber<false, true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians);
+    }
   } else {
-    GetGradientsKernel_Huber<true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, cuda_weights_, num_data_, alpha_, gradients, hessians);
+    GetGradientsKernel_Huber<true, true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+      score, cuda_labels_, cuda_weights_, num_data_, alpha_, gradients, hessians);
   }
 }
 
@@ -492,40 +817,100 @@ void CUDARegressionQuantileloss::LaunchRenewTreeOutputCUDAKernel(
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
-template <bool USE_WEIGHT>
+template <bool USE_WEIGHT, bool WRITE_HESS = true, bool FUSE_MINMAX = false>
 __global__ void GetGradientsKernel_RegressionQuantile(const double* cuda_scores, const label_t* cuda_labels,
   const label_t* cuda_weights, const data_size_t num_data, const double alpha,
-  score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  score_t* cuda_out_gradients, score_t* cuda_out_hessians,
+  score_t* out_grad_min = nullptr, score_t* out_grad_max = nullptr,
+  score_t* out_hess_min = nullptr, score_t* out_hess_max = nullptr) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
+  score_t g_min = kMaxScore;
+  score_t g_max = kMinScore;
+  score_t h_min = kMaxScore;
+  score_t h_max = kMinScore;
   if (data_index < num_data) {
     if (!USE_WEIGHT) {
       const double diff = cuda_scores[data_index] - static_cast<double>(cuda_labels[data_index]);
-      if (diff >= 0.0f) {
-        cuda_out_gradients[data_index] = (1.0f - alpha);
-      } else {
-        cuda_out_gradients[data_index] = -alpha;
+      const score_t g = diff >= 0.0f ? static_cast<score_t>(1.0f - alpha) : static_cast<score_t>(-alpha);
+      cuda_out_gradients[data_index] = g;
+      if (WRITE_HESS) {
+        cuda_out_hessians[data_index] = 1.0f;
       }
-      cuda_out_hessians[data_index] = 1.0f;
+      if (FUSE_MINMAX) {
+        g_min = g;
+        g_max = g;
+      }
     } else {
       const double diff = cuda_scores[data_index] - static_cast<double>(cuda_labels[data_index]);
       const score_t weight = static_cast<score_t>(cuda_weights[data_index]);
-      if (diff >= 0.0f) {
-        cuda_out_gradients[data_index] = (1.0f - alpha) * weight;
-      } else {
-        cuda_out_gradients[data_index] = -alpha * weight;
-      }
+      const score_t g = diff >= 0.0f ? static_cast<score_t>((1.0f - alpha) * weight)
+                                     : static_cast<score_t>(-alpha * weight);
+      cuda_out_gradients[data_index] = g;
       cuda_out_hessians[data_index] = weight;
+      if (FUSE_MINMAX) {
+        g_min = g;
+        g_max = g;
+        h_min = weight;
+        h_max = weight;
+      }
+    }
+  }
+  if (FUSE_MINMAX) {
+    if (!USE_WEIGHT) {
+      __shared__ score_t s_gmin[WARPSIZE];
+      __shared__ score_t s_gmax[WARPSIZE];
+      ReduceBlockGradMinMaxConstHess(g_min, g_max, 1.0f, s_gmin, s_gmax,
+                                     out_grad_min, out_grad_max, out_hess_min, out_hess_max,
+                                     static_cast<int>(blockIdx.x));
+    } else {
+      __shared__ score_t s_gmin[WARPSIZE];
+      __shared__ score_t s_gmax[WARPSIZE];
+      __shared__ score_t s_hmin[WARPSIZE];
+      __shared__ score_t s_hmax[WARPSIZE];
+      ReduceBlockGradHessMinMax(g_min, g_max, h_min, h_max, s_gmin, s_gmax, s_hmin, s_hmax,
+                                out_grad_min, out_grad_max, out_hess_min, out_hess_max,
+                                static_cast<int>(blockIdx.x));
     }
   }
 }
 
 void CUDARegressionQuantileloss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
   const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
+  const bool fuse_minmax = FalcataPlan::Get().grad_minmax_fuse && FalcataPlan::Get().quant_training && num_data_ > 0;
+  if (fuse_minmax) {
+    score_t* mm = PreparePrecomputedGradMinMax(gradients, hessians, num_data_, num_blocks, 1);
+    score_t* g_min = mm;
+    score_t* g_max = mm + num_blocks;
+    score_t* h_min = mm + 2 * num_blocks;
+    score_t* h_max = mm + 3 * num_blocks;
+    if (cuda_weights_ == nullptr) {
+      const bool skip_hess = SkipConstantHessianWrite(hessians, static_cast<size_t>(num_data_));
+      if (skip_hess) {
+        GetGradientsKernel_RegressionQuantile<false, false, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+          score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians, g_min, g_max, h_min, h_max);
+      } else {
+        GetGradientsKernel_RegressionQuantile<false, true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+          score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians, g_min, g_max, h_min, h_max);
+      }
+    } else {
+      GetGradientsKernel_RegressionQuantile<true, true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, cuda_weights_, num_data_, alpha_, gradients, hessians, g_min, g_max, h_min, h_max);
+    }
+    return;
+  }
   if (cuda_weights_ == nullptr) {
-    GetGradientsKernel_RegressionQuantile<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians);
+    const bool skip_hess = SkipConstantHessianWrite(hessians, static_cast<size_t>(num_data_));
+    if (skip_hess) {
+      GetGradientsKernel_RegressionQuantile<false, false, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians);
+    } else {
+      GetGradientsKernel_RegressionQuantile<false, true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+        score, cuda_labels_, nullptr, num_data_, alpha_, gradients, hessians);
+    }
   } else {
-    GetGradientsKernel_RegressionQuantile<true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(score, cuda_labels_, cuda_weights_, num_data_, alpha_, gradients, hessians);
+    GetGradientsKernel_RegressionQuantile<true, true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+      score, cuda_labels_, cuda_weights_, num_data_, alpha_, gradients, hessians);
   }
 }
 

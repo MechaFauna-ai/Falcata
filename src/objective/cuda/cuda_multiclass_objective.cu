@@ -6,6 +6,7 @@
 
 #ifdef USE_CUDA
 
+#include <Falcata/cuda/cuda_algorithms.hpp>
 #include <Falcata/falcata_plan.h>
 
 #include <algorithm>
@@ -82,65 +83,99 @@ __global__ void GetGradientsKernel_MulticlassSoftmax(
 // classes k >= num_class are never read, and the loops (unrolled over the capacity) run SoftmaxCUDA's operations in
 // its order: the max from class 0 up, the exponentials summed from 0.0 in class order, one division per class. The
 // same doubles: bit-identical.
-template <bool USE_WEIGHT, int MAX_CLASS>
+template <bool USE_WEIGHT, int MAX_CLASS, bool FUSE_MINMAX = false>
 __global__ void __launch_bounds__(GET_GRADIENTS_BLOCK_SIZE_MULTICLASS) GetGradientsKernel_MulticlassSoftmaxRegisters(
   const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights,
   const double factor, const int num_class, const data_size_t num_data,
-  score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  score_t* cuda_out_gradients, score_t* cuda_out_hessians,
+  score_t* out_block_minmax = nullptr, const int num_blocks = 0) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
-  if (data_index >= num_data) {
+  if (!FUSE_MINMAX && data_index >= num_data) {
     return;
   }
+  const bool valid = data_index < num_data;
   double p[MAX_CLASS];
-#pragma unroll
-  for (int k = 0; k < MAX_CLASS; ++k) {
-    if (k < num_class) {
-      p[k] = cuda_scores[static_cast<size_t>(num_data) * k + data_index];
-    }
-  }
-  double wmax = p[0];
-#pragma unroll
-  for (int k = 1; k < MAX_CLASS; ++k) {
-    if (k < num_class) {
-      wmax = max(p[k], wmax);
-    }
-  }
   double wsum = 0.0f;
+  int label = 0;
+  double weight = 1.0;
+  if (valid) {
 #pragma unroll
-  for (int k = 0; k < MAX_CLASS; ++k) {
-    if (k < num_class) {
-      p[k] = exp(p[k] - wmax);
-      wsum += p[k];
+    for (int k = 0; k < MAX_CLASS; ++k) {
+      if (k < num_class) {
+        p[k] = cuda_scores[static_cast<size_t>(num_data) * k + data_index];
+      }
     }
+    double wmax = p[0];
+#pragma unroll
+    for (int k = 1; k < MAX_CLASS; ++k) {
+      if (k < num_class) {
+        wmax = max(p[k], wmax);
+      }
+    }
+#pragma unroll
+    for (int k = 0; k < MAX_CLASS; ++k) {
+      if (k < num_class) {
+        p[k] = exp(p[k] - wmax);
+        wsum += p[k];
+      }
+    }
+    label = static_cast<int>(cuda_labels[data_index]);
+    weight = USE_WEIGHT ? static_cast<double>(cuda_weights[data_index]) : 1.0;
   }
-  const int label = static_cast<int>(cuda_labels[data_index]);
-  const double weight = USE_WEIGHT ? static_cast<double>(cuda_weights[data_index]) : 1.0;
+  __shared__ score_t s_buf[FUSE_MINMAX ? 2 : 1][4][WARPSIZE];
 #pragma unroll
   for (int k = 0; k < MAX_CLASS; ++k) {
     if (k < num_class) {
-      const double pk = p[k] / static_cast<double>(wsum);
-      const size_t idx = static_cast<size_t>(num_data) * k + data_index;
-      if (!USE_WEIGHT) {
-        cuda_out_gradients[idx] = static_cast<score_t>(label == k ? pk - 1.0f : pk);
-        cuda_out_hessians[idx] = static_cast<score_t>(factor * pk * (1.0f - pk));
-      } else {
-        cuda_out_gradients[idx] = static_cast<score_t>(label == k ? (pk - 1.0f) * weight : pk * weight);
-        cuda_out_hessians[idx] = static_cast<score_t>((factor * pk * (1.0f - pk)) * weight);
+      score_t g_min = kMaxScore;
+      score_t g_max = kMinScore;
+      score_t h_min = kMaxScore;
+      score_t h_max = kMinScore;
+      if (valid) {
+        const double pk = p[k] / static_cast<double>(wsum);
+        const size_t idx = static_cast<size_t>(num_data) * k + data_index;
+        score_t gk;
+        score_t hk;
+        if (!USE_WEIGHT) {
+          gk = static_cast<score_t>(label == k ? pk - 1.0f : pk);
+          hk = static_cast<score_t>(factor * pk * (1.0f - pk));
+        } else {
+          gk = static_cast<score_t>(label == k ? (pk - 1.0f) * weight : pk * weight);
+          hk = static_cast<score_t>((factor * pk * (1.0f - pk)) * weight);
+        }
+        cuda_out_gradients[idx] = gk;
+        cuda_out_hessians[idx] = hk;
+        if (FUSE_MINMAX) {
+          g_min = gk;
+          g_max = gk;
+          h_min = hk;
+          h_max = hk;
+        }
+      }
+      if (FUSE_MINMAX) {
+        const size_t stride = static_cast<size_t>(num_blocks);
+        score_t* base = out_block_minmax + static_cast<size_t>(k) * 4 * stride;
+        const int buf_id = k & 1;
+        ReduceBlockGradHessMinMax(g_min, g_max, h_min, h_max,
+                                  s_buf[buf_id][0], s_buf[buf_id][1], s_buf[buf_id][2], s_buf[buf_id][3],
+                                  base, base + stride, base + 2 * stride, base + 3 * stride,
+                                  static_cast<int>(blockIdx.x));
       }
     }
   }
 }
 
-template <bool USE_WEIGHT, int MAX_CLASS>
+template <bool USE_WEIGHT, int MAX_CLASS, bool FUSE_MINMAX>
 static bool LaunchMulticlassSoftmaxRegisters(const int num_blocks, const double* scores, const label_t* labels,
                                              const label_t* weights, const double factor, const int num_class,
-                                             const data_size_t num_data, score_t* gradients, score_t* hessians) {
+                                             const data_size_t num_data, score_t* gradients, score_t* hessians,
+                                             score_t* out_block_minmax) {
   if (num_class > MAX_CLASS) {
     return false;
   }
-  GetGradientsKernel_MulticlassSoftmaxRegisters<USE_WEIGHT, MAX_CLASS><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_MULTICLASS>>>(
-    scores, labels, weights, factor, num_class, num_data, gradients, hessians);
+  GetGradientsKernel_MulticlassSoftmaxRegisters<USE_WEIGHT, MAX_CLASS, FUSE_MINMAX>
+    <<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_MULTICLASS>>>(
+      scores, labels, weights, factor, num_class, num_data, gradients, hessians, out_block_minmax, num_blocks);
   return true;
 }
 
@@ -149,19 +184,41 @@ void CUDAMulticlassSoftmax::LaunchGetGradientsKernel(const double* scores, score
   if (FalcataPlan::Get().softmax_registers) {
     // class capacities 8 / 16 / 32 (at 32 the 64-register cap of __launch_bounds__(1024) spills part of the array to
     // thread-interleaved local memory, still coalesced); wider class counts keep the scratch kernel
-    const bool launched = cuda_weights_ == nullptr ?
-      (LaunchMulticlassSoftmaxRegisters<false, 8>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
-                                                  num_data_, gradients, hessians) ||
-       LaunchMulticlassSoftmaxRegisters<false, 16>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
-                                                   num_data_, gradients, hessians) ||
-       LaunchMulticlassSoftmaxRegisters<false, 32>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
-                                                   num_data_, gradients, hessians)) :
-      (LaunchMulticlassSoftmaxRegisters<true, 8>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
-                                                 num_data_, gradients, hessians) ||
-       LaunchMulticlassSoftmaxRegisters<true, 16>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
-                                                  num_data_, gradients, hessians) ||
-       LaunchMulticlassSoftmaxRegisters<true, 32>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
-                                                  num_data_, gradients, hessians));
+    const bool fuse_minmax = FalcataPlan::Get().grad_minmax_fuse && FalcataPlan::Get().quant_training &&
+                             num_data_ > 0 && num_class_ <= 32;
+    score_t* mm = fuse_minmax
+      ? PreparePrecomputedGradMinMax(gradients, hessians, num_data_, num_blocks, num_class_)
+      : nullptr;
+    bool launched = false;
+    if (fuse_minmax) {
+      launched = cuda_weights_ == nullptr ?
+        (LaunchMulticlassSoftmaxRegisters<false, 8, true>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                          num_class_, num_data_, gradients, hessians, mm) ||
+         LaunchMulticlassSoftmaxRegisters<false, 16, true>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                           num_class_, num_data_, gradients, hessians, mm) ||
+         LaunchMulticlassSoftmaxRegisters<false, 32, true>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                           num_class_, num_data_, gradients, hessians, mm)) :
+        (LaunchMulticlassSoftmaxRegisters<true, 8, true>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                         num_class_, num_data_, gradients, hessians, mm) ||
+         LaunchMulticlassSoftmaxRegisters<true, 16, true>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                          num_class_, num_data_, gradients, hessians, mm) ||
+         LaunchMulticlassSoftmaxRegisters<true, 32, true>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                          num_class_, num_data_, gradients, hessians, mm));
+    } else {
+      launched = cuda_weights_ == nullptr ?
+        (LaunchMulticlassSoftmaxRegisters<false, 8, false>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                           num_class_, num_data_, gradients, hessians, nullptr) ||
+         LaunchMulticlassSoftmaxRegisters<false, 16, false>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                            num_class_, num_data_, gradients, hessians, nullptr) ||
+         LaunchMulticlassSoftmaxRegisters<false, 32, false>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                            num_class_, num_data_, gradients, hessians, nullptr)) :
+        (LaunchMulticlassSoftmaxRegisters<true, 8, false>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                          num_class_, num_data_, gradients, hessians, nullptr) ||
+         LaunchMulticlassSoftmaxRegisters<true, 16, false>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                           num_class_, num_data_, gradients, hessians, nullptr) ||
+         LaunchMulticlassSoftmaxRegisters<true, 32, false>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_,
+                                                           num_class_, num_data_, gradients, hessians, nullptr));
+    }
     if (launched) {
       return;
     }

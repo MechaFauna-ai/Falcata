@@ -724,6 +724,20 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
         hess = hessians_pointer_ + offset;
       }
       bool is_first_tree = models_.size() < static_cast<size_t>(num_tree_per_iteration_);
+      #ifdef USE_CUDA
+      if (objective_function_ != nullptr) {
+        ObjectiveFunction::CUDAPrecomputedGradMinMax mm;
+        if (objective_function_->GetPrecomputedGradMinMax(cur_tree_id, &mm) &&
+            mm.for_gradients == grad && mm.for_hessians == hess && mm.num_data == num_data_) {
+          tree_learner_->SetPrecomputedGradMinMax(
+            mm.grad_min_blocks, mm.grad_max_blocks, mm.hess_min_blocks, mm.hess_max_blocks,
+            mm.for_gradients, mm.for_hessians, mm.num_data, mm.num_blocks);
+        } else {
+          tree_learner_->SetPrecomputedGradMinMax(
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0);
+        }
+      }
+      #endif  // USE_CUDA
       new_tree.reset(tree_learner_->Train(grad, hess, is_first_tree));
     }
 

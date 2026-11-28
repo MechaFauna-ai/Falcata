@@ -483,6 +483,7 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
 #ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
   WholeMapOnlyFaultCheckpoint(this, WholeMapOnlyFaultPoint::AfterRootInit);
 #endif
+  bool larger_leaf_initialized = false;
   if (config_->use_quantized_grad) {
     // l2 ridge in hessian quanta in every discretized find kernel -- scalar
     // (FindBestSplitsDiscretizedForLeafKernel,
@@ -520,38 +521,77 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     cuda_gradient_discretizer_->SetHessiansConstant(share_state_->is_constant_hessian &&
                                                     train_data_->metadata().weights() == nullptr &&
                                                     vec_num_targets_ <= 1);
-    cuda_gradient_discretizer_->DiscretizeGradients(num_data_, gradients_, hessians_);
-    for (int t = 1; t < vec_num_targets_; ++t) {
-      // plane t: target t's gradients at their own scale, plane 0's hessians
-      cuda_gradient_discretizer_->DiscretizeGradientsForPlane(
-        t, num_data_, gradients_ + static_cast<size_t>(t) * num_data_, hessians_);
-    }
-    cuda_histogram_constructor_->BeforeTrain(
-      reinterpret_cast<const score_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()), nullptr);
     // cuda_plan key async_tree_start: the root sums are first needed by the level prefix
     // (TrainLevelWisePrefix's EnsureRootSumsReadBack; Train reads them back itself before any other flow), so
     // the synchronous readback -- which waits for the histogram zeroing and the root sum kernels -- moves behind
     // the column sample, the metadata uploads and the fill launch instead of holding them back
     root_sums_deferred_ = AsyncTreeStart() && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr &&
                           fp_merge_state_ == nullptr && HybridGrowthUsable() && !UseSelectiveGrowth();
-    cuda_smaller_leaf_splits_->InitValues(
-      config_->lambda_l1,
-      config_->lambda_l2,
-      config_->max_delta_step,
-      reinterpret_cast<const int16_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()),
-      leaf_splits_init_indices,
-      cuda_data_partition_->cuda_data_indices(),
-      root_num_data,
-      cuda_histogram_constructor_->cuda_hist_pointer(),
-      &leaf_sum_gradients_[0],
-      &leaf_sum_hessians_[0],
-      cuda_gradient_discretizer_->grad_scale_ptr(),
-      cuda_gradient_discretizer_->hess_scale_ptr(),
-      root_sums_deferred_);
-      cuda_gradient_discretizer_->SetNumBitsInHistogramBin<false>(0, -1, root_num_data, 0);
-      if (nccl_communicator_ != nullptr) {
-        cuda_gradient_discretizer_->SetNumBitsInHistogramBin<true>(0, -1, global_num_data_, 0);
+    // cuda_plan key discretize_root_sums: fuse the per-1024-row chunk root sums (and plane scale snapshot) into
+    // DiscretizeGradientsKernel on unbagged scalar single-GPU trees, skipping CUDAInitValuesChunkWarpKernel and
+    // PDL-chaining directly into CUDAInitValuesKernel4 -> InitValuesEmptyKernel before the histogram memset
+    const bool fuse_root_sums =
+        FalcataPlan::Get().discretize_root_sums &&
+        leaf_splits_init_indices == nullptr &&
+        root_num_data == num_data_ &&
+        vec_num_targets_ <= 1 &&
+        nccl_communicator_ == nullptr &&
+        num_data_ > 0 &&
+        cuda_gradient_discretizer_->num_reduce_blocks() ==
+            cuda_smaller_leaf_splits_->num_blocks_init_from_gradients();
+    if (fuse_root_sums) {
+      cuda_gradient_discretizer_->DiscretizeGradientsWithRootSums(
+        num_data_, gradients_, hessians_,
+        cuda_smaller_leaf_splits_->cuda_sum_of_gradients_buffer(),
+        cuda_smaller_leaf_splits_->cuda_sum_of_hessians_buffer(),
+        cuda_smaller_leaf_splits_->cuda_sum_of_gradients_hessians_buffer());
+      cuda_smaller_leaf_splits_->InitValues(
+        config_->lambda_l1,
+        config_->lambda_l2,
+        config_->max_delta_step,
+        reinterpret_cast<const int16_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()),
+        leaf_splits_init_indices,
+        cuda_data_partition_->cuda_data_indices(),
+        root_num_data,
+        cuda_histogram_constructor_->cuda_hist_pointer(),
+        &leaf_sum_gradients_[0],
+        &leaf_sum_hessians_[0],
+        cuda_gradient_discretizer_->grad_scale_ptr(),
+        cuda_gradient_discretizer_->hess_scale_ptr(),
+        root_sums_deferred_,
+        /*precomputed_chunk_sums=*/true);
+      cuda_larger_leaf_splits_->InitValues();
+      larger_leaf_initialized = true;
+      cuda_histogram_constructor_->BeforeTrain(
+        reinterpret_cast<const score_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()), nullptr);
+    } else {
+      cuda_gradient_discretizer_->DiscretizeGradients(num_data_, gradients_, hessians_);
+      for (int t = 1; t < vec_num_targets_; ++t) {
+        // plane t: target t's gradients at their own scale, plane 0's hessians
+        cuda_gradient_discretizer_->DiscretizeGradientsForPlane(
+          t, num_data_, gradients_ + static_cast<size_t>(t) * num_data_, hessians_);
       }
+      cuda_histogram_constructor_->BeforeTrain(
+        reinterpret_cast<const score_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()), nullptr);
+      cuda_smaller_leaf_splits_->InitValues(
+        config_->lambda_l1,
+        config_->lambda_l2,
+        config_->max_delta_step,
+        reinterpret_cast<const int16_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()),
+        leaf_splits_init_indices,
+        cuda_data_partition_->cuda_data_indices(),
+        root_num_data,
+        cuda_histogram_constructor_->cuda_hist_pointer(),
+        &leaf_sum_gradients_[0],
+        &leaf_sum_hessians_[0],
+        cuda_gradient_discretizer_->grad_scale_ptr(),
+        cuda_gradient_discretizer_->hess_scale_ptr(),
+        root_sums_deferred_);
+    }
+    cuda_gradient_discretizer_->SetNumBitsInHistogramBin<false>(0, -1, root_num_data, 0);
+    if (nccl_communicator_ != nullptr) {
+      cuda_gradient_discretizer_->SetNumBitsInHistogramBin<true>(0, -1, global_num_data_, 0);
+    }
   } else {
     cuda_histogram_constructor_->BeforeTrain(gradients_, hessians_);
     // The single-sync hybrid prefix derives every root gate on-device, so the
@@ -581,7 +621,9 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
       root_sums_deferred_);
   }
   leaf_num_data_[0] = root_num_data;
-  cuda_larger_leaf_splits_->InitValues();
+  if (!larger_leaf_initialized) {
+    cuda_larger_leaf_splits_->InitValues();
+  }
   if (vec_num_targets_ > 1) {
     VectorInitRootPlanes(leaf_splits_init_indices, root_num_data);
   }
