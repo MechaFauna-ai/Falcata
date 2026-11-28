@@ -136,10 +136,25 @@ static constexpr double kVecDivMaxSafe = 2.58224987808690859e+120;
 
 // Exact IEEE-754 round-to-nearest-even quotient a / d using a precomputed
 // reciprocal inv_d = __ddiv_rn(1.0, d) (Markstein 2000, Theorem 5.2):
-// for normal finite d in [2^-400, 2^400] and a == 0 or a in [2^-400, 2^400],
-// q0 = RN(a * inv_d), r0 = fma(-q0, d, a), q = fma(r0, inv_d, q0) is provably
-// bit-identical to __ddiv_rn(a, d) using 3 FP64 instructions instead of a full
-// division sequence (~25 FP64 ops + slow-path CALL) on every target plane.
+// for normal finite d, a in [2^-400, 2^400], the first refinement q1 satisfies
+// |q1 - a/d| <= 1 ulp (< 0.51 ulp), so the second refinement q2 is
+// unconditionally bit-identical to __ddiv_rn(a, d) using 5 FP64 ops instead of
+// a full division sequence (~25 FP64 ops + slow-path CALL) per target plane.
+// Zero numerators preserve sign via `return a` (valid for d > 0); extreme
+// magnitudes outside the normal guard fall back to exact a / d.
+__device__ __forceinline__ void VectorPrepareRecip(
+    const double denom, double* inv_denom, bool* safe) {
+#if defined(__HIP_PLATFORM_AMD__)
+  (void)denom;
+  *inv_denom = 0.0;
+  *safe = false;
+#else
+  const bool ok = denom >= kVecDivMinSafe && denom <= kVecDivMaxSafe;
+  *safe = ok;
+  *inv_denom = ok ? __ddiv_rn(1.0, denom) : 0.0;
+#endif
+}
+
 __device__ __forceinline__ double VectorExactDivWithRecip(
     const double a, const double d, const double inv_d, const bool denom_safe) {
 #if defined(__HIP_PLATFORM_AMD__)
@@ -147,10 +162,17 @@ __device__ __forceinline__ double VectorExactDivWithRecip(
   (void)denom_safe;
   return a / d;
 #else
-  if (denom_safe && (a == 0.0 || (a >= kVecDivMinSafe && a <= kVecDivMaxSafe))) {
-    const double q0 = __dmul_rn(a, inv_d);
-    const double r0 = __fma_rn(-q0, d, a);
-    return __fma_rn(r0, inv_d, q0);
+  if (denom_safe) {
+    if (a == 0.0) {
+      return a;
+    }
+    if (a >= kVecDivMinSafe && a <= kVecDivMaxSafe) {
+      const double q0 = __dmul_rn(a, inv_d);
+      const double r0 = __fma_rn(-q0, d, a);
+      const double q1 = __fma_rn(r0, inv_d, q0);
+      const double r1 = __fma_rn(-q1, d, a);
+      return __fma_rn(r1, inv_d, q1);
+    }
   }
   return a / d;
 #endif
@@ -230,12 +252,12 @@ __device__ void FindBestSplitsForLeafKernelVectorCategoricalInner(
           if (sum_other_hessian >= min_sum_hessian_in_leaf) {
             const double other_denom = sum_other_hessian + lambda_l2;
             const double bin_denom = (hess + kEpsilon) + lambda_l2;
-            const bool other_denom_safe =
-              other_denom >= kVecDivMinSafe && other_denom <= kVecDivMaxSafe;
-            const bool bin_denom_safe =
-              bin_denom >= kVecDivMinSafe && bin_denom <= kVecDivMaxSafe;
-            const double inv_other_denom = other_denom_safe ? (1.0 / other_denom) : 0.0;
-            const double inv_bin_denom = bin_denom_safe ? (1.0 / bin_denom) : 0.0;
+            double inv_other_denom = 0.0;
+            double inv_bin_denom = 0.0;
+            bool other_denom_safe = false;
+            bool bin_denom_safe = false;
+            VectorPrepareRecip(other_denom, &inv_other_denom, &other_denom_safe);
+            VectorPrepareRecip(bin_denom, &inv_bin_denom, &bin_denom_safe);
             double current_gain = 0.0;
             #pragma unroll 1
             for (int t = 0; t < num_targets; ++t) {
@@ -411,12 +433,12 @@ __device__ void FindBestSplitsForLeafKernelVectorCategoricalInner(
           min_data_per_group)) {
         const double left_denom = sum_left_hessian + l2;
         const double right_denom = sum_right_hessian + l2;
-        const bool left_denom_safe =
-          left_denom >= kVecDivMinSafe && left_denom <= kVecDivMaxSafe;
-        const bool right_denom_safe =
-          right_denom >= kVecDivMinSafe && right_denom <= kVecDivMaxSafe;
-        const double inv_left_denom = left_denom_safe ? (1.0 / left_denom) : 0.0;
-        const double inv_right_denom = right_denom_safe ? (1.0 / right_denom) : 0.0;
+        double inv_left_denom = 0.0;
+        double inv_right_denom = 0.0;
+        bool left_denom_safe = false;
+        bool right_denom_safe = false;
+        VectorPrepareRecip(left_denom, &inv_left_denom, &left_denom_safe);
+        VectorPrepareRecip(right_denom, &inv_right_denom, &right_denom_safe);
         double current_gain = 0.0;
         #pragma unroll 1
         for (int t = 0; t < num_targets; ++t) {
@@ -686,12 +708,12 @@ __device__ void FindBestSplitsVectorInner(
         sum_right_hessian >= min_sum_hessian_in_leaf && right_count >= min_data_in_leaf) {
       const double left_denom = sum_left_hessian + lambda_l2;
       const double right_denom = sum_right_hessian + lambda_l2;
-      const bool left_denom_safe =
-        left_denom >= kVecDivMinSafe && left_denom <= kVecDivMaxSafe;
-      const bool right_denom_safe =
-        right_denom >= kVecDivMinSafe && right_denom <= kVecDivMaxSafe;
-      const double inv_left_denom = left_denom_safe ? (1.0 / left_denom) : 0.0;
-      const double inv_right_denom = right_denom_safe ? (1.0 / right_denom) : 0.0;
+      double inv_left_denom = 0.0;
+      double inv_right_denom = 0.0;
+      bool left_denom_safe = false;
+      bool right_denom_safe = false;
+      VectorPrepareRecip(left_denom, &inv_left_denom, &left_denom_safe);
+      VectorPrepareRecip(right_denom, &inv_right_denom, &right_denom_safe);
       double current_gain = 0.0;
       #pragma unroll 1
       for (int t = 0; t < num_targets; ++t) {
@@ -957,10 +979,8 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
       valid_split = true;
       left_denom = (sum_left_hessian + kEpsilon) + lambda_l2;
       right_denom = (sum_right_hessian + kEpsilon) + lambda_l2;
-      left_denom_safe = left_denom >= kVecDivMinSafe && left_denom <= kVecDivMaxSafe;
-      right_denom_safe = right_denom >= kVecDivMinSafe && right_denom <= kVecDivMaxSafe;
-      inv_left_denom = left_denom_safe ? (1.0 / left_denom) : 0.0;
-      inv_right_denom = right_denom_safe ? (1.0 / right_denom) : 0.0;
+      VectorPrepareRecip(left_denom, &inv_left_denom, &left_denom_safe);
+      VectorPrepareRecip(right_denom, &inv_right_denom, &right_denom_safe);
       const int64_t other_gh0 = parent_gh_hess - scan_gh0;
       const double gs0 = smem->grad_scale[0];
       const double scan_grad = static_cast<double>(
@@ -1080,6 +1100,8 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
     // parallel (256 threads / 16 = kMaxVectorTargets). Every thread executes
     // the full-warp shuffles with 0xffffffff so all lanes stay converged; lane
     // 0 of each half-warp holds the exact reduced prefix for target t.
+    static_assert(NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER / 16 >= kMaxVectorTargets,
+                  "half-warp replay requires at least kMaxVectorTargets half-warps per block");
     const int t = static_cast<int>(threadIdx_x >> 4);
     const unsigned int lane = threadIdx_x & 15u;
     const uint32_t best_idx = smem->best_thread_index;
@@ -1089,8 +1111,13 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
       const ACC_HIST_TYPE* hist_ptr =
         reinterpret_cast<const ACC_HIST_TYPE*>(smem->plane_hist[t]) + task->hist_offset;
       if (na_missing_head) {
+        // Bound the replay to the exact lanes [1, min(num_bin, blockDim.x))
+        // scanned by the block (critical when num_bin == blockDim.x + 1 = 257
+        // with mfb_offset == 1, where lane 0 holds the synthesized MFB and
+        // stored bin 255 is outside the 256-thread scan).
         const uint32_t num_bin = static_cast<uint32_t>(task->num_bin);
-        for (uint32_t i = 1 + lane; i < num_bin; i += 16u) {
+        const uint32_t scan_end = num_bin < blockDim.x ? num_bin : blockDim.x;
+        for (uint32_t i = 1 + lane; i < scan_end; i += 16u) {
           const ACC_HIST_TYPE v = hist_ptr[i - 1];
           sum_all += v;
           if (i <= best_idx) {
@@ -1098,8 +1125,9 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
           }
         }
       } else if (!reverse) {
-        const uint32_t limit = best_idx + 1 < feature_num_bin_minus_offset ?
-          best_idx + 1 : feature_num_bin_minus_offset;
+        const uint32_t max_bin = feature_num_bin_minus_offset < blockDim.x ?
+          feature_num_bin_minus_offset : blockDim.x;
+        const uint32_t limit = best_idx + 1 < max_bin ? best_idx + 1 : max_bin;
         for (uint32_t i = lane; i < limit; i += 16u) {
           if (!task->skip_default_bin ||
               static_cast<int>(i + task->mfb_offset) != static_cast<int>(task->default_bin)) {
@@ -1108,8 +1136,9 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
         }
       } else {
         const uint32_t start = static_cast<uint32_t>(task->na_as_missing);
-        const uint32_t limit = best_idx + 1 < feature_num_bin_minus_offset ?
-          best_idx + 1 : feature_num_bin_minus_offset;
+        const uint32_t max_bin = feature_num_bin_minus_offset < blockDim.x ?
+          feature_num_bin_minus_offset : blockDim.x;
+        const uint32_t limit = best_idx + 1 < max_bin ? best_idx + 1 : max_bin;
         for (uint32_t i = start + lane; i < limit; i += 16u) {
           if (!task->skip_default_bin ||
               static_cast<int>(task->num_bin - 1 - i) != static_cast<int>(task->default_bin)) {
