@@ -311,7 +311,13 @@ def test_device_tree_deep_live_grid_cuda(case, graph):
     # These fixtures change histogram bit width at the 64-pair search, which stays under the budget; the live copy
     # moving real data is covered by the fullbig case of test_device_tree_live_grid_cuda.
     depth = int(case[4:])
-    data, diag = _run(case, graph, base_plan="auto,device_tree_live_grid:1")
+    # Disable final_level_sub_in_find and hist_subtract_vec4 so the widest search level (2^(depth-2) pairs)
+    # still launches the 1-bin-per-thread subtract/copy kernels whose live-grid routing this test exercises.
+    data, diag = _run(
+        case,
+        graph,
+        base_plan="auto,device_tree_live_grid:1,final_level_sub_in_find:off,hist_subtract_vec4:off",
+    )
     events = re.findall(r"device_tree: complete depth=(\d+) applied_levels=(\d+) ", diag)
     assert len(events) == data["rounds"]
     assert all(e == (str(depth), str(depth)) for e in events)
@@ -350,7 +356,13 @@ def test_device_tree_live_grid_cuda(case, extra, live_grid, expect, graph):
     # device_tree_live_grid blocks per SM runs the fix/subtract and the bit-change copy over its live pairs. The diag
     # line of every enqueued level (direct or captured) names the route; the probe compares the complete tree's model
     # bytes with the host flow's.
-    data, diag = _run(case, graph, base_plan=f"auto,device_tree_live_grid:{live_grid}{extra}")
+    # Disable final_level_sub_in_find and hist_subtract_vec4 so every searched level runs the 1-bin-per-thread
+    # subtract/copy kernels whose live-grid routing this test asserts.
+    data, diag = _run(
+        case,
+        graph,
+        base_plan=f"auto,device_tree_live_grid:{live_grid},final_level_sub_in_find:off,hist_subtract_vec4:off{extra}",
+    )
     assert diag.count("device_tree: complete") == data["rounds"]
     assert not re.search(r"device_tree: fallback \((?!plan_off\))", diag)
     lines = _LIVE_GRID_LINE.findall(diag)

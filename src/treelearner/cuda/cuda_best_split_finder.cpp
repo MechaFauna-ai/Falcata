@@ -791,7 +791,8 @@ void CUDABestSplitFinder::FindBestSplitsForLevel(
   const int num_pairs,
   const score_t* grad_scale,
   const score_t* hess_scale,
-  const bool gate_on_desc_counts) {
+  const bool gate_on_desc_counts,
+  const bool subtract_on_fly) {
   if (num_pairs <= 0) {
     return;
   }
@@ -799,8 +800,9 @@ void CUDABestSplitFinder::FindBestSplitsForLevel(
   // order the batched find after the whole batched histogram phase of this level
   CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
   if (grad_scale != nullptr && hess_scale != nullptr) {
-    LaunchFindBestSplitsDiscretizedForLevelKernel(pair_descs, num_pairs, grad_scale, hess_scale);
+    LaunchFindBestSplitsDiscretizedForLevelKernel(pair_descs, num_pairs, grad_scale, hess_scale, subtract_on_fly);
   } else {
+    CHECK(!subtract_on_fly);
     LaunchFindBestSplitsForLevelKernel(pair_descs, num_pairs, gate_on_desc_counts);
   }
   if (FalcataDebug().dump) {

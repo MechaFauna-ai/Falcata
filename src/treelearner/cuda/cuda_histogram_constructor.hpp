@@ -73,6 +73,11 @@ namespace Falcata {
 inline constexpr size_t CUDAHistSlabElements(const int num_total_bin, const int num_leaves, const int num_planes) {
   return static_cast<size_t>(num_total_bin) * 2 * static_cast<size_t>(num_leaves) * static_cast<size_t>(num_planes);
 }
+/*! \brief per-pair int32 stride inside hist_buffer_for_num_bit_change_, padded to a multiple of 4 int32 elements
+ *  (16 bytes) so every pair's region is 16-byte aligned for int4 (128-bit) vectorized loads and stores */
+__host__ __device__ inline size_t BitChangePairStride(const int num_total_bin) {
+  return (static_cast<size_t>(num_total_bin) + 3u) & ~static_cast<size_t>(3u);
+}
 }  // namespace Falcata
 // Deterministic float-mode sparse construct (see
 // CUDAConstructHistogramSparseDeterministicKernel): dynamic-shared budget for
@@ -553,6 +558,13 @@ class CUDAHistogramConstructor {
     const int num_pairs,
     const bool any_pair_needs_bit_change_copy);
 
+  /*! \brief cuda_plan key final_level_sub_in_find: on the final searched level of a complete quantized device_tree,
+   *  skip SubtractHistogram and CopyChangedNumBitHistogram, running only FixHistogram on the smaller child when
+   *  need-fix features exist, and record subtract_done_events_[0] so the finder's stream wait completes */
+  void FixOnlyHistogramsForLevel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs);
+
   /*! \brief minimum rows-per-thread cap of the batched construct grid sizing
    *  (baked constant FalcataPlan::batch_construct_min_rows_per_thread;
    *  0 = per-leaf sizing). Shared by the host
@@ -722,7 +734,7 @@ class CUDAHistogramConstructor {
    *  pair (blockIdx of the batched kernels) or per pipeline (the per-pair host path, sized at Init), and stores the
    *  packed 16+16-bit larger-leaf histogram entry, an int32 by construction */
   size_t BitChangeScratchEntries(const int max_pairs) const {
-    return (static_cast<size_t>(std::max(max_pairs, 0)) * static_cast<size_t>(num_total_bin_) + 1) / 2;
+    return (static_cast<size_t>(std::max(max_pairs, 0)) * BitChangePairStride(num_total_bin_) + 1) / 2;
   }
   /*! \brief cuda_plan key device_levels: the bit-change scratch for a level of max_pairs pairs */
   void EnsureDeviceLevelCapacity(const int max_pairs) {
@@ -1094,6 +1106,10 @@ class CUDAHistogramConstructor {
     const int num_pairs,
     const bool any_pair_needs_bit_change_copy);
 
+  void LaunchFixOnlyHistogramBatchedKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs);
+
   // ---- small-leaf level launchers (hybrid growth, non-quantized only) ----
 
   /*! \brief fused fix + subtract of the small-leaf path: one launch does both
@@ -1103,10 +1119,13 @@ class CUDAHistogramConstructor {
    *  for both leaves with the identical arithmetic, so the result is
    *  bit-identical to the sequential fix -> subtract launches. */
   /*! \brief grid.x of the fused small-leaf fix + subtract: its subtract blocks
-   *  (one element per thread) and its fix blocks (kFixGroupFeatures need-fix
-   *  features each) */
+   *  (one element per thread, or 16-byte vector per thread under hist_subtract_vec4)
+   *  and its fix blocks (kFixGroupFeatures need-fix features each) */
   int FixSubtractSmallLeafSubtractBlocks() const {
-    return (2 * num_total_bin_ + FIX_HISTOGRAM_BLOCK_SIZE - 1) / FIX_HISTOGRAM_BLOCK_SIZE;
+    const int threads = FalcataPlan::Get().hist_subtract_vec4
+      ? (hist_fp32_ ? (num_total_bin_ + 1) / 2 : num_total_bin_)
+      : 2 * num_total_bin_;
+    return (threads + FIX_HISTOGRAM_BLOCK_SIZE - 1) / FIX_HISTOGRAM_BLOCK_SIZE;
   }
   int FixSubtractSmallLeafGridX() const {
     const int num_need_fix = static_cast<int>(need_fix_histogram_features_.size());
@@ -1120,7 +1139,8 @@ class CUDAHistogramConstructor {
     return use_quantized_grad_ && !need_fix_histogram_features_.empty() && FalcataPlan::Get().fix_subtract_masked;
   }
   int FixSubtractMaskedSubtractBlocks() const {
-    return (num_total_bin_ + fix_subtract_masked_block_ - 1) / fix_subtract_masked_block_;
+    const int threads = FalcataPlan::Get().hist_subtract_vec4 ? (num_total_bin_ + 3) / 4 : num_total_bin_;
+    return (threads + fix_subtract_masked_block_ - 1) / fix_subtract_masked_block_;
   }
   int FixSubtractMaskedGridX() const {
     return FixSubtractMaskedSubtractBlocks() + static_cast<int>(need_fix_histogram_features_.size());

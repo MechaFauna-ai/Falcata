@@ -111,6 +111,16 @@ class CUDABestSplitFinder {
 
   void UpdateWarpFindEligibility();
 
+  /*! \brief whether LaunchFindBestSplitsDiscretizedForLevelKernel runs the warp-per-task kernel (required for
+   *  cuda_plan key final_level_sub_in_find, which computes parent - smaller on the fly inside WarpFindBest) */
+  bool WarpFindDiscretizedActive() const {
+#if defined(__HIP_PLATFORM_AMD__)
+    return false;
+#else
+    return warp_find_eligible_ && !FalcataFP32GainEnabled();
+#endif
+  }
+
   /*! \brief large-bin fallback stays fp64: the tree learner disables the fp32
    *  histogram mode when this is set */
   bool use_global_memory() const { return use_global_memory_; }
@@ -287,7 +297,8 @@ class CUDABestSplitFinder {
     const int num_pairs,
     const score_t* grad_scale,
     const score_t* hess_scale,
-    const bool gate_on_desc_counts = false);
+    const bool gate_on_desc_counts = false,
+    const bool subtract_on_fly = false);
 
   /*! \brief vector-leaf counterpart of FindBestSplitsForLevel: one find launch
    *  and one sync launch cover every sibling pair of a level over T histogram
@@ -507,6 +518,9 @@ class CUDABestSplitFinder {
     key->push_back(static_cast<const void*>(device_node_table_));
     key->push_back(static_cast<const void*>(device_node_tasks_));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(device_node_max_tasks_)));
+    // cuda_plan key final_level_sub_in_find: whether the final searched level runs SUBTRACT_ON_FLY in WarpFindBest
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(
+      WarpFindDiscretizedActive() && FalcataPlan::Get().final_level_sub_in_find ? 1 : 0)));
   }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
@@ -678,7 +692,8 @@ class CUDABestSplitFinder {
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
     const score_t* grad_scale,
-    const score_t* hess_scale);
+    const score_t* hess_scale,
+    const bool subtract_on_fly = false);
 
   void LaunchFindBestSplitsForLevelKernelVector(
     const CUDAHybridPairDescriptor* pair_descs,

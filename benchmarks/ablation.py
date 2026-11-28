@@ -90,6 +90,8 @@ ALL_KEYS = {
     "sync_copy_batched": True,
     "fix_subtract_fused": True,
     "fix_subtract_masked": True,
+    "final_level_sub_in_find": True,
+    "hist_subtract_vec4": True,
     "apply_inner_rows": True,
     "apply_genbit_rows": True,
     "aggregate_load_first": True,

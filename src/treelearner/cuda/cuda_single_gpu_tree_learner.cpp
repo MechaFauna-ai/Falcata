@@ -3744,6 +3744,13 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     // the children's search behind the apply, inside the scratch SetupDeviceLevels presized (a growth here would
     // reallocate under in-flight or captured kernels)
     CHECK_LE(max_splits, device_level_max_pairs_);
+    // cuda_plan key final_level_sub_in_find: on the final searched level of a complete quantized device_tree (no
+    // descendant level reads the larger children's histograms), skip SubtractHistogram and CopyChangedNumBitHistogram
+    // (only running FixHistogram on the smaller child when need-fix features exist) and compute parent - smaller on
+    // the fly inside WarpFindBest
+    const bool sub_in_find = FalcataPlan::Get().final_level_sub_in_find &&
+      cfg.whole_tree != 0 && level == num_levels - 2 && config_->use_quantized_grad &&
+      cuda_best_split_finder_->WarpFindDiscretizedActive();
     const int chunks = cfg.num_chunks > 1 ? DeviceTreeChunks(max_splits) : 1;
     if (chunks > 1) {
       // pair chunking: the level's construct over all its pairs (no per-pair scratch), then per chunk of
@@ -3767,9 +3774,14 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
           // cuda_plan key device_bynode_masks: the chunk's children's masks into the chunk's row slots
           EnqueueDeviceBynodeChunkMasks(find_stream, level, base, count);
         }
-        cuda_histogram_constructor_->SubtractHistogramsForLevel(chunk_descs, count,
-                                                                /*any_pair_needs_bit_change_copy=*/true);
-        cuda_best_split_finder_->FindBestSplitsForLevel(chunk_descs, count, grad_scale, hess_scale);
+        if (sub_in_find) {
+          cuda_histogram_constructor_->FixOnlyHistogramsForLevel(chunk_descs, count);
+        } else {
+          cuda_histogram_constructor_->SubtractHistogramsForLevel(chunk_descs, count,
+                                                                  /*any_pair_needs_bit_change_copy=*/true);
+        }
+        cuda_best_split_finder_->FindBestSplitsForLevel(chunk_descs, count, grad_scale, hess_scale,
+                                                        /*gate_on_desc_counts=*/false, sub_in_find);
       }
       cuda_histogram_constructor_->SetDeviceLevelState(dls, /*whole_tree=*/true);
       cuda_best_split_finder_->SetDeviceLevelState(dls);
@@ -3780,15 +3792,23 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     if (device_bynode_active_) {
       EnqueueDeviceBynodeMasks(find_stream, level, max_splits);
     }
-    cuda_histogram_constructor_->ConstructHistogramsForLevel(
-      cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, /*max_num_data_in_smaller_leaf=*/0,
-      /*any_pair_needs_bit_change_copy=*/true);
+    if (sub_in_find) {
+      cuda_histogram_constructor_->ConstructHistogramsForLevelOnly(
+        cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits);
+      cuda_histogram_constructor_->FixOnlyHistogramsForLevel(
+        cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits);
+    } else {
+      cuda_histogram_constructor_->ConstructHistogramsForLevel(
+        cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, /*max_num_data_in_smaller_leaf=*/0,
+        /*any_pair_needs_bit_change_copy=*/true);
+    }
     // (the record reads the split leaves' best-split entries, which this level's sync overwrites)
     cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, tree_record_done_event_);
     JoinDeviceBynode();
     cuda_best_split_finder_->SetDeviceLevelSelect(!cfg.whole_tree && level + 1 < num_levels ? cfg_device : nullptr);
     cuda_best_split_finder_->FindBestSplitsForLevel(
-      cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, grad_scale, hess_scale);
+      cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, grad_scale, hess_scale,
+      /*gate_on_desc_counts=*/false, sub_in_find);
     select_ran = cuda_best_split_finder_->LastSyncRanSelect();
     cuda_best_split_finder_->SetDeviceLevelSelect(nullptr);
   }
