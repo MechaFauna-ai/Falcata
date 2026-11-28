@@ -9,6 +9,7 @@
 #include <Falcata/falcata_plan.h>
 
 #include <cstdint>
+#include <cstring>
 
 #include "cuda_dense_binner.hpp"
 
@@ -49,6 +50,35 @@ __device__ __forceinline__ uint32_t DeviceValueToBin(
   return static_cast<uint32_t>(l);
 }
 
+// exact float32 replica of DeviceValueToBin using precomputed
+// FloatThresholdBelow(ub[m]) bounds: zero FP64 instructions, bit-identical for
+// every IEEE-754 float32 (including NaNs, +-0, +-inf, subnormals, boundaries).
+__device__ __forceinline__ uint32_t DeviceValueToBinFloat(
+    float value, const float* __restrict__ bounds,
+    const CUDADenseBinnerColMeta& meta) {
+  if (isnan(value)) {
+    if (meta.missing_is_nan) {
+      return static_cast<uint32_t>(meta.num_bin - 1);
+    }
+    value = 0.0f;
+  }
+  int l = 0;
+  int r = meta.num_bin - 1;
+  if (meta.missing_is_nan) {
+    r -= 1;
+  }
+  const float* ub = bounds + meta.bounds_offset;
+  while (l < r) {
+    int m = (r + l - 1) >> 1;
+    if (value <= ub[m]) {
+      r = m;
+    } else {
+      l = m + 1;
+    }
+  }
+  return static_cast<uint32_t>(l);
+}
+
 // exact device replica of BinMapper::ValueToBin for categorical bins. The
 // host truncates the value to int: NaN, values at or below -1 (negative after
 // truncation) and categories it never saw (at or above the table end, which
@@ -58,6 +88,18 @@ __device__ __forceinline__ uint32_t DeviceCategoryToBin(
     double value, const uint32_t* __restrict__ cat_bins,
     const CUDADenseBinnerColMeta& meta) {
   if (!(value > -1.0) || value >= static_cast<double>(meta.cat_size)) {
+    return 0;
+  }
+  return cat_bins[meta.cat_offset + static_cast<int>(value)];
+}
+
+// exact float32 replica of DeviceCategoryToBin: kMaxCategoryTableEntries <= 2^24
+// guarantees meta.cat_size is exactly representable in float32, so all
+// comparisons and truncation to int are bit-identical with zero FP64.
+__device__ __forceinline__ uint32_t DeviceCategoryToBinFloat(
+    float value, const uint32_t* __restrict__ cat_bins,
+    const CUDADenseBinnerColMeta& meta) {
+  if (!(value > -1.0f) || value >= static_cast<float>(meta.cat_size)) {
     return 0;
   }
   return cat_bins[meta.cat_offset + static_cast<int>(value)];
@@ -102,7 +144,7 @@ __device__ __forceinline__ uint32_t DeviceLutIndex(uint16_t v) {
 // parity=1 the first pair holds only the chunk's first row in its high slot
 // (the low slot stays zero and is OR-merged into the byte the previous chunk
 // already wrote). parity=0 reproduces the original behavior exactly.
-template <typename T, bool ROW_MAJOR, bool USE_LUT>
+template <typename T, bool ROW_MAJOR, bool USE_LUT, bool USE_F32_BOUNDS = false>
 __global__ void CUDADenseBinChunkKernel(const T* __restrict__ in,
                                         int64_t in_stride, data_size_t rows,
                                         data_size_t pairs, int parity,
@@ -131,6 +173,14 @@ __global__ void CUDADenseBinChunkKernel(const T* __restrict__ in,
       uint32_t enc;
       if constexpr (USE_LUT) {
         enc = tables.lut[tables.col_lut_off[col] + DeviceLutIndex<T>(raw)];
+      } else if constexpr (USE_F32_BOUNDS) {
+        const CUDADenseBinnerColMeta meta = tables.col_meta[col];
+        const float value = static_cast<float>(raw);
+        enc = DeviceEncodeBin(
+            meta.cat_size > 0
+                ? DeviceCategoryToBinFloat(value, tables.cat_bins, meta)
+                : DeviceValueToBinFloat(value, tables.bounds_f32, meta),
+            meta);
       } else {
         const CUDADenseBinnerColMeta meta = tables.col_meta[col];
         const double value = static_cast<double>(raw);
@@ -170,7 +220,7 @@ __global__ void CUDADenseBinChunkKernel(const T* __restrict__ in,
   }
 }
 
-template <typename T, bool USE_LUT>
+template <typename T, bool USE_LUT, bool USE_F32_BOUNDS = false>
 void LaunchTyped(const void* in, bool is_row_major, int64_t in_stride,
                  data_size_t rows, data_size_t pairs, int parity,
                  int num_groups, const CUDADenseBinnerTables& tables,
@@ -180,10 +230,10 @@ void LaunchTyped(const void* in, bool is_row_major, int64_t in_stride,
             static_cast<unsigned int>(num_groups));
   const T* typed_in = reinterpret_cast<const T*>(in);
   if (is_row_major) {
-    CUDADenseBinChunkKernel<T, true, USE_LUT><<<grid, block_dim, 0, stream>>>(
+    CUDADenseBinChunkKernel<T, true, USE_LUT, USE_F32_BOUNDS><<<grid, block_dim, 0, stream>>>(
         typed_in, in_stride, rows, pairs, parity, tables, out);
   } else {
-    CUDADenseBinChunkKernel<T, false, USE_LUT><<<grid, block_dim, 0, stream>>>(
+    CUDADenseBinChunkKernel<T, false, USE_LUT, USE_F32_BOUNDS><<<grid, block_dim, 0, stream>>>(
         typed_in, in_stride, rows, pairs, parity, tables, out);
   }
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
@@ -363,6 +413,342 @@ void LaunchTileTyped(const void* in, int64_t in_stride, int ncol,
   }
 }
 
+// Bank-conflict-free shared-memory tile kernel for row-major 16-bit LUT inputs
+// (int16, uint16, fp16 bits) with single-column feature groups:
+// 64 columns (128 bytes = 1 cache line) x 64 rows per block of 256 threads.
+// Column-major shared tile with stride 66 elements (33 4-byte words, odd):
+// - Phase 1: consecutive threads load consecutive columns (coalesced 64B/warp),
+//   writing [j * 66 + r] into 32 distinct banks (0 bank conflicts).
+// - Phase 2: each warp owns one column (32 row pairs), reading both rows of a
+//   pair as one aligned 32-bit word from 32 distinct banks (0 bank conflicts).
+constexpr int kI16TileCols = kCUDADenseBinTileColsI16;
+constexpr int kI16TileRows = 64;
+constexpr int kI16TilePairs = kI16TileRows / 2;
+constexpr int kI16TileLd = kI16TileRows + 2;  // 66 elements = 33 words (odd)
+constexpr int kI16TileThreads = 256;
+
+template <typename T>
+__global__ void __launch_bounds__(kI16TileThreads)
+CUDADenseBinTileI16Kernel(const T* __restrict__ in, int64_t in_stride, int ncol,
+                          data_size_t rows, data_size_t pairs, int parity,
+                          CUDADenseBinnerTables tables,
+                          uint8_t* __restrict__ out) {
+  static_assert(sizeof(T) == 2, "CUDADenseBinTileI16Kernel requires 2-byte T");
+  __shared__ alignas(16) T tile[kI16TileCols * kI16TileLd];
+  const data_size_t pair_base =
+      static_cast<data_size_t>(blockIdx.x) * kI16TilePairs;
+  const int col_base = static_cast<int>(blockIdx.y) * kI16TileCols;
+  const data_size_t row_base = pair_base * 2 - static_cast<data_size_t>(parity);
+  #pragma unroll
+  for (int i = threadIdx.x; i < kI16TileCols * kI16TileRows;
+       i += kI16TileThreads) {
+    const int r = i >> 6;
+    const int j = i & 63;
+    const data_size_t row = row_base + r;
+    const int col = col_base + j;
+    T v = 0;
+    if (row >= 0 && row < rows && col < ncol) {
+      v = in[static_cast<int64_t>(row) * in_stride + col];
+    }
+    tile[j * kI16TileLd + r] = v;
+  }
+  __syncthreads();
+  const int warp_id = threadIdx.x >> 5;
+  const int lane = threadIdx.x & 31;
+  const data_size_t pair = pair_base + lane;
+  if (pair >= pairs) {
+    return;
+  }
+  const data_size_t row0 = pair * 2 - static_cast<data_size_t>(parity);
+  for (int j = warp_id; j < kI16TileCols; j += kI16TileThreads / 32) {
+    const int col = col_base + j;
+    if (col >= ncol) {
+      continue;
+    }
+    const int group = tables.col_group[col];
+    if (group < 0) {
+      continue;
+    }
+    uint32_t pair_bits = 0;
+    std::memcpy(&pair_bits, &tile[j * kI16TileLd + 2 * lane], sizeof(uint32_t));
+    const T raw[2] = {
+        static_cast<T>(static_cast<uint16_t>(pair_bits & 0xFFFFu)),
+        static_cast<T>(static_cast<uint16_t>(pair_bits >> 16)),
+    };
+    const uint32_t* col_lut = tables.lut + tables.col_lut_off[col];
+    uint32_t vals[2] = {0, 0};
+    #pragma unroll
+    for (int t = 0; t < 2; ++t) {
+      const data_size_t row = row0 + t;
+      if (row < 0 || row >= rows) {
+        continue;
+      }
+      const uint32_t enc = col_lut[DeviceLutIndex<T>(raw[t])];
+      if (enc != kDeviceSkipBin) {
+        vals[t] = enc;
+      }
+    }
+    const uint8_t width = tables.group_width[group];
+    uint8_t* group_out = out + tables.group_pair_off[group] * pairs;
+    if (width == 0) {
+      group_out[pair] = static_cast<uint8_t>(vals[0] | (vals[1] << 4));
+      continue;
+    }
+    #pragma unroll
+    for (int t = 0; t < 2; ++t) {
+      const data_size_t row = row0 + t;
+      if (row < 0 || row >= rows) {
+        continue;
+      }
+      const data_size_t elem = pair * 2 + t;
+      if (width == 1) {
+        group_out[elem] = static_cast<uint8_t>(vals[t]);
+      } else if (width == 2) {
+        reinterpret_cast<uint16_t*>(group_out)[elem] =
+            static_cast<uint16_t>(vals[t]);
+      } else {
+        reinterpret_cast<uint32_t*>(group_out)[elem] = vals[t];
+      }
+    }
+  }
+}
+
+template <typename T>
+void LaunchTileI16Typed(const void* in, int64_t in_stride, int ncol,
+                        data_size_t rows, data_size_t pairs, int parity,
+                        const CUDADenseBinnerTables& tables, uint8_t* out,
+                        cudaStream_t stream) {
+  const dim3 grid(
+      static_cast<unsigned int>((pairs + kI16TilePairs - 1) / kI16TilePairs),
+      static_cast<unsigned int>((ncol + kI16TileCols - 1) / kI16TileCols));
+  CUDADenseBinTileI16Kernel<T><<<grid, kI16TileThreads, 0, stream>>>(
+      reinterpret_cast<const T*>(in), in_stride, ncol, rows, pairs, parity,
+      tables, out);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
+// Bank-conflict-free shared-memory tile kernel for row-major float32 inputs
+// with single-column feature groups and exact float32 bounds (zero FP64):
+// 32 columns (128 bytes = 1 cache line) x 128 rows per block of 256 threads.
+// Row-major shared tile[r * 33 + j] (stride 33 floats, odd):
+// - Phase 1: each warp reads 32 consecutive floats of one row (coalesced 128B)
+//   and writes tile[r * 33 + lane] -> 32 distinct banks (0 bank conflicts).
+// - Phase 2: each warp owns one column at a time across 4 chunks of 32 rows,
+//   reading tile[(r_base + lane) * 33 + j] -> 32 distinct banks (0 conflicts).
+//   Every lane in the warp shares the same column metadata and bounds:
+//   - r_init <= 32: bounds kept in 1 register/lane, searched via __shfl_sync
+//   - 32 < r_init <= 256: bounds staged once into per-warp shared s_ub[warp_id]
+//   - r_init > 256: bounds read from L1-cached global memory.
+//   For 4-bit packed output (width == 0), adjacent even/odd lanes combine via
+//   __shfl_down_sync; all 32 lanes stay convergent through warp primitives.
+constexpr int kF32TileCols = kCUDADenseBinTileColsF32;
+constexpr int kF32TileRows = 128;
+constexpr int kF32TilePairs = kF32TileRows / 2;
+constexpr int kF32TileLd = kF32TileCols + 1;  // 33 floats (odd)
+constexpr int kF32TileThreads = 256;
+constexpr int kF32TileWarps = kF32TileThreads / 32;
+constexpr int kF32SmemMaxBounds = 256;
+
+__device__ __forceinline__ void WriteTileF32WarpChunk(
+    uint32_t val, uint8_t width, uint8_t* __restrict__ group_out,
+    data_size_t pair_base, data_size_t row, data_size_t rows, data_size_t pairs,
+    int r_base, int lane) {
+  if (width == 0) {
+    const uint32_t hi = __shfl_down_sync(0xFFFFFFFFu, val, 1);
+    if ((lane & 1) == 0) {
+      const data_size_t row_pair = pair_base + ((r_base + lane) >> 1);
+      if (row_pair < pairs) {
+        group_out[row_pair] = static_cast<uint8_t>(val | (hi << 4));
+      }
+    }
+    return;
+  }
+  if (row >= 0 && row < rows) {
+    const data_size_t elem = pair_base * 2 + r_base + lane;
+    if (width == 1) {
+      group_out[elem] = static_cast<uint8_t>(val);
+    } else if (width == 2) {
+      reinterpret_cast<uint16_t*>(group_out)[elem] =
+          static_cast<uint16_t>(val);
+    } else {
+      reinterpret_cast<uint32_t*>(group_out)[elem] = val;
+    }
+  }
+}
+
+__global__ void __launch_bounds__(kF32TileThreads, 3)
+CUDADenseBinTileF32Kernel(const float* __restrict__ in, int64_t in_stride,
+                          int ncol, data_size_t rows, data_size_t pairs,
+                          int parity, CUDADenseBinnerTables tables,
+                          uint8_t* __restrict__ out) {
+  __shared__ alignas(16) float tile[kF32TileRows * kF32TileLd];
+  __shared__ alignas(16) float s_ub[kF32TileWarps][kF32SmemMaxBounds];
+  const data_size_t pair_base =
+      static_cast<data_size_t>(blockIdx.x) * kF32TilePairs;
+  const int col_base = static_cast<int>(blockIdx.y) * kF32TileCols;
+  const data_size_t row_base = pair_base * 2 - static_cast<data_size_t>(parity);
+  #pragma unroll
+  for (int i = threadIdx.x; i < kF32TileCols * kF32TileRows;
+       i += kF32TileThreads) {
+    const int r = i >> 5;
+    const int j = i & 31;
+    const data_size_t row = row_base + r;
+    const int col = col_base + j;
+    float v = 0.0f;
+    if (row >= 0 && row < rows && col < ncol) {
+      v = in[static_cast<int64_t>(row) * in_stride + col];
+    }
+    tile[r * kF32TileLd + j] = v;
+  }
+  __syncthreads();
+  const int warp_id = threadIdx.x >> 5;
+  const int lane = threadIdx.x & 31;
+  float* warp_ub = s_ub[warp_id];
+  for (int j = warp_id; j < kF32TileCols; j += kF32TileWarps) {
+    const int col = col_base + j;
+    if (col >= ncol) {
+      continue;
+    }
+    const int group = tables.col_group[col];
+    if (group < 0) {
+      continue;
+    }
+    const CUDADenseBinnerColMeta meta = tables.col_meta[col];
+    const uint8_t width = tables.group_width[group];
+    uint8_t* group_out = out + tables.group_pair_off[group] * pairs;
+    if (meta.cat_size > 0) {
+      #pragma unroll
+      for (int r_base = 0; r_base < kF32TileRows; r_base += 32) {
+        const data_size_t row = row_base + r_base + lane;
+        uint32_t val = 0;
+        if (row >= 0 && row < rows) {
+          const float raw = tile[(r_base + lane) * kF32TileLd + j];
+          const uint32_t enc = DeviceEncodeBin(
+              DeviceCategoryToBinFloat(raw, tables.cat_bins, meta), meta);
+          if (enc != kDeviceSkipBin) {
+            val = enc;
+          }
+        }
+        WriteTileF32WarpChunk(val, width, group_out, pair_base, row, rows,
+                              pairs, r_base, lane);
+      }
+      continue;
+    }
+    const int r_init = meta.num_bin - 1 - static_cast<int>(meta.missing_is_nan);
+    const float* ub = tables.bounds_f32 + meta.bounds_offset;
+    if (r_init <= 32) {
+      const float my_ub = (lane < r_init) ? ub[lane] : 0.0f;
+      const int steps = (r_init > 0) ? (32 - __clz(r_init)) : 0;
+      #pragma unroll
+      for (int r_base = 0; r_base < kF32TileRows; r_base += 32) {
+        const data_size_t row = row_base + r_base + lane;
+        const bool active = (row >= 0 && row < rows);
+        float value = active ? tile[(r_base + lane) * kF32TileLd + j] : 0.0f;
+        const bool is_nan = isnan(value);
+        if (is_nan) {
+          value = 0.0f;
+        }
+        int l = 0;
+        int r = r_init;
+        for (int s = 0; s < steps; ++s) {
+          const int m = (l < r) ? ((r + l - 1) >> 1) : 0;
+          const float bound = __shfl_sync(0xFFFFFFFFu, my_ub, m);
+          if (l < r) {
+            if (value <= bound) {
+              r = m;
+            } else {
+              l = m + 1;
+            }
+          }
+        }
+        uint32_t val = 0;
+        if (active) {
+          const uint32_t bin = (is_nan && meta.missing_is_nan)
+                                   ? static_cast<uint32_t>(meta.num_bin - 1)
+                                   : static_cast<uint32_t>(l);
+          const uint32_t enc = DeviceEncodeBin(bin, meta);
+          if (enc != kDeviceSkipBin) {
+            val = enc;
+          }
+        }
+        WriteTileF32WarpChunk(val, width, group_out, pair_base, row, rows,
+                              pairs, r_base, lane);
+      }
+    } else if (r_init <= kF32SmemMaxBounds) {
+      // WAR barrier: all lanes of the warp must finish reading warp_ub from
+      // any previous column before overwriting s_ub[warp_id].
+      __syncwarp();
+      for (int idx = lane; idx < r_init; idx += 32) {
+        warp_ub[idx] = ub[idx];
+      }
+      __syncwarp();
+      #pragma unroll
+      for (int r_base = 0; r_base < kF32TileRows; r_base += 32) {
+        const data_size_t row = row_base + r_base + lane;
+        uint32_t val = 0;
+        if (row >= 0 && row < rows) {
+          float value = tile[(r_base + lane) * kF32TileLd + j];
+          uint32_t bin;
+          if (isnan(value) && meta.missing_is_nan) {
+            bin = static_cast<uint32_t>(meta.num_bin - 1);
+          } else {
+            if (isnan(value)) {
+              value = 0.0f;
+            }
+            int l = 0;
+            int r = r_init;
+            while (l < r) {
+              const int m = (r + l - 1) >> 1;
+              if (value <= warp_ub[m]) {
+                r = m;
+              } else {
+                l = m + 1;
+              }
+            }
+            bin = static_cast<uint32_t>(l);
+          }
+          const uint32_t enc = DeviceEncodeBin(bin, meta);
+          if (enc != kDeviceSkipBin) {
+            val = enc;
+          }
+        }
+        WriteTileF32WarpChunk(val, width, group_out, pair_base, row, rows,
+                              pairs, r_base, lane);
+      }
+    } else {
+      #pragma unroll
+      for (int r_base = 0; r_base < kF32TileRows; r_base += 32) {
+        const data_size_t row = row_base + r_base + lane;
+        uint32_t val = 0;
+        if (row >= 0 && row < rows) {
+          const float raw = tile[(r_base + lane) * kF32TileLd + j];
+          const uint32_t enc = DeviceEncodeBin(
+              DeviceValueToBinFloat(raw, tables.bounds_f32, meta), meta);
+          if (enc != kDeviceSkipBin) {
+            val = enc;
+          }
+        }
+        WriteTileF32WarpChunk(val, width, group_out, pair_base, row, rows,
+                              pairs, r_base, lane);
+      }
+    }
+  }
+}
+
+void LaunchTileF32(const void* in, int64_t in_stride, int ncol,
+                   data_size_t rows, data_size_t pairs, int parity,
+                   const CUDADenseBinnerTables& tables, uint8_t* out,
+                   cudaStream_t stream) {
+  CHECK(tables.bounds_f32 != nullptr);
+  const dim3 grid(
+      static_cast<unsigned int>((pairs + kF32TilePairs - 1) / kF32TilePairs),
+      static_cast<unsigned int>((ncol + kF32TileCols - 1) / kF32TileCols));
+  CUDADenseBinTileF32Kernel<<<grid, kF32TileThreads, 0, stream>>>(
+      reinterpret_cast<const float*>(in), in_stride, ncol, rows, pairs, parity,
+      tables, out);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
 template <typename T>
 __global__ void CUDAGatherRowsKernel(const T* __restrict__ in,
                                      bool is_row_major, data_size_t nrow,
@@ -453,8 +839,15 @@ void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
   CheckCUDADeviceSupportsThisBuild(-1);
   switch (dtype_code) {
     case 0:
-      LaunchTyped<float, false>(in, is_row_major, in_stride, rows, pairs,
-                                parity, num_groups, tables, out, stream);
+      if (tables.bounds_f32 != nullptr) {
+        LaunchTyped<float, false, true>(in, is_row_major, in_stride, rows,
+                                        pairs, parity, num_groups, tables, out,
+                                        stream);
+      } else {
+        LaunchTyped<float, false, false>(in, is_row_major, in_stride, rows,
+                                         pairs, parity, num_groups, tables, out,
+                                         stream);
+      }
       break;
     case 1:
       LaunchTyped<double, false>(in, is_row_major, in_stride, rows, pairs,
@@ -491,14 +884,27 @@ void LaunchCUDADenseBinTileKernel(const void* in, int dtype_code,
   if (pairs <= 0) {
     return;
   }
+  CheckCUDADeviceSupportsThisBuild(-1);
   switch (dtype_code) {
+    case 0:
+      LaunchTileF32(in, in_stride, ncol, rows, pairs, parity, tables, out,
+                    stream);
+      break;
     case 2:
       LaunchTileTyped<int8_t>(in, in_stride, ncol, rows, pairs, parity,
                               tile_rows, tile_threads, tables, out, stream);
       break;
+    case 3:
+      LaunchTileI16Typed<int16_t>(in, in_stride, ncol, rows, pairs, parity,
+                                  tables, out, stream);
+      break;
     case 4:
       LaunchTileTyped<uint8_t>(in, in_stride, ncol, rows, pairs, parity,
                                tile_rows, tile_threads, tables, out, stream);
+      break;
+    case 5:
+      LaunchTileI16Typed<uint16_t>(in, in_stride, ncol, rows, pairs, parity,
+                                   tables, out, stream);
       break;
     default:
       Log::Fatal("CUDADenseBinner: no tile kernel for dtype code %d", dtype_code);

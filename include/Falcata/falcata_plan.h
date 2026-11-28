@@ -193,6 +193,11 @@ struct FalcataPlan {
   // GPU binning of row-major int8/uint8 input whose groups are one column each:
   // coalesced shared-memory tile kernel (off: the per-thread gather kernel)
   bool construct_tile_bin = true;   // key: construct_tile_bin
+  // GPU binning of float32 (exact float32 bounds binary search, zero FP64, plus
+  // bank-conflict-free 32x128 shared-memory tile kernel for row-major
+  // single-column groups) and row-major int16/uint16/fp16 (64x64 tile kernel):
+  // off restores the double-bounds non-tiled chunk kernel for those dtypes
+  bool construct_tile_bin_f32 = true;  // key: construct_tile_bin_f32
   // key construct_tile_rows: the tile kernel's input rows per block, an even number in [2, 384] (the tile is
   // kConstructTileCols (128) x rows bytes of shared memory, plus up to 6 bytes of bank-conflict padding per column
   // below 382 rows (see TileStride in cuda_dense_binner.cu), within kConstructTileSmemBytes (48 KB), the shared
@@ -1068,6 +1073,7 @@ struct FalcataPlan {
     if (key == "construct_staging_pool") return &construct_staging_pool;
     if (key == "construct_h2d_overlap") return &construct_h2d_overlap;
     if (key == "construct_tile_bin") return &construct_tile_bin;
+    if (key == "construct_tile_bin_f32") return &construct_tile_bin_f32;
     if (key == "efb_precheck") return &efb_precheck;
     if (key == "split_packed_read") return &split_packed_read;
     if (key == "split_packed_read8") return &split_packed_read8;
