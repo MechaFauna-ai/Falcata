@@ -103,9 +103,10 @@ struct FalcataPlan {
   bool nonquant_hist_cost = true;  // key: nonquant_hist_cost
   // non-quantized fixed-point histogram construct (nonquant_deterministic / nonquant_hist_cost): pre-scale each row's
   // (grad, hess) to 64-bit fixed-point integers once per tree instead of repeating scalbnf + __float2ll_rn per column
-  // per row, use native 64-bit shared atomicAdd_block on sm_70+ (wrapping two's complement addition, bit-identical to
-  // the 32-bit carry emulation), and batch rows in flight with index prefetching + zero-bin flush skip. Same integer
-  // addends and wrapping sums: bit-identical. Off restores the baseline per-row scalbnf + emulated atomic path.
+  // per row, use branchless split lo/hi 32-bit ATOMS.ADD with PTX add.cc.u32/addc.u32 carry propagation (avoiding
+  // sm_120's ATOMS.CAST.SPIN.64 CAS spin-loop while overlapping lo atomic latencies across each batch), and batch rows
+  // in flight with index prefetching + zero-bin flush skip. Same integer addends and wrapping sums mod 2^64:
+  // bit-identical. Off restores the baseline per-row scalbnf + branched carry-atomic path.
   bool nonquant_fixed_prescale = true;  // key: nonquant_fixed_prescale
   // per-tree compact column view for quantized construct at any
   // 0 < feature_fraction < 1 (win scales with the excluded fraction:

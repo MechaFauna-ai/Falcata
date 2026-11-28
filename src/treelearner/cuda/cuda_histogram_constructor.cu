@@ -2046,8 +2046,9 @@ __global__ void PrescaleNonquantFixedGHKernel(
                 "longlong2 must pack two 64-bit fixed-point addends with 16-byte alignment");
   const int scale_g = fixed_scale[0];
   const int scale_h = fixed_scale[1];
-  for (data_size_t i = static_cast<data_size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < n;
-       i += static_cast<data_size_t>(gridDim.x) * blockDim.x) {
+  const int64_t n64 = static_cast<int64_t>(n);
+  const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
+  for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < n64; i += stride) {
     const int64_t g = NonquantFixedAddend(static_cast<float>(gradients[i]), scale_g);
     const int64_t h = NonquantFixedAddend(static_cast<float>(hessians[i]), scale_h);
     fixed_gh[i] = make_longlong2(static_cast<ll_t>(g), static_cast<ll_t>(h));

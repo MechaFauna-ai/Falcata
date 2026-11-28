@@ -202,7 +202,25 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
   // hessians by powers of two from their max |value| (the interleave pass below collects it when it runs, else
   // LaunchNonquantFixedScale does); same legacy-stream ordering
   const bool nq_fixed = !use_quantized_grad_ && NonquantFixedActive() && gradients != nullptr && hessians != nullptr;
-  const bool nq_prescale = nq_fixed && FalcataPlan::Get().nonquant_fixed_prescale && num_data_ > 0;
+  bool nq_prescale = nq_fixed && FalcataPlan::Get().nonquant_fixed_prescale && num_data_ > 0;
+  if (nq_prescale) {
+    // Release the 8 B/row float2 interleave buffer before allocating the 16 B/row prescaled buffer so peak VRAM
+    // never holds both simultaneously; gracefully fall back to per-row scaling if device memory is tight.
+    cuda_gradients_hessians_.Clear();
+    if (cuda_nonquant_fixed_gh_.Size() < static_cast<size_t>(num_data_)) {
+      if (!cuda_nonquant_fixed_gh_.TryResizeDiscard(static_cast<size_t>(num_data_))) {
+        if (!nq_fixed_prescale_oom_warned_) {
+          nq_fixed_prescale_oom_warned_ = true;
+          Log::Warning("nonquant_fixed_prescale: unable to allocate %zu MiB for prescaled gradients; "
+                       "falling back to per-row scaling",
+                       ToMiB(static_cast<size_t>(num_data_) * sizeof(longlong2)));
+        }
+        nq_prescale = false;
+      }
+    }
+  } else if (cuda_nonquant_fixed_gh_.Size() > 0) {
+    cuda_nonquant_fixed_gh_.Clear();
+  }
   if (nq_fixed) {
     if (nq_scale_.Size() < 2) {
       nq_scale_.Resize(2);
@@ -227,12 +245,14 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
     LaunchNonquantFixedScale(gradients, hessians, num_data_, gh_interleave_valid_, nq_absmax_bits_.RawData(),
                              nq_scale_.RawData(), nq_inv_scale_.RawData());
     if (nq_prescale) {
-      if (cuda_nonquant_fixed_gh_.Size() < static_cast<size_t>(num_data_)) {
-        cuda_nonquant_fixed_gh_.ResizeDiscard(static_cast<size_t>(num_data_));
-      }
       LaunchPrescaleNonquantFixedGH(gradients, hessians, nq_scale_.RawDataReadOnly(), num_data_,
                                     cuda_nonquant_fixed_gh_.RawData());
       nq_fixed_prescale_valid_ = true;
+      if (FalcataDebug().diag && !nq_fixed_prescale_diag_logged_) {
+        nq_fixed_prescale_diag_logged_ = true;
+        fprintf(stderr, "[hybrid-diag] nonquant_fixed_prescale: active (%d rows, %zu MiB)\n",
+                num_data_, ToMiB(static_cast<size_t>(num_data_) * sizeof(longlong2)));
+      }
     }
   }
   const void* l2_target = nq_fixed_prescale_valid_

@@ -1030,6 +1030,9 @@ __device__ __forceinline__ void HistSharedAddFixed(nq_fixed_t* dst, const nq_fix
   const uint32_t lo = static_cast<uint32_t>(v);
   const uint32_t old = atomicAdd_block(words, lo);
   if constexpr (FAST_BRANCHLESS) {
+    // Unconditionally issuing the hi atomic is intentional: with fixed-point scale 62 - e - lg_n,
+    // hi is almost never zero (all negative addends have upper word ~0u and positive ones span >> 2^32),
+    // so omitting `if (hi != 0u)` removes a ~99%-taken branch + BSSY/BSYNC on every add.
     const uint32_t hi = HistSharedAddFixedCarryHi(old, lo, static_cast<uint32_t>(v >> 32));
     atomicAdd_block(words + 1, hi);
   } else {

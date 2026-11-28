@@ -1577,6 +1577,8 @@ class CUDAHistogramConstructor {
   // to num_data_ only when fixed-point nonquant is active)
   CUDAVector<longlong2> cuda_nonquant_fixed_gh_;
   bool nq_fixed_prescale_valid_ = false;
+  bool nq_fixed_prescale_oom_warned_ = false;
+  bool nq_fixed_prescale_diag_logged_ = false;
   // set while the batched construct launches its fixed-point instantiation: the kernel applies the exponents,
   // and the launch sites pass the fixed table's dynamic shared memory
   bool nq_fixed_launch_ = false;
