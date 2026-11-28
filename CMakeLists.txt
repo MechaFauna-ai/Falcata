@@ -504,6 +504,24 @@ if(USE_CUDA)
     else()
       set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
     endif()
+    # Parallelize per-architecture cicc/ptxas invocations inside nvcc (CUDA 11.2+).
+    # Ignored by nvcc on single-architecture builds; bounded to 4 by default to
+    # avoid memory oversubscription when paired with parallel Ninja/Make builds.
+    set(
+      FALCATA_NVCC_THREADS
+      "4"
+      CACHE STRING
+      "Max nvcc --threads for multi-architecture CUDA builds (0 = all CPUs, 1 = disabled)"
+    )
+    if(
+      CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA"
+      AND CUDAToolkit_VERSION VERSION_GREATER_EQUAL "11.2"
+      AND FALCATA_NVCC_THREADS MATCHES "^[0-9]+$"
+      AND NOT "${FALCATA_NVCC_THREADS}" STREQUAL "1"
+      AND NOT CMAKE_CUDA_FLAGS MATCHES "(^| )(--threads|-t)(=| |$)"
+    )
+      set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --threads=${FALCATA_NVCC_THREADS}")
+    endif()
     message(STATUS "CMAKE_CUDA_FLAGS: ${CMAKE_CUDA_FLAGS}")
 
     add_definitions(-DUSE_CUDA)
