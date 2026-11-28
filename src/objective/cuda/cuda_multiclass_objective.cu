@@ -144,14 +144,16 @@ __global__ void __launch_bounds__(GET_GRADIENTS_BLOCK_SIZE_MULTICLASS) GetGradie
 //   - for k == kmax: 1 - p[kmax] = S_other * inv_wsum = qmax (zero cancellation in our evaluation!).
 //
 // Error bounds vs the original double expression (N = num_class <= 32):
-//   - SoftmaxLeanExpNeg(d) for d in [-700, 0] uses a 512-entry table (k = rint(d_rn * 512/ln2), |r| <= 0.000731,
-//     single FMA reduction omitting lo: |k * lo| <= 2.34e-14 < 2^-45.27), fp32 tail = rf^2 * (1/2 + rf/6 + rf^2/24)
-//     (error <= 2^-22 * 2.68e-7 = 6.4e-14), dr = r + tail, scaled = fma(dr, tbl, tbl): ONLY 3 FP64 ops per exp,
-//     total relative error < 9.0e-14 < 2^-43.3 (measured max 2^-43.79).
-//   - S_other (<= 31 non-negative adds): < 2^-43.2; wsum = 1 + S_other: < 2^-43.2; inv_wsum (one Newton step from
-//     __frcp_rn(SoftmaxLeanApproxFloatRN(wsum)), error <= 2^-46): < 2^-43.0 relative to 1 / wsum*.
+//   - SoftmaxLeanExpNeg(d) for d in [-700, 0] uses a 512-entry table (k = rint(d_rn * 512/ln2), |k - d*512/ln2| <=
+//     0.545 accounting for float rounding of d near -700, so |r| <= 0.000738; single FMA reduction omitting lo:
+//     |k * lo| <= 2.34e-14 < 2^-45.27), fp32 tail = rf^2 * (1/2 + rf/6 + rf^2/24) (error <= 2^-22 * 2.73e-7 = 6.5e-14),
+//     dr = r + tail, scaled = fma(dr, tbl, tbl): ONLY 3 FP64 ops per exp, total relative error < 2^-43.1 (measured max
+//     2^-43.79).
+//   - S_other (<= 31 non-negative adds): < 2^-43.0; wsum = 1 + S_other: < 2^-43.0; inv_wsum (one Newton step from
+//     __frcp_rn(SoftmaxLeanApproxFloatRN(wsum)), error <= 2^-46): < 2^-42.8 relative to 1 / wsum*.
 //   - Original kernel's wsum_orig has relative error < 2^-47.9 and absolute error <= (N - 1)*2^-53*wsum + 2^-51*S_other,
-//     so p_orig[k] for k != kmax is within 2^-42.0 (< 2048 double ulps) of our p[k]; margin 4096 ulps (2x slack).
+//     so p_orig[k] for k != kmax is within 2^-41.9 (< 2200 double ulps) of our p[k]; margin 4096 ulps for p/g and
+//     6144 ulps for h (>2x slack).
 //   - For k == kmax:
 //     (1) If S_other < 2^-55, then sum_{k != kmax} e_orig[k] < 2^-54 < 0.5 * ulp(1.0), so wsum_orig == 1.0
 //         bit-for-bit, p_orig[kmax] == 1.0 exact, g_orig = (label == kmax ? +0.0 : weight), and h_orig = +0.0 exact.
@@ -161,13 +163,15 @@ __global__ void __launch_bounds__(GET_GRADIENTS_BLOCK_SIZE_MULTICLASS) GetGradie
 //         order using Dekker's FastTwoSum to certify wsum_ord == wsum_orig bit-for-bit (fails only when an addition
 //         lands within 2^-41 * S_other of a double midpoint of 1.0, < 0.5% at 1e-6 and < 1e-6 at 1e-10!), then run
 //         ONE exact FP64 division 1.0 / wsum_ord for kmax alone without recomputing any exp().
-//   - Underflow to +0.0f: for proven non-negative quantities with margin < 2^27 (relative error < 2^-26), any double in
-//     [0, 2^-151) implies original double in [0, 2^-150 = 0.5 * FLT_TRUE_MIN), which provably rounds to +0.0f.
+//   - Underflow to +0.0f: for proven non-negative quantities with margin < 2^27 (relative error <= margin * 2^-52 <
+//     2^-25), any double in [0, 2^-151) implies original double in [0, 2^-151 * (1 + 2^-25) < 2^-150 = 0.5 *
+//     FLT_TRUE_MIN), which provably rounds to +0.0f.
 //   - Any row still failing a check runs MulticlassSoftmaxExactFallback (the exact original double expression).
 constexpr bool kSoftmaxLeanScoreIsFloat = std::is_same<score_t, float>::value;
 constexpr int kSoftmaxLeanBlockSize = 256;
 
-// Integer round-to-nearest double -> float in float's normal range (relative error <= 2^-24).
+// Integer round-to-nearest double -> float in float's normal range (relative error <= 2^-24); avoids the 1/64-rate
+// FP64 pipe's F2F.F32.F64 instruction.
 __device__ __forceinline__ float SoftmaxLeanApproxFloatRN(const double v) {
   const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(v));  // NOLINT(runtime/int)
   const int biased = static_cast<int>((bits >> 52) & 0x7ffu);
@@ -183,6 +187,8 @@ __device__ __forceinline__ float SoftmaxLeanApproxFloatRN(const double v) {
   return __int_as_float(static_cast<int>(fbits));
 }
 
+// Exact float -> double for normal floats and +-0.0f only (not float subnormals, NaN, or Inf); runs on the integer
+// pipe to avoid F2F.F64.F32 on the 1/64-rate FP64 pipe.
 __device__ __forceinline__ double SoftmaxLeanFloatToDouble(const float f) {
   const unsigned int fbits = static_cast<unsigned int>(__float_as_int(f));
   const unsigned long long sign = static_cast<unsigned long long>(fbits >> 31) << 63;  // NOLINT(runtime/int)
@@ -380,7 +386,9 @@ __device__ __forceinline__ double SoftmaxLeanExpNeg(const double d) {
   const double dr = r + SoftmaxLeanFloatToDouble(tail_f);
   const double tbl = kSoftmaxLeanExp2Table512[k & 511];
   const double scaled = fma(dr, tbl, tbl);
-  return __longlong_as_double(__double_as_longlong(scaled) + (static_cast<long long>(k >> 9) << 52));  // NOLINT(runtime/int)
+  const unsigned long long scaled_bits = static_cast<unsigned long long>(__double_as_longlong(scaled));  // NOLINT(runtime/int)
+  const unsigned long long exp_delta = static_cast<unsigned long long>(static_cast<long long>(k >> 9)) << 52;  // NOLINT(runtime/int)
+  return __longlong_as_double(static_cast<long long>(scaled_bits + exp_delta));  // NOLINT(runtime/int)
 }
 
 template <bool USE_WEIGHT, int MAX_CLASS>
@@ -477,6 +485,10 @@ __global__ void __launch_bounds__(kSoftmaxLeanBlockSize) GetGradientsKernel_Mult
     if (k < num_class && k != kmax) {
       const double d = p[k] - wmax;
       double ek = 0.0;
+      // Under USE_WEIGHT, require d >= -650.0 so e[k] >= exp(-650) > 2^-938 and pk, h stay strictly inside
+      // SoftmaxLeanWideNormal (>= 2^-959) before multiplying by weight (rows with d < -650 fall back so extreme
+      // weights like 1e300 cannot turn a clamped 0 into a wrong float). Unweighted rows safely clamp d < -700.0
+      // (e[k] < 2^-1009 << 0.5 * FLT_TRUE_MIN) to 0.0.
       if (!(d <= 0.0)) {
         ok = false;
       } else if (d >= (USE_WEIGHT ? -650.0 : -700.0)) {
@@ -594,7 +606,7 @@ __global__ void __launch_bounds__(kSoftmaxLeanBlockSize) GetGradientsKernel_Mult
             const double fp = p[k] * f_inv;
             const double h_val = fma(-pk, fp, fp);
             const double hw = USE_WEIGHT ? (h_val * weight) : h_val;
-            if (!SoftmaxLeanSettledNonNegFloat(hw, 4096.0f, &h_out)) {
+            if (!SoftmaxLeanSettledNonNegFloat(hw, 6144.0f, &h_out)) {
               ok = false;
             }
             if (k == label) {
@@ -646,8 +658,9 @@ void CUDAMulticlassSoftmax::LaunchGetGradientsKernel(const double* scores, score
   const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_MULTICLASS - 1) / GET_GRADIENTS_BLOCK_SIZE_MULTICLASS;
   const FalcataPlan& plan = FalcataPlan::Get();
   if (plan.softmax_registers) {
-    // class capacities 8 / 16 / 32 (at 32 the 64-register cap of __launch_bounds__(1024) spills part of the array to
-    // thread-interleaved local memory, still coalesced); wider class counts keep the scratch kernel
+    // class capacities 8 / 16 / 32 (for the non-lean kernel at 32, the 64-register cap of __launch_bounds__(1024)
+    // spills part of the array to thread-interleaved local memory, still coalesced; the lean kernel uses 256-thread
+    // blocks and stays spill-free across 8 / 16 / 32); wider class counts keep the scratch kernel
     const bool lean = plan.softmax_fp64_lean;
     const bool launched = cuda_weights_ == nullptr ?
       (LaunchMulticlassSoftmaxRegisters<false, 8>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
