@@ -462,6 +462,12 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
 #ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
   WholeMapOnlyFaultCheckpoint(this, WholeMapOnlyFaultPoint::BeforeRootReuse);
 #endif
+  prefill_launched_this_tree_ = false;
+  if (FalcataPlan::Get().compact_prefill_dt || FalcataPlan::Get().compact_prefill) {
+    // Record an event on stream 0 after the previous tree's UpdateScore / OOB / GetGradients so
+    // the next tree's prefill into *_alt_ buffers waits on the GPU without a host sync.
+    cuda_histogram_constructor_->RecordPrevTreeDone();
+  }
   const data_size_t root_num_data = cuda_data_partition_->root_num_data();
   if (!boosting_on_cuda_) {
     const size_t grad_count = static_cast<size_t>(num_data_) *
@@ -611,13 +617,6 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     cuda_histogram_constructor_->SetFeatureUsedBytree(fp_feature_mask_);
     cuda_histogram_constructor_->BuildCompactView(fp_feature_mask_);
   } else {
-    // cuda_plan key tree_meta_batch: the uploads from here to the compact fill go out as one copy and one scatter
-    // (flushed before the fill and any other GPU operation in between, and at the end of this block)
-    TreeStartMetaBatchScope meta_batch_scope(
-      FalcataPlan::Get().tree_meta_batch && AsyncTreeStart() && nccl_communicator_ == nullptr ?
-        &tree_meta_batch_ : nullptr);
-    cuda_best_split_finder_->BeforeTrain(col_sampler_.is_feature_used_bytree());
-    cuda_histogram_constructor_->SetFeatureUsedBytree(col_sampler_.is_feature_used_bytree());
     // fused root histogram: the fill sees every row, which is the root leaf only without bagging; the root level
     // of the batched host flow consumes it (EnqueueLevelBestSplitSearch)
     // cuda_plan key bagged_code_view: under bagging the root is the bag, so the fill's histogram of every row is
@@ -627,15 +626,52 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
       use_hybrid_growth_ && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr;
     const bool root_is_every_row = !cuda_data_partition_->use_bagging() && root_num_data == num_data_;
     const bool bagged_code_view = FalcataPlan::Get().bagged_code_view && cuda_data_partition_->use_bagging();
-    cuda_histogram_constructor_->RequestFusedRootHist(
-      fused_root_shape && (root_is_every_row || bagged_code_view),
-      config_->use_quantized_grad && cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0) <= 16,
-      !root_is_every_row);
-    // cuda_plan key pair_code5: no code view for a tree whose split path reads the nibble view anyway
-    cuda_histogram_constructor_->AllowCode5View(!BuildsOneByteSplitView());
-    cuda_histogram_constructor_->BuildCompactView(col_sampler_.is_feature_used_bytree());
-    cuda_histogram_constructor_->RequestFusedRootHist(false, false);
-    meta_batch_scope.End();
+    const bool want_fused_root = fused_root_shape && root_is_every_row;
+    const bool allow_code5 = !BuildsOneByteSplitView();
+    const std::vector<int8_t>& bytree_mask = col_sampler_.is_feature_used_bytree();
+    const bool use_prefill_meta = prefill_meta_ready_ &&
+      FalcataPlan::Get().compact_prefill_dt && AsyncTreeStart() &&
+      !cuda_histogram_constructor_->view_mask_regime() &&
+      prefill_meta_bitmap_ == bytree_mask &&
+      (!prefill_meta_has_fused_compact_ ||
+       (prefill_meta_want_fused_root_ == want_fused_root && prefill_meta_allow_code5_ == allow_code5));
+    prefill_meta_ready_ = false;
+    if (use_prefill_meta) {
+      // Cross-tree overlapped metadata hit: H2D already completed on prefetch_stream_ during the previous tree.
+      // Wait on GPU event + run ONE vectorized MetaBatchScatter into fixed device pointers (zero host loops,
+      // zero PCIe wait, zero CUDA graph misses).
+      prefill_meta_batch_.ConsumeOnDefaultStream();
+      cuda_best_split_finder_->ApplyPrecomputedBeforeTrain(&prefill_finder_state_);
+      cuda_histogram_constructor_->ApplyPrecomputedSetFeatureUsedBytree(prefill_hist_feature_state_);
+      cuda_histogram_constructor_->RequestFusedRootHist(
+        fused_root_shape && (root_is_every_row || bagged_code_view),
+        config_->use_quantized_grad && cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0) <= 16,
+        !root_is_every_row);
+      cuda_histogram_constructor_->AllowCode5View(allow_code5);
+      if (prefill_meta_has_fused_compact_) {
+        cuda_histogram_constructor_->ApplyPrecomputedFusedRootCompactView(&prefill_hist_compact_state_);
+      } else {
+        cuda_histogram_constructor_->BuildCompactView(bytree_mask);
+      }
+      cuda_histogram_constructor_->RequestFusedRootHist(false, false);
+    } else {
+      // cuda_plan key tree_meta_batch: the uploads from here to the compact fill go out as one copy and one scatter
+      // (flushed before the fill and any other GPU operation in between, and at the end of this block)
+      TreeStartMetaBatchScope meta_batch_scope(
+        FalcataPlan::Get().tree_meta_batch && AsyncTreeStart() && nccl_communicator_ == nullptr ?
+          &tree_meta_batch_ : nullptr);
+      cuda_best_split_finder_->BeforeTrain(bytree_mask);
+      cuda_histogram_constructor_->SetFeatureUsedBytree(bytree_mask);
+      cuda_histogram_constructor_->RequestFusedRootHist(
+        fused_root_shape && (root_is_every_row || bagged_code_view),
+        config_->use_quantized_grad && cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0) <= 16,
+        !root_is_every_row);
+      // cuda_plan key pair_code5: no code view for a tree whose split path reads the nibble view anyway
+      cuda_histogram_constructor_->AllowCode5View(allow_code5);
+      cuda_histogram_constructor_->BuildCompactView(bytree_mask);
+      cuda_histogram_constructor_->RequestFusedRootHist(false, false);
+      meta_batch_scope.End();
+    }
   }
   if (nccl_communicator_ != nullptr) {
     // this tree's feature sample decides which histogram bins the all-reduce
@@ -665,22 +701,93 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     global_num_data_in_leaf_[0] = global_num_data_;
   }
 
-  // Compact-view prefill (cuda_plan key compact_prefill): draw the NEXT tree's
-  // per-tree column sample now -- the same single Sample() call the next
-  // BeforeTrain would make, so the RNG sequence is unchanged -- and fill its
-  // compact view into the alt buffer on the side stream. Launched HERE, before
-  // this tree's training begins, so the ~5ms fill hides inside this tree's
-  // launch gaps rather than sitting on the critical path. Every consumer of
-  // THIS tree's mask above has already taken its copy. Gated off under by-node
-  // feature sampling (GetByNode draws from the same RNG per node; an early
-  // by-tree draw would reorder the stream and change models).
-  if (FalcataPlan::Get().compact_prefill && !select_features_by_node_ && !forest_slot_ &&
-      nccl_communicator_ == nullptr && fp_merge_state_ == nullptr &&
-      cuda_histogram_constructor_->compact_view_active()) {
-    col_sampler_.ResetByTree();
-    next_tree_col_sample_ready_ = true;
-    cuda_histogram_constructor_->PrefillNextCompactView(col_sampler_.is_feature_used_bytree());
+  // Legacy compact_prefill (without compact_prefill_dt): launch prefill here at BeforeTrain end.
+  // Modern compact_prefill_dt defers prefill until after this tree's root/device_tree launches are
+  // submitted so host metadata staging overlaps GPU execution with zero launch delay.
+  if (FalcataPlan::Get().compact_prefill && !FalcataPlan::Get().compact_prefill_dt) {
+    MaybePrefillNextCompactView();
   }
+}
+
+void CUDASingleGPUTreeLearner::InvalidatePrefillMeta() {
+  prefill_meta_ready_ = false;
+  prefill_meta_has_fused_compact_ = false;
+  prefill_meta_batch_.Drain();
+  col_sampler_.InvalidatePeek();
+  static_packed_view_active_ = false;
+  static_packed_view_sig_ = 0;
+  static_packed_view_k_ = -1;
+  device_level_feature_source_col_data_ = nullptr;
+  device_level_feature_source_gen_ = 0;
+  if (cuda_histogram_constructor_ != nullptr) {
+    cuda_histogram_constructor_->InvalidateCompactPrefill();
+  }
+}
+
+void CUDASingleGPUTreeLearner::MaybePrefillNextCompactView() {
+  if (prefill_launched_this_tree_) {
+    return;
+  }
+  const FalcataPlan& plan = FalcataPlan::Get();
+  if (!plan.compact_prefill_dt && !plan.compact_prefill) {
+    return;
+  }
+  // Shared-stream by-node sampling mutates col_sampler_.random_ per node, so peeking next tree's
+  // by-tree draw before splits complete would mismatch; keyed by-node masks never touch random_.
+  if ((select_features_by_node_ && !bynode_keyed_) || forest_slot_ || forest_next_sample_ready_ ||
+      nccl_communicator_ != nullptr || fp_merge_state_ != nullptr || colmajor_fill_pending_ ||
+      cuda_histogram_constructor_->view_mask_regime()) {
+    return;
+  }
+  // Non-mutating RNG peek (cached for O(1) consumption in next tree's ResetByTree; zero RNG corruption on early stop).
+  if (!col_sampler_.PeekNextByTree(&prefill_next_mask_)) {
+    return;
+  }
+  const bool fused_root_shape = plan.fused_root_hist && config_->use_quantized_grad &&
+    use_hybrid_growth_ && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr;
+  const bool root_is_every_row = !cuda_data_partition_->use_bagging();
+  const bool bagged_code_view = plan.bagged_code_view && cuda_data_partition_->use_bagging();
+  const bool want_fused_root = fused_root_shape && root_is_every_row;
+  const bool allow_code5 = !BuildsOneByteSplitView();
+  const bool do_gpu_data_prefill =
+    cuda_histogram_constructor_->ShouldPrefillCompactData(root_is_every_row, fused_root_shape);
+
+  // Overlap next tree's host metadata computation + async pinned H2D staging on low-priority prefetch_stream_
+  // for ALL feature-sampled trees (unbagged 4-bit fused-root, 8-bit non-compact e.g. epsilon ff=0.5, AND
+  // bagged/8-bit/nonquant GPU prefill trees).
+  prefill_meta_ready_ = false;
+  if (plan.compact_prefill_dt && AsyncTreeStart()) {
+    prefill_meta_batch_.BeginPrepare();
+    bool ok = cuda_best_split_finder_->PrecomputeBeforeTrain(
+                prefill_next_mask_, &prefill_meta_batch_, &prefill_finder_state_) &&
+              cuda_histogram_constructor_->PrecomputeSetFeatureUsedBytree(
+                prefill_next_mask_, &prefill_meta_batch_, &prefill_hist_feature_state_);
+    bool has_fused_compact = false;
+    if (ok && !do_gpu_data_prefill) {
+      ok = cuda_histogram_constructor_->PrecomputeFusedRootCompactView(
+             prefill_next_mask_, want_fused_root, allow_code5,
+             &prefill_meta_batch_, &prefill_hist_compact_state_);
+      has_fused_compact = ok;
+    }
+    if (ok && prefill_meta_batch_.SubmitAsync(cuda_histogram_constructor_->prefetch_stream())) {
+      prefill_meta_ready_ = true;
+      prefill_meta_has_fused_compact_ = has_fused_compact;
+      prefill_meta_want_fused_root_ = want_fused_root;
+      prefill_meta_allow_code5_ = allow_code5;
+      prefill_meta_bitmap_ = prefill_next_mask_;
+    } else {
+      prefill_meta_batch_.AbortPrepare();
+    }
+  }
+
+  // Launch GPU compact data prefill into compact_data_uint8_t_alt_ only when it avoids splitting a used fused root hist.
+  if (do_gpu_data_prefill && cuda_histogram_constructor_->compact_view_active()) {
+    const bool prefill_code5 = allow_code5 && config_->use_quantized_grad &&
+      use_hybrid_growth_ && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr &&
+      (root_is_every_row || bagged_code_view);
+    cuda_histogram_constructor_->PrefillNextCompactView(prefill_next_mask_, prefill_code5);
+  }
+  prefill_launched_this_tree_ = true;
 }
 
 namespace {
@@ -758,6 +865,112 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   // columns: the row data's matrix, or under colmajor_direct the full view (EnsureFullView there, not here).
 
   const auto& bytree_mask = col_sampler_.is_feature_used_bytree();
+  // Static all-columns packed view fast path (cuda_plan key compact_prefill_dt):
+  // When packed splits read solely from invariant storage (colmajor_bin_ for 4-bit colmajor_split, or
+  // full_view / row_data for 8-bit non-compact split_packed_read8), every column's split source pointer is
+  // independent of this tree's feature sample. Install all columns once and hit O(1) across trees, which
+  // also keeps column_view_generation_ stable so TrainDeviceLevels skips its per-tree 48 KB H2D upload!
+  CUDAColumnData* col_data = ColumnView();
+  if (FalcataPlan::Get().compact_prefill_dt && PackedSplitReadUsable()) {
+    const bool is_4bit = row_data->is_4bit_packed();
+    const bool can_static_colmajor = is_4bit && FalcataPlan::Get().colmajor_split &&
+      cuda_histogram_constructor_->colmajor_bin() != nullptr;
+    const bool can_static_packed8 = !is_4bit && !cuda_histogram_constructor_->CompactViewSourceAvailable() &&
+      FalcataPlan::Get().split_packed_read8 && cuda_histogram_constructor_->any_feature_unused_bytree();
+    if (can_static_colmajor || can_static_packed8) {
+      const uint8_t* full_or_row = can_static_packed8 ?
+        cuda_histogram_constructor_->EnsureFullView("a split view the compact matrix cannot serve") : nullptr;
+      uint64_t ssig = can_static_packed8 ? 0x8888888888888888ULL : 0x4444444444444444ULL;
+      ssig = ssig * 1099511628211ULL ^ static_cast<uint64_t>(reinterpret_cast<uintptr_t>(row_data));
+      ssig = ssig * 1099511628211ULL ^
+             static_cast<uint64_t>(reinterpret_cast<uintptr_t>(cuda_histogram_constructor_->colmajor_bin()));
+      ssig = ssig * 1099511628211ULL ^ static_cast<uint64_t>(cuda_histogram_constructor_->colmajor_pad());
+      ssig = ssig * 1099511628211ULL ^ static_cast<uint64_t>(reinterpret_cast<uintptr_t>(full_or_row));
+      if (static_packed_view_active_ && ssig == static_packed_view_sig_ &&
+          col_view_generation_seen_ == col_data->column_view_generation()) {
+        if (can_static_colmajor) {
+          // Preserve column_view_reads_full_view_ semantics if full view was needed.
+          if (column_view_reads_full_view_) {
+            cuda_histogram_constructor_->EnsureFullView("a split view the compact matrix cannot serve");
+          }
+          return;
+        }
+        // For 8-bit static packed_read8, verify feature_fraction count matches the cached SplitPackedRead8Pays verdict.
+        const int num_total_cols = static_cast<int>(row_data->host_feature_partition_column_index_offsets().back());
+        const int sampled_feats = col_sampler_.need_reset_bytree() ?
+          static_cast<int>(col_sampler_.used_feature_indices().size()) : -1;
+        if (sampled_feats > 0 && sampled_feats == static_packed_view_k_ &&
+            static_cast<int>(bytree_mask.size()) == num_total_cols) {
+          return;
+        }
+      }
+      if (can_static_colmajor) {
+        const int num_total_cols = static_cast<int>(row_data->host_feature_partition_column_index_offsets().back());
+        std::vector<int> all_slots(num_total_cols);
+        std::iota(all_slots.begin(), all_slots.end(), 0);
+        std::vector<size_t> dummy_base(num_total_cols, 0);
+        std::vector<int> dummy_stride(num_total_cols, 0);
+        std::vector<uint8_t> dummy_shift(num_total_cols, 0);
+        const bool compact_src = cuda_histogram_constructor_->CompactViewSourceAvailable() &&
+          cuda_histogram_constructor_->compact_codec() == PackCodecId::kNibble4;
+        column_view_reads_full_view_ = !compact_src;
+        if (column_view_reads_full_view_) {
+          cuda_histogram_constructor_->EnsureFullView("a split view the compact matrix cannot serve");
+        }
+        col_data->SetCompactPackedColumnView(all_slots, nullptr, dummy_base, dummy_stride, dummy_shift,
+                                             cuda_histogram_constructor_->colmajor_bin(),
+                                             cuda_histogram_constructor_->colmajor_pad(),
+                                             /*source_is_8bit=*/false);
+        compact_packed_view_active_ = true;
+        static_packed_view_active_ = true;
+        static_packed_view_sig_ = ssig;
+        static_packed_view_k_ = -1;
+        col_view_generation_seen_ = col_data->column_view_generation();
+        return;
+      } else if (can_static_packed8 && full_or_row != nullptr) {
+        const auto& src_part_col_offsets_h = row_data->host_feature_partition_column_index_offsets();
+        const int num_total_cols = static_cast<int>(src_part_col_offsets_h.back());
+        const int num_features = static_cast<int>(bytree_mask.size());
+        const int sampled_feats = col_sampler_.need_reset_bytree() ?
+          static_cast<int>(col_sampler_.used_feature_indices().size()) : -1;
+        if (sampled_feats > 0 && sampled_feats < num_total_cols && num_features == num_total_cols) {
+          const data_size_t num_data = row_data->num_data();
+          const bool pays = !FalcataPlan::Get().split_packed_read8_cost ||
+            SplitPackedRead8Pays(num_data, num_total_cols, sampled_feats, config_->max_depth,
+                                 config_->num_leaves, l2_cache_bytes_);
+          if (pays) {
+            std::vector<int> all_slots(num_total_cols);
+            std::vector<size_t> col_base_byte_h(num_total_cols);
+            std::vector<int> col_stride_h(num_total_cols);
+            std::vector<uint8_t> col_shift_h(num_total_cols, 0);
+            const int num_parts = static_cast<int>(src_part_col_offsets_h.size()) - 1;
+            for (int p = 0; p < num_parts; ++p) {
+              const int p_start = src_part_col_offsets_h[p];
+              const int p_end = src_part_col_offsets_h[p + 1];
+              const size_t p_base = static_cast<size_t>(p_start) * static_cast<size_t>(num_data);
+              const int p_stride = p_end - p_start;
+              for (int c = p_start; c < p_end; ++c) {
+                all_slots[c] = c;
+                col_base_byte_h[c] = p_base + static_cast<size_t>(c - p_start);
+                col_stride_h[c] = p_stride;
+              }
+            }
+            column_view_reads_full_view_ = true;
+            col_data->SetCompactPackedColumnView(all_slots, full_or_row, col_base_byte_h, col_stride_h, col_shift_h,
+                                                 nullptr, 0, /*source_is_8bit=*/true);
+            compact_packed_view_active_ = true;
+            static_packed_view_active_ = true;
+            static_packed_view_sig_ = ssig;
+            static_packed_view_k_ = sampled_feats;
+            col_view_generation_seen_ = col_data->column_view_generation();
+            return;
+          }
+        }
+      }
+    }
+  }
+  static_packed_view_active_ = false;
+
   uint64_t sig = 0;
   for (size_t i = 0; i < bytree_mask.size(); ++i) {
     if (bytree_mask[i]) sig = sig * 1099511628211ULL ^ static_cast<uint64_t>(i + 1);
@@ -785,7 +998,6 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   // -- tree traversal restores the original per-column view (see
   // CUDATree::LaunchAddPredictionToScoreKernel) -- and then an unchanged layout
   // no longer means our view is the one in force.
-  CUDAColumnData* col_data = ColumnView();
   if (sig == compact_col_signature_ && !compact_column_to_orig_.empty() &&
       col_view_generation_seen_ == col_data->column_view_generation()) {
     // Cache hit: layout, source pointers AND published view unchanged.
@@ -849,16 +1061,17 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   }
   const bool gather_src_is_4bit = compact_src ?
     cuda_histogram_constructor_->compact_src_is_4bit() : row_data->is_4bit_packed();
-  std::vector<size_t> slot_p_byte_h(num_compact_cols);
-  std::vector<int> slot_p_stride_h(num_compact_cols);
-  std::vector<int> slot_col_in_p_h(num_compact_cols);
+  slot_p_byte_host_.resize(num_compact_cols);
+  slot_p_stride_host_.resize(num_compact_cols);
+  slot_col_in_p_host_.resize(num_compact_cols);
+  slot_p_device_uploaded_ = false;
   if (compact_src) {
     // 8-bit: slot byte offsets already include the column-in-partition offset
     // (col entries are 0); 4-bit: byte offsets are the packed partition bases
     // and the logical column-in-partition rides in compact_slot_cols()
-    slot_p_byte_h = cuda_histogram_constructor_->compact_slot_bytes();
-    slot_p_stride_h = cuda_histogram_constructor_->compact_slot_strides();
-    slot_col_in_p_h = cuda_histogram_constructor_->compact_slot_cols();
+    slot_p_byte_host_ = cuda_histogram_constructor_->compact_slot_bytes();
+    slot_p_stride_host_ = cuda_histogram_constructor_->compact_slot_strides();
+    slot_col_in_p_host_ = cuda_histogram_constructor_->compact_slot_cols();
   } else {
     const std::vector<int>& packed_offsets_h = row_data->host_packed_partition_byte_offsets();
     for (int s = 0; s < num_compact_cols; ++s) {
@@ -869,25 +1082,15 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
       const int p_start = src_part_col_offsets_h[p];
       const int p_end = src_part_col_offsets_h[p + 1];
       if (gather_src_is_4bit) {
-        slot_p_byte_h[s] = static_cast<size_t>(packed_offsets_h[p]) * static_cast<size_t>(num_data);
-        slot_p_stride_h[s] = packed_offsets_h[p + 1] - packed_offsets_h[p];
+        slot_p_byte_host_[s] = static_cast<size_t>(packed_offsets_h[p]) * static_cast<size_t>(num_data);
+        slot_p_stride_host_[s] = packed_offsets_h[p + 1] - packed_offsets_h[p];
       } else {
-        slot_p_byte_h[s] = static_cast<size_t>(p_start) * static_cast<size_t>(num_data);
-        slot_p_stride_h[s] = p_end - p_start;
+        slot_p_byte_host_[s] = static_cast<size_t>(p_start) * static_cast<size_t>(num_data);
+        slot_p_stride_host_[s] = p_end - p_start;
       }
-      slot_col_in_p_h[s] = orig_col - p_start;
+      slot_col_in_p_host_[s] = orig_col - p_start;
     }
   }
-  if (cuda_slot_p_byte_.Size() < static_cast<size_t>(num_compact_cols)) {
-    cuda_slot_p_byte_.Resize(num_compact_cols);
-    cuda_slot_p_stride_.Resize(num_compact_cols);
-    cuda_slot_col_in_p_.Resize(num_compact_cols);
-  }
-  // cuda_plan key async_tree_start: no host wait (the live fill may still be running); the sources are local, so
-  // their bytes are kept until the tree end
-  tree_start_uploads_.Upload<size_t>(cuda_slot_p_byte_.RawData(), slot_p_byte_h.data(), num_compact_cols);
-  tree_start_uploads_.Upload<int>(cuda_slot_p_stride_.RawData(), slot_p_stride_h.data(), num_compact_cols);
-  tree_start_uploads_.Upload<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_h.data(), num_compact_cols);
 
   compact_packed_view_active_ = false;
   // cuda_plan key split_packed_read8 (#613) serves feature-sampled trees: there the per-tree gather of every sampled
@@ -906,33 +1109,26 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   if ((gather_src_is_4bit || packed_read8) && PackedSplitReadUsable()) {
     // categorical batched-apply descriptors need the plain per-column view
     // (SplitLevelBatched CHECK-enforces it); numerical-only datasets keep the packed read
-    // packed split read: skip the column-major gather entirely; the batched
-    // apply descriptors address the packed source per column (byte of row 0,
-    // per-row byte stride, nibble shift). Sparse-encoded columns are the
-    // exception: SetCompactPackedColumnView points them at their own
-    // materialized buffer at their real width, because their encoding (the
-    // most-frequent bin spelled as 0) never matches the row matrix. The slot
-    // metadata just uploaded stays valid for the lazy classic fallback
-    // (EnsureClassicColumnView), which any classic per-split Split() triggers
-    // via ApplySplit.
+    // packed split read: skip the column-major gather AND defer uploading cuda_slot_p_*
+    // unless EnsureClassicColumnView() is actually triggered later!
     std::vector<size_t> col_base_byte_h(num_compact_cols);
     std::vector<uint8_t> col_shift_h(num_compact_cols);
     for (int s = 0; s < num_compact_cols; ++s) {
       if (packed_read8) {
         // one byte per value: the slot's byte of row 0 is its partition base plus its column in the partition
         // (0 for a compact source, whose slot bytes already include it), rows slot_p_stride bytes apart
-        col_base_byte_h[s] = slot_p_byte_h[s] + static_cast<size_t>(slot_col_in_p_h[s]);
+        col_base_byte_h[s] = slot_p_byte_host_[s] + static_cast<size_t>(slot_col_in_p_host_[s]);
         col_shift_h[s] = 0;
       } else {
-        col_base_byte_h[s] = slot_p_byte_h[s] + static_cast<size_t>(slot_col_in_p_h[s] >> 1);
-        col_shift_h[s] = static_cast<uint8_t>((slot_col_in_p_h[s] & 1) << 2);
+        col_base_byte_h[s] = slot_p_byte_host_[s] + static_cast<size_t>(slot_col_in_p_host_[s] >> 1);
+        col_shift_h[s] = static_cast<uint8_t>((slot_col_in_p_host_[s] & 1) << 2);
       }
     }
     // the column-major store holds nibbles: only a 4-bit source can be served from it
     const bool colmajor_split = !packed_read8 &&
       FalcataPlan::Get().colmajor_split && cuda_histogram_constructor_->colmajor_bin() != nullptr;
     col_data->SetCompactPackedColumnView(orig_column_to_compact_slot_, gather_src,
-                                         col_base_byte_h, slot_p_stride_h, col_shift_h,
+                                         col_base_byte_h, slot_p_stride_host_, col_shift_h,
                                          colmajor_split ? cuda_histogram_constructor_->colmajor_bin() : nullptr,
                                          colmajor_split ? cuda_histogram_constructor_->colmajor_pad() : 0,
                                          packed_read8);
@@ -947,9 +1143,12 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   // The gather is the buffer's only consumer on this path, so this is where it
   // gets allocated (moved down from the top of the function).
   EnsureCompactColumnBuffer(needed_bytes, num_compact_cols, num_data);
+  UploadCompactSlotMetadataIfNeeded();
   if (compact_src) {
     // cuda_plan key pair_code5: the compact view's nibbles may not be written yet
     cuda_histogram_constructor_->EnsureNibbleView();
+    // cuda_plan key compact_prefill_dt: order stream 0 after the prefill fill event before gathering
+    cuda_histogram_constructor_->WaitForCompactPrefillOnStream(0);
   }
 
   LaunchRowToColCompactKernel(
@@ -970,6 +1169,26 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
                                  static_cast<size_t>(num_data));
   compact_col_signature_ = sig;
   col_view_generation_seen_ = col_data->column_view_generation();
+}
+
+void CUDASingleGPUTreeLearner::UploadCompactSlotMetadataIfNeeded() {
+  if (slot_p_device_uploaded_) {
+    return;
+  }
+  const size_t num_compact_cols = slot_p_byte_host_.size();
+  if (num_compact_cols == 0) {
+    slot_p_device_uploaded_ = true;
+    return;
+  }
+  if (cuda_slot_p_byte_.Size() < num_compact_cols) {
+    cuda_slot_p_byte_.Resize(num_compact_cols);
+    cuda_slot_p_stride_.Resize(num_compact_cols);
+    cuda_slot_col_in_p_.Resize(num_compact_cols);
+  }
+  tree_start_uploads_.Upload<size_t>(cuda_slot_p_byte_.RawData(), slot_p_byte_host_.data(), num_compact_cols);
+  tree_start_uploads_.Upload<int>(cuda_slot_p_stride_.RawData(), slot_p_stride_host_.data(), num_compact_cols);
+  tree_start_uploads_.Upload<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_host_.data(), num_compact_cols);
+  slot_p_device_uploaded_ = true;
 }
 
 void CUDASingleGPUTreeLearner::EnsureCompactColumnBuffer(
@@ -1005,15 +1224,74 @@ void CUDASingleGPUTreeLearner::EnsureClassicColumnView() {
   if (!compact_packed_view_active_) {
     return;
   }
+  const auto* row_data = cuda_histogram_constructor_->cuda_row_data_internal();
+  const data_size_t num_data = row_data->num_data();
+  CUDAColumnData* col_data = ColumnView();
+  if (static_packed_view_active_) {
+    // Lazily populate per-tree gather metadata that the static all-columns packed view skipped.
+    static_packed_view_active_ = false;
+    compact_col_signature_ = 0;
+    const auto& bytree_mask = col_sampler_.is_feature_used_bytree();
+    const auto& src_part_col_offsets_h = row_data->host_feature_partition_column_index_offsets();
+    const int num_total_cols = static_cast<int>(src_part_col_offsets_h.back());
+    const int num_features = static_cast<int>(bytree_mask.size());
+    orig_column_to_compact_slot_.assign(num_total_cols, -1);
+    compact_column_to_orig_.clear();
+    for (int f = 0; f < num_features; ++f) {
+      if (!bytree_mask[f]) continue;
+      int c = col_data->feature_to_column(f);
+      if (c < 0 || c >= num_total_cols) continue;
+      if (orig_column_to_compact_slot_[c] < 0) {
+        orig_column_to_compact_slot_[c] = static_cast<int>(compact_column_to_orig_.size());
+        compact_column_to_orig_.push_back(c);
+      }
+    }
+    const int num_compact_cols = static_cast<int>(compact_column_to_orig_.size());
+    const bool compact_src = cuda_histogram_constructor_->CompactViewSourceAvailable() &&
+      cuda_histogram_constructor_->compact_codec() == PackCodecId::kNibble4 &&
+      cuda_histogram_constructor_->compact_src_cols() == compact_column_to_orig_;
+    compact_gather_src_ = compact_src ? cuda_histogram_constructor_->compact_data_device() :
+      cuda_histogram_constructor_->EnsureFullView("a split view the compact matrix cannot serve");
+    compact_gather_src_is_4bit_ = compact_src ?
+      cuda_histogram_constructor_->compact_src_is_4bit() : row_data->is_4bit_packed();
+    slot_p_byte_host_.resize(num_compact_cols);
+    slot_p_stride_host_.resize(num_compact_cols);
+    slot_col_in_p_host_.resize(num_compact_cols);
+    slot_p_device_uploaded_ = false;
+    if (compact_src) {
+      slot_p_byte_host_ = cuda_histogram_constructor_->compact_slot_bytes();
+      slot_p_stride_host_ = cuda_histogram_constructor_->compact_slot_strides();
+      slot_col_in_p_host_ = cuda_histogram_constructor_->compact_slot_cols();
+    } else {
+      const std::vector<int>& packed_offsets_h = row_data->host_packed_partition_byte_offsets();
+      for (int s = 0; s < num_compact_cols; ++s) {
+        const int orig_col = compact_column_to_orig_[s];
+        int p = 0;
+        while (p + 1 < static_cast<int>(src_part_col_offsets_h.size()) &&
+               orig_col >= src_part_col_offsets_h[p + 1]) ++p;
+        const int p_start = src_part_col_offsets_h[p];
+        const int p_end = src_part_col_offsets_h[p + 1];
+        if (compact_gather_src_is_4bit_) {
+          slot_p_byte_host_[s] = static_cast<size_t>(packed_offsets_h[p]) * static_cast<size_t>(num_data);
+          slot_p_stride_host_[s] = packed_offsets_h[p + 1] - packed_offsets_h[p];
+        } else {
+          slot_p_byte_host_[s] = static_cast<size_t>(p_start) * static_cast<size_t>(num_data);
+          slot_p_stride_host_[s] = p_end - p_start;
+        }
+        slot_col_in_p_host_[s] = orig_col - p_start;
+      }
+    }
+  }
   // run the gather that BuildCompactColumnView skipped for the packed split
   // read; once per tree at most (the classic view stays registered after)
-  const data_size_t num_data = cuda_histogram_constructor_->cuda_row_data_internal()->num_data();
   const int num_compact_cols = static_cast<int>(compact_column_to_orig_.size());
   const size_t needed_bytes = static_cast<size_t>(num_compact_cols) * static_cast<size_t>(num_data);
   EnsureCompactColumnBuffer(needed_bytes, num_compact_cols, num_data);
+  UploadCompactSlotMetadataIfNeeded();
   if (compact_gather_src_ == cuda_histogram_constructor_->compact_data_device()) {
     // cuda_plan key pair_code5: the compact view's nibbles may not be written yet
     cuda_histogram_constructor_->EnsureNibbleView();
+    cuda_histogram_constructor_->WaitForCompactPrefillOnStream(0);
   }
   LaunchRowToColCompactKernel(
       0,
@@ -1026,7 +1304,6 @@ void CUDASingleGPUTreeLearner::EnsureClassicColumnView() {
       num_data,
       compact_gather_src_is_4bit_);
   CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
-  CUDAColumnData* col_data = ColumnView();
   col_data->SetCompactColumnView(orig_column_to_compact_slot_,
                                  compact_column_buffer_.RawData(),
                                  static_cast<size_t>(num_data));
@@ -2650,8 +2927,8 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // leaves; no compact prefill on the non-blocking side stream, which the device synchronize would wait for)
   const FalcataPlan& readback_plan = FalcataPlan::Get();
   const bool readback_fused = readback_plan.readback_fused && readback_plan.readback_kernel &&
-    !readback_plan.compact_prefill && nccl_communicator_ == nullptr && fp_merge_state_ == nullptr &&
-    vec_num_targets_ <= 1 && use_batched_level_kernels;
+    !(readback_plan.compact_prefill && !readback_plan.compact_prefill_dt) && nccl_communicator_ == nullptr &&
+    fp_merge_state_ == nullptr && vec_num_targets_ <= 1 && use_batched_level_kernels;
   // per leaf of this tree: the best-split staging holds the device cache's bytes (written by a mirrored level sync
   // kernel or a full copy of this tree's loop; nothing else writes those entries inside the loop)
   std::vector<char> leaf_staging_coherent;
@@ -2712,6 +2989,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
         }
       }
       // one device synchronization + one transfer for the whole level
+      MaybePrefillNextCompactView();
       if (readback_fused) {
         const int level_num_leaves = tree->num_leaves();
         if (leaf_staging_coherent.size() < static_cast<size_t>(level_num_leaves)) {
@@ -2875,6 +3153,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
   while (true) {
     // the ONE device synchronization of the level: the synchronous best-split
     // readback drains the previous apply and its children's search
+    MaybePrefillNextCompactView();
     cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(tree->num_leaves(), &host_leaf_best_splits_);
     if (!pending.empty()) {
       cuda_data_partition_->FinishSplitBatch(static_cast<int>(pending.size()), &batch_info);
@@ -4148,11 +4427,19 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
                                                 std::vector<HybridPendingPair>* pairs, const bool record_split_infos) {
   global_timer.Start("CUDASingleGPUTreeLearner::TrainDeviceLevels");
   cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
-  // the tree's column sources (the per-tree compact or packed view), as SplitLevelBatched reads them per split
-  cuda_data_partition_->BuildDeviceLevelFeatureSource(&host_device_level_feature_source_);
-  CopyFromHostToCUDADeviceAsync<CUDAHybridGraphFeatureSource>(
-    cuda_device_level_feature_source_.RawData(), host_device_level_feature_source_.data(),
-    host_device_level_feature_source_.size(), find_stream, __FILE__, __LINE__);
+  // the tree's column sources (the per-tree compact or packed view), as SplitLevelBatched reads them per split.
+  // Skip rebuild + 48 KB H2D upload whenever the published column view generation is unchanged (static packed views).
+  const CUDAColumnData* col_data_dl = ColumnView();
+  if (!FalcataPlan::Get().compact_prefill_dt ||
+      device_level_feature_source_col_data_ != col_data_dl ||
+      device_level_feature_source_gen_ != col_data_dl->column_view_generation()) {
+    cuda_data_partition_->BuildDeviceLevelFeatureSource(&host_device_level_feature_source_);
+    CopyFromHostToCUDADeviceAsync<CUDAHybridGraphFeatureSource>(
+      cuda_device_level_feature_source_.RawData(), host_device_level_feature_source_.data(),
+      host_device_level_feature_source_.size(), find_stream, __FILE__, __LINE__);
+    device_level_feature_source_col_data_ = col_data_dl;
+    device_level_feature_source_gen_ = col_data_dl->column_view_generation();
+  }
   CUDADeviceLevelState* dls = cuda_device_level_state_.RawData();
   CUDADeviceLevelConfig& cfg = host_device_level_config_;
   std::memset(&cfg, 0, sizeof(cfg));
@@ -4363,6 +4650,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
                                            static_cast<size_t>(splits) * sizeof(CUDASplitInfo),
                                            cudaMemcpyDeviceToHost, find_stream));
     }
+    // Overlap next tree's host metadata preparation + low-priority GPU compact/code5 prefill
+    // while the GPU executes this tree's device levels (before sleeping in cudaStreamSynchronize)!
+    MaybePrefillNextCompactView();
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(find_stream));
   };
   // ---- selective trees: past the unrolled levels while R1 holds. Level U's leaves are the applied splits + 1 and
@@ -4380,6 +4670,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   bool leaf_entries_read = false;
   const bool device_boundary = selective && selective_device_boundary_;
   if (device_boundary) {
+    MaybePrefillNextCompactView();
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(find_stream));
     continues = pinned_device_level_flag_[0] != 0;
     if (!continues) {
@@ -6114,7 +6405,19 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     }
     global_timer.Stop("CUDASingleGPUTreeLearner::Split");
   }
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  if (device_tree_completed_ && !selective_handled && !config_->linear_tree &&
+      nccl_communicator_ == nullptr && FalcataPlan::Get().compact_prefill_dt) {
+    // TrainDeviceLevels already synchronized find_stream (ordered after every device-tree stream
+    // and legacy stream 0). Synchronize stream 0 rather than the whole device so the low-priority
+    // non-blocking prefetch_stream_ continues overlapping ToHost, score update, and next-tree gradients.
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(0));
+  } else {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
+#else
   SynchronizeCUDADevice(__FILE__, __LINE__);
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   // cuda_plan key async_tree_start: every upload this tree made from a function-local buffer has completed
   cuda_histogram_constructor_->ReleaseTreeStartUploads();
   tree_start_uploads_.Release();
@@ -6834,7 +7137,7 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
   // training data changed: the predrawn column sample and any prefilled
   // compact view belong to the old data / re-seeded sampler
   next_tree_col_sample_ready_ = false;
-  cuda_histogram_constructor_->InvalidateCompactPrefill();
+  InvalidatePrefillMeta();
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   ReleaseDeviceLevelGraphs();  // captured buffer pointers may have changed
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
@@ -6922,7 +7225,7 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   // config changed: SerialTreeLearner::ResetConfig re-seeded the column
   // sampler, so the predrawn sample / prefilled view are stale
   next_tree_col_sample_ready_ = false;
-  cuda_histogram_constructor_->InvalidateCompactPrefill();
+  InvalidatePrefillMeta();
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   ReleaseDeviceLevelGraphs();  // captured buffer pointers / budgets may have changed
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
@@ -7170,6 +7473,7 @@ void CUDASingleGPUTreeLearner::AbortedTreeReset() {
   // what the next tree would otherwise take from the last completed one: every histogram slot zeroed (as after
   // Init), the count scratch zeroed, no selective-growth peak or pending readback carried over
   SynchronizeCUDADevice(__FILE__, __LINE__);  // the aborted tree's kernels finish before the next tree's zeroing
+  InvalidatePrefillMeta();
   // If a validated completion was published before a later error, consume it before scratch is reused.
   // Failures before publication never create a pending receipt; BeforeTrain replaces the root assignment.
 #ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST

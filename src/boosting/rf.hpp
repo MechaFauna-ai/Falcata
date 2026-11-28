@@ -535,7 +535,7 @@ class RF : public GBDT {
     return plan.forest_batched && config_->device_type == std::string("cuda") && config_->num_gpu <= 1 && oob_view &&
            boosting_on_gpu_ && config_->data_sample_strategy == std::string("bagging") && !config_->linear_tree &&
            config_->forcedsplits_filename.empty() && config_->tree_mode != std::string("vector_leaf") && !cegb &&
-           !shared_stream_bynode && keyed_bags && !plan.compact_prefill &&
+           !shared_stream_bynode && keyed_bags && !(plan.compact_prefill && !plan.compact_prefill_dt) &&
            CUDAForestTrainer::Supports(tree_learner_.get());
   }
 

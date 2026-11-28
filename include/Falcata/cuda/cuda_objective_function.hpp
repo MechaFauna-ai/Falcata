@@ -89,7 +89,7 @@ class CUDAObjectiveInterface: public HOST_OBJECTIVE, public NCCLInfo {
    *  without a stream-ordered copy) and the plan allows it */
   static bool GradientsNeedNoSync(const score_t* gradients, const score_t* hessians) {
     const FalcataPlan& plan = FalcataPlan::Get();
-    if (!plan.gradients_no_sync || plan.compact_prefill) {
+    if (!plan.gradients_no_sync || (plan.compact_prefill && !plan.compact_prefill_dt)) {
       return false;
     }
     for (const score_t* ptr : {gradients, hessians}) {

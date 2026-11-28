@@ -1007,13 +1007,17 @@ struct FalcataPlan {
   // update, which also covers a bag kept for several trees). No row is read from the swapped-out buffer: bit-identical.
   bool index_parity_canonical = true;  // key: index_parity_canonical
   // prefill the next tree's compact column view on a side stream during the
-  // current tree's training (bit-identical). Default OFF: measured no wall
-  // win -- steady-state training is 97% device-busy and the ~41 synchronous
-  // D2H readbacks per tree impose legacy-stream barriers that serialize the
-  // fill anyway -- while the alt buffer costs VRAM (620MB on numerai). Becomes
-  // worthwhile only if the barrier structure is reduced; kept keyed and
-  // gate-covered so the machinery stays correct.
+  // current tree's training (bit-identical). Legacy toggle (default OFF);
+  // modernized path is gated by compact_prefill_dt below.
   bool compact_prefill = false;     // key: compact_prefill
+  // Modernized compact-view prefill compatible with device_tree, AsyncTreeStart(),
+  // pair_code5/pair_code_wide/pair_code_radix, readback_fused, and gradients_no_sync.
+  // Pre-samples the next tree's features via non-mutating RNG peek, prepares its compact
+  // layout and metadata on the host while the current tree runs on the GPU, and fills the
+  // next tree's compact (or pair-code) view on a low-priority non-blocking stream into
+  // double-buffered alt storage + dedicated alt metadata. The next tree consumes it via
+  // O(1) buffer/metadata swap + cudaStreamWaitEvent with zero host sync. Bit-identical.
+  bool compact_prefill_dt = true;   // key: compact_prefill_dt
 
   // --- baked tuning constants (no keys) ------------------------------------
   int batch_construct_min_rows_per_thread = 64;
@@ -1080,6 +1084,7 @@ struct FalcataPlan {
     if (key == "robust_scale") return &robust_scale;
     if (key == "quant_ef") return &quant_ef;
     if (key == "compact_prefill") return &compact_prefill;
+    if (key == "compact_prefill_dt") return &compact_prefill_dt;
     if (key == "pack_bit3") return &pack_bit3;
     if (key == "pack_radix5") return &pack_radix5;
     if (key == "pack_radix6") return &pack_radix6;

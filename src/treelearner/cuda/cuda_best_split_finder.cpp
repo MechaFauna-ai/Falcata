@@ -126,8 +126,18 @@ void CUDABestSplitFinder::InitFeatureMetaInfo(const Dataset* train_data) {
 void CUDABestSplitFinder::Init() {
   InitCUDAFeatureMetaInfo();
   cuda_streams_.resize(2);
-  CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[0]));
-  CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[1]));
+  int low_prio = 0, high_prio = 0;
+  CUDASUCCESS_OR_FATAL(cudaDeviceGetStreamPriorityRange(&low_prio, &high_prio));
+  if (FalcataPlan::Get().compact_prefill_dt && low_prio > high_prio) {
+    // Higher priority than the low-priority non-blocking compact_prefill_dt stream so
+    // device_tree / find kernels are never starved by background next-tree prefills.
+    const int prio = low_prio - 1;
+    CUDASUCCESS_OR_FATAL(cudaStreamCreateWithPriority(&cuda_streams_[0], cudaStreamDefault, prio));
+    CUDASUCCESS_OR_FATAL(cudaStreamCreateWithPriority(&cuda_streams_[1], cudaStreamDefault, prio));
+  } else {
+    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[0]));
+    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[1]));
+  }
   cuda_best_split_info_buffer_.Resize(8);
   if (use_global_memory_) {
     // 2x: separate staging regions for the forward and reverse direction
@@ -646,6 +656,97 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
     UploadTreeStartMeta<int>(cuda_warp_find_order_.RawData(), host_warp_find_order_.data(),
                              host_warp_find_order_.size());
     warp_find_order_all_tasks_ = num_used_tasks_ == num_tasks_;
+    warp_find_all_num_narrow_ = warp_find_num_narrow_used_;
+    warp_find_all_pad_ = warp_find_order_pad_;
+  }
+}
+
+bool CUDABestSplitFinder::PrecomputeBeforeTrain(
+    const std::vector<int8_t>& is_feature_used_bytree,
+    PrefillMetaBatch* batch,
+    PrecomputedBeforeTrain* out) const {
+  if (batch == nullptr || out == nullptr) {
+    return false;
+  }
+  if (cuda_is_feature_used_bytree_.Size() != is_feature_used_bytree.size()) {
+    return false;
+  }
+  if (!batch->AddTyped(const_cast<int8_t*>(cuda_is_feature_used_bytree_.RawDataReadOnly()),
+                       is_feature_used_bytree.data(), is_feature_used_bytree.size())) {
+    return false;
+  }
+  out->used_task_indices.clear();
+  out->used_task_indices.reserve(static_cast<size_t>(num_tasks_));
+  for (int task_index = 0; task_index < num_tasks_; ++task_index) {
+    if (is_feature_used_bytree[split_find_tasks_[task_index].inner_feature_index]) {
+      out->used_task_indices.push_back(task_index);
+    }
+  }
+  out->num_used_tasks = static_cast<int>(out->used_task_indices.size());
+  if (out->num_used_tasks < num_tasks_ && out->num_used_tasks > 0) {
+    if (cuda_used_task_indices_.Size() < static_cast<size_t>(num_tasks_)) {
+      return false;
+    }
+    if (!batch->AddTyped(const_cast<int*>(cuda_used_task_indices_.RawDataReadOnly()),
+                         out->used_task_indices.data(), out->used_task_indices.size())) {
+      return false;
+    }
+  }
+  out->warp_find_num_narrow_used = 0;
+  out->warp_find_order_pad = 0;
+  out->warp_find_order_used = false;
+  out->update_all_tasks_cache = false;
+  out->warp_find_order_all_tasks = false;
+  const bool group_direction = warp_find_narrow_mixed_direction_ && FalcataPlan::Get().find_group_direction;
+  if (warp_find_eligible_ && warp_find_num_narrow_ > 0 && out->num_used_tasks > 0 &&
+      (warp_find_num_narrow_ < num_tasks_ || group_direction)) {
+    out->warp_find_order_used = true;
+    if (out->num_used_tasks == num_tasks_ && warp_find_order_all_tasks_) {
+      out->warp_find_num_narrow_used = warp_find_all_num_narrow_;
+      out->warp_find_order_pad = warp_find_all_pad_;
+      return true;
+    }
+    out->warp_find_order.clear();
+    out->warp_find_order.reserve(static_cast<size_t>(out->num_used_tasks) + 8);
+    for (const int cls : {3, 2, 0}) {
+      const int narrow = cls >> 1;
+      for (int k = 0; k < out->num_used_tasks; ++k) {
+        const int task_index = out->used_task_indices[k];
+        if (warp_find_task_narrow_[task_index] != narrow) continue;
+        if (narrow && group_direction && static_cast<int>(split_find_tasks_[task_index].reverse) != (cls & 1)) {
+          continue;
+        }
+        if (narrow && !group_direction && cls == 2) continue;
+        out->warp_find_order.push_back(task_index);
+      }
+      while (cls == 3 && group_direction && out->warp_find_order.size() % 8 != 0) {
+        out->warp_find_order.push_back(-1);
+        ++out->warp_find_order_pad;
+      }
+      if (narrow) out->warp_find_num_narrow_used = static_cast<int>(out->warp_find_order.size());
+    }
+    if (cuda_warp_find_order_.Size() < out->warp_find_order.size()) {
+      return false;
+    }
+    if (!batch->AddTyped(const_cast<int*>(cuda_warp_find_order_.RawDataReadOnly()),
+                         out->warp_find_order.data(), out->warp_find_order.size())) {
+      return false;
+    }
+    out->update_all_tasks_cache = true;
+    out->warp_find_order_all_tasks = out->num_used_tasks == num_tasks_;
+  }
+  return true;
+}
+
+void CUDABestSplitFinder::ApplyPrecomputedBeforeTrain(PrecomputedBeforeTrain* pre) {
+  host_used_task_indices_.swap(pre->used_task_indices);
+  num_used_tasks_ = pre->num_used_tasks;
+  warp_find_num_narrow_used_ = pre->warp_find_num_narrow_used;
+  warp_find_order_pad_ = pre->warp_find_order_pad;
+  warp_find_order_used_ = pre->warp_find_order_used;
+  if (pre->update_all_tasks_cache) {
+    host_warp_find_order_.swap(pre->warp_find_order);
+    warp_find_order_all_tasks_ = pre->warp_find_order_all_tasks;
     warp_find_all_num_narrow_ = warp_find_num_narrow_used_;
     warp_find_all_pad_ = warp_find_order_pad_;
   }

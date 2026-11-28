@@ -104,6 +104,11 @@ class Random {
     return ret;
   }
 
+  /*!
+  * \brief Return the current internal RNG state word without mutating it.
+  */
+  inline unsigned int State() const { return x; }
+
  private:
   // upper_bound - lower_bound, which must be in [1, INT_MAX]
   static inline int Range(int lower_bound, int upper_bound) {

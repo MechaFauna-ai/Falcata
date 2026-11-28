@@ -73,8 +73,23 @@ __global__ void MetaBatchScatterKernel(const uint8_t* __restrict__ staged, const
   uint8_t* dst = segments.dst[s];
   const uint8_t* src = staged + segments.src_offset[s];
   const uint32_t bytes = segments.bytes[s];
-  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < bytes; i += gridDim.x * blockDim.x) {
-    dst[i] = src[i];
+  const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+  const uint32_t stride = gridDim.x * blockDim.x;
+  if (((reinterpret_cast<uintptr_t>(dst) | reinterpret_cast<uintptr_t>(src)) & 15u) == 0u) {
+    const uint32_t vecs = bytes >> 4;
+    uint4* dst4 = reinterpret_cast<uint4*>(dst);
+    const uint4* src4 = reinterpret_cast<const uint4*>(src);
+    for (uint32_t i = tid; i < vecs; i += stride) {
+      dst4[i] = src4[i];
+    }
+    const uint32_t tail_base = vecs << 4;
+    for (uint32_t i = tail_base + tid; i < bytes; i += stride) {
+      dst[i] = src[i];
+    }
+  } else {
+    for (uint32_t i = tid; i < bytes; i += stride) {
+      dst[i] = src[i];
+    }
   }
 }
 
@@ -87,7 +102,7 @@ void LaunchMetaBatchScatter(const uint8_t* staged, const MetaBatchSegments& segm
     max_bytes = std::max(max_bytes, segments.bytes[s]);
   }
   constexpr uint32_t kThreads = 256;
-  const uint32_t blocks_x = std::min<uint32_t>(256, (max_bytes + kThreads * 4 - 1) / (kThreads * 4));
+  const uint32_t blocks_x = std::min<uint32_t>(256, (max_bytes + kThreads * 16 - 1) / (kThreads * 16));
   MetaBatchScatterKernel<<<dim3(std::max<uint32_t>(1, blocks_x), static_cast<unsigned int>(segments.count)), kThreads>>>(
     staged, segments);
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
@@ -512,6 +527,96 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   (void)max_rows_per_block; (void)grad_and_hess; (void)hist_16bit;
   (void)root_hist_scratch; (void)root_hist_scratch_bytes; (void)code_view; (void)code_table; (void)code_row_words;
   (void)code_bits;
+  return false;
+#endif
+}
+
+bool LaunchFillCompactData4BitTiledCodeKernel(
+  cudaStream_t stream,
+  const uint8_t* src_data,
+  uint8_t* compact_data,
+  const size_t* bs_src_nib0,
+  const size_t* bs_src_nib1,
+  const size_t* bs_dst_byte,
+  const int* bs_dst_stride,
+  int total_byte_slots,
+  data_size_t num_data,
+  bool strided_tiles,
+  bool run_copy,
+  bool word_prefetch,
+  bool l2_lead,
+  uint32_t* code_view,
+  const uint8_t* code_table,
+  int code_row_words,
+  int code_bits) {
+#if !defined(__HIP_PLATFORM_AMD__)
+  if (code_view == nullptr || (code_bits != 5 && code_bits != 6 && code_bits != kCodeRadix)) {
+    return false;
+  }
+  const size_t max_shared_bytes = CurrentDeviceLaunchLimits().shared_bytes_per_block;
+  const size_t base_shared_bytes = Fill4BitTiledSharedBytes(total_byte_slots) + kFusedRootRunSlack;
+  if (base_shared_bytes > max_shared_bytes) {
+    return false;
+  }
+  const bool code5_ok = (code_bits == 6 || code_bits == kCodeRadix ||
+                         (code_bits == 5 && base_shared_bytes + 16 <= max_shared_bytes));
+  if (!code5_ok) {
+    return false;
+  }
+  const bool code_wide_regs = (code_bits == 6 || code_bits == kCodeRadix) &&
+                              FalcataPlan::Get().pair_code_wide_regs && base_shared_bytes + 16 <= max_shared_bytes;
+  const size_t shared_bytes = base_shared_bytes + ((code_bits == 5) || code_wide_regs ? 16 : 0);
+  using CodeFillKernel = void (*)(const uint8_t*, uint8_t*, const size_t*, const size_t*, const size_t*, const int*,
+                                  int, data_size_t, const int*, const uint32_t*, int, int, int, bool, bool, bool, bool,
+                                  const int32_t*, bool, hist_t*, uint32_t*, const uint8_t*, int, bool, bool, bool);
+  const CodeFillKernel kernel =
+    code_bits == kCodeRadix ? CUDAFillCompactData4BitTiledRootHistKernel<false, kCodeRadix, false> :
+    code_bits == 6 ? CUDAFillCompactData4BitTiledRootHistKernel<false, 6, false> :
+                     CUDAFillCompactData4BitTiledRootHistKernel<false, 5, false>;
+  const data_size_t num_tiles = (num_data + kFill4BitTiledRows - 1) / kFill4BitTiledRows;
+  // Short blocks (2..4 tiles per block): keeps word_prefetch/l2_lead active inside each block
+  // while letting higher-priority device_tree CTAs preempt quickly between blocks on the low-priority stream.
+  constexpr int kPrefillMaxTilesPerBlock = 4;
+  int tiles_per_block = kPrefillMaxTilesPerBlock;
+  const double block_rounds = FalcataPlan::Get().root_hist_block_rounds;
+  if (FalcataPlan::Get().root_hist_short_blocks && block_rounds >= 1.0) {
+    struct ResidentQuery {
+      int device = -1;
+      CodeFillKernel kernel = nullptr;
+      size_t shared_bytes = 0;
+      int resident_blocks = 0;
+    };
+    static thread_local ResidentQuery cached;
+    int device = 0;
+    CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+    if (cached.device != device || cached.kernel != kernel || cached.shared_bytes != shared_bytes) {
+      int blocks_per_sm = 0;
+      const int num_sms = FalcataDeviceSMCount(device, kSMSiteFusedRootFill);
+      CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &blocks_per_sm, kernel, kFusedRootThreads, shared_bytes));
+      cached.device = device;
+      cached.kernel = kernel;
+      cached.shared_bytes = shared_bytes;
+      cached.resident_blocks = std::max(1, num_sms * blocks_per_sm);
+    }
+    const double target_blocks = static_cast<double>(cached.resident_blocks) * block_rounds;
+    const int64_t wanted = static_cast<int64_t>(std::ceil(static_cast<double>(num_tiles) / target_blocks));
+    tiles_per_block = static_cast<int>(std::min<int64_t>(
+      kPrefillMaxTilesPerBlock, std::max<int64_t>(2, wanted)));
+  }
+  const int grid = static_cast<int>((num_tiles + tiles_per_block - 1) / tiles_per_block);
+  kernel<<<grid, kFusedRootThreads, shared_bytes, stream>>>(
+    src_data, compact_data, bs_src_nib0, bs_src_nib1, bs_dst_byte, bs_dst_stride, total_byte_slots, num_data,
+    nullptr, nullptr, 0, 0, tiles_per_block,
+    strided_tiles, run_copy, word_prefetch, l2_lead, nullptr, false, nullptr,
+    code_view, code_table, code_row_words, FalcataPlan::Get().pair_code5_pack2,
+    !FalcataPlan::Get().pair_code5_l2_store, code_wide_regs);
+  CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
+  return true;
+#else
+  (void)stream; (void)src_data; (void)compact_data; (void)bs_src_nib0; (void)bs_src_nib1; (void)bs_dst_byte;
+  (void)bs_dst_stride; (void)total_byte_slots; (void)num_data; (void)strided_tiles; (void)run_copy;
+  (void)word_prefetch; (void)l2_lead; (void)code_view; (void)code_table; (void)code_row_words; (void)code_bits;
   return false;
 #endif
 }

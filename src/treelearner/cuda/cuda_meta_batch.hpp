@@ -11,6 +11,7 @@
 
 #include <Falcata/cuda/cuda_utils.hu>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -144,6 +145,166 @@ inline void FlushTreeStartMetaBatch() {
     CurrentTreeStartMetaBatch()->Flush();
   }
 }
+
+// cuda_plan key compact_prefill_dt: cross-tree overlapped metadata staging.
+// While tree N executes on the GPU (device_tree), the host pre-computes tree N+1's metadata
+// (BestSplitFinder masks/task lists, HistogramConstructor bin mask / used_feature_info /
+// compact layout & fill tables) into a single pinned host buffer and asynchronously DMAs it
+// into an inactive device staging arena on low-priority prefetch_stream_. At tree N+1 start,
+// stream 0 waits on the H2D event (already complete) and runs ONE vectorized MetaBatchScatter
+// into the fixed destination device pointers — zero host prep, zero PCIe wait, zero graph misses!
+class PrefillMetaBatch {
+ public:
+  PrefillMetaBatch() { segments_.count = 0; }
+  ~PrefillMetaBatch() {
+    Drain();
+    if (h2d_done_event_ != nullptr) {
+      gpuAssert(cudaEventDestroy(h2d_done_event_), __FILE__, __LINE__);
+    }
+    for (int i = 0; i < 2; ++i) {
+      if (scatter_done_event_[i] != nullptr) {
+        gpuAssert(cudaEventDestroy(scatter_done_event_[i]), __FILE__, __LINE__);
+      }
+    }
+    if (pinned_host_ != nullptr) {
+      gpuAssert(cudaFreeHost(pinned_host_), __FILE__, __LINE__);
+    }
+  }
+
+  void BeginPrepare() {
+    if (h2d_pending_) {
+      CUDASUCCESS_OR_FATAL(cudaEventSynchronize(h2d_done_event_));
+      h2d_pending_ = false;
+    }
+    host_size_ = 0;
+    segments_.count = 0;
+  }
+
+  void AbortPrepare() {
+    host_size_ = 0;
+    segments_.count = 0;
+  }
+
+  bool Add(void* device_dst, const void* host_src, const size_t bytes) {
+    if (bytes == 0) {
+      return true;
+    }
+    uint8_t* dst = ReserveDirect(device_dst, bytes);
+    if (dst == nullptr) {
+      return false;
+    }
+    std::memcpy(dst, host_src, bytes);
+    return true;
+  }
+
+  template <typename T>
+  bool AddTyped(T* device_dst, const T* host_src, const size_t count) {
+    return Add(static_cast<void*>(device_dst), static_cast<const void*>(host_src), count * sizeof(T));
+  }
+
+  // Reserve `bytes` directly in the pinned staging buffer so large arrays (e.g., 512 KB bin_used_bytree)
+  // can be constructed in place with zero extra host memcpy.
+  uint8_t* ReserveDirect(void* device_dst, const size_t bytes) {
+    if (bytes == 0 || segments_.count >= kMetaBatchMaxSegments) {
+      return nullptr;
+    }
+    const size_t offset = (host_size_ + 15) & ~static_cast<size_t>(15);
+    const size_t needed = offset + bytes;
+    if (needed > pinned_cap_) {
+      const size_t fresh_cap = std::max<size_t>(size_t{64} << 10, (needed * 2 + 4095) & ~static_cast<size_t>(4095));
+      void* fresh = nullptr;
+      CUDASUCCESS_OR_FATAL(cudaHostAlloc(&fresh, fresh_cap, cudaHostAllocDefault));
+      if (pinned_host_ != nullptr) {
+        if (host_size_ > 0) {
+          std::memcpy(fresh, pinned_host_, host_size_);
+        }
+        CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_host_));
+      }
+      pinned_host_ = fresh;
+      pinned_cap_ = fresh_cap;
+    }
+    segments_.dst[segments_.count] = static_cast<uint8_t*>(device_dst);
+    segments_.src_offset[segments_.count] = static_cast<uint32_t>(offset);
+    segments_.bytes[segments_.count] = static_cast<uint32_t>(bytes);
+    ++segments_.count;
+    host_size_ = needed;
+    return static_cast<uint8_t*>(pinned_host_) + offset;
+  }
+
+  bool SubmitAsync(cudaStream_t prefetch_stream) {
+    if (segments_.count == 0 || host_size_ == 0) {
+      return false;
+    }
+    if (h2d_done_event_ == nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&h2d_done_event_, cudaEventDisableTiming));
+      CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&scatter_done_event_[0], cudaEventDisableTiming));
+      CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&scatter_done_event_[1], cudaEventDisableTiming));
+    }
+    const int slot = write_slot_;
+    if (device_arena_[slot].Size() < host_size_) {
+      if (scatter_pending_[slot]) {
+        CUDASUCCESS_OR_FATAL(cudaEventSynchronize(scatter_done_event_[slot]));
+        scatter_pending_[slot] = false;
+      }
+      const size_t cap = std::max<size_t>(size_t{64} << 10, host_size_ * 2);
+      if (!device_arena_[slot].TryResizeDiscard(cap)) {
+        AbortPrepare();
+        return false;
+      }
+    }
+    if (scatter_pending_[slot]) {
+      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(prefetch_stream, scatter_done_event_[slot], 0));
+    }
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(device_arena_[slot].RawData(), pinned_host_, host_size_,
+                                         cudaMemcpyHostToDevice, prefetch_stream));
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(h2d_done_event_, prefetch_stream));
+    h2d_pending_ = true;
+    return true;
+  }
+
+  void ConsumeOnDefaultStream() {
+    if (segments_.count == 0) {
+      return;
+    }
+    const int slot = write_slot_;
+    if (h2d_pending_) {
+      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(0, h2d_done_event_, 0));
+    }
+    LaunchMetaBatchScatter(device_arena_[slot].RawDataReadOnly(), segments_);
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(scatter_done_event_[slot], 0));
+    scatter_pending_[slot] = true;
+    write_slot_ ^= 1;
+    segments_.count = 0;
+    host_size_ = 0;
+  }
+
+  void Drain() {
+    if (h2d_pending_ && h2d_done_event_ != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaEventSynchronize(h2d_done_event_));
+      h2d_pending_ = false;
+    }
+    for (int i = 0; i < 2; ++i) {
+      if (scatter_pending_[i] && scatter_done_event_[i] != nullptr) {
+        CUDASUCCESS_OR_FATAL(cudaEventSynchronize(scatter_done_event_[i]));
+        scatter_pending_[i] = false;
+      }
+    }
+    host_size_ = 0;
+    segments_.count = 0;
+  }
+
+ private:
+  void* pinned_host_ = nullptr;
+  size_t pinned_cap_ = 0;
+  size_t host_size_ = 0;
+  CUDAVector<uint8_t> device_arena_[2];
+  cudaEvent_t h2d_done_event_ = nullptr;
+  cudaEvent_t scatter_done_event_[2] = {nullptr, nullptr};
+  bool h2d_pending_ = false;
+  bool scatter_pending_[2] = {false, false};
+  int write_slot_ = 0;
+  MetaBatchSegments segments_;
+};
 
 }  // namespace Falcata
 
