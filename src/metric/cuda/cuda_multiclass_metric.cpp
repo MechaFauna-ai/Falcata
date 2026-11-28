@@ -61,11 +61,7 @@ std::vector<double> CUDAMultiErrorMetric::Eval(const double* score, const Object
     double transform_param = 0.0;
     const ObjectiveFunction::CUDAOutputTransform transform = objective->GetCUDAOutputTransform(&transform_param);
     if (transform == ObjectiveFunction::CUDAOutputTransform::kSoftmax) {
-      if (multi_error_top_k_ == 1) {
-        LaunchEvalIdentityKernel(score, &sum_loss);
-      } else {
-        LaunchEvalSoftmaxTopKKernel(score, &sum_loss);
-      }
+      LaunchEvalSoftmaxTopKKernel(score, &sum_loss);
     } else if (transform == ObjectiveFunction::CUDAOutputTransform::kSigmoid) {
       LaunchEvalSigmoidKernel(score, transform_param, &sum_loss);
     } else if (transform == ObjectiveFunction::CUDAOutputTransform::kIdentity) {

@@ -1,7 +1,6 @@
 # coding: utf-8
 """Native CUDA multiclass metrics, cached sum_weights_, and fused ConvertOutput parity tests."""
 
-import hashlib
 import os
 
 import numpy as np
@@ -13,10 +12,6 @@ _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
     reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
-
-
-def _model_md5(booster):
-    return hashlib.md5(booster.model_to_string().split("\nparameters:")[0].encode()).hexdigest()
 
 
 def _softmax(raw):
@@ -59,10 +54,10 @@ def _make_multiclass_data(n_train, n_val, num_class, n_features=12, seed=42):
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("num_class", [3, 7, 16, 40])
+@pytest.mark.parametrize("num_class", [3, 7, 8, 9, 16, 17, 32, 33, 40])
 @pytest.mark.parametrize("weighted", [False, True])
 def test_cuda_multiclass_logloss_and_error_parity(num_class, weighted, capfd):
-    X_tr, y_tr, X_va, y_va = _make_multiclass_data(4000, 1500, num_class, seed=100 + num_class)
+    X_tr, y_tr, X_va, y_va = _make_multiclass_data(2000, 800, num_class, seed=100 + num_class)
     rng = np.random.default_rng(200 + num_class)
     w_tr = rng.uniform(0.2, 3.0, len(y_tr)).astype(np.float32) if weighted else None
     w_va = rng.uniform(0.2, 3.0, len(y_va)).astype(np.float32) if weighted else None
@@ -83,7 +78,7 @@ def test_cuda_multiclass_logloss_and_error_parity(num_class, weighted, capfd):
     booster = flc.train(
         params,
         tr,
-        num_boost_round=8,
+        num_boost_round=6,
         valid_sets=[tr, va],
         valid_names=["train", "valid"],
         callbacks=[flc.record_evaluation(evals_result)],
@@ -103,6 +98,66 @@ def test_cuda_multiclass_logloss_and_error_parity(num_class, weighted, capfd):
             np.testing.assert_allclose(evals_result[split]["multi_error"][-1], expected_err, rtol=1e-12, atol=1e-12)
         else:
             assert evals_result[split]["multi_error"][-1] == expected_err
+
+
+@_REQUIRES_CUDA
+def test_cuda_multiclass_single_block():
+    # rows=128 <= MULTICLASS_EVAL_BLOCK_SIZE (256) exercises the single-block reduction fast path.
+    X_tr, y_tr, X_va, y_va = _make_multiclass_data(128, 128, 7, seed=111)
+    params = {
+        "device_type": "cuda",
+        "objective": "multiclass",
+        "num_class": 7,
+        "metric": ["multi_logloss", "multi_error"],
+        "num_leaves": 7,
+        "min_data_in_leaf": 5,
+        "seed": 3,
+        "verbose": -1,
+    }
+    tr = flc.Dataset(X_tr, label=y_tr, free_raw_data=False)
+    va = flc.Dataset(X_va, label=y_va, reference=tr)
+    evals = {}
+    booster = flc.train(
+        params,
+        tr,
+        num_boost_round=5,
+        valid_sets=[va],
+        valid_names=["valid"],
+        callbacks=[flc.record_evaluation(evals)],
+    )
+    probs = _softmax(booster.predict(X_va, raw_score=True))
+    np.testing.assert_allclose(evals["valid"]["multi_logloss"][-1], _numpy_multi_logloss(y_va, probs), rtol=1e-12)
+    assert evals["valid"]["multi_error"][-1] == _numpy_multi_error(y_va, probs)
+
+    # Single-block multi_rmse
+    rng = np.random.default_rng(112)
+    Y_tr = rng.standard_normal((128, 4)).astype(np.float32)
+    Y_va = rng.standard_normal((128, 4)).astype(np.float32)
+    tr_r = flc.Dataset(X_tr, label=Y_tr, free_raw_data=False)
+    va_r = flc.Dataset(X_va, label=Y_va, reference=tr_r)
+    evals_r = {}
+    booster_r = flc.train(
+        {
+            "device_type": "cuda",
+            "objective": "multi_regression",
+            "num_class": 4,
+            "metric": "multi_rmse",
+            "num_leaves": 7,
+            "min_data_in_leaf": 5,
+            "seed": 3,
+            "verbose": -1,
+        },
+        tr_r,
+        num_boost_round=5,
+        valid_sets=[va_r],
+        valid_names=["valid"],
+        callbacks=[flc.record_evaluation(evals_r)],
+    )
+    np.testing.assert_allclose(
+        evals_r["valid"]["multi_rmse"][-1],
+        _numpy_multi_rmse(Y_va.astype(np.float64), booster_r.predict(X_va)),
+        rtol=1e-12,
+    )
 
 
 @_REQUIRES_CUDA
@@ -179,6 +234,37 @@ def test_cuda_multi_error_tie_semantics_and_larger_valid_set():
     valid_eval_5 = {name: val for _, name, val, _ in booster.eval_valid()}
     np.testing.assert_allclose(valid_eval_5["multi_logloss"], _numpy_multi_logloss(y_va, probs), rtol=1e-12, atol=1e-12)
     assert valid_eval_5["multi_error"] == _numpy_multi_error(y_va, probs)
+
+
+@_REQUIRES_CUDA
+def test_cuda_multi_error_near_tie_matches_cpu_softmax():
+    # Raw scores [0.0, -1e-17, -10.0] have strictly distinct raw values (0.0 > -1e-17),
+    # but exp(0.0) == exp(-1e-17) == 1.0 in FP64 softmax, so CPU MultiErrorMetric sees a tie -> error 1.0.
+    n = 64
+    rng = np.random.default_rng(515)
+    X = rng.standard_normal((n, 4)).astype(np.float32)
+    y_tr = (np.arange(n) % 3).astype(np.float32)
+    y_va = np.zeros(n, dtype=np.float32)
+    init_va = np.tile(np.array([0.0, -1e-17, -10.0], dtype=np.float64), (n, 1))
+
+    base_params = {
+        "objective": "multiclass",
+        "num_class": 3,
+        "metric": ["multi_logloss", "multi_error"],
+        "boost_from_average": False,
+        "verbose": -1,
+    }
+    results = {}
+    for device in ("cpu", "cuda"):
+        tr = flc.Dataset(X, label=y_tr, params={"device_type": device, "verbose": -1}, free_raw_data=False)
+        va = flc.Dataset(X, label=y_va, init_score=init_va, reference=tr)
+        booster = flc.Booster({**base_params, "device_type": device}, tr)
+        booster.add_valid(va, "valid")
+        results[device] = {name: val for _, name, val, _ in booster.eval_valid()}
+
+    assert results["cpu"]["multi_error"] == 1.0
+    assert results["cuda"]["multi_error"] == results["cpu"]["multi_error"]
+    np.testing.assert_allclose(results["cuda"]["multi_logloss"], results["cpu"]["multi_logloss"], rtol=1e-12)
 
 
 @_REQUIRES_CUDA

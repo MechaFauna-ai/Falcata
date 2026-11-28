@@ -9,13 +9,16 @@
 #include <Falcata/cuda/cuda_algorithms.hpp>
 #include <Falcata/cuda/cuda_rocm_interop.h>
 
-#include <algorithm>
-
 #include "cuda_multiclass_metric.hpp"
 
 namespace Falcata {
 
 namespace {
+
+// Matches std::max(val, cur) on CPU: (val < cur) ? cur : val.
+__device__ __forceinline__ double StdMaxDouble(double val, double cur) {
+  return (val < cur) ? cur : val;
+}
 
 __global__ void MulticlassReduceBlockSumKernel(const double* block_buffer, const int num_blocks, double* out_sum) {
   __shared__ double shared_mem_buffer[WARPSIZE];
@@ -61,7 +64,7 @@ __global__ void __launch_bounds__(MULTICLASS_EVAL_BLOCK_SIZE) EvalMultiLoglossSo
     #pragma unroll
     for (int k = 1; k < MAX_CLASS; ++k) {
       if (k < num_class) {
-        wmax = max(s[k], wmax);
+        wmax = StdMaxDouble(s[k], wmax);
       }
     }
     const int true_class = static_cast<int>(labels[index]);
@@ -100,7 +103,7 @@ __global__ void __launch_bounds__(MULTICLASS_EVAL_BLOCK_SIZE) EvalMultiLoglossSo
     const size_t stride = static_cast<size_t>(num_data);
     double wmax = scores[static_cast<size_t>(index)];
     for (int k = 1; k < num_class; ++k) {
-      wmax = max(scores[static_cast<size_t>(k) * stride + static_cast<size_t>(index)], wmax);
+      wmax = StdMaxDouble(scores[static_cast<size_t>(k) * stride + static_cast<size_t>(index)], wmax);
     }
     const int true_class = static_cast<int>(labels[index]);
     double wsum = 0.0;
@@ -165,6 +168,7 @@ __global__ void __launch_bounds__(MULTICLASS_EVAL_BLOCK_SIZE) EvalMultiErrorRawK
       true_val = 1.0f / (1.0f + exp(-sigmoid * true_val));
     }
     int num_larger = 0;
+    double row_loss = 0.0;
     for (int k = 0; k < num_class; ++k) {
       double val = scores[static_cast<size_t>(k) * stride + static_cast<size_t>(index)];
       if (USE_SIGMOID) {
@@ -173,11 +177,71 @@ __global__ void __launch_bounds__(MULTICLASS_EVAL_BLOCK_SIZE) EvalMultiErrorRawK
       if (val >= true_val) {
         ++num_larger;
         if (num_larger > top_k) {
-          point_metric = USE_WEIGHTS ? static_cast<double>(weights[index]) : 1.0;
+          row_loss = 1.0;
           break;
         }
       }
     }
+    point_metric = USE_WEIGHTS ? (row_loss * static_cast<double>(weights[index])) : row_loss;
+  }
+  const double block_sum = ShuffleReduceSum<double>(point_metric, shared_mem_buffer, MULTICLASS_EVAL_BLOCK_SIZE);
+  if (threadIdx.x == 0) {
+    reduce_block_buffer[blockIdx.x] = block_sum;
+  }
+}
+
+template <bool USE_WEIGHTS, int MAX_CLASS>
+__global__ void __launch_bounds__(MULTICLASS_EVAL_BLOCK_SIZE) EvalMultiErrorSoftmaxRegistersKernel(
+    const data_size_t num_data, const int num_class, const int top_k,
+    const label_t* labels, const label_t* weights, const double* scores,
+    double* reduce_block_buffer) {
+  __shared__ double shared_mem_buffer[WARPSIZE];
+  const data_size_t index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
+  double point_metric = 0.0;
+  if (index < num_data) {
+    const size_t stride = static_cast<size_t>(num_data);
+    double p[MAX_CLASS];
+    #pragma unroll
+    for (int k = 0; k < MAX_CLASS; ++k) {
+      if (k < num_class) {
+        p[k] = scores[static_cast<size_t>(k) * stride + static_cast<size_t>(index)];
+      }
+    }
+    double wmax = p[0];
+    #pragma unroll
+    for (int k = 1; k < MAX_CLASS; ++k) {
+      if (k < num_class) {
+        wmax = StdMaxDouble(p[k], wmax);
+      }
+    }
+    double wsum = 0.0;
+    #pragma unroll
+    for (int k = 0; k < MAX_CLASS; ++k) {
+      if (k < num_class) {
+        p[k] = exp(p[k] - wmax);
+        wsum += p[k];
+      }
+    }
+    const int true_class = static_cast<int>(labels[index]);
+    double true_prob = 0.0;
+    #pragma unroll
+    for (int k = 0; k < MAX_CLASS; ++k) {
+      if (k < num_class) {
+        p[k] /= wsum;
+        if (k == true_class) {
+          true_prob = p[k];
+        }
+      }
+    }
+    int num_larger = 0;
+    #pragma unroll
+    for (int k = 0; k < MAX_CLASS; ++k) {
+      if (k < num_class && p[k] >= true_prob) {
+        ++num_larger;
+      }
+    }
+    const double row_loss = (num_larger > top_k) ? 1.0 : 0.0;
+    point_metric = USE_WEIGHTS ? (row_loss * static_cast<double>(weights[index])) : row_loss;
   }
   const double block_sum = ShuffleReduceSum<double>(point_metric, shared_mem_buffer, MULTICLASS_EVAL_BLOCK_SIZE);
   if (threadIdx.x == 0) {
@@ -186,7 +250,7 @@ __global__ void __launch_bounds__(MULTICLASS_EVAL_BLOCK_SIZE) EvalMultiErrorRawK
 }
 
 template <bool USE_WEIGHTS>
-__global__ void __launch_bounds__(MULTICLASS_EVAL_BLOCK_SIZE) EvalMultiErrorSoftmaxTopKKernel(
+__global__ void __launch_bounds__(MULTICLASS_EVAL_BLOCK_SIZE) EvalMultiErrorSoftmaxStreamingKernel(
     const data_size_t num_data, const int num_class, const int top_k,
     const label_t* labels, const label_t* weights, const double* scores,
     double* reduce_block_buffer) {
@@ -197,7 +261,7 @@ __global__ void __launch_bounds__(MULTICLASS_EVAL_BLOCK_SIZE) EvalMultiErrorSoft
     const size_t stride = static_cast<size_t>(num_data);
     double wmax = scores[static_cast<size_t>(index)];
     for (int k = 1; k < num_class; ++k) {
-      wmax = max(scores[static_cast<size_t>(k) * stride + static_cast<size_t>(index)], wmax);
+      wmax = StdMaxDouble(scores[static_cast<size_t>(k) * stride + static_cast<size_t>(index)], wmax);
     }
     const int true_class = static_cast<int>(labels[index]);
     double wsum = 0.0;
@@ -211,16 +275,18 @@ __global__ void __launch_bounds__(MULTICLASS_EVAL_BLOCK_SIZE) EvalMultiErrorSoft
     }
     const double true_prob = exp_true / wsum;
     int num_larger = 0;
+    double row_loss = 0.0;
     for (int k = 0; k < num_class; ++k) {
       const double pk = exp(scores[static_cast<size_t>(k) * stride + static_cast<size_t>(index)] - wmax) / wsum;
       if (pk >= true_prob) {
         ++num_larger;
         if (num_larger > top_k) {
-          point_metric = USE_WEIGHTS ? static_cast<double>(weights[index]) : 1.0;
+          row_loss = 1.0;
           break;
         }
       }
     }
+    point_metric = USE_WEIGHTS ? (row_loss * static_cast<double>(weights[index])) : row_loss;
   }
   const double block_sum = ShuffleReduceSum<double>(point_metric, shared_mem_buffer, MULTICLASS_EVAL_BLOCK_SIZE);
   if (threadIdx.x == 0) {
@@ -268,6 +334,25 @@ void DispatchMultiLoglossSoftmax(const int num_blocks, const data_size_t num_dat
   } else {
     EvalMultiLoglossSoftmaxStreamingKernel<USE_WEIGHTS><<<num_blocks, MULTICLASS_EVAL_BLOCK_SIZE>>>(
       num_data, num_class, labels, weights, scores, reduce_block_buffer);
+  }
+}
+
+template <bool USE_WEIGHTS>
+void DispatchMultiErrorSoftmax(const int num_blocks, const data_size_t num_data, const int num_class,
+                               const int top_k, const label_t* labels, const label_t* weights,
+                               const double* scores, double* reduce_block_buffer) {
+  if (num_class <= 8) {
+    EvalMultiErrorSoftmaxRegistersKernel<USE_WEIGHTS, 8><<<num_blocks, MULTICLASS_EVAL_BLOCK_SIZE>>>(
+      num_data, num_class, top_k, labels, weights, scores, reduce_block_buffer);
+  } else if (num_class <= 16) {
+    EvalMultiErrorSoftmaxRegistersKernel<USE_WEIGHTS, 16><<<num_blocks, MULTICLASS_EVAL_BLOCK_SIZE>>>(
+      num_data, num_class, top_k, labels, weights, scores, reduce_block_buffer);
+  } else if (num_class <= 32) {
+    EvalMultiErrorSoftmaxRegistersKernel<USE_WEIGHTS, 32><<<num_blocks, MULTICLASS_EVAL_BLOCK_SIZE>>>(
+      num_data, num_class, top_k, labels, weights, scores, reduce_block_buffer);
+  } else {
+    EvalMultiErrorSoftmaxStreamingKernel<USE_WEIGHTS><<<num_blocks, MULTICLASS_EVAL_BLOCK_SIZE>>>(
+      num_data, num_class, top_k, labels, weights, scores, reduce_block_buffer);
   }
 }
 
@@ -348,13 +433,13 @@ void CUDAMultiErrorMetric::LaunchEvalSoftmaxTopKKernel(const double* score, doub
   }
   const int num_blocks = CUDABlockCount(this->num_data_, MULTICLASS_EVAL_BLOCK_SIZE);
   if (this->cuda_weights_ != nullptr) {
-    EvalMultiErrorSoftmaxTopKKernel<true><<<num_blocks, MULTICLASS_EVAL_BLOCK_SIZE>>>(
-      this->num_data_, this->num_class_, multi_error_top_k_, this->cuda_labels_, this->cuda_weights_,
-      score, reduce_block_buffer_.RawData());
+    DispatchMultiErrorSoftmax<true>(
+      num_blocks, this->num_data_, this->num_class_, multi_error_top_k_, this->cuda_labels_,
+      this->cuda_weights_, score, reduce_block_buffer_.RawData());
   } else {
-    EvalMultiErrorSoftmaxTopKKernel<false><<<num_blocks, MULTICLASS_EVAL_BLOCK_SIZE>>>(
-      this->num_data_, this->num_class_, multi_error_top_k_, this->cuda_labels_, this->cuda_weights_,
-      score, reduce_block_buffer_.RawData());
+    DispatchMultiErrorSoftmax<false>(
+      num_blocks, this->num_data_, this->num_class_, multi_error_top_k_, this->cuda_labels_,
+      this->cuda_weights_, score, reduce_block_buffer_.RawData());
   }
   FinalizeMulticlassReduction(num_blocks, reduce_block_buffer_.RawData(), reduce_block_buffer_inner_.RawData(), sum_loss);
 }

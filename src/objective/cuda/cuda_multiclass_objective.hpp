@@ -32,8 +32,6 @@ class CUDAMulticlassSoftmax: public CUDAObjectiveInterface<MulticlassSoftmax> {
 
   void Init(const Metadata& metadata, data_size_t num_data) override;
 
-  bool NeedConvertOutputCUDA() const override { return true; }
-
   CUDAOutputTransform GetCUDAOutputTransform(double* /*param*/) const override {
     return CUDAOutputTransform::kSoftmax;
   }
@@ -71,8 +69,6 @@ class CUDAMulticlassOVA: public CUDAObjectiveInterface<MulticlassOVA> {
   ~CUDAMulticlassOVA();
 
   bool IsCUDAObjective() const override { return true; }
-
-  bool NeedConvertOutputCUDA() const override { return true; }
 
   CUDAOutputTransform GetCUDAOutputTransform(double* param) const override {
     if (param != nullptr) {
