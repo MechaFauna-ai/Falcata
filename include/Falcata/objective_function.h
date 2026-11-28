@@ -142,6 +142,21 @@ class ObjectiveFunction {
 
   virtual bool NeedConvertOutputCUDA () const { return false; }
 
+  /*!
+  * \brief cuda_plan key score_grad_fuse: fuse unbagged training score update
+  * (cuda_scores[i] += cuda_leaf_value[cuda_data_index_to_leaf_index[i]]) with
+  * next-iteration gradient/hessian computation in a single device kernel.
+  * Returns true if launched, false if the caller should fall back to separate passes.
+  */
+  virtual bool LaunchAddPredictionToScoreAndGetGradients(
+    const int* /*cuda_data_index_to_leaf_index*/,
+    const double* /*cuda_leaf_value*/,
+    double* /*cuda_scores*/,
+    score_t* /*cuda_gradients*/,
+    score_t* /*cuda_hessians*/) const {
+    return false;
+  }
+
   virtual void SetNCCLInfo(
     ncclComm_t /*nccl_communicator*/,
     int /*nccl_gpu_rank*/,

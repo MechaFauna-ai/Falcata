@@ -215,6 +215,18 @@ inline void CUDAScoreUpdater::AddScore(const TreeLearner* tree_learner, const Tr
   }
 }
 
+bool CUDAScoreUpdater::AddScoreAndGetGradients(
+  const TreeLearner* tree_learner, const Tree* tree, int cur_tree_id,
+  const ObjectiveFunction* objective_function, score_t* gradients, score_t* hessians) {
+  if (!boosting_on_cuda_ || cur_tree_id != 0) {
+    return false;
+  }
+  Common::FunctionTimer fun_timer("ScoreUpdater::AddScore", global_timer);
+  const size_t offset = static_cast<size_t>(num_data_) * cur_tree_id;
+  return tree_learner->AddPredictionToScoreAndGetGradients(
+    tree, cuda_score_.RawData() + offset, objective_function, gradients, hessians);
+}
+
 inline void CUDAScoreUpdater::AddScore(const Tree* tree, const data_size_t* data_indices,
                       data_size_t data_cnt, int cur_tree_id) {
   Common::FunctionTimer fun_timer("ScoreUpdater::AddScore", global_timer);

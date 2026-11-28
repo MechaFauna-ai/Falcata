@@ -100,6 +100,7 @@ ALL_KEYS = {
     "invalidate_async": True,
     "level_apply_first": True,
     "gradients_no_sync": True,
+    "score_grad_fuse": True,
     "tree_meta_batch": True,
     "tree_end_prealloc": True,
     "const_hess_reads": True,

@@ -623,6 +623,7 @@ def build_cells():
         "invalidate_async",
         "level_apply_first",
         "gradients_no_sync",
+        "score_grad_fuse",
         "tree_meta_batch",
         "tree_end_prealloc",
         "pair_block_map",

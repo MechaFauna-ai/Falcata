@@ -94,6 +94,10 @@ class CUDARegressionL2loss : public CUDARegressionObjectiveInterface<RegressionL
 
   void Init(const Metadata& metadata, data_size_t num_data) override;
 
+  bool LaunchAddPredictionToScoreAndGetGradients(
+    const int* cuda_data_index_to_leaf_index, const double* cuda_leaf_value,
+    double* cuda_scores, score_t* cuda_gradients, score_t* cuda_hessians) const override;
+
  protected:
   void LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const override;
 
@@ -128,6 +132,10 @@ class CUDARegressionL1loss : public CUDAPercentileRegressionObjective<Regression
 
   ~CUDARegressionL1loss();
 
+  bool LaunchAddPredictionToScoreAndGetGradients(
+    const int* cuda_data_index_to_leaf_index, const double* cuda_leaf_value,
+    double* cuda_scores, score_t* cuda_gradients, score_t* cuda_hessians) const override;
+
  protected:
   double LaunchCalcInitScoreKernel(const int class_id) const override;
 
@@ -146,6 +154,10 @@ class CUDARegressionHuberLoss : public CUDARegressionObjectiveInterface<Regressi
   explicit CUDARegressionHuberLoss(const std::vector<std::string>& strs);
 
   ~CUDARegressionHuberLoss();
+
+  bool LaunchAddPredictionToScoreAndGetGradients(
+    const int* cuda_data_index_to_leaf_index, const double* cuda_leaf_value,
+    double* cuda_scores, score_t* cuda_gradients, score_t* cuda_hessians) const override;
 
  private:
   void LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const override;
@@ -196,6 +208,10 @@ class CUDARegressionQuantileloss : public CUDAPercentileRegressionObjective<Regr
   explicit CUDARegressionQuantileloss(const std::vector<std::string>& strs);
 
   ~CUDARegressionQuantileloss();
+
+  bool LaunchAddPredictionToScoreAndGetGradients(
+    const int* cuda_data_index_to_leaf_index, const double* cuda_leaf_value,
+    double* cuda_scores, score_t* cuda_gradients, score_t* cuda_hessians) const override;
 
  protected:
   void LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const override;

@@ -1053,6 +1053,16 @@ void CUDASingleGPUTreeLearner::AddPredictionToScore(const Tree* tree, double* ou
   cuda_data_partition_->UpdateTrainScore(tree, out_score);
 }
 
+bool CUDASingleGPUTreeLearner::AddPredictionToScoreAndGetGradients(
+  const Tree* tree, double* out_score, const ObjectiveFunction* objective_function,
+  score_t* out_gradients, score_t* out_hessians) const {
+  if (config_->linear_tree && last_tree_is_linear_ && tree->is_linear()) {
+    return false;
+  }
+  return cuda_data_partition_->UpdateTrainScoreAndGetGradients(
+    tree, out_score, objective_function, out_gradients, out_hessians);
+}
+
 void CUDASingleGPUTreeLearner::RestoreBagOrder() {
   cuda_data_partition_->RestoreBagOrder();
 }

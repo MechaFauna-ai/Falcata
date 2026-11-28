@@ -92,6 +92,22 @@ class TreeLearner {
   */
   virtual void AddPredictionToScore(const Tree* tree, double* out_score) const = 0;
 
+  #ifdef USE_CUDA
+  /*!
+  * \brief cuda_plan key score_grad_fuse: fuse AddPredictionToScore with the
+  * objective's next-round GetGradients on the device when unbagged and eligible.
+  * Returns true if both score and gradients/hessians were updated.
+  */
+  virtual bool AddPredictionToScoreAndGetGradients(
+    const Tree* /*tree*/,
+    double* /*out_score*/,
+    const ObjectiveFunction* /*objective_function*/,
+    score_t* /*out_gradients*/,
+    score_t* /*out_hessians*/) const {
+    return false;
+  }
+  #endif  // USE_CUDA
+
   /*!
   * \brief Put the rows of the bag back in bag order, as AddPredictionToScore does on the CUDA learner (the next tree's
   * partition starts from the index order the last one left), for a caller that does not add the last tree's

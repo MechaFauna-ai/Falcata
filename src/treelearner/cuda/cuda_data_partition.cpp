@@ -7,6 +7,9 @@
 
 #ifdef USE_CUDA
 
+#include <Falcata/falcata_plan.h>
+#include <Falcata/objective_function.h>
+
 #include <algorithm>
 #include <cstring>
 #include <memory>
@@ -777,6 +780,34 @@ void CUDADataPartition::UpdateTrainScore(const Tree* tree, double* scores) {
       SynchronizeCUDADevice(__FILE__, __LINE__);
     }
   }
+}
+
+bool CUDADataPartition::UpdateTrainScoreAndGetGradients(
+  const Tree* tree, double* scores, const ObjectiveFunction* objective_function,
+  score_t* gradients, score_t* hessians) {
+  if (use_bagging_ || objective_function == nullptr || !tree->is_cuda_tree() || num_data_ <= 0) {
+    return false;
+  }
+  const CUDATree* cuda_tree = reinterpret_cast<const CUDATree*>(tree);
+  if (cuda_tree->leaf_value_dim() != 1 || cuda_tree->cuda_leaf_value() == nullptr ||
+      cuda_data_index_to_leaf_index_.RawData() == nullptr || root_num_data() != num_data_) {
+    return false;
+  }
+  global_timer.Start("CUDADataPartition::AddPredictionToScoreAndGetGradients");
+  const bool launched = objective_function->LaunchAddPredictionToScoreAndGetGradients(
+    cuda_data_index_to_leaf_index_.RawData(),
+    cuda_tree->cuda_leaf_value(),
+    scores,
+    gradients,
+    hessians);
+  if (launched) {
+    const FalcataPlan& plan = FalcataPlan::Get();
+    if (!AsyncTreeStart() || !plan.gradients_no_sync || plan.compact_prefill) {
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+    }
+  }
+  global_timer.Stop("CUDADataPartition::AddPredictionToScoreAndGetGradients");
+  return launched;
 }
 
 void CUDADataPartition::CalcBlockDim(const data_size_t num_data_in_leaf) {

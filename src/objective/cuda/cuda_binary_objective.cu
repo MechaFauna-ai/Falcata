@@ -16,6 +16,7 @@
 #include <Falcata/falcata_plan.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <type_traits>
 
 namespace Falcata {
@@ -323,6 +324,66 @@ __device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool
   return true;
 }
 
+constexpr int kFusedBinaryScoreGradBlockSize = 256;
+
+#if !defined(SCORE_T_USE_DOUBLE) && !defined(LABEL_T_USE_DOUBLE)
+inline bool BinaryIsAligned16(const void* ptr) {
+  return (reinterpret_cast<uintptr_t>(ptr) & 0xfu) == 0;
+}
+
+inline bool BinaryIsAligned8(const void* ptr) {
+  return (reinterpret_cast<uintptr_t>(ptr) & 0x7u) == 0;
+}
+#endif  // !SCORE_T_USE_DOUBLE && !LABEL_T_USE_DOUBLE
+
+template <bool USE_LABEL_WEIGHT, bool USE_WEIGHT>
+__device__ __forceinline__ void ComputeBinaryLoglossGradHess(
+  const double score, const label_t raw_label, const double* __restrict__ cuda_label_weights,
+  const label_t raw_sample_weight, const double sigmoid, const bool lean,
+  score_t* out_gradient, score_t* out_hessian) {
+  const label_t cuda_label = static_cast<int>(raw_label);
+  const int is_pos = cuda_label > 0 ? 1 : 0;
+  if (kLeanScoreIsFloat && lean) {
+    float lean_gradient, lean_hessian;
+    const double lean_label_weight = USE_LABEL_WEIGHT ? cuda_label_weights[is_pos] : 1.0;
+    const double lean_sample_weight = USE_WEIGHT ? static_cast<double>(raw_sample_weight) : 1.0;
+    if (BinaryLoglossLean<USE_LABEL_WEIGHT, USE_WEIGHT>(score, is_pos != 0, sigmoid,
+                                                        lean_label_weight, lean_sample_weight, &lean_gradient,
+                                                        &lean_hessian)) {
+      *out_gradient = lean_gradient;
+      *out_hessian = lean_hessian;
+      return;
+    }
+  }
+  const int label = is_pos ? 1 : -1;
+  const double response = -label * sigmoid / (1.0f + exp(label * sigmoid * score));
+  const double abs_response = fabs(response);
+  if (!USE_WEIGHT) {
+    if (USE_LABEL_WEIGHT) {
+      // label_weights is indexed {0,1} like the CPU's label_weights_[is_pos];
+      // indexing it with label {-1,+1} read one double BEFORE the allocation
+      // for every negative sample (is_unbalance /
+      // scale_pos_weight on device=cuda trained garbage, AUC 0.500 on fraud)
+      const double label_weight = cuda_label_weights[is_pos];
+      *out_gradient = static_cast<score_t>(response * label_weight);
+      *out_hessian = static_cast<score_t>(abs_response * (sigmoid - abs_response) * label_weight);
+    } else {
+      *out_gradient = static_cast<score_t>(response);
+      *out_hessian = static_cast<score_t>(abs_response * (sigmoid - abs_response));
+    }
+  } else {
+    const double sample_weight = raw_sample_weight;
+    if (USE_LABEL_WEIGHT) {
+      const double label_weight = cuda_label_weights[is_pos];
+      *out_gradient = static_cast<score_t>(response * label_weight * sample_weight);
+      *out_hessian = static_cast<score_t>(abs_response * (sigmoid - abs_response) * label_weight * sample_weight);
+    } else {
+      *out_gradient = static_cast<score_t>(response * sample_weight);
+      *out_hessian = static_cast<score_t>(abs_response * (sigmoid - abs_response) * sample_weight);
+    }
+  }
+}
+
 template <bool USE_LABEL_WEIGHT, bool USE_WEIGHT>
 __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, const label_t* cuda_labels,
   const double* cuda_label_weights, const label_t* cuda_weights,
@@ -331,47 +392,90 @@ __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, cons
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
   if (data_index < num_data) {
-    const label_t cuda_label = static_cast<int>(cuda_labels[data_index]);
-    const int is_pos = cuda_label > 0 ? 1 : 0;
-    if (kLeanScoreIsFloat && lean) {
-      float lean_gradient, lean_hessian;
-      const double lean_label_weight = USE_LABEL_WEIGHT ? cuda_label_weights[is_pos] : 1.0;
-      const double lean_sample_weight = USE_WEIGHT ? static_cast<double>(cuda_weights[data_index]) : 1.0;
-      if (BinaryLoglossLean<USE_LABEL_WEIGHT, USE_WEIGHT>(cuda_scores[data_index], is_pos != 0, sigmoid,
-                                                          lean_label_weight, lean_sample_weight, &lean_gradient,
-                                                          &lean_hessian)) {
-        cuda_out_gradients[data_index] = lean_gradient;
-        cuda_out_hessians[data_index] = lean_hessian;
-        return;
-      }
-    }
-    const int label = is_pos ? 1 : -1;
-    const double response = -label * sigmoid / (1.0f + exp(label * sigmoid * cuda_scores[data_index]));
-    const double abs_response = fabs(response);
-    if (!USE_WEIGHT) {
-      if (USE_LABEL_WEIGHT) {
-        // label_weights is indexed {0,1} like the CPU's label_weights_[is_pos];
-        // indexing it with label {-1,+1} read one double BEFORE the allocation
-        // for every negative sample (is_unbalance /
-        // scale_pos_weight on device=cuda trained garbage, AUC 0.500 on fraud)
-        const double label_weight = cuda_label_weights[is_pos];
-        cuda_out_gradients[data_index] = static_cast<score_t>(response * label_weight);
-        cuda_out_hessians[data_index] = static_cast<score_t>(abs_response * (sigmoid - abs_response) * label_weight);
-      } else {
-        cuda_out_gradients[data_index] = static_cast<score_t>(response);
-        cuda_out_hessians[data_index] = static_cast<score_t>(abs_response * (sigmoid - abs_response));
-      }
-    } else {
-      const double sample_weight = cuda_weights[data_index];
-      if (USE_LABEL_WEIGHT) {
-        const double label_weight = cuda_label_weights[is_pos];
-        cuda_out_gradients[data_index] = static_cast<score_t>(response * label_weight * sample_weight);
-        cuda_out_hessians[data_index] = static_cast<score_t>(abs_response * (sigmoid - abs_response) * label_weight * sample_weight);
-      } else {
-        cuda_out_gradients[data_index] = static_cast<score_t>(response * sample_weight);
-        cuda_out_hessians[data_index] = static_cast<score_t>(abs_response * (sigmoid - abs_response) * sample_weight);
-      }
-    }
+    const label_t raw_weight = USE_WEIGHT ? cuda_weights[data_index] : static_cast<label_t>(1.0f);
+    score_t g, h;
+    ComputeBinaryLoglossGradHess<USE_LABEL_WEIGHT, USE_WEIGHT>(
+      cuda_scores[data_index], cuda_labels[data_index], cuda_label_weights, raw_weight,
+      sigmoid, lean, &g, &h);
+    cuda_out_gradients[data_index] = g;
+    cuda_out_hessians[data_index] = h;
+  }
+}
+
+#if !defined(SCORE_T_USE_DOUBLE) && !defined(LABEL_T_USE_DOUBLE)
+template <bool USE_LABEL_WEIGHT, bool USE_WEIGHT>
+__global__ void AddPredictionAndGetGradientsKernel_BinaryLogloss_Vec2(
+  const int* __restrict__ cuda_data_index_to_leaf_index,
+  const double* __restrict__ cuda_leaf_value,
+  double* __restrict__ cuda_scores,
+  const label_t* __restrict__ cuda_labels,
+  const double* __restrict__ cuda_label_weights,
+  const label_t* __restrict__ cuda_weights,
+  const double sigmoid,
+  const data_size_t num_data,
+  score_t* __restrict__ cuda_out_gradients,
+  score_t* __restrict__ cuda_out_hessians,
+  const bool lean) {
+  PdlWaitForProducer();
+  PdlLaunchDependents();
+  const size_t pair_idx = static_cast<size_t>(blockDim.x) * blockIdx.x + threadIdx.x;
+  const size_t base = pair_idx * 2;
+  const size_t n = static_cast<size_t>(num_data);
+  if (base + 1 < n) {
+    const int2 leaf = reinterpret_cast<const int2*>(cuda_data_index_to_leaf_index)[pair_idx];
+    double2 s = reinterpret_cast<const double2*>(cuda_scores)[pair_idx];
+    s.x += __ldg(&cuda_leaf_value[leaf.x]);
+    s.y += __ldg(&cuda_leaf_value[leaf.y]);
+    reinterpret_cast<double2*>(cuda_scores)[pair_idx] = s;
+    const float2 lbl = reinterpret_cast<const float2*>(cuda_labels)[pair_idx];
+    const float2 w = USE_WEIGHT ? reinterpret_cast<const float2*>(cuda_weights)[pair_idx] : make_float2(1.0f, 1.0f);
+    float2 g, h;
+    ComputeBinaryLoglossGradHess<USE_LABEL_WEIGHT, USE_WEIGHT>(
+      s.x, lbl.x, cuda_label_weights, w.x, sigmoid, lean, &g.x, &h.x);
+    ComputeBinaryLoglossGradHess<USE_LABEL_WEIGHT, USE_WEIGHT>(
+      s.y, lbl.y, cuda_label_weights, w.y, sigmoid, lean, &g.y, &h.y);
+    reinterpret_cast<float2*>(cuda_out_gradients)[pair_idx] = g;
+    reinterpret_cast<float2*>(cuda_out_hessians)[pair_idx] = h;
+  } else if (base < n) {
+    const int leaf = cuda_data_index_to_leaf_index[base];
+    const double s = cuda_scores[base] + __ldg(&cuda_leaf_value[leaf]);
+    cuda_scores[base] = s;
+    const label_t w = USE_WEIGHT ? cuda_weights[base] : static_cast<label_t>(1.0f);
+    score_t g, h;
+    ComputeBinaryLoglossGradHess<USE_LABEL_WEIGHT, USE_WEIGHT>(
+      s, cuda_labels[base], cuda_label_weights, w, sigmoid, lean, &g, &h);
+    cuda_out_gradients[base] = g;
+    cuda_out_hessians[base] = h;
+  }
+}
+#endif  // !SCORE_T_USE_DOUBLE && !LABEL_T_USE_DOUBLE
+
+template <bool USE_LABEL_WEIGHT, bool USE_WEIGHT>
+__global__ void AddPredictionAndGetGradientsKernel_BinaryLogloss_Scalar(
+  const int* __restrict__ cuda_data_index_to_leaf_index,
+  const double* __restrict__ cuda_leaf_value,
+  double* __restrict__ cuda_scores,
+  const label_t* __restrict__ cuda_labels,
+  const double* __restrict__ cuda_label_weights,
+  const label_t* __restrict__ cuda_weights,
+  const double sigmoid,
+  const data_size_t num_data,
+  score_t* __restrict__ cuda_out_gradients,
+  score_t* __restrict__ cuda_out_hessians,
+  const bool lean) {
+  PdlWaitForProducer();
+  PdlLaunchDependents();
+  const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
+  if (data_index < num_data) {
+    const int leaf = cuda_data_index_to_leaf_index[data_index];
+    const double s = cuda_scores[data_index] + __ldg(&cuda_leaf_value[leaf]);
+    cuda_scores[data_index] = s;
+    const label_t w = USE_WEIGHT ? cuda_weights[data_index] : static_cast<label_t>(1.0f);
+    score_t g, h;
+    ComputeBinaryLoglossGradHess<USE_LABEL_WEIGHT, USE_WEIGHT>(
+      s, cuda_labels[data_index], cuda_label_weights, w, sigmoid, lean, &g, &h);
+    cuda_out_gradients[data_index] = g;
+    cuda_out_hessians[data_index] = h;
   }
 }
 
@@ -404,6 +508,51 @@ void CUDABinaryLogloss::LaunchGetGradientsKernel(const double* scores, score_t* 
 }
 
 #undef GetGradientsKernel_BinaryLogloss_ARGS
+
+bool CUDABinaryLogloss::LaunchAddPredictionToScoreAndGetGradients(
+  const int* cuda_data_index_to_leaf_index, const double* cuda_leaf_value,
+  double* cuda_scores, score_t* cuda_gradients, score_t* cuda_hessians) const {
+  if (num_data_ <= 0) {
+    return false;
+  }
+  const bool pdl = PdlLevelChainEnabled();
+  const bool use_label_weight = cuda_label_weights_.Size() != 0;
+  const bool use_weight = cuda_weights_ != nullptr;
+  const bool lean = FalcataPlan::Get().gradient_fp64_lean;
+#if !defined(SCORE_T_USE_DOUBLE) && !defined(LABEL_T_USE_DOUBLE)
+  if (BinaryIsAligned8(cuda_data_index_to_leaf_index) && BinaryIsAligned16(cuda_scores) &&
+      BinaryIsAligned8(cuda_label_) && BinaryIsAligned8(cuda_gradients) && BinaryIsAligned8(cuda_hessians) &&
+      (!use_weight || BinaryIsAligned8(cuda_weights_))) {
+    const size_t num_pairs = (static_cast<size_t>(num_data_) + 1) / 2;
+    const unsigned int num_blocks = static_cast<unsigned int>((num_pairs + kFusedBinaryScoreGradBlockSize - 1) / kFusedBinaryScoreGradBlockSize);
+    auto kernel =
+      !use_label_weight
+        ? (!use_weight ? AddPredictionAndGetGradientsKernel_BinaryLogloss_Vec2<false, false>
+                       : AddPredictionAndGetGradientsKernel_BinaryLogloss_Vec2<false, true>)
+        : (!use_weight ? AddPredictionAndGetGradientsKernel_BinaryLogloss_Vec2<true, false>
+                       : AddPredictionAndGetGradientsKernel_BinaryLogloss_Vec2<true, true>);
+    LaunchLevelChainKernel(
+      pdl, kernel, dim3(num_blocks), dim3(kFusedBinaryScoreGradBlockSize), 0, nullptr,
+      cuda_data_index_to_leaf_index, cuda_leaf_value, cuda_scores, cuda_label_,
+      cuda_label_weights_.RawData(), cuda_weights_, sigmoid_, num_data_,
+      cuda_gradients, cuda_hessians, lean);
+    return true;
+  }
+#endif  // !SCORE_T_USE_DOUBLE && !LABEL_T_USE_DOUBLE
+  const int num_blocks = (num_data_ + kFusedBinaryScoreGradBlockSize - 1) / kFusedBinaryScoreGradBlockSize;
+  auto kernel =
+    !use_label_weight
+      ? (!use_weight ? AddPredictionAndGetGradientsKernel_BinaryLogloss_Scalar<false, false>
+                     : AddPredictionAndGetGradientsKernel_BinaryLogloss_Scalar<false, true>)
+      : (!use_weight ? AddPredictionAndGetGradientsKernel_BinaryLogloss_Scalar<true, false>
+                     : AddPredictionAndGetGradientsKernel_BinaryLogloss_Scalar<true, true>);
+  LaunchLevelChainKernel(
+    pdl, kernel, dim3(num_blocks), dim3(kFusedBinaryScoreGradBlockSize), 0, nullptr,
+    cuda_data_index_to_leaf_index, cuda_leaf_value, cuda_scores, cuda_label_,
+    cuda_label_weights_.RawData(), cuda_weights_, sigmoid_, num_data_,
+    cuda_gradients, cuda_hessians, lean);
+  return true;
+}
 
 __global__ void ConvertOutputCUDAKernel_BinaryLogloss(const double sigmoid, const data_size_t num_data, const double* input, double* output) {
   const data_size_t data_index = static_cast<data_size_t>(blockIdx.x * blockDim.x + threadIdx.x);

@@ -5,6 +5,7 @@
  */
 #include "gbdt.h"
 
+#include <Falcata/falcata_plan.h>
 #include <Falcata/metric.h>
 #include <Falcata/network.h>
 #include <Falcata/objective_function.h>
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <memory>
 #include <queue>
@@ -332,6 +334,10 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
   if (config_->linear_tree) {
     linear_tree_ = true;
   }
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  score_grad_fuse_diag_logged_ = false;
+  #endif  // USE_CUDA
 }
 
 Json GBDT::ParseForcedSplits(const std::string& content, const std::string& filename) {
@@ -453,6 +459,12 @@ void GBDT::Boosting() {
   if (objective_function_ == nullptr) {
     Log::Fatal("No objective function provided");
   }
+  #ifdef USE_CUDA
+  if (fused_gradients_ready_) {
+    fused_gradients_ready_ = false;
+    return;
+  }
+  #endif  // USE_CUDA
   // objective function will calculate gradients and hessians
   int64_t num_score = 0;
   if (config_->bagging_by_query) {
@@ -489,6 +501,9 @@ void GBDT::Train(int snapshot_freq, const std::string& model_output_path) {
 double ObtainAutomaticInitialScore(const ObjectiveFunction* fobj, int class_id);
 
 void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const size_t ncol) {
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  #endif  // USE_CUDA
   if (leaf_value_dim_ > 1) {
     Log::Fatal(
         "Refitting vector-leaf models is not supported yet "
@@ -655,12 +670,20 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
   if (gradients == nullptr || hessians == nullptr) {
     for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
       init_scores[cur_tree_id] = BoostFromAverage(cur_tree_id, true);
+      #ifdef USE_CUDA
+      if (std::fabs(init_scores[cur_tree_id]) > kEpsilon) {
+        fused_gradients_ready_ = false;
+      }
+      #endif  // USE_CUDA
     }
     Boosting();
     gradients = gradients_pointer_;
     hessians = hessians_pointer_;
     CheckGradientNormForDivergence(gradients);
   } else {
+    #ifdef USE_CUDA
+    fused_gradients_ready_ = false;
+    #endif  // USE_CUDA
     // use customized objective function
     // the check below fails unless objective=custom is provided in the parameters on Booster creation
     CHECK(objective_function_ == nullptr);
@@ -741,6 +764,9 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
         new_tree->AddBias(init_scores[cur_tree_id]);
       }
     } else {
+      #ifdef USE_CUDA
+      fused_gradients_ready_ = false;
+      #endif  // USE_CUDA
       // only add default score one-time
       if (models_.size() < static_cast<size_t>(num_tree_per_iteration_)) {
         if (objective_function_ != nullptr && !config_->boost_from_average && !train_score_updater_->has_init_score()) {
@@ -783,6 +809,9 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
 }
 
 bool GBDT::VectorTrainOneIter() {
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  #endif  // USE_CUDA
   Common::FunctionTimer fun_timer("GBDT::TrainOneIter", global_timer);
   CHECK_NOTNULL(objective_function_);
   CHECK_EQ(num_tree_per_iteration_, 1);
@@ -834,6 +863,9 @@ bool GBDT::VectorTrainOneIter() {
 }
 
 void GBDT::RollbackOneIter() {
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  #endif  // USE_CUDA
   if (iter_ <= 0) {
     return;
   }
@@ -861,6 +893,9 @@ bool GBDT::EvalAndCheckEarlyStopping() {
 
   is_met_early_stopping = !best_msg.empty();
   if (is_met_early_stopping) {
+    #ifdef USE_CUDA
+    fused_gradients_ready_ = false;
+    #endif  // USE_CUDA
     Log::Info("Early stopping at iteration %d, the best iteration round is %d",
               iter_, iter_ - early_stopping_round_);
     Log::Info("Output of best iteration round:\n%s", best_msg.c_str());
@@ -872,31 +907,75 @@ bool GBDT::EvalAndCheckEarlyStopping() {
   return is_met_early_stopping;
 }
 
+#ifdef USE_CUDA
+bool GBDT::CanFuseScoreAndGradients(const Tree* tree, const int cur_tree_id) const {
+  return SupportsScoreGradFuse() &&
+         boosting_on_gpu_ &&
+         FalcataPlan::Get().score_grad_fuse &&
+         config_ != nullptr &&
+         config_->device_type == std::string("cuda") &&
+         config_->boosting == std::string("gbdt") &&
+         num_tree_per_iteration_ == 1 &&
+         leaf_value_dim_ == 1 &&
+         cur_tree_id == 0 &&
+         num_data_ > 0 &&
+         !linear_tree_ &&
+         !tree->is_linear() &&
+         objective_function_ != nullptr &&
+         gradients_pointer_ == cuda_gradients_.RawData() &&
+         hessians_pointer_ == cuda_hessians_.RawData() &&
+         cuda_gradients_.Size() >= static_cast<size_t>(num_data_) &&
+         cuda_hessians_.Size() >= static_cast<size_t>(num_data_) &&
+         data_sample_strategy_ != nullptr &&
+         !data_sample_strategy_->is_use_subset() &&
+         !data_sample_strategy_->IsHessianChange() &&
+         !config_->bagging_by_query &&
+         data_sample_strategy_->bag_data_cnt() == num_data_;
+}
+#endif  // USE_CUDA
+
 void GBDT::UpdateScore(const Tree* tree, const int cur_tree_id) {
   Common::FunctionTimer fun_timer("GBDT::UpdateScore", global_timer);
-  // update training score
-  if (!data_sample_strategy_->is_use_subset()) {
-    train_score_updater_->AddScore(tree_learner_.get(), tree, cur_tree_id);
-
-    const data_size_t bag_data_cnt = data_sample_strategy_->bag_data_cnt();
-    // we need to predict out-of-bag scores of data for boosting
-    if (num_data_ - bag_data_cnt > 0) {
-      #ifdef USE_CUDA
-      if (config_->device_type == std::string("cuda")) {
-        // The out-of-bag traversal reads the packed per-tree column view
-        // directly when one is in force (see LaunchAddPredictionToScoreKernel),
-        // so no per-column materialization is needed here.
-        train_score_updater_->AddScore(tree, data_sample_strategy_->cuda_bag_data_indices().RawData() + bag_data_cnt, num_data_ - bag_data_cnt, cur_tree_id);
-      } else {
-      #endif  // USE_CUDA
-        train_score_updater_->AddScore(tree, data_sample_strategy_->bag_data_indices().data() + bag_data_cnt, num_data_ - bag_data_cnt, cur_tree_id);
-      #ifdef USE_CUDA
-      }
-      #endif  // USE_CUDA
+  bool score_updated = false;
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  if (CanFuseScoreAndGradients(tree, cur_tree_id) &&
+      train_score_updater_->AddScoreAndGetGradients(
+          tree_learner_.get(), tree, cur_tree_id, objective_function_,
+          gradients_pointer_, hessians_pointer_)) {
+    fused_gradients_ready_ = true;
+    score_updated = true;
+    if (FalcataDebug().diag && !score_grad_fuse_diag_logged_) {
+      fprintf(stderr, "[gbdt-diag] score_grad_fuse: fused AddPredictionToScore+GetGradients (%s)\n",
+              objective_function_->GetName());
+      score_grad_fuse_diag_logged_ = true;
     }
+  }
+  #endif  // USE_CUDA
+  // update training score
+  if (!score_updated) {
+    if (!data_sample_strategy_->is_use_subset()) {
+      train_score_updater_->AddScore(tree_learner_.get(), tree, cur_tree_id);
 
-  } else {
-    train_score_updater_->AddScore(tree, cur_tree_id);
+      const data_size_t bag_data_cnt = data_sample_strategy_->bag_data_cnt();
+      // we need to predict out-of-bag scores of data for boosting
+      if (num_data_ - bag_data_cnt > 0) {
+        #ifdef USE_CUDA
+        if (config_->device_type == std::string("cuda")) {
+          // The out-of-bag traversal reads the packed per-tree column view
+          // directly when one is in force (see LaunchAddPredictionToScoreKernel),
+          // so no per-column materialization is needed here.
+          train_score_updater_->AddScore(tree, data_sample_strategy_->cuda_bag_data_indices().RawData() + bag_data_cnt, num_data_ - bag_data_cnt, cur_tree_id);
+        } else {
+        #endif  // USE_CUDA
+          train_score_updater_->AddScore(tree, data_sample_strategy_->bag_data_indices().data() + bag_data_cnt, num_data_ - bag_data_cnt, cur_tree_id);
+        #ifdef USE_CUDA
+        }
+        #endif  // USE_CUDA
+      }
+    } else {
+      train_score_updater_->AddScore(tree, cur_tree_id);
+    }
   }
 
 
@@ -1155,6 +1234,10 @@ double GBDT::GetLowerBoundValue() const {
 
 void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction* objective_function,
                              const std::vector<const Metric*>& training_metrics) {
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  score_grad_fuse_diag_logged_ = false;
+  #endif  // USE_CUDA
   if (leaf_value_dim_ > 1) {
     Log::Fatal(
         "Continuing training from a vector-leaf model is not supported by the "
@@ -1273,6 +1356,10 @@ void GBDT::OnBoostingOnGPUChanged(bool train_data_changes) {
 #endif  // USE_CUDA
 
 void GBDT::ResetConfig(const Config* config) {
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  score_grad_fuse_diag_logged_ = false;
+  #endif  // USE_CUDA
   auto new_config = std::unique_ptr<Config>(new Config(*config));
   if (!new_config->forcedsplits_filename.empty() &&
       (tree_learner_ == nullptr || train_data_ == nullptr)) {
@@ -1359,6 +1446,9 @@ void GBDT::ResetConfig(const Config* config) {
 }
 
 void GBDT::ResetGradientBuffers() {
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  #endif  // USE_CUDA
   const size_t total_size = static_cast<size_t>(num_data_) * NumOutputPerIteration();
   const bool is_use_subset = data_sample_strategy_->is_use_subset();
   const data_size_t bag_data_cnt = data_sample_strategy_->bag_data_cnt();

@@ -107,6 +107,9 @@ class DART: public GBDT {
     return false;
   }
 
+ protected:
+  bool SupportsScoreGradFuse() const override { return false; }
+
  private:
   /*!
   * \brief drop trees based on drop_rate

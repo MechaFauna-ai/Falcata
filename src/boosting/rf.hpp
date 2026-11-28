@@ -40,6 +40,10 @@ class RF : public GBDT {
 
   ~RF() {}
 
+ protected:
+  bool SupportsScoreGradFuse() const override { return false; }
+
+ public:
   void Init(const Config* config, const Dataset* train_data, const ObjectiveFunction* objective_function,
     const std::vector<const Metric*>& training_metrics) override {
     CheckSamplingConfig(*config);
