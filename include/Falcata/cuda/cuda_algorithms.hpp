@@ -257,6 +257,17 @@ __device__ __forceinline__ T ShuffleReduceMin(T value, T* shared_mem_buffer, con
 template <typename VAL_T, typename REDUCE_T>
 void ShuffleReduceMinGlobal(const VAL_T* values, size_t n, REDUCE_T* block_buffer);
 
+// Match ShuffleReduceMinWarp / ShuffleReduceMaxWarp comparison semantics (including NaN handling).
+template <typename T>
+__device__ __forceinline__ T SelectMin(const T a, const T b) {
+  return (b < a) ? b : a;
+}
+
+template <typename T>
+__device__ __forceinline__ T SelectMax(const T a, const T b) {
+  return (b > a) ? b : a;
+}
+
 // Block-wide min/max reduction over 1024 threads matching ReduceMinMaxKernel's exact
 // warp-tree and cross-warp-tree operand order (ShuffleReduceMinWarp / ShuffleReduceMaxWarp).
 __device__ __forceinline__ void ReduceBlockGradHessMinMax(

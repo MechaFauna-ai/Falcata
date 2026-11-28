@@ -8,6 +8,7 @@
 #ifdef USE_CUDA
 
 #include <Falcata/falcata_plan.h>
+#include <Falcata/objective_function.h>
 
 #include <algorithm>
 #include <atomic>
@@ -21,6 +22,19 @@ namespace Falcata {
 
 static_assert(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE == NUM_THREADS_PER_BLOCK_LEAF_SPLITS,
               "discretize_root_sums requires matching 1024-row chunks");
+static_assert(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE == ObjectiveFunction::CUDAPrecomputedGradMinMax::kBlockSize,
+              "grad_minmax_fuse requires matching 1024-row blocks");
+
+// Prevent ptxas from contracting (v * scale) + residual into FMA when scale lives in a uniform register
+// across unrolled rows, keeping DiscretizeGradientsKernel and DiscretizeGradientsChunk256Kernel
+// instruction-for-instruction identical under both float and SCORE_T_USE_DOUBLE builds.
+__device__ __forceinline__ score_t MulNoFMA(const score_t a, const score_t b) {
+#ifdef SCORE_T_USE_DOUBLE
+  return __dmul_rn(a, b);
+#else
+  return __fmul_rn(a, b);
+#endif
+}
 
 static int CachedDeviceSMCount() {
   constexpr int kMaxDevices = 64;
@@ -298,10 +312,11 @@ __global__ void ComputeGradMagHistogramAsyncKernel(
   PdlWaitForProducer();
   const score_t grad_abs_max = (*grad_dequant_ptr) * static_cast<score_t>(grad_discretize_bins / 2);
   if (grad_abs_max > 0.0f) {
-    const data_size_t stride = static_cast<data_size_t>(gridDim.x) * static_cast<data_size_t>(blockDim.x);
-    for (data_size_t index = static_cast<data_size_t>(blockIdx.x) * static_cast<data_size_t>(blockDim.x) +
-                             static_cast<data_size_t>(threadIdx.x);
-         index < num_data; index += stride) {
+    const int64_t stride = static_cast<int64_t>(gridDim.x) * static_cast<int64_t>(blockDim.x);
+    const int64_t limit = static_cast<int64_t>(num_data);
+    for (int64_t index = static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+                         static_cast<int64_t>(threadIdx.x);
+         index < limit; index += stride) {
       const score_t g = fabs(input_gradients[index]);
       if (g > 0.0f) {
         const score_t frac = g / grad_abs_max;
@@ -555,9 +570,11 @@ __global__ void DiscretizeGradientsKernel(
         static_cast<int16_t>(__fmaf_rn(hessian, hess_scale, hessian_random_value));
     } else {
       // the double 0.5 is deliberate: a double add cannot be contracted with
-      // the float multiply, keeping the rounding sequence arch-stable
-      const score_t gv = input_gradients[index] * grad_scale;
-      const score_t hv = input_hessians[CONST_HESS ? 0 : index] * hess_scale;
+      // the float multiply, keeping the rounding sequence arch-stable; MulNoFMA
+      // pins the separate multiply before adding the error-feedback residual so
+      // DiscretizeGradientsKernel and DiscretizeGradientsChunk256Kernel stay bit-identical
+      const score_t gv = MulNoFMA(input_gradients[index], grad_scale);
+      const score_t hv = MulNoFMA(input_hessians[CONST_HESS ? 0 : index], hess_scale);
       // out-of-bag residuals must not move: nothing consumes those values
       const bool ef_active = ef_residuals != nullptr &&
           (ef_inbag_mask == nullptr || ef_inbag_mask[index] != 0);
@@ -738,11 +755,9 @@ __global__ void DiscretizeGradientsChunk256Kernel(
           static_cast<int16_t>(__fmaf_rn(gradient, grad_scale, -gradient_random_value));
         qh = static_cast<int16_t>(__fmaf_rn(hessian, hess_scale, hessian_random_value));
       } else {
-        // Explicit __fmul_rn: grad_scale/hess_scale live in uniform registers across the unrolled rows,
-        // so without __fmul_rn ptxas contracts (g * grad_scale) + ge into FFMA (one rounding instead of
-        // two), diverging from DiscretizeGradientsKernel's separate FMUL + FADD on borderline fixedpoint rows.
-        const score_t gv = __fmul_rn(input_gradients[index], grad_scale);
-        const score_t hv = __fmul_rn(CONST_HESS ? const_hess_val : input_hessians[index], hess_scale);
+        // MulNoFMA matches DiscretizeGradientsKernel's separate FMUL + FADD (and DMUL + DADD under SCORE_T_USE_DOUBLE)
+        const score_t gv = MulNoFMA(input_gradients[index], grad_scale);
+        const score_t hv = MulNoFMA(CONST_HESS ? const_hess_val : input_hessians[index], hess_scale);
         const bool ef_active = ef_residuals != nullptr &&
             (ef_inbag_mask == nullptr || ef_inbag_mask[index] != 0);
         score_t ge = 0.0f;

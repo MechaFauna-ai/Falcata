@@ -16,6 +16,9 @@
 
 namespace Falcata {
 
+static_assert(GET_GRADIENTS_BLOCK_SIZE_REGRESSION == ObjectiveFunction::CUDAPrecomputedGradMinMax::kBlockSize,
+              "grad_minmax_fuse requires 1024-row blocks");
+
 template <typename HOST_OBJECTIVE>
 void CUDARegressionObjectiveInterface<HOST_OBJECTIVE>::Init(const Metadata& metadata, data_size_t num_data) {
   CUDAObjectiveInterface<HOST_OBJECTIVE>::Init(metadata, num_data);
@@ -169,17 +172,17 @@ __global__ void GetGradientsChunk256Kernel_RegressionL2(
         if (WRITE_HESS) {
           cuda_out_hessians[data_index] = 1.0f;
         }
-        g_min = min(g_min, g);
-        g_max = max(g_max, g);
+        g_min = SelectMin(g_min, g);
+        g_max = SelectMax(g_max, g);
       } else {
         const score_t weight = static_cast<score_t>(cuda_weights[data_index]);
         const score_t g = static_cast<score_t>(cuda_scores[data_index] - cuda_labels[data_index]) * weight;
         cuda_out_gradients[data_index] = g;
         cuda_out_hessians[data_index] = weight;
-        g_min = min(g_min, g);
-        g_max = max(g_max, g);
-        h_min = min(h_min, weight);
-        h_max = max(h_max, weight);
+        g_min = SelectMin(g_min, g);
+        g_max = SelectMax(g_max, g);
+        h_min = SelectMin(h_min, weight);
+        h_max = SelectMax(h_max, weight);
       }
     }
   }
@@ -214,13 +217,13 @@ __global__ void GetGradientsChunk256Kernel_RegressionL2(
     for (int offset = kNumWarps / 2; offset > 0; offset >>= 1) {
       const score_t og_min = __shfl_down_sync(0xffffffff, g_min, offset);
       const score_t og_max = __shfl_down_sync(0xffffffff, g_max, offset);
-      g_min = min(g_min, og_min);
-      g_max = max(g_max, og_max);
+      g_min = SelectMin(g_min, og_min);
+      g_max = SelectMax(g_max, og_max);
       if (USE_WEIGHT) {
         const score_t oh_min = __shfl_down_sync(0xffffffff, h_min, offset);
         const score_t oh_max = __shfl_down_sync(0xffffffff, h_max, offset);
-        h_min = min(h_min, oh_min);
-        h_max = max(h_max, oh_max);
+        h_min = SelectMin(h_min, oh_min);
+        h_max = SelectMax(h_max, oh_max);
       }
     }
     if (lane == 0) {

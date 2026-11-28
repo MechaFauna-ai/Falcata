@@ -21,6 +21,9 @@
 
 namespace Falcata {
 
+static_assert(GET_GRADIENTS_BLOCK_SIZE_BINARY == ObjectiveFunction::CUDAPrecomputedGradMinMax::kBlockSize,
+              "grad_minmax_fuse requires 1024-row blocks");
+
 // The label (and weight) sums of the init score: each block's partial sum goes to its own slot of block_sums
 // (labels in [0, num_blocks), weights in [num_blocks, 2 * num_blocks)), and BoostFromScoreKernel_Sum_BinaryLogloss
 // adds the slots in block order. (The blocks used to atomicAdd their partials into one double, in whatever order they
@@ -485,10 +488,10 @@ __global__ void GetGradientsChunk256Kernel_BinaryLogloss(
       }
       cuda_out_gradients[data_index] = grad_val;
       cuda_out_hessians[data_index] = hess_val;
-      g_min = min(g_min, grad_val);
-      g_max = max(g_max, grad_val);
-      h_min = min(h_min, hess_val);
-      h_max = max(h_max, hess_val);
+      g_min = SelectMin(g_min, grad_val);
+      g_max = SelectMax(g_max, grad_val);
+      h_min = SelectMin(h_min, hess_val);
+      h_max = SelectMax(h_max, hess_val);
     }
   }
   __shared__ score_t s_gmin[kNumWarps];
@@ -518,10 +521,10 @@ __global__ void GetGradientsChunk256Kernel_BinaryLogloss(
       const score_t og_max = __shfl_down_sync(0xffffffff, g_max, offset);
       const score_t oh_min = __shfl_down_sync(0xffffffff, h_min, offset);
       const score_t oh_max = __shfl_down_sync(0xffffffff, h_max, offset);
-      g_min = min(g_min, og_min);
-      g_max = max(g_max, og_max);
-      h_min = min(h_min, oh_min);
-      h_max = max(h_max, oh_max);
+      g_min = SelectMin(g_min, og_min);
+      g_max = SelectMax(g_max, og_max);
+      h_min = SelectMin(h_min, oh_min);
+      h_max = SelectMax(h_max, oh_max);
     }
     if (lane == 0) {
       out_grad_min[chunk] = g_min;

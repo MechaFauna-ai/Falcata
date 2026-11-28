@@ -139,6 +139,7 @@ class ObjectiveFunction {
   * can skip its full-dataset ReduceMinMax pass.
   */
   struct CUDAPrecomputedGradMinMax {
+    static constexpr int kBlockSize = 1024;
     const score_t* grad_min_blocks = nullptr;
     const score_t* grad_max_blocks = nullptr;
     const score_t* hess_min_blocks = nullptr;

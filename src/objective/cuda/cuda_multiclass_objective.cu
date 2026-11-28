@@ -17,6 +17,9 @@
 
 namespace Falcata {
 
+static_assert(GET_GRADIENTS_BLOCK_SIZE_MULTICLASS == ObjectiveFunction::CUDAPrecomputedGradMinMax::kBlockSize,
+              "grad_minmax_fuse requires 1024-row blocks");
+
 // Softmax over a row's len values, which sit `stride` elements apart: the scratch is class-major (class k of row r at
 // k * num_rows + r, the layout of the scores), so the threads of a warp, consecutive rows, touch consecutive doubles
 // on every pass. (A row-major scratch put them num_class doubles apart, an uncoalesced access per pass.)
