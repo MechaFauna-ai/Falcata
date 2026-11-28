@@ -2245,7 +2245,8 @@ __device__ __forceinline__ void WarpFindBest(
     const double parent_output, const double grad_scale, const double hess_scale,
     const bool prune_fp32, const bool select_int, const bool compact, const bool prune_sure, unsigned char* s_compact,
     CUDASplitInfo* out, const uint32_t pos0 = 0, uint64_t* s_merge_bits = nullptr, uint32_t* s_merge_t = nullptr,
-    float* s_merge_thr = nullptr) {
+    float* s_merge_thr = nullptr,
+    const hist_t* parent_hist_base = nullptr, const hist_t* smaller_hist_base = nullptr, const int sub_mode = 0) {
   using UT = std::make_unsigned_t<ACC_T>;
   constexpr uint32_t kNoThreshold = 0xffffffffu;
   static_assert((G == 32 && PPL >= 2) || (G == 4 && PPL == 2),
@@ -2274,13 +2275,48 @@ __device__ __forceinline__ void WarpFindBest(
   // from the leaf total below.
   const uint32_t shift = (!REVERSE && task->na_as_missing && task->mfb_offset == 1) ? 1u : 0u;
 
+  // cuda_plan key final_level_sub_in_find: when subtract_on_fly is active on the larger child, read parent_hist and
+  // smaller_hist and compute parent - smaller directly in registers (matching SubtractHistogramDiscretizedInner
+  // bit-for-bit across all 4 bit-width combinations). sub_mode is warp-uniform (kept runtime rather than templated
+  // to avoid doubling the ~1.5 MB warp kernel cubin and paying ~20 ms extra CUDA module load time): 0 = direct read,
+  // 1 = same-width parent - smaller, 2 = 64-bit parent minus unpacked 16-bit smaller (packed to 16-bit if B16).
+  const ACC_T* sub_same = nullptr;
+  const int64_t* parent64 = nullptr;
+  const int32_t* smaller32 = nullptr;
+  if (sub_mode == 1) {
+    sub_same = reinterpret_cast<const ACC_T*>(smaller_hist_base) + task->hist_offset;
+  } else if (sub_mode == 2) {
+    parent64 = reinterpret_cast<const int64_t*>(parent_hist_base) + task->hist_offset;
+    smaller32 = reinterpret_cast<const int32_t*>(smaller_hist_base) + task->hist_offset;
+  }
+  auto load_bin = [&](const uint32_t idx) -> UT {
+    if (sub_mode == 0) {
+      return static_cast<UT>(hist[idx]);
+    }
+    if (sub_mode == 1) {
+      return static_cast<UT>(hist[idx]) - static_cast<UT>(sub_same[idx]);
+    }
+    const int64_t p = parent64[idx];
+    const int32_t s32 = smaller32[idx];
+    const int64_t s64 = static_cast<int64_t>(
+        (static_cast<uint64_t>(static_cast<int64_t>(static_cast<int16_t>(s32 >> 16))) << 32) |
+        static_cast<uint64_t>(s32 & 0x0000ffff));
+    const int64_t diff = p - s64;
+    if (B16) {
+      return static_cast<UT>(
+          (static_cast<uint32_t>(static_cast<uint16_t>(diff >> 32)) << 16) |
+          static_cast<uint32_t>(static_cast<uint16_t>(diff)));
+    }
+    return static_cast<UT>(diff);
+  };
+
   UT v[PPL];
 #pragma unroll
   for (int i = 0; i < PPL; ++i) {
     const uint32_t t = position(i);
     UT x = 0;
     if (REVERSE ? (t >= na && t < fnb) : (t >= shift && t - shift < fnb)) {
-      x = static_cast<UT>(hist[REVERSE ? (fnb - 1 - t) : (t - shift)]);
+      x = load_bin(REVERSE ? (fnb - 1 - t) : (t - shift));
     }
     v[i] = x;
   }
@@ -2294,7 +2330,7 @@ __device__ __forceinline__ void WarpFindBest(
     for (uint32_t t = lane; t < fnb + shift; t += 32u) {
       UT x = 0;
       if (REVERSE ? (t >= na && t < fnb) : (t >= shift && t - shift < fnb)) {
-        x = static_cast<UT>(hist[REVERSE ? (fnb - 1 - t) : (t - shift)]);
+        x = load_bin(REVERSE ? (fnb - 1 - t) : (t - shift));
       }
       if (t < pos0) carry += x;
       all += x;
@@ -2798,6 +2834,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   const bool select_int,
   const bool compact_survivors,
   const bool prune_sure,
+  const bool subtract_on_fly,
   CUDASplitInfo* cuda_best_split_info,
   const CUDADeviceLevelState* dls) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
@@ -2884,6 +2921,16 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   gscale = *grad_scale;
   hscale = *hess_scale;
   hist_in_leaf = leaf_splits->hist_in_leaf;
+  int sub_mode = 0;
+  const hist_t* sub_hist_base = nullptr;
+  if (subtract_on_fly && is_larger) {
+    sub_hist_base = desc->smaller_struct->hist_in_leaf;
+    if (leaf_num_bits <= 16) {
+      sub_mode = desc->parent_num_bits <= 16 ? 1 : 2;
+    } else {
+      sub_mode = desc->smaller_num_bits > 16 ? 1 : 2;
+    }
+  }
   // scan positions 0 .. fnb + shift - 1 (see WarpFindBest)
   const uint32_t num_positions = static_cast<uint32_t>(task->num_bin - task->mfb_offset) +
     ((!task->reverse && task->na_as_missing && task->mfb_offset == 1) ? 1u : 0u);
@@ -2892,19 +2939,22 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   // tier per 32 positions: a launch mixing widths runs fewer distinct WarpFindBest bodies at once.
   const uint32_t mid_ppl_slots = !mid_ppl ? 8u : num_positions <= 64u ? 2u : num_positions <= 128u ? 4u : 8u;
 #define FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, PPL, G) \
-  WarpFindBest<REV, B16, ACC_T, PPL, G>(reinterpret_cast<const ACC_T*>(hist_in_leaf) + task->hist_offset, \
+  WarpFindBest<REV, B16, ACC_T, PPL, G>( \
+    reinterpret_cast<const ACC_T*>(hist_in_leaf) + task->hist_offset, \
     task, lambda_l2, max_delta_step, min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split, parent_gain, \
     sum_gradients_hessians, num_data, parent_output, gscale, hscale, prune_fp32, select_int, compact_survivors, \
-    prune_sure, s_compact_warp, out)
+    prune_sure, s_compact_warp, out, 0u, nullptr, nullptr, nullptr, hist_in_leaf, sub_hist_base, sub_mode)
 #define FALCATA_WARP_FIND(REV, B16, ACC_T) \
   if (!WIDE || narrow) { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 2, 4); \
   } else if (split_wide) { \
     /* find_split_small: this warp's 64 positions of the task (2 per lane), merged over the block's 4 warps */ \
-    WarpFindBest<REV, B16, ACC_T, 2, 32, true>(reinterpret_cast<const ACC_T*>(hist_in_leaf) + task->hist_offset, \
+    WarpFindBest<REV, B16, ACC_T, 2, 32, true>( \
+      reinterpret_cast<const ACC_T*>(hist_in_leaf) + task->hist_offset, \
       task, lambda_l2, max_delta_step, min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split, parent_gain, \
       sum_gradients_hessians, num_data, parent_output, gscale, hscale, prune_fp32, select_int, compact_survivors, \
-      prune_sure, s_compact_warp, out, sub * 64u, s_merge_bits, s_merge_t, s_merge_thr); \
+      prune_sure, s_compact_warp, out, sub * 64u, s_merge_bits, s_merge_t, s_merge_thr, \
+      hist_in_leaf, sub_hist_base, sub_mode); \
   } else if (mid_ppl_slots == 2u) { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 2, 32); \
   } else if (mid_ppl_slots == 4u) { \
@@ -2934,12 +2984,14 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
   const score_t* grad_scale,
-  const score_t* hess_scale) {
+  const score_t* hess_scale,
+  const bool subtract_on_fly) {
   const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
   if (num_used_tasks_ == 0) {
     return;  // no usable feature this tree; the sync masks every lane not-found
   }
   const bool use_warp = warp_find_eligible_ && !FalcataFP32GainEnabled();
+  CHECK(!subtract_on_fly || use_warp);
   const int num_launch_tasks = compact_tasks ? num_used_tasks_ : num_tasks_;
   // the warp launch's order (BeforeTrain): the narrow tasks first, eight per warp, then the wide ones, one per warp
   // (find_group_direction: the order's narrow part may carry padding slots, which are not tasks)
@@ -2983,18 +3035,17 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
     const bool select_int = FalcataPlan::Get().find_select_int;
     const bool compact_survivors = FalcataPlan::Get().find_compact_survivors;
     const bool prune_sure = FalcataPlan::Get().find_prune_sure;
+    const unsigned int blocks = static_cast<unsigned int>((warps + 3) / 4);
     #define FindBestSplitsDiscretizedForLevelWarpKernel_ARGS \
       cuda_is_feature_used_bytree_.RawData(), LevelNodeMaskTable(), num_tasks_, num_narrow, num_wide, split, cuda_split_find_tasks_.RawData(), \
       task_order, pair_descs, num_pairs, min_data_in_leaf_, min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_, \
       max_delta_step_, grad_scale, hess_scale, hessian_ridge_quanta_, mid_ppl, prune_fp32, select_int, \
-      compact_survivors, prune_sure, cuda_best_split_info_.RawData(), device_level_state_
+      compact_survivors, prune_sure, subtract_on_fly, cuda_best_split_info_.RawData(), device_level_state_
     if (num_wide == 0) {
-      FindBestSplitsDiscretizedForLevelWarpKernel<false><<<static_cast<unsigned int>((warps + 3) / 4), 128, 0,
-                                                           cuda_streams_[0]>>>(
+      FindBestSplitsDiscretizedForLevelWarpKernel<false><<<blocks, 128, 0, cuda_streams_[0]>>>(
         FindBestSplitsDiscretizedForLevelWarpKernel_ARGS);
     } else {
-      FindBestSplitsDiscretizedForLevelWarpKernel<true><<<static_cast<unsigned int>((warps + 3) / 4), 128, 0,
-                                                          cuda_streams_[0]>>>(
+      FindBestSplitsDiscretizedForLevelWarpKernel<true><<<blocks, 128, 0, cuda_streams_[0]>>>(
         FindBestSplitsDiscretizedForLevelWarpKernel_ARGS);
     }
     #undef FindBestSplitsDiscretizedForLevelWarpKernel_ARGS

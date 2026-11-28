@@ -1607,12 +1607,12 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
   InitCountConstruct();
 
-  // one int32 region of num_total_bin_ entries per histogram pipeline (the pairs
-  // of a level run concurrently on different pipeline streams and must not share
-  // the 64->32-bit compaction scratch space); sized in hist_t (8 byte) units
+  // one 16-byte-aligned int32 region of BitChangePairStride(num_total_bin_) entries per histogram pipeline
+  // (the pairs of a level run concurrently on different pipeline streams and must not share the 64->32-bit
+  // compaction scratch space); sized in hist_t (8 byte) units
   hist_buffer_for_num_bit_change_.Resize(
     std::max<size_t>(static_cast<size_t>(num_total_bin_) * 2,
-                     (static_cast<size_t>(num_total_bin_) * kNumHistPipelines + 1) / 2));
+                     BitChangeScratchEntries(kNumHistPipelines)));
 }
 
 // colmajor_direct. The column-major store colmajor_fill gathers from holds, byte for byte, the Dataset's 4-bit
@@ -2158,6 +2158,18 @@ void CUDAHistogramConstructor::SubtractHistogramsForLevel(
   }
   // the best split finder's batched find kernel waits on this event before reading
   // any of this level's histograms (construct/fix/subtract are stream-ordered here)
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
+}
+
+void CUDAHistogramConstructor::FixOnlyHistogramsForLevel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs) {
+  if (num_pairs <= 0) {
+    return;
+  }
+  if (!need_fix_histogram_features_.empty()) {
+    LaunchFixOnlyHistogramBatchedKernel(pair_descs, num_pairs);
+  }
   CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
 }
 

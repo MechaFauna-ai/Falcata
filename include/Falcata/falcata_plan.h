@@ -1034,6 +1034,15 @@ struct FalcataPlan {
   // exceeds that budget switch; narrower ones keep the batched kernels. 0 = the worst-case launch everywhere. Each
   // (pair, bin) element is computed as before: bit-identical.
   int device_tree_live_grid = 32;  // key: device_tree_live_grid
+  // complete depth-limited quantized device_tree: on the final searched level (level == num_levels - 2, whose children
+  // have no descendant level that reads their histograms), skip SubtractHistogram and CopyChangedNumBitHistogram (only
+  // running FixHistogram on the smaller child when need-fix features exist) and compute parent - smaller on the fly in
+  // WarpFindBest for the larger child. Bit-identical across all bit-width transitions (16/16, 32/16->16, 32/16->32,
+  // 32/32).
+  bool final_level_sub_in_find = true;  // key: final_level_sub_in_find
+  // 128-bit vectorized (int4 / longlong2 / double2 / float4) loads and stores in the histogram subtract and bit-change
+  // copy kernels (quantized and non-quantized). Bit-identical elementwise arithmetic.
+  bool hist_subtract_vec4 = true;  // key: hist_subtract_vec4
 
   // --- resolved facts from Config (no keys; inputs to auto decisions) -------
   // Quantized training active. Shape auto-decisions that only win under the
@@ -1175,6 +1184,8 @@ struct FalcataPlan {
     if (key == "device_level_graph") return &device_level_graph;
     if (key == "device_level_graph_update") return &device_level_graph_update;
     if (key == "index_parity_canonical") return &index_parity_canonical;
+    if (key == "final_level_sub_in_find") return &final_level_sub_in_find;
+    if (key == "hist_subtract_vec4") return &hist_subtract_vec4;
     return nullptr;
   }
 

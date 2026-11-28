@@ -4496,12 +4496,68 @@ __device__ __forceinline__ void SubtractHistogramInner(
   }
 }
 
+__device__ __forceinline__ void SubtractHistogramInnerVec4(
+  const int num_total_bin,
+  const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
+  const CUDALeafSplitsStruct* cuda_larger_leaf_splits,
+  const uint8_t* bin_used,
+  const bool hist_fp32) {
+  if (cuda_larger_leaf_splits->leaf_index < 0) {
+    return;
+  }
+  const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+  const uint32_t nbins = static_cast<uint32_t>(num_total_bin);
+  if (hist_fp32) {
+    const uint32_t b0 = tid * 2u;
+    if (b0 >= nbins) {
+      return;
+    }
+    const float* smaller_hist = reinterpret_cast<const float*>(cuda_smaller_leaf_splits->hist_in_leaf);
+    float* larger_hist = reinterpret_cast<float*>(cuda_larger_leaf_splits->hist_in_leaf);
+    if (b0 + 2u <= nbins && (bin_used == nullptr || (bin_used[b0] && bin_used[b0 + 1u]))) {
+      const float4 s = reinterpret_cast<const float4*>(smaller_hist)[tid];
+      float4 l = reinterpret_cast<const float4*>(larger_hist)[tid];
+      l.x -= s.x;
+      l.y -= s.y;
+      l.z -= s.z;
+      l.w -= s.w;
+      reinterpret_cast<float4*>(larger_hist)[tid] = l;
+    } else {
+      if (bin_used == nullptr || bin_used[b0]) {
+        const float2 s = reinterpret_cast<const float2*>(smaller_hist)[b0];
+        float2 l = reinterpret_cast<const float2*>(larger_hist)[b0];
+        l.x -= s.x;
+        l.y -= s.y;
+        reinterpret_cast<float2*>(larger_hist)[b0] = l;
+      }
+      if (b0 + 1u < nbins && (bin_used == nullptr || bin_used[b0 + 1u])) {
+        const float2 s = reinterpret_cast<const float2*>(smaller_hist)[b0 + 1u];
+        float2 l = reinterpret_cast<const float2*>(larger_hist)[b0 + 1u];
+        l.x -= s.x;
+        l.y -= s.y;
+        reinterpret_cast<float2*>(larger_hist)[b0 + 1u] = l;
+      }
+    }
+  } else {
+    if (tid >= nbins || (bin_used != nullptr && !bin_used[tid])) {
+      return;
+    }
+    const double2 s = reinterpret_cast<const double2*>(cuda_smaller_leaf_splits->hist_in_leaf)[tid];
+    double2 l = reinterpret_cast<const double2*>(cuda_larger_leaf_splits->hist_in_leaf)[tid];
+    l.x -= s.x;
+    l.y -= s.y;
+    reinterpret_cast<double2*>(cuda_larger_leaf_splits->hist_in_leaf)[tid] = l;
+  }
+}
+
+template <bool VEC4 = false>
 __global__ void SubtractHistogramKernel(
   const int num_total_bin,
   const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
   const CUDALeafSplitsStruct* cuda_larger_leaf_splits,
   const bool hist_fp32);
 
+template <bool VEC4 = false>
 __global__ void SubtractHistogramBatchedKernel(
   const int num_total_bin,
   const CUDAHybridPairDescriptor* pair_descs,
@@ -4715,6 +4771,7 @@ __device__ __forceinline__ void FixHistogramGroupInner(
   }
 }
 
+template <bool VEC4 = false>
 __global__ void FixSubtractHistogramSmallLeafBatchedKernel(
   const int num_total_bin,
   const int num_subtract_blocks,
@@ -4729,6 +4786,146 @@ __global__ void FixSubtractHistogramSmallLeafBatchedKernel(
   const int8_t* feature_used,
   const bool hist_fp32,
   const CUDADeviceLevelState* dls);
+
+__device__ __forceinline__ int64_t Unpack16To64(const int32_t s32) {
+  return static_cast<int64_t>(
+      (static_cast<uint64_t>(static_cast<int64_t>(static_cast<int16_t>(s32 >> 16))) << 32) |
+      static_cast<uint64_t>(s32 & 0x0000ffff));
+}
+
+__device__ __forceinline__ int32_t Pack64To16(const int64_t v64) {
+  return static_cast<int32_t>(
+      (static_cast<uint32_t>(static_cast<uint16_t>(v64 >> 32)) << 16) |
+      static_cast<uint32_t>(static_cast<uint16_t>(v64)));
+}
+
+template <bool SMALLER_USE_16BIT_HIST, bool LARGER_USE_16BIT_HIST, bool PARENT_USE_16BIT_HIST>
+__device__ __forceinline__ void SubtractDiscretizedQuad(
+  const uint32_t q,
+  const hist_t* smaller_hist,
+  hist_t* larger_hist,
+  int32_t* buffer) {
+  if (PARENT_USE_16BIT_HIST) {
+    const int4 s = reinterpret_cast<const int4*>(smaller_hist)[q];
+    int4 l = reinterpret_cast<const int4*>(larger_hist)[q];
+    l.x = static_cast<int32_t>(static_cast<uint32_t>(l.x) - static_cast<uint32_t>(s.x));
+    l.y = static_cast<int32_t>(static_cast<uint32_t>(l.y) - static_cast<uint32_t>(s.y));
+    l.z = static_cast<int32_t>(static_cast<uint32_t>(l.z) - static_cast<uint32_t>(s.z));
+    l.w = static_cast<int32_t>(static_cast<uint32_t>(l.w) - static_cast<uint32_t>(s.w));
+    reinterpret_cast<int4*>(larger_hist)[q] = l;
+  } else if (LARGER_USE_16BIT_HIST) {
+    const int4 s = reinterpret_cast<const int4*>(smaller_hist)[q];
+    const longlong2 p0 = reinterpret_cast<const longlong2*>(larger_hist)[2 * q];
+    const longlong2 p1 = reinterpret_cast<const longlong2*>(larger_hist)[2 * q + 1];
+    int4 out;
+    out.x = Pack64To16(static_cast<int64_t>(p0.x) - Unpack16To64(s.x));
+    out.y = Pack64To16(static_cast<int64_t>(p0.y) - Unpack16To64(s.y));
+    out.z = Pack64To16(static_cast<int64_t>(p1.x) - Unpack16To64(s.z));
+    out.w = Pack64To16(static_cast<int64_t>(p1.y) - Unpack16To64(s.w));
+    reinterpret_cast<int4*>(buffer)[q] = out;
+  } else if (SMALLER_USE_16BIT_HIST) {
+    const int4 s = reinterpret_cast<const int4*>(smaller_hist)[q];
+    longlong2 p0 = reinterpret_cast<const longlong2*>(larger_hist)[2 * q];
+    longlong2 p1 = reinterpret_cast<const longlong2*>(larger_hist)[2 * q + 1];
+    p0.x = static_cast<long long>(static_cast<int64_t>(p0.x) - Unpack16To64(s.x));  // NOLINT(runtime/int)
+    p0.y = static_cast<long long>(static_cast<int64_t>(p0.y) - Unpack16To64(s.y));  // NOLINT(runtime/int)
+    p1.x = static_cast<long long>(static_cast<int64_t>(p1.x) - Unpack16To64(s.z));  // NOLINT(runtime/int)
+    p1.y = static_cast<long long>(static_cast<int64_t>(p1.y) - Unpack16To64(s.w));  // NOLINT(runtime/int)
+    reinterpret_cast<longlong2*>(larger_hist)[2 * q] = p0;
+    reinterpret_cast<longlong2*>(larger_hist)[2 * q + 1] = p1;
+  } else {
+    const longlong2 s0 = reinterpret_cast<const longlong2*>(smaller_hist)[2 * q];
+    const longlong2 s1 = reinterpret_cast<const longlong2*>(smaller_hist)[2 * q + 1];
+    longlong2 l0 = reinterpret_cast<const longlong2*>(larger_hist)[2 * q];
+    longlong2 l1 = reinterpret_cast<const longlong2*>(larger_hist)[2 * q + 1];
+    l0.x = static_cast<long long>(static_cast<uint64_t>(l0.x) - static_cast<uint64_t>(s0.x));  // NOLINT(runtime/int)
+    l0.y = static_cast<long long>(static_cast<uint64_t>(l0.y) - static_cast<uint64_t>(s0.y));  // NOLINT(runtime/int)
+    l1.x = static_cast<long long>(static_cast<uint64_t>(l1.x) - static_cast<uint64_t>(s1.x));  // NOLINT(runtime/int)
+    l1.y = static_cast<long long>(static_cast<uint64_t>(l1.y) - static_cast<uint64_t>(s1.y));  // NOLINT(runtime/int)
+    reinterpret_cast<longlong2*>(larger_hist)[2 * q] = l0;
+    reinterpret_cast<longlong2*>(larger_hist)[2 * q + 1] = l1;
+  }
+}
+
+template <bool SMALLER_USE_16BIT_HIST, bool LARGER_USE_16BIT_HIST, bool PARENT_USE_16BIT_HIST>
+__device__ __forceinline__ void SubtractDiscretizedScalarBin(
+  const uint32_t i,
+  const hist_t* smaller_hist,
+  hist_t* larger_hist,
+  int32_t* buffer) {
+  if (PARENT_USE_16BIT_HIST) {
+    reinterpret_cast<int32_t*>(larger_hist)[i] -= reinterpret_cast<const int32_t*>(smaller_hist)[i];
+  } else if (LARGER_USE_16BIT_HIST) {
+    const int64_t parent_hist_item = reinterpret_cast<const int64_t*>(larger_hist)[i];
+    const int32_t smaller_hist_item = reinterpret_cast<const int32_t*>(smaller_hist)[i];
+    buffer[i] = Pack64To16(parent_hist_item - Unpack16To64(smaller_hist_item));
+  } else if (SMALLER_USE_16BIT_HIST) {
+    int64_t* larger_leaf_hist = reinterpret_cast<int64_t*>(larger_hist);
+    const int32_t smaller_hist_item = reinterpret_cast<const int32_t*>(smaller_hist)[i];
+    larger_leaf_hist[i] -= Unpack16To64(smaller_hist_item);
+  } else {
+    reinterpret_cast<int64_t*>(larger_hist)[i] -= reinterpret_cast<const int64_t*>(smaller_hist)[i];
+  }
+}
+
+template <bool SMALLER_USE_16BIT_HIST, bool LARGER_USE_16BIT_HIST, bool PARENT_USE_16BIT_HIST>
+__device__ __forceinline__ void SubtractHistogramDiscretizedInnerVec4(
+  const int num_total_bin,
+  const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
+  const CUDALeafSplitsStruct* cuda_larger_leaf_splits,
+  int32_t* num_bit_change_buffer,
+  const uint8_t* bin_used) {
+  if (cuda_larger_leaf_splits->leaf_index < 0) {
+    return;
+  }
+  const uint32_t q = threadIdx.x + blockIdx.x * blockDim.x;
+  const uint32_t b0 = q * 4u;
+  const uint32_t nbins = static_cast<uint32_t>(num_total_bin);
+  if (b0 >= nbins) {
+    return;
+  }
+  const hist_t* smaller_hist = cuda_smaller_leaf_splits->hist_in_leaf;
+  hist_t* larger_hist = cuda_larger_leaf_splits->hist_in_leaf;
+  if (b0 + 4u <= nbins) {
+    bool all_used = true;
+    uchar4 u = make_uchar4(1, 1, 1, 1);
+    if (bin_used != nullptr) {
+      u = reinterpret_cast<const uchar4*>(bin_used)[q];
+      if ((u.x | u.y | u.z | u.w) == 0) {
+        return;
+      }
+      all_used = u.x && u.y && u.z && u.w;
+    }
+    if (all_used) {
+      SubtractDiscretizedQuad<SMALLER_USE_16BIT_HIST, LARGER_USE_16BIT_HIST, PARENT_USE_16BIT_HIST>(
+        q, smaller_hist, larger_hist, num_bit_change_buffer);
+    } else {
+      if (u.x) {
+        SubtractDiscretizedScalarBin<SMALLER_USE_16BIT_HIST, LARGER_USE_16BIT_HIST, PARENT_USE_16BIT_HIST>(
+          b0, smaller_hist, larger_hist, num_bit_change_buffer);
+      }
+      if (u.y) {
+        SubtractDiscretizedScalarBin<SMALLER_USE_16BIT_HIST, LARGER_USE_16BIT_HIST, PARENT_USE_16BIT_HIST>(
+          b0 + 1u, smaller_hist, larger_hist, num_bit_change_buffer);
+      }
+      if (u.z) {
+        SubtractDiscretizedScalarBin<SMALLER_USE_16BIT_HIST, LARGER_USE_16BIT_HIST, PARENT_USE_16BIT_HIST>(
+          b0 + 2u, smaller_hist, larger_hist, num_bit_change_buffer);
+      }
+      if (u.w) {
+        SubtractDiscretizedScalarBin<SMALLER_USE_16BIT_HIST, LARGER_USE_16BIT_HIST, PARENT_USE_16BIT_HIST>(
+          b0 + 3u, smaller_hist, larger_hist, num_bit_change_buffer);
+      }
+    }
+  } else {
+    for (uint32_t b = b0; b < nbins; ++b) {
+      if (bin_used == nullptr || bin_used[b]) {
+        SubtractDiscretizedScalarBin<SMALLER_USE_16BIT_HIST, LARGER_USE_16BIT_HIST, PARENT_USE_16BIT_HIST>(
+          b, smaller_hist, larger_hist, num_bit_change_buffer);
+      }
+    }
+  }
+}
 
 template <bool SMALLER_USE_16BIT_HIST, bool LARGER_USE_16BIT_HIST, bool PARENT_USE_16BIT_HIST>
 __device__ __forceinline__ void SubtractHistogramDiscretizedInner(
@@ -4779,17 +4976,24 @@ __device__ __forceinline__ void SubtractHistogramDiscretizedInner(
   }
 }
 
-template <bool SMALLER_USE_16BIT_HIST, bool LARGER_USE_16BIT_HIST, bool PARENT_USE_16BIT_HIST>
+template <bool SMALLER_USE_16BIT_HIST, bool LARGER_USE_16BIT_HIST, bool PARENT_USE_16BIT_HIST, bool VEC4 = false>
 __global__ void SubtractHistogramDiscretizedKernel(
   const int num_total_bin,
   const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
   const CUDALeafSplitsStruct* cuda_larger_leaf_splits,
   hist_t* num_bit_change_buffer) {
-  SubtractHistogramDiscretizedInner<SMALLER_USE_16BIT_HIST, LARGER_USE_16BIT_HIST, PARENT_USE_16BIT_HIST>(
-    num_total_bin, cuda_smaller_leaf_splits, cuda_larger_leaf_splits,
-    reinterpret_cast<int32_t*>(num_bit_change_buffer));
+  if (VEC4) {
+    SubtractHistogramDiscretizedInnerVec4<SMALLER_USE_16BIT_HIST, LARGER_USE_16BIT_HIST, PARENT_USE_16BIT_HIST>(
+      num_total_bin, cuda_smaller_leaf_splits, cuda_larger_leaf_splits,
+      reinterpret_cast<int32_t*>(num_bit_change_buffer), nullptr);
+  } else {
+    SubtractHistogramDiscretizedInner<SMALLER_USE_16BIT_HIST, LARGER_USE_16BIT_HIST, PARENT_USE_16BIT_HIST>(
+      num_total_bin, cuda_smaller_leaf_splits, cuda_larger_leaf_splits,
+      reinterpret_cast<int32_t*>(num_bit_change_buffer));
+  }
 }
 
+template <bool VEC4 = false>
 __global__ void SubtractHistogramDiscretizedBatchedKernel(
   const int num_total_bin,
   const CUDAHybridPairDescriptor* pair_descs,
@@ -4797,11 +5001,13 @@ __global__ void SubtractHistogramDiscretizedBatchedKernel(
   const uint8_t* bin_used,
   const CUDADeviceLevelState* dls);
 
+template <bool VEC4 = false>
 __global__ void CopyChangedNumBitHistogram(
   const int num_total_bin,
   const CUDALeafSplitsStruct* cuda_larger_leaf_splits,
   hist_t* num_bit_change_buffer);
 
+template <bool VEC4 = false>
 __global__ void CopyChangedNumBitHistogramBatchedKernel(
   const int num_total_bin,
   const CUDAHybridPairDescriptor* pair_descs,
@@ -4892,6 +5098,33 @@ __global__ void FixHistogramDiscretizedBatchedKernel(
   const int8_t* feature_used,
   const CUDADeviceLevelState* dls);
 
+__global__ void FixHistogramDiscretizedLiveKernel(
+  const uint32_t* cuda_feature_num_bins,
+  const uint32_t* cuda_feature_hist_offsets,
+  const uint32_t* cuda_feature_most_freq_bins,
+  const int* cuda_need_fix_histogram_features,
+  const uint32_t* cuda_need_fix_histogram_features_num_bin_aligned,
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int8_t* feature_used,
+  const CUDADeviceLevelState* dls);
+
+__device__ __forceinline__ void SubtractDiscretizedQuadByCase(
+  const int sub_case,
+  const uint32_t q,
+  const hist_t* smaller_hist,
+  hist_t* larger_hist,
+  int32_t* buffer) {
+  if (sub_case == 0) {
+    SubtractDiscretizedQuad<true, true, true>(q, smaller_hist, larger_hist, buffer);
+  } else if (sub_case == 1) {
+    SubtractDiscretizedQuad<true, true, false>(q, smaller_hist, larger_hist, buffer);
+  } else if (sub_case == 2) {
+    SubtractDiscretizedQuad<true, false, false>(q, smaller_hist, larger_hist, buffer);
+  } else {
+    SubtractDiscretizedQuad<false, false, false>(q, smaller_hist, larger_hist, buffer);
+  }
+}
+
 __device__ __forceinline__ void SubtractDiscretizedBin(
   const int sub_case, const uint32_t i, const int32_t s32, const int64_t s64,
   hist_t* larger_hist_in_leaf, int32_t* buffer) {
@@ -4913,6 +5146,7 @@ __device__ __forceinline__ void SubtractDiscretizedBin(
   }
 }
 
+template <bool VEC4 = false>
 __device__ __forceinline__ void FixSubtractDiscretizedMaskedPair(
   const int num_total_bin,
   const int num_subtract_blocks,
@@ -4934,8 +5168,54 @@ __device__ __forceinline__ void FixSubtractDiscretizedMaskedPair(
   const int sub_case = parent_num_bits <= 16 ? 0 : (larger_num_bits <= 16 ? 1 : (smaller_num_bits <= 16 ? 2 : 3));
   const hist_t* smaller_hist = smaller_struct->hist_in_leaf;
   if (static_cast<int>(blockIdx.x) < num_subtract_blocks) {
+    if (!larger_exists) {
+      return;
+    }
+    if (VEC4) {
+      const uint32_t q = blockIdx.x * blockDim.x + threadIdx.x;
+      const uint32_t b0 = q * 4u;
+      const uint32_t nbins = static_cast<uint32_t>(num_total_bin);
+      if (b0 >= nbins) {
+        return;
+      }
+      if (b0 + 4u <= nbins) {
+        const uint64_t m8 = reinterpret_cast<const uint64_t*>(fix_mfb_mask)[q];
+        bool all_used = true;
+        uchar4 u = make_uchar4(1, 1, 1, 1);
+        if (bin_used != nullptr) {
+          u = reinterpret_cast<const uchar4*>(bin_used)[q];
+          if ((u.x | u.y | u.z | u.w) == 0) {
+            return;
+          }
+          all_used = u.x && u.y && u.z && u.w;
+        }
+        if (m8 == 0 && all_used) {
+          SubtractDiscretizedQuadByCase(sub_case, q, smaller_hist, larger_struct->hist_in_leaf, buffer);
+          return;
+        }
+        const uint8_t used_arr[4] = {u.x, u.y, u.z, u.w};
+        #pragma unroll
+        for (uint32_t k = 0; k < 4u; ++k) {
+          const uint32_t i = b0 + k;
+          if (!fix_mfb_mask[2 * static_cast<size_t>(i)] && used_arr[k]) {
+            const int32_t s32 = sub_case == 3 ? 0 : reinterpret_cast<const int32_t*>(smaller_hist)[i];
+            const int64_t s64 = sub_case == 3 ? reinterpret_cast<const int64_t*>(smaller_hist)[i] : 0;
+            SubtractDiscretizedBin(sub_case, i, s32, s64, larger_struct->hist_in_leaf, buffer);
+          }
+        }
+      } else {
+        for (uint32_t i = b0; i < nbins; ++i) {
+          if (!fix_mfb_mask[2 * static_cast<size_t>(i)] && (bin_used == nullptr || bin_used[i])) {
+            const int32_t s32 = sub_case == 3 ? 0 : reinterpret_cast<const int32_t*>(smaller_hist)[i];
+            const int64_t s64 = sub_case == 3 ? reinterpret_cast<const int64_t*>(smaller_hist)[i] : 0;
+            SubtractDiscretizedBin(sub_case, i, s32, s64, larger_struct->hist_in_leaf, buffer);
+          }
+        }
+      }
+      return;
+    }
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (!larger_exists || i >= static_cast<uint32_t>(num_total_bin) || fix_mfb_mask[2 * static_cast<size_t>(i)] ||
+    if (i >= static_cast<uint32_t>(num_total_bin) || fix_mfb_mask[2 * static_cast<size_t>(i)] ||
         (bin_used != nullptr && !bin_used[i])) {
       return;
     }
@@ -4970,6 +5250,7 @@ __device__ __forceinline__ void FixSubtractDiscretizedMaskedPair(
   }
 }
 
+template <bool VEC4 = false>
 __global__ void FixSubtractDiscretizedMaskedBatchedKernel(
   const int num_total_bin,
   const int num_subtract_blocks,
@@ -4985,6 +5266,7 @@ __global__ void FixSubtractDiscretizedMaskedBatchedKernel(
   const int8_t* feature_used,
   const CUDADeviceLevelState* dls);
 
+template <bool VEC4 = false>
 __global__ void FixSubtractDiscretizedMaskedKernel(
   const int num_total_bin,
   const int num_subtract_blocks,
@@ -5110,6 +5392,12 @@ __global__ void __launch_bounds__(512) FixSubtractUsedFeaturesBatchedKernel(
   const int num_total_bin,
   const CUDAHybridPairDescriptor* pair_descs,
   hist_t* num_bit_change_buffer,
+  const CUDADeviceLevelState* dls);
+
+__global__ void __launch_bounds__(512) FixOnlyUsedFeaturesBatchedKernel(
+  const uint32_t* used_feature_info,
+  const int num_used_features,
+  const CUDAHybridPairDescriptor* pair_descs,
   const CUDADeviceLevelState* dls);
 
 __global__ void ConvertFixedHistBatchedKernel(
