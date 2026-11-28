@@ -17,9 +17,10 @@ import glob
 import hashlib
 import os
 
-import falcata as flc
 import numpy as np
 import pytest
+
+import falcata as flc
 from falcata.basic import _LIB, _c_float_array, _c_str, _np2d_to_np1d, _safe_call
 
 _REQUIRES_CUDA = pytest.mark.skipif(
@@ -31,8 +32,7 @@ _REQUIRES_CUDA = pytest.mark.skipif(
 def _load_cudart():
     names = ["libcudart.so", "libcudart.so.13", "libcudart.so.12"]
     names += [
-        os.path.join(root, "lib64", "libcudart.so")
-        for root in sorted(glob.glob("/usr/local/cuda*"), reverse=True)
+        os.path.join(root, "lib64", "libcudart.so") for root in sorted(glob.glob("/usr/local/cuda*"), reverse=True)
     ]
     for name in names:
         try:
@@ -63,9 +63,7 @@ class _DeviceMatrix:
         self._ptr = ctypes.c_void_p()
         status = self._rt.cudaMalloc(ctypes.byref(self._ptr), arr.nbytes)
         assert status == 0, f"cudaMalloc failed with status {status}"
-        status = self._rt.cudaMemcpy(
-            self._ptr, ctypes.c_void_p(arr.ctypes.data), arr.nbytes, self._MEMCPY_H2D
-        )
+        status = self._rt.cudaMemcpy(self._ptr, ctypes.c_void_p(arr.ctypes.data), arr.nbytes, self._MEMCPY_H2D)
         assert status == 0, f"cudaMemcpy failed with status {status}"
         self.__cuda_array_interface__ = {
             "shape": arr.shape,
@@ -85,9 +83,7 @@ class _DeviceMatrix:
 
 
 def _dataset_binary_md5(X, params, tmp_path, tag, categorical_feature="auto"):
-    ds = flc.Dataset(
-        X, params=params, categorical_feature=categorical_feature, free_raw_data=False
-    )
+    ds = flc.Dataset(X, params=params, categorical_feature=categorical_feature, free_raw_data=False)
     ds.construct()
     path = tmp_path / f"{tag}.bin"
     ds.save_binary(str(path))
@@ -97,11 +93,7 @@ def _dataset_binary_md5(X, params, tmp_path, tag, categorical_feature="auto"):
 def _model_md5(X, y, params, rounds=8, categorical_feature="auto"):
     ds = flc.Dataset(X, label=y, params=params, categorical_feature=categorical_feature)
     booster = flc.train(params, ds, num_boost_round=rounds)
-    lines = [
-        line
-        for line in booster.model_to_string().splitlines()
-        if "cuda_plan" not in line
-    ]
+    lines = [line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line]
     return hashlib.md5("\n".join(lines).encode()).hexdigest()
 
 
@@ -133,11 +125,7 @@ def _make_edge_case_matrix(dtype, rows=4096, seed=17, sentinel=None):
     else:
         cols.append(rng.integers(1, 21, size=rows, dtype=dtype))
     # 6: strictly negative with zeros (int8) or high positive with zeros (uint8)
-    c6 = (
-        rng.integers(-30, 0, size=rows, dtype=dtype)
-        if is_signed
-        else rng.integers(100, 150, size=rows, dtype=dtype)
-    )
+    c6 = rng.integers(-30, 0, size=rows, dtype=dtype) if is_signed else rng.integers(100, 150, size=rows, dtype=dtype)
     c6[rng.random(rows) < 0.3] = 0
     cols.append(c6)
     # 7: 85% single nonzero value (most_freq_bin != default_bin -> exercises GetByteMostFreqMask)
@@ -202,22 +190,14 @@ def test_int8_uint8_counting_findbin_matches_float64_binary(
         "verbose": -1,
     }
     cat_cols = [10, 11]
-    h_byte = _dataset_binary_md5(
-        X, params, tmp_path, "byte", categorical_feature=cat_cols
-    )
-    h_f64 = _dataset_binary_md5(
-        X_f64, params, tmp_path, "f64", categorical_feature=cat_cols
-    )
+    h_byte = _dataset_binary_md5(X, params, tmp_path, "byte", categorical_feature=cat_cols)
+    h_f64 = _dataset_binary_md5(X_f64, params, tmp_path, "f64", categorical_feature=cat_cols)
     assert h_byte == h_f64
 
 
-@pytest.mark.parametrize(
-    "dtype,sentinel", [(np.int8, -128), (np.int8, 127), (np.uint8, 255)]
-)
+@pytest.mark.parametrize(("dtype", "sentinel"), [(np.int8, -128), (np.int8, 127), (np.uint8, 255)])
 @pytest.mark.parametrize("zero_as_missing", [False, True])
-def test_int8_uint8_counting_findbin_missing_sentinel(
-    tmp_path, dtype, sentinel, zero_as_missing
-):
+def test_int8_uint8_counting_findbin_missing_sentinel(tmp_path, dtype, sentinel, zero_as_missing):
     X = _make_edge_case_matrix(dtype, rows=4096, seed=29, sentinel=sentinel)
     X_f64 = X.astype(np.float64)
     X_f64[X == dtype(sentinel)] = np.nan
@@ -242,9 +222,7 @@ def test_int8_uint8_counting_findbin_missing_sentinel(
         "byte_sentinel",
         categorical_feature=cat_cols,
     )
-    h_f64 = _dataset_binary_md5(
-        X_f64, base_params, tmp_path, "f64_nan", categorical_feature=cat_cols
-    )
+    h_f64 = _dataset_binary_md5(X_f64, base_params, tmp_path, "f64_nan", categorical_feature=cat_cols)
     assert h_byte == h_f64
 
 
@@ -265,9 +243,7 @@ def test_int8_uint8_counting_findbin_multi_matrix_mixed_layout(tmp_path, dtype):
         "data_random_seed": 19,
         "verbose": -1,
     }
-    h_f64 = _dataset_binary_md5(
-        X_f64, params, tmp_path, "single_f64", categorical_feature=[10, 11]
-    )
+    h_f64 = _dataset_binary_md5(X_f64, params, tmp_path, "single_f64", categorical_feature=[10, 11])
 
     # Call FLC_DatasetCreateFromMats directly to verify mixed C/F multi-matrix int8/uint8 sampling.
     mats = [X1, X2]
@@ -283,9 +259,7 @@ def test_int8_uint8_counting_findbin_multi_matrix_mixed_layout(tmp_path, dtype):
         layouts[i] = layout
         dtype_code = code
         holders.append(holder)
-    params_str = (
-        " ".join(f"{k}={v}" for k, v in params.items()) + " categorical_column=10,11"
-    )
+    params_str = " ".join(f"{k}={v}" for k, v in params.items()) + " categorical_column=10,11"
     handle = ctypes.c_void_p()
     _safe_call(
         _LIB.FLC_DatasetCreateFromMats(
@@ -316,12 +290,9 @@ def test_cuda_int8_uint8_counting_findbin_tree_md5_matches_float64(dtype, max_bi
     X = _make_edge_case_matrix(dtype, rows=8192, seed=53)
     X_f64 = X.astype(np.float64)
     rng = np.random.default_rng(54)
-    y = (
-        0.02 * X_f64[:, 0]
-        + 0.3 * X_f64[:, 1]
-        - 0.05 * X_f64[:, 5]
-        + 0.2 * rng.standard_normal(X.shape[0])
-    ).astype(np.float32)
+    y = (0.02 * X_f64[:, 0] + 0.3 * X_f64[:, 1] - 0.05 * X_f64[:, 5] + 0.2 * rng.standard_normal(X.shape[0])).astype(
+        np.float32
+    )
 
     params = {
         "device_type": "cuda",
@@ -343,9 +314,7 @@ def test_cuda_int8_uint8_counting_findbin_tree_md5_matches_float64(dtype, max_bi
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize(
-    ("rows", "cols"), [(1_100_000, 80), (1_100_001, 80), (2_200_001, 12)]
-)
+@pytest.mark.parametrize(("rows", "cols"), [(1_100_000, 80), (1_100_001, 80), (2_200_001, 12)])
 @pytest.mark.parametrize("feature_fraction", [0.5, 1.0])
 def test_cuda_colmajor_pinned_async_upload_bit_identical(rows, cols, feature_fraction):
     """Multi-slab (<1 MiB/col pinned staged) and direct async (>=1 MiB/col) 4-bit
@@ -353,9 +322,7 @@ def test_cuda_colmajor_pinned_async_upload_bit_identical(rows, cols, feature_fra
     """
     rng = np.random.default_rng(71)
     X = rng.integers(0, 5, size=(rows, cols), dtype=np.int8)
-    y = (
-        0.3 * X[:, 0] - 0.2 * X[:, 1] + 0.15 * X[:, 2] + rng.standard_normal(rows)
-    ).astype(np.float32)
+    y = (0.3 * X[:, 0] - 0.2 * X[:, 1] + 0.15 * X[:, 2] + rng.standard_normal(rows)).astype(np.float32)
 
     params = {
         "device_type": "cuda",
@@ -371,9 +338,7 @@ def test_cuda_colmajor_pinned_async_upload_bit_identical(rows, cols, feature_fra
         "verbose": -1,
     }
     on = _model_md5(X, y, {**params, "cuda_plan": "auto"}, rounds=5)
-    off = _model_md5(
-        X, y, {**params, "cuda_plan": "auto,colmajor_direct:off"}, rounds=5
-    )
+    off = _model_md5(X, y, {**params, "cuda_plan": "auto,colmajor_direct:off"}, rounds=5)
     assert on == off
 
 
@@ -381,9 +346,7 @@ def test_cuda_colmajor_pinned_async_upload_bit_identical(rows, cols, feature_fra
     ("dtype", "sentinel"),
     [(np.int8, "1.5"), (np.int8, "200"), (np.uint8, "1.5"), (np.uint8, "-1")],
 )
-def test_int8_uint8_non_matching_missing_sentinel_matches_float64(
-    tmp_path, dtype, sentinel
-):
+def test_int8_uint8_non_matching_missing_sentinel_matches_float64(tmp_path, dtype, sentinel):
     """Non-integer or out-of-range missing_sentinel must match float64 byte-for-byte."""
     X = _make_edge_case_matrix(dtype, rows=4096, seed=83)
     X_f64 = X.astype(np.float64)
@@ -417,9 +380,7 @@ def test_int8_uint8_non_matching_missing_sentinel_matches_float64(
 
 @pytest.mark.parametrize("dtype", [np.int8, np.uint8])
 @pytest.mark.parametrize("feature_pre_filter", [True, False])
-def test_int8_uint8_max_bin_by_feature_and_pre_filter_matches_float64(
-    tmp_path, dtype, feature_pre_filter
-):
+def test_int8_uint8_max_bin_by_feature_and_pre_filter_matches_float64(tmp_path, dtype, feature_pre_filter):
     """Per-feature max_bin_by_feature and feature_pre_filter=False must match float64 byte-for-byte."""
     X = _make_edge_case_matrix(dtype, rows=4096, seed=97)
     X_f64 = X.astype(np.float64)
@@ -435,21 +396,15 @@ def test_int8_uint8_max_bin_by_feature_and_pre_filter_matches_float64(
         "data_random_seed": 37,
         "verbose": -1,
     }
-    h_byte = _dataset_binary_md5(
-        X, params, tmp_path, "byte_mbbf", categorical_feature=[10, 11]
-    )
-    h_f64 = _dataset_binary_md5(
-        X_f64, params, tmp_path, "f64_mbbf", categorical_feature=[10, 11]
-    )
+    h_byte = _dataset_binary_md5(X, params, tmp_path, "byte_mbbf", categorical_feature=[10, 11])
+    h_f64 = _dataset_binary_md5(X_f64, params, tmp_path, "f64_mbbf", categorical_feature=[10, 11])
     assert h_byte == h_f64
 
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("dtype", [np.int8, np.uint8])
 @pytest.mark.parametrize("order", ["C", "F"])
-def test_cuda_device_array_and_chunked_builder_int8_uint8_matches_float64(
-    tmp_path, dtype, order
-):
+def test_cuda_device_array_and_chunked_builder_int8_uint8_matches_float64(tmp_path, dtype, order):
     """__cuda_array_interface__ (FLC_DatasetCreateFromMatDevice) and chunked DeviceDatasetBuilder
     for int8/uint8 must produce byte-identical Datasets to CPU float64.
     """
@@ -521,9 +476,7 @@ def test_cuda_colmajor_mixed_4bit_and_8bit_upload_bit_identical(feature_fraction
     low = rng.integers(0, 5, size=(rows, 40), dtype=np.int8)
     wide = rng.integers(-5, 11, size=(rows, 10), dtype=np.int8)
     X = np.ascontiguousarray(np.hstack([low, wide]))
-    y = (
-        0.25 * X[:, 0] - 0.15 * X[:, 40] + 0.1 * X[:, 41] + rng.standard_normal(rows)
-    ).astype(np.float32)
+    y = (0.25 * X[:, 0] - 0.15 * X[:, 40] + 0.1 * X[:, 41] + rng.standard_normal(rows)).astype(np.float32)
     params = {
         "device_type": "cuda",
         "objective": "regression",
@@ -538,7 +491,5 @@ def test_cuda_colmajor_mixed_4bit_and_8bit_upload_bit_identical(feature_fraction
         "verbose": -1,
     }
     on = _model_md5(X, y, {**params, "cuda_plan": "auto"}, rounds=5)
-    off = _model_md5(
-        X, y, {**params, "cuda_plan": "auto,colmajor_direct:off"}, rounds=5
-    )
+    off = _model_md5(X, y, {**params, "cuda_plan": "auto,colmajor_direct:off"}, rounds=5)
     assert on == off
