@@ -479,14 +479,21 @@ class CUDABestSplitFinder {
   void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
   /*! \brief cuda_plan key device_graph_indirect: per-tree runtime params in device memory (nullptr: direct args) */
   void SetDeviceTreeGraphParams(const CUDADeviceTreeGraphParams* params) { device_tree_graph_params_ = params; }
-  /*! \brief cuda_plan key device_graph_indirect: true when split-finder task counts or ridge can vary per tree */
-  bool UseDeviceGraphIndirect() const {
+  /*! \brief cuda_plan key device_graph_indirect: true when split-finder task counts or ridge can churn per tree */
+  bool UseDeviceGraphIndirect(const bool compact_indirect = false) const {
     if (!FalcataPlan::Get().device_graph_indirect) {
       return false;
     }
+    if (hessian_ridge_quanta_ > 0.0) {
+      return true;
+    }
     const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
-    return hessian_ridge_quanta_ > 0.0 ||
-           (compact_tasks && (warp_find_order_used_ || num_tasks_ != num_features_));
+    if (!compact_tasks || !(warp_find_order_used_ || num_tasks_ != num_features_)) {
+      return false;
+    }
+    // Narrow non-compact datasets (e.g. 54-feature covtype) saturate a small number of cached graphs after
+    // warmup; only indirect when the compact view is indirected or the feature/task space is wide enough to churn.
+    return compact_indirect || num_features_ >= 128 || num_tasks_ >= 128;
   }
   /*! \brief cuda_plan key device_graph_indirect: populate finder-side per-tree runtime params before upload */
   void FillDeviceTreeGraphParams(CUDADeviceTreeGraphParams* params);
@@ -541,7 +548,7 @@ class CUDABestSplitFinder {
   void SetDeviceLevelSelect(const CUDADeviceLevelConfig* cfg) { device_level_select_cfg_ = cfg; }
   bool LastSyncRanSelect() const { return last_sync_ran_select_; }
   /*! \brief cuda_plan key device_level_graph: the pointers and per-tree task layout a captured level search bakes in */
-  void DeviceLevelGraphKey(std::vector<const void*>* key) const {
+  void DeviceLevelGraphKey(std::vector<const void*>* key, const bool compact_indirect = false) const {
     const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
     key->push_back(compact_tasks ?
       static_cast<const void*>(cuda_used_task_indices_.RawDataReadOnly()) : nullptr);
@@ -550,7 +557,7 @@ class CUDABestSplitFinder {
     key->push_back(static_cast<const void*>(cuda_best_split_info_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_cat_threshold_feature_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_cat_threshold_real_feature_.RawDataReadOnly()));
-    if (UseDeviceGraphIndirect()) {
+    if (UseDeviceGraphIndirect(compact_indirect)) {
       // cuda_plan key device_graph_indirect: exact num_used_tasks_, warp_find_num_narrow_used_,
       // warp_find_order_pad_ and hessian_ridge_quanta_ are read from CUDADeviceTreeGraphParams;
       // only the mode flags, buffer pointers, and coarse grid buckets remain in the graph key.

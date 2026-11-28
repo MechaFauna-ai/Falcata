@@ -640,11 +640,9 @@ class CUDAHistogramConstructor {
   void SetDeviceTreeGraphParams(const CUDADeviceTreeGraphParams* params) {
     device_tree_graph_params_ = params;
   }
-  /*! \brief cuda_plan key device_graph_indirect: true when histogram construct or fused fix/subtract can vary per tree */
+  /*! \brief cuda_plan key device_graph_indirect: true when compact-view histogram construct can vary per tree */
   bool UseDeviceGraphIndirect() const {
-    return FalcataPlan::Get().device_graph_indirect &&
-           (use_compact_view_ ||
-            (any_feature_unused_bytree_ && used_feature_info_ok_ && FalcataPlan::Get().fix_subtract_fused));
+    return FalcataPlan::Get().device_graph_indirect && use_compact_view_;
   }
   /*! \brief cuda_plan key device_graph_indirect: populate histogram-side per-tree runtime params before upload */
   void FillDeviceTreeGraphParams(CUDADeviceTreeGraphParams* params,

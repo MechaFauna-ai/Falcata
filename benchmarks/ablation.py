@@ -76,6 +76,7 @@ ALL_KEYS = {
     "device_levels": True,
     "device_tree": True,
     "device_level_graph": True,
+    "device_graph_indirect": True,
     "leaf_map_small_blocks": True,
     "root_hist_l2_prefetch": True,
     "colmajor_align": True,

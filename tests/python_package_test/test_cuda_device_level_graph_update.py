@@ -84,5 +84,6 @@ def test_device_level_graph_update_engages_cuda():
         assert lines, out.stderr[-2000:]
         return lines[-1]
 
-    assert "updates=0 " not in last_update_line("auto")
-    assert "updates=0 refused=0" in last_update_line("auto,device_level_graph_update:off")
+    # Disable device_graph_indirect so key churn reaches device_level_graph_update's in-place exec update path.
+    assert "updates=0 " not in last_update_line("auto,device_graph_indirect:off")
+    assert "updates=0 refused=0" in last_update_line("auto,device_graph_indirect:off,device_level_graph_update:off")
