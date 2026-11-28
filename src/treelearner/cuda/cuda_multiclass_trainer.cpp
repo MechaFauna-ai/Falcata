@@ -145,6 +145,10 @@ void CUDAMulticlassTrainer::TrainRound(const score_t* gradients, const score_t* 
   CUDASingleGPUTreeLearner* const main = slots_[0];
   SetCUDADevice(main->gpu_device_id(), __FILE__, __LINE__);
   const int S = EnsureSlots(num_active);
+  if (FalcataDebug().diag && !diag_logged_) {
+    diag_logged_ = true;
+    fprintf(stderr, "[multiclass-diag] multiclass_concurrent: active=%d slots=%d\n", num_active, S);
+  }
   const data_size_t num_data = train_data_->num_data();
 
   // Record completion of GBDT::Boosting() (GetGradients on stream 0) so every slot stream waits on it.

@@ -5,6 +5,7 @@
  */
 #include "gbdt.h"
 
+#include <Falcata/falcata_plan.h>
 #include <Falcata/metric.h>
 #include <Falcata/network.h>
 #include <Falcata/objective_function.h>
@@ -28,7 +29,6 @@
 #ifdef USE_CUDA
 #include <cuda_runtime.h>
 #include <Falcata/cuda/cuda_tree.hpp>
-#include <Falcata/falcata_plan.h>
 #include "../treelearner/cost_effective_gradient_boosting.hpp"
 #include "../treelearner/cuda/cuda_multiclass_trainer.hpp"
 #endif  // USE_CUDA

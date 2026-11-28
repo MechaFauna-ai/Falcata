@@ -544,13 +544,13 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     // (TrainLevelWisePrefix's EnsureRootSumsReadBack; Train reads them back itself before any other flow), so
     // the synchronous readback -- which waits for the histogram zeroing and the root sum kernels -- moves behind
     // the column sample, the metadata uploads and the fill launch instead of holding them back
+    bool selective_multiclass_defer = false;
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+    selective_multiclass_defer = multiclass_stream_active_ && SelectiveDeviceTree();
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
     root_sums_deferred_ = AsyncTreeStart() && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr &&
                           fp_merge_state_ == nullptr && HybridGrowthUsable() &&
-                          (!UseSelectiveGrowth()
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-                           || (multiclass_stream_active_ && SelectiveDeviceTree())
-#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
-                          );
+                          (!UseSelectiveGrowth() || selective_multiclass_defer);
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
       config_->lambda_l2,
@@ -7360,7 +7360,7 @@ void CUDASingleGPUTreeLearner::StartTrainAsync(const score_t* gradients, const s
       cfg.pair_slots = hybrid_pair_slots_.RawData();
       cfg.feature_meta = cuda_device_level_feature_meta_.RawDataReadOnly();
       cfg.feature_source = cuda_device_level_feature_source_.RawDataReadOnly();
-      CHECK(cuda_device_level_real_thresholds_.Size() > 0);
+      CHECK_GT(cuda_device_level_real_thresholds_.Size(), size_t{0});
       cfg.real_thresholds = cuda_device_level_real_thresholds_.RawDataReadOnly();
       cfg.journal = cuda_device_level_journal_.RawData();
       cfg.max_depth = GrowthMaxDepth();

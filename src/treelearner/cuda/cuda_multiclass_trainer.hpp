@@ -72,6 +72,7 @@ class CUDAMulticlassTrainer {
   size_t slot_init_bytes_ = 0;
   size_t slot_tree_bytes_ = 0;
   bool memory_bound_ = false;
+  bool diag_logged_ = false;
   cudaEvent_t grad_ready_event_ = nullptr;
   std::vector<cudaEvent_t> score_done_events_;
 
