@@ -134,7 +134,7 @@ class MulticlassMetric: public Metric {
     return std::vector<double>(1, loss);
   }
 
- private:
+ protected:
   /*! \brief Number of data */
   data_size_t num_data_;
   /*! \brief Pointer of label */
@@ -450,7 +450,7 @@ class MultiRMSEMetric : public Metric {
     return std::vector<double>(1, std::sqrt(sum_loss / sum_weights_));
   }
 
- private:
+ protected:
   int num_class_;
   data_size_t num_data_;
   const label_t* label_;

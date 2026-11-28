@@ -32,6 +32,12 @@ class CUDAMulticlassSoftmax: public CUDAObjectiveInterface<MulticlassSoftmax> {
 
   void Init(const Metadata& metadata, data_size_t num_data) override;
 
+  bool NeedConvertOutputCUDA() const override { return true; }
+
+  CUDAOutputTransform GetCUDAOutputTransform(double* /*param*/) const override {
+    return CUDAOutputTransform::kSoftmax;
+  }
+
  private:
   void LaunchGetGradientsKernel(const double* scores, score_t* gradients, score_t* hessians) const;
 
@@ -65,6 +71,15 @@ class CUDAMulticlassOVA: public CUDAObjectiveInterface<MulticlassOVA> {
   ~CUDAMulticlassOVA();
 
   bool IsCUDAObjective() const override { return true; }
+
+  bool NeedConvertOutputCUDA() const override { return true; }
+
+  CUDAOutputTransform GetCUDAOutputTransform(double* param) const override {
+    if (param != nullptr) {
+      *param = sigmoid_;
+    }
+    return CUDAOutputTransform::kSigmoid;
+  }
 
  private:
   void LaunchGetGradientsKernel(const double* /*scores*/, score_t* /*gradients*/, score_t* /*hessians*/) const {}

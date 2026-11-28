@@ -40,6 +40,25 @@ CUDAFairLossMetric::CUDAFairLossMetric(const Config& config): CUDARegressionMetr
 
 CUDAPoissonMetric::CUDAPoissonMetric(const Config& config): CUDARegressionMetricInterface<PoissonMetric, CUDAPoissonMetric>(config) {}
 
+std::vector<double> CUDAPoissonMetric::Eval(const double* score, const ObjectiveFunction* objective) const {
+  double sum_loss = 0.0, sum_weight = 0.0;
+  if (objective != nullptr) {
+    double transform_param = 0.0;
+    const ObjectiveFunction::CUDAOutputTransform transform = objective->GetCUDAOutputTransform(&transform_param);
+    if (transform == ObjectiveFunction::CUDAOutputTransform::kExp) {
+      this->LaunchEvalKernelFusedExp(score, &sum_loss, &sum_weight);
+      return std::vector<double>{this->AverageLoss(sum_loss, sum_weight)};
+    } else if (transform != ObjectiveFunction::CUDAOutputTransform::kIdentity) {
+      this->score_convert_buffer_.Resize(static_cast<size_t>(this->num_data_) * static_cast<size_t>(this->num_class_));
+      const double* score_convert = objective->ConvertOutputCUDA(this->num_data_, score, this->score_convert_buffer_.RawData());
+      this->LaunchEvalKernel(score_convert, &sum_loss, &sum_weight);
+      return std::vector<double>{this->AverageLoss(sum_loss, sum_weight)};
+    }
+  }
+  this->LaunchEvalKernel(score, &sum_loss, &sum_weight);
+  return std::vector<double>{this->AverageLoss(sum_loss, sum_weight)};
+}
+
 CUDAMAPEMetric::CUDAMAPEMetric(const Config& config): CUDARegressionMetricInterface<MAPEMetric, CUDAMAPEMetric>(config) {}
 
 CUDAGammaMetric::CUDAGammaMetric(const Config& config): CUDARegressionMetricInterface<GammaMetric, CUDAGammaMetric>(config) {}

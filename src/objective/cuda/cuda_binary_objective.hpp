@@ -36,6 +36,13 @@ class CUDABinaryLogloss : public CUDAObjectiveInterface<BinaryLogloss> {
 
   bool NeedConvertOutputCUDA() const override { return true; }
 
+  CUDAOutputTransform GetCUDAOutputTransform(double* param) const override {
+    if (param != nullptr) {
+      *param = sigmoid_;
+    }
+    return CUDAOutputTransform::kSigmoid;
+  }
+
  private:
   void LaunchGetGradientsKernel(const double* scores, score_t* gradients, score_t* hessians) const override;
 

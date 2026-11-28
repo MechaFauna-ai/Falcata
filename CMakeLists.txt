@@ -744,8 +744,10 @@ set(
       src/boosting/cuda/cuda_predictor.cpp
       src/boosting/cuda/cuda_predictor.cu
       src/metric/cuda/cuda_binary_metric.cpp
+      src/metric/cuda/cuda_multiclass_metric.cpp
       src/metric/cuda/cuda_pointwise_metric.cpp
       src/metric/cuda/cuda_regression_metric.cpp
+      src/metric/cuda/cuda_multiclass_metric.cu
       src/metric/cuda/cuda_pointwise_metric.cu
       src/objective/cuda/cuda_binary_objective.cpp
       src/objective/cuda/cuda_multiclass_objective.cpp
