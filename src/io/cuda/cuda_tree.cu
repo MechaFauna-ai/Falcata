@@ -56,7 +56,33 @@ __global__ void WholeActiveReadbackKernel(const uint8_t* slab, uint8_t* staging,
   }
 }
 
+__global__ void InitTreeRootKernel(double* leaf_value, double* leaf_weight, int* leaf_parent,
+                                   double* leaf_values_vec, const int leaf_value_dim) {
+  const int tid = static_cast<int>(threadIdx.x);
+  if (tid == 0) {
+    leaf_value[0] = 0.0;
+    leaf_weight[0] = 0.0;
+    leaf_parent[0] = -1;
+  }
+  if (leaf_values_vec != nullptr) {
+    for (int t = tid; t < leaf_value_dim; t += static_cast<int>(blockDim.x)) {
+      leaf_values_vec[t] = 0.0;
+    }
+  }
+}
+
 }  // namespace
+
+void CUDATree::LaunchInitTreeRootKernel() {
+  const int threads = leaf_value_dim_ > 1 ? std::min(leaf_value_dim_, 256) : 1;
+  InitTreeRootKernel<<<1, threads>>>(
+    cuda_leaf_value_.RawData(),
+    cuda_leaf_weight_.RawData(),
+    cuda_leaf_parent_.RawData(),
+    leaf_value_dim_ > 1 ? cuda_leaf_values_vec_.RawData() : nullptr,
+    leaf_value_dim_);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
 
 bool CUDATree::LaunchActiveSlabReadback(void* readback_staging_device, size_t readback_staging_bytes,
     const data_size_t* exact_counts, const int* device_journal, int max_total_splits, cudaStream_t stream) const {
@@ -1233,7 +1259,7 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
         num_data, cuda_column_data->cuda_data_by_column(), cuda_column_data->cuda_column_bit_type(), nullptr, nullptr,
         nullptr, nullptr, used_data_indices, nodes, cuda_leaf_value_.RawData(), score, leaf_index_out);
     }
-    SynchronizeCUDADevice(__FILE__, __LINE__);
+    CUDASUCCESS_OR_FATAL(cudaGetLastError());
     return;
   }
   // Same treatment for the categorical arrays, on their own trigger: the
@@ -1357,7 +1383,11 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       score,
       leaf_index_out);
   }
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+  if (restore_tree_structure || restore_cat_arrays) {
+    // Wait for stream 0 before freeing temporary structure/categorical buffers.
+    SynchronizeCUDAStream(nullptr, __FILE__, __LINE__);
+  }
   if (restore_tree_structure) {
     CUDATree* self = const_cast<CUDATree*>(this);
     self->cuda_left_child_.Clear();

@@ -146,6 +146,8 @@ class CUDADataPartition: public NCCLInfo {
    *  learner's private view, CUDAColumnData::InitViewOf); call before Init */
   void SetColumnData(const CUDAColumnData* column_data) { cuda_column_data_ = column_data; }
 
+  const CUDAColumnData* cuda_column_data() const { return cuda_column_data_; }
+
   /*! \brief cuda_plan key forest_batched: size the batched level apply's block-offset and packed-bit buffers for
    *  the worst case of any level (as the device levels do), so they never grow during training: a growth is a device
    *  synchronize, which stalls every forest slot */

@@ -590,6 +590,14 @@ class Tree {
   /*! determine what the total permutation weight would be if we unwound a previous extension in the decision path*/
   static double UnwoundPathSum(const PathElement *unique_path, int unique_depth, int path_index);
 
+  /*! \brief Tag for subclasses (CUDATree) that grow structure on device and size
+   *  the 16 host structure vectors once at final num_leaves_ instead of
+   *  allocating max_leaves_ up front and calling shrink_to_fit() on every tree. */
+  struct DeferredHostStorageTag {};
+
+  Tree(int max_leaves, bool track_branch_features, bool is_linear,
+       int leaf_value_dim, DeferredHostStorageTag, int reserve_leaves = 0);
+
   /*! \brief Number of max leaves*/
   int max_leaves_ = 0;
   /*! \brief Number of current leaves*/

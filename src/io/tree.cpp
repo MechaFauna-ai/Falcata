@@ -74,6 +74,66 @@ Tree::Tree(int max_leaves, bool track_branch_features, bool is_linear,
   #endif  // USE_CUDA
 }
 
+Tree::Tree(int max_leaves, bool track_branch_features, bool is_linear,
+           int leaf_value_dim, DeferredHostStorageTag, int reserve_leaves)
+  : max_leaves_(max_leaves), track_branch_features_(track_branch_features) {
+  CHECK_GT(max_leaves_, 0);
+  CHECK_GT(leaf_value_dim, 0);
+  CHECK_LE(max_leaves_, std::numeric_limits<int>::max() / leaf_value_dim);
+  leaf_value_dim_ = leaf_value_dim;
+  const int capped_reserve = std::min(std::max(reserve_leaves, 0), max_leaves_);
+  if (capped_reserve > 1) {
+    const size_t n_leaves = static_cast<size_t>(capped_reserve);
+    const size_t n_internal = n_leaves - 1;
+    // Reserve capacity without zero-filling so ToHost() can scatter via assign()
+    // with zero mallocs, zero memset(0)s, and zero shrink_to_fit()s on the
+    // GPU-idle critical path.
+    left_child_.reserve(n_internal);
+    right_child_.reserve(n_internal);
+    split_feature_inner_.reserve(n_internal);
+    split_feature_.reserve(n_internal);
+    threshold_in_bin_.reserve(n_internal);
+    threshold_.reserve(n_internal);
+    decision_type_.reserve(n_internal);
+    split_gain_.reserve(n_internal);
+    leaf_parent_.reserve(n_internal);
+    internal_value_.reserve(n_internal);
+    internal_weight_.reserve(n_internal);
+    internal_count_.reserve(n_internal);
+    leaf_value_.reserve(n_leaves);
+    leaf_weight_.reserve(n_leaves);
+    leaf_count_.reserve(n_leaves);
+    leaf_depth_.reserve(n_leaves);
+    if (leaf_value_dim_ > 1) {
+      leaf_values_vec_.reserve(n_leaves * static_cast<size_t>(leaf_value_dim_));
+    }
+  }
+  leaf_depth_.assign(1, 0);
+  num_leaves_ = 1;
+  leaf_value_.assign(1, 0.0);
+  if (leaf_value_dim_ > 1) {
+    leaf_values_vec_.assign(static_cast<size_t>(leaf_value_dim_), 0.0);
+  }
+  if (track_branch_features_) {
+    branch_features_ = std::vector<std::vector<int>>(max_leaves_);
+  }
+  shrinkage_ = 1.0f;
+  num_cat_ = 0;
+  cat_boundaries_.push_back(0);
+  cat_boundaries_inner_.push_back(0);
+  max_depth_ = -1;
+  is_linear_ = is_linear;
+  if (is_linear_) {
+    leaf_coeff_.resize(max_leaves_);
+    leaf_const_ = std::vector<double>(max_leaves_, 0);
+    leaf_features_.resize(max_leaves_);
+    leaf_features_inner_.resize(max_leaves_);
+  }
+  #ifdef USE_CUDA
+  is_cuda_tree_ = false;
+  #endif  // USE_CUDA
+}
+
 int Tree::Split(int leaf, int feature, int real_feature, uint32_t threshold_bin,
                 double threshold_double, double left_value, double right_value,
                 int left_cnt, int right_cnt, double left_weight, double right_weight, float gain,

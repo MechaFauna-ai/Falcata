@@ -12,8 +12,11 @@
 #include <Falcata/bin.h>
 #include <Falcata/tree.h>
 
+#include <algorithm>
 #include <functional>
+#include <memory>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <Falcata/cuda/cuda_column_data.hpp>
@@ -129,6 +132,60 @@ struct CUDATreeHostSplit {
   std::vector<uint32_t> cat_bitset_inner;
 };
 
+/*! \brief Refcounted device memory slab for sub-allocating retained per-tree arrays
+ *  (e.g. cuda_leaf_value_, retained categorical inner bitsets/boundaries). Each CUDATree
+ *  holds a shared_ptr to the slab backing its view so trees safely outlive the learner
+ *  (ResetTrainingData, forest slot teardown, etc.) with zero dangling device pointers. */
+template <typename T>
+struct CUDATreeDeviceSlab {
+  T* data = nullptr;
+  size_t capacity = 0;
+  size_t used = 0;
+
+  explicit CUDATreeDeviceSlab(const size_t cap) : capacity(cap), used(0) {
+    AllocateCUDAMemory<T>(&data, capacity, __FILE__, __LINE__);
+  }
+
+  ~CUDATreeDeviceSlab() {
+    DeallocateCUDAMemory<T>(&data, __FILE__, __LINE__);
+  }
+
+  CUDATreeDeviceSlab(const CUDATreeDeviceSlab&) = delete;
+  CUDATreeDeviceSlab& operator=(const CUDATreeDeviceSlab&) = delete;
+};
+
+/*! \brief Chunked bump-allocating device arena owned by a tree learner. Replaces one
+ *  cudaMalloc + cudaFree per tree with ~1 slab allocation per 64 KiB .. 1 MiB of retained
+ *  per-tree data (geometric growth up to 1 MiB). Append-only per slab so prior trees'
+ *  slices are never overwritten, and refcounted via shared_ptr<CUDATreeDeviceSlab<T>>. */
+template <typename T>
+struct CUDATreeDeviceArena {
+  static constexpr size_t kMinSlabElems = (64ULL << 10) / sizeof(T);
+  static constexpr size_t kMaxSlabElems = (1ULL << 20) / sizeof(T);
+  static constexpr size_t kAlignElems = sizeof(T) >= 32 ? 1 : (32 / sizeof(T));
+
+  std::shared_ptr<CUDATreeDeviceSlab<T>> current_slab;
+  size_t next_slab_elems = kMinSlabElems;
+
+  std::pair<T*, std::shared_ptr<CUDATreeDeviceSlab<T>>> Allocate(const size_t count) {
+    if (count == 0) {
+      return {nullptr, nullptr};
+    }
+    const size_t aligned = (count + kAlignElems - 1) & ~(kAlignElems - 1);
+    if (!current_slab || current_slab->used + aligned > current_slab->capacity) {
+      const size_t cap = std::max(next_slab_elems, aligned);
+      current_slab = std::make_shared<CUDATreeDeviceSlab<T>>(cap);
+      next_slab_elems = std::min(kMaxSlabElems, next_slab_elems * 2);
+    }
+    T* ptr = current_slab->data + current_slab->used;
+    current_slab->used += aligned;
+    return {ptr, current_slab};
+  }
+};
+
+using CUDATreeLeafSlab = CUDATreeDeviceSlab<double>;
+using CUDATreeLeafArena = CUDATreeDeviceArena<double>;
+
 /*! \brief Device growth buffers for the categorical split record of the tree being grown (the bitsets over real
  *  and inner values and their boundaries), owned by the tree learner and reused by every tree it grows. A tree
  *  takes them over in its constructor and hands them back in ToHost()/RebuildFromHostSplits(), so their capacity
@@ -145,6 +202,9 @@ struct CUDATreeCatArena {
   CUDAVector<uint32_t> readback;
   /*! \brief its host counterpart (the one copy's destination) */
   std::vector<uint32_t> readback_host;
+  /*! \brief chunked device arenas for the per-tree retained inner bitsets and boundaries kept after ToHost */
+  CUDATreeDeviceArena<uint32_t> kept_bitset_inner_arena;
+  CUDATreeDeviceArena<int> kept_boundaries_inner_arena;
 };
 
 /*! \brief categorical level record: the device inputs of one level's categorical splits for CUDATree::SplitLevel,
@@ -183,7 +243,9 @@ class CUDATree : public Tree {
   explicit CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
     const int gpu_device_id, const bool has_categorical_feature,
     uint8_t* pooled_device_buffer = nullptr, int leaf_value_dim = 1,
-    CUDATreeCatArena* cat_arena = nullptr);
+    CUDATreeCatArena* cat_arena = nullptr, cudaStream_t tree_stream = nullptr,
+    CUDATreeLeafArena* leaf_arena = nullptr, int host_reserve_leaves = 0,
+    bool defer_root_init = false);
 
   /*! \brief bytes needed by the pooled per-tree device arrays (16 arrays of
    *  max_leaves entries + the batched split descriptors), 8-byte aligned */
@@ -263,6 +325,7 @@ class CUDATree : public Tree {
    *  sum_hessians), since a CUDA histogram bin carries gradient and hessian but
    *  no count), which is exact only for a constant-hessian objective. */
   void SyncNodeCountsFromPartition(const std::vector<data_size_t>& leaf_num_data);
+  void SyncNodeCountsFromPartition(const data_size_t* leaf_num_data, int num_leaves);
 
   /*! \brief adds offset to every split's host gain (the CUDA finders report the gain above the parent's gain plus
    *  min_gain_to_split; the CPU learner stores it with min_gain_to_split added back) */
@@ -272,13 +335,19 @@ class CUDATree : public Tree {
     }
   }
 
+  /*! \brief pre-reserve host leaf_depth_ when final leaf count is known (e.g. device-level replay) */
+  void ReserveLeafDepth(const int num_leaves) {
+    if (num_leaves > static_cast<int>(leaf_depth_.capacity())) {
+      leaf_depth_.reserve(static_cast<size_t>(num_leaves));
+    }
+  }
+
   /*! \brief device level replay: the host-mirror half of SplitBatch
    *  (branch features, leaf depth, num_leaves_) for ONE split whose device
    *  updates already ran on the device */
   void ReplaySplitHostMirrors(const int leaf_index, const int real_feature_index) {
     RecordBranchFeatures(leaf_index, num_leaves_, real_feature_index);
-    leaf_depth_[num_leaves_] = leaf_depth_[leaf_index] + 1;
-    leaf_depth_[leaf_index]++;
+    UpdateLeafDepthOnSplit(leaf_index);
     ++num_leaves_;
   }
 
@@ -380,6 +449,22 @@ class CUDATree : public Tree {
 
   double* cuda_leaf_value_ref() { return cuda_leaf_value_.RawData(); }
 
+  double* cuda_leaf_weight_ref() { return cuda_leaf_weight_.RawData(); }
+
+  int* cuda_leaf_parent_ref() { return cuda_leaf_parent_.RawData(); }
+
+  /*! \brief DeviceLevelResetKernel fused root initialization (leaf_value[0], leaf_weight[0], leaf_parent[0]);
+   *  marks root initialized so no standalone InitTreeRootKernel launch is needed on the device-tree path. */
+  void MarkRootInitializedOnDevice() { root_initialized_ = true; }
+
+  /*! \brief Lazily launch InitTreeRootKernel if construction deferred it for DeviceLevelResetKernel. */
+  void EnsureRootInitializedOnDevice() {
+    if (!root_initialized_) {
+      LaunchInitTreeRootKernel();
+      root_initialized_ = true;
+    }
+  }
+
   /*! \brief vector-leaf mode: flat [leaf * leaf_value_dim + target] device
    *  leaf outputs (empty when leaf_value_dim == 1). Retained after ToHost()
    *  like cuda_leaf_value_ so score updates and shrinkage can read it. */
@@ -463,9 +548,21 @@ class CUDATree : public Tree {
 
   void LaunchPackCategoricalRecordKernel(uint32_t* out, size_t words_bound, size_t words_inner_bound);
 
-  void InitCUDAMemory(uint8_t* pooled_device_buffer);
+  void InitCUDAMemory(uint8_t* pooled_device_buffer, cudaStream_t tree_stream, bool defer_root_init);
+
+  void LaunchInitTreeRootKernel();
 
   void InitCUDA();
+
+  inline void UpdateLeafDepthOnSplit(const int leaf_index) {
+    const int next_depth = leaf_depth_[leaf_index] + 1;
+    leaf_depth_[leaf_index] = next_depth;
+    if (static_cast<size_t>(num_leaves_) == leaf_depth_.size()) {
+      leaf_depth_.push_back(next_depth);
+    } else {
+      leaf_depth_[num_leaves_] = next_depth;
+    }
+  }
 
   void LaunchSplitKernel(const int leaf_index,
                          const int real_feature_index,
@@ -504,6 +601,11 @@ class CUDATree : public Tree {
   void RecordBranchFeatures(const int left_leaf_index,
                             const int right_leaf_index,
                             const int real_feature_index);
+
+  // Declared before CUDAVector views so views are destroyed before slab refcounts drop.
+  std::shared_ptr<CUDATreeLeafSlab> retained_leaf_slab_;
+  std::shared_ptr<CUDATreeDeviceSlab<uint32_t>> retained_bitset_inner_slab_;
+  std::shared_ptr<CUDATreeDeviceSlab<int>> retained_boundaries_inner_slab_;
 
   CUDAVector<int> cuda_left_child_;
   CUDAVector<int> cuda_right_child_;
@@ -545,10 +647,16 @@ class CUDATree : public Tree {
   std::vector<CUDATreeBatchSplit> host_level_splits_;
   /*! \brief device copy of one level's batched split descriptors (SplitBatch) */
   CUDAVector<CUDATreeBatchSplit> cuda_batch_splits_;
+  /*! \brief non-owning pointer to learner's leaf-value arena, nulled on ShrinkHostVectorsAndReleaseDevice */
+  CUDATreeLeafArena* leaf_arena_ = nullptr;
   /*! \brief whether the per-tree arrays are views into a pooled slab */
   bool pooled_ = false;
+  /*! \brief whether root device entries (leaf_value[0], leaf_weight[0], leaf_parent[0]) are initialized */
+  bool root_initialized_ = false;
 
-  cudaStream_t cuda_stream_;
+  cudaStream_t cuda_stream_ = nullptr;
+  /*! \brief true only when this tree called cudaStreamCreate itself (false for learner-borrowed streams) */
+  bool owns_cuda_stream_ = false;
 
  public:
   /*! \brief stream the tree-structure kernels (SplitBatch/SplitCategorical)

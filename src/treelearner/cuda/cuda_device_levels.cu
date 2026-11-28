@@ -36,6 +36,14 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
       // Root search has consumed the initialized fixed root struct on this stream. Preserve its exact output
       // before the first tree record saves leaf 0 as internal_value[0]. The select event orders the record stream.
       cfg.tree_leaf_value[0] = cfg.root_struct->leaf_value;
+    } else if (cfg.tree_leaf_value_zero != nullptr) {
+      cfg.tree_leaf_value_zero[0] = 0.0;
+    }
+    if (cfg.tree_leaf_weight != nullptr) {
+      cfg.tree_leaf_weight[0] = 0.0;
+    }
+    if (cfg.tree_leaf_parent != nullptr) {
+      cfg.tree_leaf_parent[0] = -1;
     }
     st->live_splits = 0;
     st->total_flat_blocks = 0;

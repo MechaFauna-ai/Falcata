@@ -562,6 +562,7 @@ void CUDAColumnData::ResizeWhenCopySubrow(const data_size_t num_used_indices) {
   }
   OMP_THROW_EX();
   cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
+  ++column_view_generation_;
 }
 
 void CUDAColumnData::InitMissingFlagSnapshots() {

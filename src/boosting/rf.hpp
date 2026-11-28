@@ -192,7 +192,7 @@ class RF : public GBDT {
     const data_size_t global_bag_data_cnt =
         Network::num_machines() > 1 ? Network::GlobalSyncUpBySum(bag_data_cnt) : bag_data_cnt;
     for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
-      std::unique_ptr<Tree> new_tree(new Tree(2, false, false));
+      std::unique_ptr<Tree> new_tree;
       size_t offset = static_cast<size_t>(cur_tree_id)* num_data_;
       // whether the tree learner grows this tree (and so partitioned the bag for renewing it)
       bool grown = false;
@@ -222,6 +222,9 @@ class RF : public GBDT {
             new_tree->SetLeafOutput(0, 0.0);
           }
         }
+      }
+      if (!new_tree) {
+        new_tree.reset(new Tree(2, false, false));
       }
 
       if (class_need_train_[cur_tree_id]) {
