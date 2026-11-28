@@ -51,6 +51,34 @@ serve these cells: `debug` (extra `FALCATA_DEBUG` tokens such as
 `vramfree=1`; the cell runs alone in a worker) and `forced_splits` (a JSON
 object written to a temporary `forcedsplits_filename`).
 
+## Pre-merge speed gate (`speed_gate.py`, `pr_speed_watch.py`)
+
+The perf gate below compares one nightly master run with a rolling median of earlier nights: it fires after a
+regression has merged, and cells drift 4-8% from night to night, so a 3% regression never shows. The speed gate
+measures each pull request before it merges, against the commit it branches from, in one quiet job:
+
+| Step | What |
+|---|---|
+| shapes | `speed_cells.py`: the bench tier's covtype / year / Numerai (first 1M rows) cells, the production h60 sparse shape, six v6-like tree fits (3-16 classes, fixed-point, 63-6,000 columns with 7% NaN, feature fraction down to 0.033, bagging; generated once per machine) |
+| timing | base and head builds alternate pair by pair, each run a fresh process; construct, booster create, trees and predict seconds, steady ms per iteration, host and device memory peaks, model md5 |
+| statistics | per cell and stage the paired log ratio head/base: geometric-mean ratio, 95% t interval, one-sided p for "slower", Holm-adjusted over all tests; 5 pairs, up to 12 while an interval straddles the threshold |
+| verdict | FAIL: at least 3% slower with adjusted p < 0.05, a memory peak 5% and 0.1 GB higher, or a failed run; INCONCLUSIVE, SLOWER (below 3%), SAME, FASTER otherwise; a changed model md5 is reported, never failed |
+| record | results JSON (written before any statistics), markdown summary, one history line per gate run (`--history`): master commits are measured against their first parent, so the history holds one line per merged commit |
+
+`pr_speed_watch.py poll`, run from a timer on the GPU host, lists open pull requests into master, builds base and
+head (`ci_build.sh`, cached per commit) for those whose head branch is in this repository (forks are never built),
+queues one strict `--exclusive` gpuq job per head commit and posts the verdict as the commit status
+`falcata/speed` and one pull-request comment it keeps current. The gate scripts always run from master's checkout.
+A pull request that changes no library input (src/, include/, python-package/, cmake/, CMakeLists.txt,
+external_libs/) gets `success` without a run. Making `falcata/speed` a required status of master (branch
+protection) is what makes "nothing merges without a speed verdict" hold; a maintainer can still merge past a
+deliberate, explained trade-off.
+
+    .gates-venv/bin/python tests/gates/speed_gate.py list           # cells and whether their data is here
+    python tests/gates/speed_gate.py run --base A/bin/python --head B/bin/python --out r.json
+    python tests/gates/speed_gate.py compare r.json --markdown r.md --history ~/.cache/falcata-gates/speed_history.jsonl
+    python tests/gates/pr_speed_watch.py poll --dry-run             # what one timer pass would queue
+
 ## Nightly (`nightly_local.sh`, cron)
 
     crontab -l 2>/dev/null | grep -v nightly_local.sh > /tmp/ct
