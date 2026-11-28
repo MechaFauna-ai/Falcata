@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -73,43 +74,52 @@ size_t CUDAMulticlassTrainer::Reserve(const size_t total) const {
 int CUDAMulticlassTrainer::EnsureSlots(const int wanted) {
   const int capped = std::min(wanted, kMaxConcurrentStreams);
   SetCUDADevice(slots_[0]->gpu_device_id(), __FILE__, __LINE__);
+  const size_t est_slot_bytes = slots_[0]->EstimateMulticlassSlotBytes();
   while (num_slots() < capped && !memory_bound_) {
     size_t free_before = 0, total = 0;
     CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_before, &total));
     const size_t reserve = Reserve(total);
-    const size_t tree_bytes = slot_tree_bytes_ > 0 ? slot_tree_bytes_ : slot_init_bytes_;
+    const size_t init_est = slot_init_bytes_ > 0 ? slot_init_bytes_ : est_slot_bytes;
+    const size_t tree_bytes = slot_tree_bytes_ > 0 ? slot_tree_bytes_ : init_est;
     size_t pending = 0;
     for (const bool trained : slot_trained_) {
       pending += trained ? 0 : tree_bytes;
     }
-    if (slot_init_bytes_ > 0 && free_before < reserve + pending + slot_init_bytes_ + tree_bytes) {
+    if (free_before < reserve + pending + init_est + tree_bytes) {
       memory_bound_ = true;
       break;
     }
-    std::unique_ptr<TreeLearner> created(
-        TreeLearner::CreateTreeLearner(config_->tree_learner, config_->device_type, config_, boosting_on_gpu_));
-    CUDASingleGPUTreeLearner* slot = dynamic_cast<CUDASingleGPUTreeLearner*>(created.get());
-    CHECK(slot != nullptr);
-    slot->EnableMulticlassSlot(true, slots_[0]);
-    const auto init_start = std::chrono::steady_clock::now();
-    slot->Init(train_data_, is_constant_hessian_);
-    slot->PresizeLevelBuffers();
-    slot->EnableMulticlassStream();
-    size_t free_after = 0;
-    CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_after, &total));
-    const size_t init_bytes = free_before > free_after ? free_before - free_after : size_t{0};
-    slot_init_bytes_ = std::max(slot_init_bytes_, init_bytes);
-    if (FalcataDebug().diag) {
-      fprintf(stderr, "[multiclass-diag] slot %d init %.1f ms, %.0f MiB, %.0f MiB free after\n", num_slots(),
-              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - init_start).count(),
-              init_bytes / 1048576.0, free_after / 1048576.0);
+    try {
+      std::unique_ptr<TreeLearner> created(
+          TreeLearner::CreateTreeLearner(config_->tree_learner, config_->device_type, config_, boosting_on_gpu_));
+      CUDASingleGPUTreeLearner* slot = dynamic_cast<CUDASingleGPUTreeLearner*>(created.get());
+      CHECK(slot != nullptr);
+      slot->EnableMulticlassSlot(true, slots_[0]);
+      const auto init_start = std::chrono::steady_clock::now();
+      slot->Init(train_data_, is_constant_hessian_);
+      slot->PresizeLevelBuffers();
+      slot->EnableMulticlassStream();
+      size_t free_after = 0;
+      CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_after, &total));
+      const size_t init_bytes = free_before > free_after ? free_before - free_after : size_t{0};
+      slot_init_bytes_ = std::max(slot_init_bytes_, init_bytes);
+      if (FalcataDebug().diag) {
+        fprintf(stderr, "[multiclass-diag] slot %d init %.1f ms, %.0f MiB, %.0f MiB free after\n", num_slots(),
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - init_start).count(),
+                init_bytes / 1048576.0, free_after / 1048576.0);
+      }
+      cudaEvent_t ev = nullptr;
+      CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
+      score_done_events_.push_back(ev);
+      slots_.push_back(slot);
+      slot_trained_.push_back(false);
+      owned_.push_back(std::move(created));
+    } catch (const std::exception&) {
+      // Clear any sticky OOM status and cap concurrency at the slots already created.
+      cudaGetLastError();
+      memory_bound_ = true;
+      break;
     }
-    cudaEvent_t ev = nullptr;
-    CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
-    score_done_events_.push_back(ev);
-    slots_.push_back(slot);
-    slot_trained_.push_back(false);
-    owned_.push_back(std::move(created));
   }
   return num_slots();
 }
@@ -164,8 +174,12 @@ void CUDAMulticlassTrainer::TrainRound(const score_t* gradients, const score_t* 
     class_counters[idx].bynode = base.bynode + static_cast<uint64_t>(idx);
     class_counters[idx].discretizer = base.discretizer + idx;
     if (need_bytree) {
-      sampler->ResetByTree();
-      class_samples[idx] = sampler->used_feature_indices();
+      if (idx == 0 && main->ConsumePredrawnTreeSample(&class_samples[idx])) {
+        // Consumed the column sample already drawn by a prior serial tree's compact_prefill.
+      } else {
+        sampler->ResetByTree();
+        class_samples[idx] = sampler->used_feature_indices();
+      }
     }
   }
 
@@ -251,9 +265,11 @@ void CUDAMulticlassTrainer::TrainRound(const score_t* gradients, const score_t* 
         if (apply_bias_on_stream && std::fabs(init_scores[class_id]) > kEpsilon) {
           cuda_tree->AddBiasOnStream(init_scores[class_id], exec_stream);
         }
-        CUDASUCCESS_OR_FATAL(cudaEventRecord(score_done_events_[w], exec_stream));
-        slot_updated_score[w] = true;
       }
+      // Record unconditionally (including 1-leaf stumps) so stream 0 (e.g. AsConstantTree)
+      // always waits for ShrinkHostVectorsAndReleaseDevice(exec_stream) D2D copies to complete.
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(score_done_events_[w], exec_stream));
+      slot_updated_score[w] = true;
       (*out_trees)[class_id] = std::move(tree);
       finalized[w] = true;
       --remaining;

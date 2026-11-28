@@ -361,6 +361,11 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     cuda_gradient_discretizer_->SetErrorFeedback(
         fixedpoint_quant_ && FalcataPlan::Get().quant_ef,
         std::max(config_->num_class, 1));
+    if (multiclass_ef_source_ != nullptr && multiclass_ef_source_->cuda_gradient_discretizer_ != nullptr) {
+      CUDAGradientDiscretizer* src_disc = multiclass_ef_source_->cuda_gradient_discretizer_.get();
+      cuda_gradient_discretizer_->SetSharedErrorFeedbackBuffer(src_disc->ef_residuals_data(),
+                                                               src_disc->ef_residuals_size());
+    }
     cuda_gradient_discretizer_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
     cuda_gradient_discretizer_->Init(num_data_, config_->num_leaves, train_data_->num_features(), train_data_);
   } else {
@@ -3155,7 +3160,12 @@ void CUDASingleGPUTreeLearner::BeginDeviceBynode() {
       int8_t* row = rows + static_cast<size_t>(chunked ? 0 : leaf) * static_cast<size_t>(num_features);
       std::memcpy(table.data() + static_cast<size_t>(leaf) * sizeof(int8_t*), &row, sizeof(int8_t*));
     }
-    CopyFromHostToCUDADevice<int8_t>(cuda_bynode_rows_.RawData(), table.data(), table.size(), __FILE__, __LINE__);
+    if (multiclass_stream_active_) {
+      CopyFromHostToCUDADeviceAsync<int8_t>(cuda_bynode_rows_.RawData(), table.data(), table.size(),
+                                            find_stream, __FILE__, __LINE__);
+    } else {
+      CopyFromHostToCUDADevice<int8_t>(cuda_bynode_rows_.RawData(), table.data(), table.size(), __FILE__, __LINE__);
+    }
     const size_t task_ints = 2 * static_cast<size_t>(slots) + static_cast<size_t>(row_slots) * std::max(1, max_tasks);
     cuda_bynode_tasks_.Resize(task_ints);
     std::vector<int> ranges(2 * static_cast<size_t>(slots), 0);
@@ -3165,14 +3175,29 @@ void CUDASingleGPUTreeLearner::BeginDeviceBynode() {
       CHECK_LE(offset, static_cast<int64_t>(std::numeric_limits<int>::max()));
       ranges[2 * leaf] = static_cast<int>(offset);
     }
-    CopyFromHostToCUDADevice<int>(cuda_bynode_tasks_.RawData(), ranges.data(), ranges.size(), __FILE__, __LINE__);
+    if (multiclass_stream_active_) {
+      CopyFromHostToCUDADeviceAsync<int>(cuda_bynode_tasks_.RawData(), ranges.data(), ranges.size(),
+                                         find_stream, __FILE__, __LINE__);
+    } else {
+      CopyFromHostToCUDADevice<int>(cuda_bynode_tasks_.RawData(), ranges.data(), ranges.size(), __FILE__, __LINE__);
+    }
     cuda_bynode_keys_.Resize(2 * static_cast<size_t>(slots));
-    SetCUDAMemory<uint64_t>(cuda_bynode_keys_.RawData(), 0, 2 * static_cast<size_t>(slots), __FILE__, __LINE__);
+    if (multiclass_stream_active_) {
+      CUDASUCCESS_OR_FATAL(cudaMemsetAsync(cuda_bynode_keys_.RawData(), 0,
+                                           2 * static_cast<size_t>(slots) * sizeof(uint64_t), find_stream));
+    } else {
+      SetCUDAMemory<uint64_t>(cuda_bynode_keys_.RawData(), 0, 2 * static_cast<size_t>(slots), __FILE__, __LINE__);
+    }
     cuda_bynode_sample_.Resize(5 + static_cast<size_t>(num_features));
     cuda_bynode_task_inner_.Resize(static_cast<size_t>(std::max(1, num_tasks)));
     if (num_tasks > 0) {
-      CopyFromHostToCUDADevice<int>(cuda_bynode_task_inner_.RawData(), task_inner.data(), task_inner.size(),
-                                    __FILE__, __LINE__);
+      if (multiclass_stream_active_) {
+        CopyFromHostToCUDADeviceAsync<int>(cuda_bynode_task_inner_.RawData(), task_inner.data(), task_inner.size(),
+                                           find_stream, __FILE__, __LINE__);
+      } else {
+        CopyFromHostToCUDADevice<int>(cuda_bynode_task_inner_.RawData(), task_inner.data(), task_inner.size(),
+                                      __FILE__, __LINE__);
+      }
     }
     cfg.sample = cuda_bynode_sample_.RawDataReadOnly();
     cfg.task_inner_feature = cuda_bynode_task_inner_.RawDataReadOnly();
@@ -6999,7 +7024,8 @@ void CUDASingleGPUTreeLearner::EnableMulticlassStream() {
   if (multiclass_done_event_ == nullptr) {
     CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&multiclass_done_event_, cudaEventDisableTiming));
   }
-  next_tree_col_sample_ready_ = false;
+  // Keep any pending next_tree_col_sample_ready_ drawn by a prior serial tree's compact_prefill
+  // so CUDAMulticlassTrainer::TrainRound consumes it for class 0 without shifting the RNG stream.
   cuda_histogram_constructor_->InvalidateCompactPrefill();
   cuda_smaller_leaf_splits_->SetStream(multiclass_exec_stream_);
   cuda_larger_leaf_splits_->SetStream(multiclass_exec_stream_);
@@ -7038,6 +7064,9 @@ void CUDASingleGPUTreeLearner::DisableMulticlassStream() {
 
 bool CUDASingleGPUTreeLearner::MulticlassConcurrentSupported() const {
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  if (FalcataDebug().debug || FalcataDebug().dump) {
+    return false;
+  }
   if (!HybridGrowthUsable() || vec_num_targets_ > 1 || nccl_communicator_ != nullptr ||
       fp_merge_state_ != nullptr) {
     return false;
@@ -7046,6 +7075,17 @@ bool CUDASingleGPUTreeLearner::MulticlassConcurrentSupported() const {
       !cuda_histogram_constructor_->SupportsBatchedLevel() ||
       !cuda_best_split_finder_->SupportsBatchedLevel() ||
       !cuda_histogram_constructor_->DeviceLevelConstructSupported()) {
+    return false;
+  }
+  if (cuda_best_split_finder_->num_used_tasks() == 0 ||
+      device_levels_disabled_ || device_tree_scratch_refused_) {
+    return false;
+  }
+  if (select_features_by_node_ && !(DeviceTreeRequested() && DeviceBynodeMasksUsable())) {
+    return false;
+  }
+  if (has_categorical_feature_ &&
+      (!DeviceTreeRequested() || !config_->use_quantized_grad || device_tree_cat_gate_ == 0)) {
     return false;
   }
   if (!(DeviceTreeRequested() || SelectiveDeviceTree())) {
@@ -7058,6 +7098,33 @@ bool CUDASingleGPUTreeLearner::MulticlassConcurrentSupported() const {
 #else
   return false;
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+}
+
+size_t CUDASingleGPUTreeLearner::EstimateMulticlassSlotBytes() const {
+  const size_t n_data = static_cast<size_t>(std::max<data_size_t>(0, num_data_));
+  const size_t n_leaves = static_cast<size_t>(std::max(1, config_->num_leaves));
+  const size_t n_bins = static_cast<size_t>(std::max(0, num_total_bin_));
+  // Histograms (2 * num_total_bin * num_leaves * sizeof(hist_t))
+  size_t bytes = n_leaves * 2 * n_bins * sizeof(hist_t);
+  // Data partition per-row arrays: data_indices, out_data_indices, data_index_to_leaf_index, block_to_left_offset
+  bytes += n_data * (3 * sizeof(data_size_t) + sizeof(uint16_t));
+  // Gradient discretizer per-row discretized buffer (4 B/row; quant_ef residuals are shared with slot 0)
+  // or non-quantized interleaved float2 grad/hess buffer (8 B/row)
+  bytes += n_data * (config_->use_quantized_grad ? size_t{4} : size_t{8});
+  // Tree pool slab + level output / bit-change scratch
+  bytes += CUDATree::PooledDeviceBufferSize(config_->num_leaves);
+  int max_pairs = config_->num_leaves / 2 + 2;
+  if (GrowthMaxDepth() > 0 && GrowthMaxDepth() < 30) {
+    max_pairs = std::min(max_pairs, (1 << (GrowthMaxDepth() - 1)) + 2);
+  }
+  if (cuda_best_split_finder_ != nullptr) {
+    bytes += 2 * static_cast<size_t>(cuda_best_split_finder_->num_tasks()) *
+             static_cast<size_t>(max_pairs) * sizeof(CUDASplitInfo);
+  }
+  if (config_->use_quantized_grad && cuda_histogram_constructor_ != nullptr) {
+    bytes += cuda_histogram_constructor_->BitChangeScratchEntries(max_pairs) * sizeof(hist_t);
+  }
+  return bytes;
 }
 
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
@@ -7252,6 +7319,7 @@ void CUDASingleGPUTreeLearner::StartTrainAsync(const score_t* gradients, const s
       FalcataPlan::Get().batch_construct_saturation_floor != construct_saturation_floor_) {
     FalcataPlan::Mutable().batch_construct_saturation_floor = construct_saturation_floor_;
   }
+  MaybeInitColMajorFill();
   gradients_ = gradients;
   hessians_ = hessians;
   state->leaf_map_zero_dead = LeafMapZeroDead();
@@ -7505,6 +7573,7 @@ void CUDASingleGPUTreeLearner::StartTrainAsync(const score_t* gradients, const s
     // Fallback when whole_device_tree setup declined after BeforeTrain: run synchronously on exec_stream
     EnsureRootSumsReadBack(tree);
     const int num_splits_done = TrainLevelWisePrefix(tree);
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(multiclass_tree_stream_));
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
     cuda_histogram_constructor_->ReleaseTreeStartUploads();
     tree_start_uploads_.Release();

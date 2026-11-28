@@ -224,6 +224,9 @@ GBDT::~GBDT() {
 
 void GBDT::Init(const Config* config, const Dataset* train_data, const ObjectiveFunction* objective_function,
                 const std::vector<const Metric*>& training_metrics) {
+#ifdef USE_CUDA
+  multiclass_trainer_.reset();
+#endif  // USE_CUDA
   CHECK_NOTNULL(train_data);
   CheckSingleTargetLabels(objective_function, train_data, "training");
   train_data_ = train_data;
@@ -849,13 +852,6 @@ bool GBDT::MulticlassConcurrentUsable() const {
   if (active < 2) {
     return false;
   }
-  // With fixedpoint error-feedback (quant_ef), each discretizer indexes ef_residuals_ by iter_ % num_class.
-  // When every class trains, class c always lands on slot (c % S) with iter_ % num_class == c; if any class
-  // is skipped, class indices shift modulo num_class across rounds, so decline concurrent mode to keep 100% parity.
-  if (config_->use_quantized_grad && config_->ResolvedQuantMode() == QuantMode::kFixedPoint &&
-      FalcataPlan::Get().quant_ef && active != num_tree_per_iteration_) {
-    return false;
-  }
   return true;
 }
 
@@ -880,14 +876,8 @@ bool GBDT::TrainOneIterMulticlassConcurrent(const score_t* gradients, const scor
     }
     if (new_tree->num_leaves() > 1) {
       should_continue = true;
-      if (!new_tree->is_cuda_tree()) {
-        // Fallback safety if a non-CUDA tree was ever produced
-        new_tree->Shrinkage(shrinkage_rate_);
-        UpdateScore(new_tree.get(), cur_tree_id);
-        if (std::fabs((*init_scores)[cur_tree_id]) > kEpsilon) {
-          new_tree->AddBias((*init_scores)[cur_tree_id]);
-        }
-      } else if (!valid_score_updater_.empty()) {
+      CHECK(new_tree->is_cuda_tree());
+      if (!valid_score_updater_.empty()) {
         // Stream 0 already waited on every slot's score_done_event_ inside TrainRound;
         // score validation sets BEFORE AddBias (matching GBDT::TrainOneIter order).
         for (auto& score_updater : valid_score_updater_) {
@@ -1481,6 +1471,11 @@ void GBDT::ResetConfig(const Config* config) {
                         !data_sample_strategy_->IsHessianChange();  // for sample strategy with Hessian change, fall back to boosting on CPU
       tree_learner_->ResetBoostingOnGPU(boosting_on_gpu_);
     }
+#ifdef USE_CUDA
+    if (multiclass_trainer_ != nullptr) {
+      multiclass_trainer_->ResetConfig(new_config.get());
+    }
+#endif  // USE_CUDA
 
     if (train_data_ != nullptr) {
       data_sample_strategy_->ResetSampleConfig(new_config.get(), false);
@@ -1496,6 +1491,11 @@ void GBDT::ResetConfig(const Config* config) {
       if (tree_learner_ != nullptr) {
         tree_learner_->ResetConfig(config_.get());
       }
+#ifdef USE_CUDA
+      if (multiclass_trainer_ != nullptr) {
+        multiclass_trainer_->ResetConfig(config_.get());
+      }
+#endif  // USE_CUDA
       if (train_data_ != nullptr) {
         data_sample_strategy_->ResetSampleConfig(config_.get(), false);
       }
@@ -1510,12 +1510,8 @@ void GBDT::ResetConfig(const Config* config) {
   }
   config_.reset(new_config.release());
 #ifdef USE_CUDA
-  if (multiclass_trainer_ != nullptr) {
-    if (MulticlassConcurrentUsable()) {
-      multiclass_trainer_->ResetConfig(config_.get());
-    } else {
-      multiclass_trainer_.reset();
-    }
+  if (multiclass_trainer_ != nullptr && !MulticlassConcurrentUsable()) {
+    multiclass_trainer_.reset();
   }
 #endif  // USE_CUDA
 }

@@ -97,11 +97,13 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     forest_row_data_source_ = row_data_source;
   }
   // ---- cuda_plan key multiclass_concurrent: single-host-thread multi-stream concurrent multiclass rounds ----
-  /*! \brief Before Init: mark a secondary multiclass slot. Shares immutable CUDARowData and uses a private
-   *  CUDAColumnData::InitViewOf, without disabling device_tree or device_level_graph (unlike multi-thread forest slots). */
-  void EnableMulticlassSlot(bool private_column_view, const CUDASingleGPUTreeLearner* row_data_source = nullptr) {
+  /*! \brief Before Init: mark a secondary multiclass slot. Shares immutable CUDARowData and slot 0's quant_ef
+   *  residual buffer, and uses a private CUDAColumnData::InitViewOf, without disabling device_tree or
+   *  device_level_graph (unlike multi-thread forest slots). */
+  void EnableMulticlassSlot(bool private_column_view, CUDASingleGPUTreeLearner* source = nullptr) {
     forest_private_column_view_ = private_column_view;
-    forest_row_data_source_ = row_data_source;
+    forest_row_data_source_ = source;
+    multiclass_ef_source_ = source;
   }
   /*! \brief Redirect this learner's subcomponents onto a private non-blocking execution stream and tree stream. */
   void EnableMulticlassStream();
@@ -110,6 +112,18 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   /*! \brief Whether this learner's data layout and config support async multi-stream multiclass execution
    *  (batched level kernels + whole-device-tree or selective-device-tree route). */
   bool MulticlassConcurrentSupported() const;
+  /*! \brief Conservative pre-allocation VRAM estimate (bytes) for creating a secondary multiclass slot. */
+  size_t EstimateMulticlassSlotBytes() const;
+  /*! \brief Consume a pre-drawn column sample from a prior serial tree's compact_prefill (if any) so entering
+   *  concurrent mode preserves the exact RNG draw sequence. */
+  bool ConsumePredrawnTreeSample(std::vector<int>* out) {
+    if (!next_tree_col_sample_ready_) {
+      return false;
+    }
+    *out = col_sampler_.used_feature_indices();
+    next_tree_col_sample_ready_ = false;
+    return true;
+  }
   cudaStream_t multiclass_exec_stream() const {
     return multiclass_stream_active_ ? multiclass_exec_stream_ : nullptr;
   }
@@ -856,6 +870,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> forest_next_sample_;
   bool forest_next_sample_ready_ = false;
   // cuda_plan key multiclass_concurrent: per-slot non-blocking streams & async state
+  CUDASingleGPUTreeLearner* multiclass_ef_source_ = nullptr;
   cudaStream_t multiclass_exec_stream_ = nullptr;
   cudaStream_t multiclass_tree_stream_ = nullptr;
   cudaEvent_t multiclass_done_event_ = nullptr;

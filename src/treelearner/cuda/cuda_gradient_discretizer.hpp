@@ -118,6 +118,14 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
     error_feedback_ = error_feedback;
     ef_num_slots_ = num_slots > 0 ? num_slots : 1;
   }
+  /*! \brief cuda_plan key multiclass_concurrent: expose slot 0's error-feedback buffer so secondary slots share
+   *  it via a non-owning view (disjoint per-class slices, zero duplicate VRAM, exact parity across mode transitions). */
+  int8_t* ef_residuals_data() { return ef_residuals_.RawData(); }
+  size_t ef_residuals_size() const { return ef_residuals_.Size(); }
+  void SetSharedErrorFeedbackBuffer(int8_t* ptr, const size_t size) {
+    shared_ef_residuals_ = ptr;
+    shared_ef_residuals_size_ = size;
+  }
 
   // Residuals may only move for in-bag rows: the kernel discretizes ALL rows,
   // and an out-of-bag row would accumulate corrections for values nothing
@@ -159,8 +167,12 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
       // int8 residuals in 1/128-bin units: 128x finer than the 1/2-bin error
       // being corrected, at 2 bytes/row/class. Mask allocated lazily.
       const size_t ef_size = static_cast<size_t>(num_data) * 2 * ef_num_slots_;
-      ef_residuals_.Resize(ef_size);
-      SetCUDAMemory<int8_t>(ef_residuals_.RawData(), 0, ef_size, __FILE__, __LINE__);
+      if (shared_ef_residuals_ != nullptr && shared_ef_residuals_size_ == ef_size) {
+        ef_residuals_.SetView(shared_ef_residuals_, ef_size);
+      } else {
+        ef_residuals_.Resize(ef_size);
+        SetCUDAMemory<int8_t>(ef_residuals_.RawData(), 0, ef_size, __FILE__, __LINE__);
+      }
     }
     // Stochastic rounding noise is Philox-generated in-kernel from
     // (random_seed_, tree, row) -- no resident tables, no per-tree reads.
@@ -195,6 +207,8 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   const data_size_t* ef_inbag_indices_ = nullptr;
   data_size_t ef_inbag_count_ = 0;
   cudaStream_t stream_ = nullptr;
+  int8_t* shared_ef_residuals_ = nullptr;
+  size_t shared_ef_residuals_size_ = 0;
 };
 
 }  // namespace Falcata

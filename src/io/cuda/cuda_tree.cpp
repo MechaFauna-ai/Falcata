@@ -75,7 +75,7 @@ CUDATree::~CUDATree() {
 }
 
 void CUDATree::PrepareRetainedLeafValues(const int num_leaves) {
-  if (num_leaves <= 0 || num_leaves > max_leaves_ || !cuda_leaf_value_.IsView()) {
+  if (num_leaves <= 0 || num_leaves >= max_leaves_ || !cuda_leaf_value_.IsView()) {
     return;
   }
   if (prepared_leaf_value_ != nullptr && prepared_leaf_value_size_ == static_cast<size_t>(num_leaves)) {
@@ -909,6 +909,9 @@ void CUDATree::RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& split
       CopyFromHostToCUDADeviceAsync<double>(cuda_leaf_values_vec_.RawData(), leaf_values_vec_.data(),
         static_cast<size_t>(num_leaves_) * leaf_value_dim_, stream, __FILE__, __LINE__);
     }
+    // Wait for the small host-to-device leaf_value_ upload before returning so a caller's
+    // immediate ShrinkageOnStream() cannot mutate host leaf_value_ while the H2D is in flight.
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
     ShrinkHostVectorsAndReleaseDevice(stream);
     return;
   }
