@@ -766,6 +766,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   std::vector<uint32_t> compact_col_meta_h = compact_col_hist_offsets_h;
   compact_pair_joint_max_ = 0;
   compact_pair_joint_total_ = 0;
+  compact_pair_num_marginals_ = 0;
   compact_row_interleave_ = layout.row_interleave;
   compact_row_bytes_ = layout.packed_part_offsets.empty() ? 0 : layout.packed_part_offsets.back();
   if (compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4) {
@@ -815,6 +816,52 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     if (spans_ok) {
       compact_pair_joint_max_ = static_cast<int>(joint_max);
       compact_pair_joint_total_ = static_cast<int>(joint_base);
+      // cuda_plan key pair_code5_flat_table: precompute one 8-byte descriptor per (column, bin) marginal in
+      // contiguous column/bin order so the code-word epilogue uses all threads with coalesced loads & atomics
+      if (layout.row_interleave && FalcataPlan::Get().pair_code5_flat_table) {
+        std::vector<PairJointMarginalDesc> marginals_h;
+        marginals_h.reserve(static_cast<size_t>(total_compact) * 6);
+        bool fits = true;
+        for (int p = 0; p < num_partitions && fits; ++p) {
+          const uint32_t part_hist_start = part_hist_offsets[p];
+          const int p_end = compact_part_col_offsets[p + 1];
+          for (int s = compact_part_col_offsets[p]; s < p_end; s += 2) {
+            const bool has_hi = s + 1 < p_end;
+            const uint32_t lo_span = compact_col_meta_h[total_compact + s];
+            const uint32_t hi_span = has_hi ? compact_col_meta_h[total_compact + s + 1] : 1u;
+            const uint32_t joint_off = compact_col_meta_h[3 * static_cast<size_t>(total_compact) + s];
+            if (joint_off + lo_span * hi_span > 65535u) {
+              fits = false;
+              break;
+            }
+            const uint32_t lo_hist_base = part_hist_start + compact_col_hist_offsets_h[s];
+            for (uint32_t b = 0; b < lo_span; ++b) {
+              marginals_h.push_back(MakePairJointMarginalDesc(
+                  static_cast<uint16_t>(joint_off + b * hi_span),
+                  static_cast<uint8_t>(hi_span),
+                  static_cast<uint8_t>(1u),
+                  lo_hist_base + b));
+            }
+            if (has_hi) {
+              const uint32_t hi_hist_base = part_hist_start + compact_col_hist_offsets_h[s + 1];
+              for (uint32_t b = 0; b < hi_span; ++b) {
+                marginals_h.push_back(MakePairJointMarginalDesc(
+                    static_cast<uint16_t>(joint_off + b),
+                    static_cast<uint8_t>(lo_span),
+                    static_cast<uint8_t>(hi_span),
+                    hi_hist_base + b));
+              }
+            }
+          }
+        }
+        if (fits && !marginals_h.empty()) {
+          if (compact_pair_marginal_descs_.Size() < marginals_h.size()) {
+            compact_pair_marginal_descs_.Resize(marginals_h.size());
+          }
+          tree_start_uploads_.Upload(compact_pair_marginal_descs_.RawData(), marginals_h.data(), marginals_h.size());
+          compact_pair_num_marginals_ = static_cast<int>(marginals_h.size());
+        }
+      }
     } else {
       compact_col_meta_h.resize(total_compact);
     }
@@ -2298,6 +2345,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_row_data_.reset(new CUDARowData(train_data, share_states, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
   cuda_row_data_->Init(train_data, share_states);
+  quant_dense_dyn_smem_bytes_ = 0;
 
   InitDeterministicTileScratch(num_data_);
   InitDeterministicDenseScratch();

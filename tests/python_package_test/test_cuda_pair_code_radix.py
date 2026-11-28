@@ -74,3 +74,45 @@ def test_pair_code_radix_is_bit_identical_cuda(
     on = _model_md5({**params, "cuda_plan": "auto"}, X, y, 15)
     off = _model_md5({**params, "cuda_plan": "auto,pair_code_radix:off"}, X, y, 15)
     assert on == off
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("values", "nan_frac", "quant"),
+    [
+        ((5, 6), 0.0, "stochastic"),   # 5-bit code5
+        ((5, 6), 0.08, "fixedpoint"),  # mixed-radix code
+    ],
+)
+def test_pair_code5_flat_table_and_priv2_bit_identical_cuda(values, nan_frac, quant):
+    """pair_code5_flat_table and pair_code5_priv2 must match the baseline epilogue bit-for-bit."""
+    rows, num_features = 8000, 1200
+    rng = np.random.default_rng(29)
+    levels = rng.integers(values[0], values[1], size=num_features)
+    X = (rng.random((rows, num_features)) * levels).astype(np.int64).astype(np.float64)
+    if nan_frac > 0:
+        X[rng.random(X.shape) < nan_frac] = np.nan
+    w = rng.standard_normal(40)
+    y = np.nan_to_num(X[:, :40]) @ w + rng.standard_normal(rows)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "num_leaves": 127,
+        "max_depth": 8,
+        "max_bin": 15,
+        "feature_fraction": 0.25,
+        "min_data_in_leaf": 5,
+        "learning_rate": 0.1,
+        "use_quantized_grad": True,
+        "quant_mode": quant,
+        "verbose": -1,
+        "seed": 42,
+        "metric": "None",
+    }
+    base = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:off,pair_code5_priv2:off"}, X, y, 10)
+    flat_on = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:on,pair_code5_priv2:off"}, X, y, 10)
+    priv2_on = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:off,pair_code5_priv2:on"}, X, y, 10)
+    both_on = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:on,pair_code5_priv2:on"}, X, y, 10)
+    assert flat_on == base
+    assert priv2_on == base
+    assert both_on == base

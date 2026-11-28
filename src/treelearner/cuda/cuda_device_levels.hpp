@@ -219,9 +219,10 @@ struct CUDADeviceLevelConstructShape {
   int per_pair_min_rows;
   int whole_row_partitions;
   uint32_t whole_row_joint;
-  /*! \brief code words: cuda_plan keys pair_code5_flat / pair_code5_epilogue (the instantiation) */
+  /*! \brief code words: cuda_plan keys pair_code5_flat / pair_code5_epilogue / pair_code5_flat_table / pair_code5_priv2 */
   int code5_flat;
-  int code5_epilogue_flat;
+  int code5_epilogue_mode;
+  int code5_priv2;
 };
 
 /*! \brief categorical datasets on the complete device tree: the per-level categorical split list the select emits and

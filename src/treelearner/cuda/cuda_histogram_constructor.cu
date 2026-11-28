@@ -382,11 +382,45 @@ DeviceLaunchLimits CurrentDeviceLaunchLimits() {
   int shared_bytes = 0;
   CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&shared_bytes, cudaDevAttrMaxSharedMemoryPerBlock, device));
   limits.shared_bytes_per_block = static_cast<size_t>(shared_bytes);
+  int optin_bytes = 0;
+  if (cudaDeviceGetAttribute(&optin_bytes, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
+    optin_bytes = shared_bytes;
+  }
+  limits.shared_bytes_per_block_optin = static_cast<size_t>(std::max(shared_bytes, optin_bytes));
   CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&limits.max_threads_per_block, cudaDevAttrMaxThreadsPerBlock, device));
   CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&limits.max_grid_dim_y, cudaDevAttrMaxGridDimY, device));
   CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&limits.warp_size, cudaDevAttrWarpSize, device));
   entries.push_back({device, limits});
   return limits;
+}
+
+void EnsureKernelMaxDynamicSharedMemory(const void* kernel, const size_t smem_bytes) {
+  if (smem_bytes <= 48 * 1024) {
+    return;
+  }
+  struct Entry {
+    int device;
+    const void* kernel;
+    size_t max_bytes;
+  };
+  static std::mutex mutex;
+  static std::vector<Entry> entries;
+  int device = 0;
+  CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+  std::lock_guard<std::mutex> lock(mutex);
+  for (Entry& e : entries) {
+    if (e.device == device && e.kernel == kernel) {
+      if (smem_bytes > e.max_bytes) {
+        CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(
+            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem_bytes)));
+        e.max_bytes = smem_bytes;
+      }
+      return;
+    }
+  }
+  CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(
+      kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem_bytes)));
+  entries.push_back({device, kernel, smem_bytes});
 }
 
 bool LaunchFillCompactData4BitTiledRootHistKernel(
@@ -1988,6 +2022,20 @@ size_t CUDAHistogramConstructor::NqFixedSmem(const void* kernel) {
   return nq_fixed_smem_bytes_;
 }
 
+size_t CUDAHistogramConstructor::QuantDenseDynSmem(const void* kernel) {
+  if (quant_dense_dyn_smem_bytes_ == 0) {
+    const std::vector<uint32_t>& offsets = cuda_row_data_->host_partition_hist_offsets();
+    uint32_t max_bins = 1;
+    for (size_t p = 1; p < offsets.size(); ++p) {
+      max_bins = std::max(max_bins, offsets[p] - offsets[p - 1]);
+    }
+    quant_dense_dyn_smem_bytes_ =
+        ((static_cast<size_t>(max_bins) * sizeof(int32_t)) + 15) & ~static_cast<size_t>(15);
+  }
+  EnsureKernelMaxDynamicSharedMemory(kernel, quant_dense_dyn_smem_bytes_);
+  return quant_dense_dyn_smem_bytes_;
+}
+
 __global__ void NonquantFixedAbsMaxKernel(const score_t* gradients, const score_t* hessians, const data_size_t n,
                                           uint32_t* absmax_bits) {
   float mg = 0.0f, mh = 0.0f;
@@ -2177,20 +2225,40 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
   const bool code5_flat = plan.pair_code5_flat && code5_flat_smem_bytes <= CurrentDeviceLaunchLimits().shared_bytes_per_block;
   const size_t code5_word_smem_bytes = code5_flat ? code5_flat_smem_bytes : pair_smem_bytes;
   const bool code5_tall = plan.pair_code5_slots && plan.pair_code5_tall;
-  const bool code5_epilogue_flat = code5_flat && plan.pair_code5_epilogue;
+  const int code5_epilogue_mode =
+      (code5_flat && plan.pair_code5_flat_table && compact_pair_num_marginals_ > 0) ? 2 :
+      (code5_flat && plan.pair_code5_epilogue) ? 1 : 0;
   int code5_word_rows = 0;
   if (whole_rows && code5_valid_ && plan.pair_code5 && plan.pair_code5_words &&
       Code5RowWords(compact_row_bytes_, code5_bits_) == code5_row_words_) {
-    const PairJointCode5WordShape word_shape = PairJointCode5WordShapeFor(
-      code5_row_words_, code5_word_smem_bytes, bins, code5_flat, code5_tall, code5_epilogue_flat, code5_bits_);
+    PairJointCode5WordShape word_shape = PairJointCode5WordShapeFor(
+      code5_row_words_, code5_word_smem_bytes, bins, code5_flat, code5_tall, code5_epilogue_mode, false, code5_bits_);
+    bool code5_priv2 = false;
+    size_t final_code5_smem_bytes = code5_word_smem_bytes;
+    if (plan.pair_code5_priv2 && code5_flat && code5_epilogue_mode != 1 && word_shape.rows >= 2) {
+      const size_t priv2_smem_bytes =
+          (2 * static_cast<size_t>(compact_pair_joint_total_) + Code5DummyCells(code5_bits_)) * sizeof(int32_t);
+      const size_t optin_limit = CurrentDeviceLaunchLimits().shared_bytes_per_block_optin;
+      if (priv2_smem_bytes <= 60 * 1024 && priv2_smem_bytes + 1024 <= optin_limit) {
+        const PairJointCode5WordShape p2_shape = PairJointCode5WordShapeFor(
+          code5_row_words_, priv2_smem_bytes, bins, code5_flat, code5_tall, code5_epilogue_mode, true, code5_bits_);
+        if (p2_shape.rows >= 2 && p2_shape.rows >= word_shape.rows &&
+            p2_shape.device_slots >= word_shape.device_slots) {
+          word_shape = p2_shape;
+          code5_priv2 = true;
+          final_code5_smem_bytes = priv2_smem_bytes;
+        }
+      }
+    }
     code5_word_rows = word_shape.rows;
     if (code5_word_rows > 0) {
       pair_y = code5_word_rows;
       shape->kernel_kind = 4;
       shape->block_x = code5_row_words_;
-      shape->smem_bytes = static_cast<int>(code5_word_smem_bytes);
+      shape->smem_bytes = static_cast<int>(final_code5_smem_bytes);
       shape->code5_flat = code5_flat ? 1 : 0;
-      shape->code5_epilogue_flat = code5_epilogue_flat ? 1 : 0;
+      shape->code5_epilogue_mode = code5_epilogue_mode;
+      shape->code5_priv2 = code5_priv2 ? 1 : 0;
       if (plan.pair_code5_slots && word_shape.device_slots > 0) {
         shape->slot = 1;
         shape->slot_device_slots = word_shape.device_slots;
@@ -2235,12 +2303,13 @@ void CUDAHistogramConstructor::LaunchDeviceLevelPairJoint(const CUDAHybridPairDe
   DeviceLevelConstructShape(&sh);
   CHECK_EQ(sh.pair_mode, 1);
   const PairJointKernelFn kernel =
-    sh.kernel_kind == 4 ? PairJointCode5WordKernelDL(sh.code5_flat != 0, sh.code5_epilogue_flat != 0, code5_bits_) :
+    sh.kernel_kind == 4 ? PairJointCode5WordKernelDL(sh.code5_flat != 0, sh.code5_epilogue_mode, sh.code5_priv2 != 0, code5_bits_) :
     sh.kernel_kind == 3 ? PairJointCappedDL().gather_code5 :
     sh.kernel_kind == 2 ? CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, true, true> :
     sh.kernel_kind == 1 ? PairJointCappedDL().gather :
     CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, false, true>;
   DiagConstructKernel(sh.kernel_kind == 4 ? "pair_code5_words (device levels)" : "pair_hist (device levels)");
+  EnsureKernelMaxDynamicSharedMemory(reinterpret_cast<const void*>(kernel), static_cast<size_t>(sh.smem_bytes));
   const uint8_t* data = sh.kernel_kind >= 2 ? compact_data_uint8_t_.RawDataReadOnly() : NibbleViewData();
   const int grid_x = std::max(1, sh.grid_x);
   int grid_y = std::max(1, std::min(65535, (DeviceLevelConstructTargetBlocks() + grid_x - 1) / grid_x));
@@ -2270,6 +2339,8 @@ void CUDAHistogramConstructor::LaunchDeviceLevelPairJoint(const CUDAHybridPairDe
     sh.whole_row_joint,
     static_cast<data_size_t>(0),
     PairJointBlockPrefix{},
+    compact_pair_marginal_descs_.RawDataReadOnly(),
+    compact_pair_num_marginals_,
     device_level_state_);
   CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());  // a new launch shape: its launch errors surface
 }

@@ -119,11 +119,33 @@ constexpr int kFill4BitTiledMaxSlots = 256;
  *  largest block, the grid's y extent and the warp width. Memoised per device (CurrentDeviceLaunchLimits). */
 struct DeviceLaunchLimits {
   size_t shared_bytes_per_block = 0;
+  size_t shared_bytes_per_block_optin = 0;
   int max_threads_per_block = 0;
   int max_grid_dim_y = 0;
   int warp_size = 0;
 };
 DeviceLaunchLimits CurrentDeviceLaunchLimits();
+
+/*! \brief Raise a kernel's cudaFuncAttributeMaxDynamicSharedMemorySize on the current device when smem_bytes > 48 KB
+ *  (thread-safe, memoised per (device, kernel) high-water mark). No-op when smem_bytes <= 48 KB. */
+void EnsureKernelMaxDynamicSharedMemory(const void* kernel, size_t smem_bytes);
+
+/*! \brief cuda_plan key pair_code5_flat_table: precomputed per-marginal flush descriptor for whole-row pair-joint
+ *  code-word histograms. meta packs joint_cell_offset (bits 0..15) | count (bits 16..23) | stride (bits 24..31);
+ *  global_hist_pos is the destination bin index in hist_in_leaf. 8-byte aligned for a single 64-bit coalesced load. */
+struct alignas(8) PairJointMarginalDesc {
+  uint32_t meta;
+  uint32_t global_hist_pos;
+};
+static_assert(sizeof(PairJointMarginalDesc) == 8, "PairJointMarginalDesc must be 8 bytes");
+
+inline PairJointMarginalDesc MakePairJointMarginalDesc(const uint16_t joint_cell_offset, const uint8_t count,
+                                                       const uint8_t stride, const uint32_t global_hist_pos) {
+  return PairJointMarginalDesc{
+      static_cast<uint32_t>(joint_cell_offset) | (static_cast<uint32_t>(count) << 16) |
+          (static_cast<uint32_t>(stride) << 24),
+      global_hist_pos};
+}
 
 /*! \brief fp32-pair global histogram storage for the non-quantized CUDA path
  *  (config cuda_precision=fp32 requests; default fp64 = hist_t/double pairs,
@@ -594,10 +616,15 @@ class CUDAHistogramConstructor {
   /*! \brief the batched dense construct accumulates in 64-bit fixed point (nonquant_deterministic, scalar trees;
    *  the levels the deterministic batched construct does not take) */
   bool NonquantFixedActive() const { return NonquantDet() && num_hist_planes_ == 1 && nq_fixed_supported_; }
-  /*! \brief threads per block of the batched non-quantized construct: 2 x 504 under the fixed-point accumulator,
-   *  whose 64-bit table (up to 96 KB) leaves room for one block per SM where the float table fits two */
+  /*! \brief threads per block of the batched construct: 2 x 504 under the non-quantized fixed-point accumulator or
+   *  quantized dynamic wide shared histogram (dense_wide_hist_96k), whose >48 KB shared table leaves room for one
+   *  block per SM where the <=48 KB tables fit two */
   int BatchedConstructThreads() const {
-    return !use_quantized_grad_ && NonquantFixedActive() ? 2 * NUM_THREADS_PER_BLOCK : NUM_THREADS_PER_BLOCK;
+    if (!use_quantized_grad_) {
+      return NonquantFixedActive() ? 2 * NUM_THREADS_PER_BLOCK : NUM_THREADS_PER_BLOCK;
+    }
+    return (cuda_row_data_ != nullptr && cuda_row_data_->dense_wide_hist_dynamic())
+      ? 2 * NUM_THREADS_PER_BLOCK : NUM_THREADS_PER_BLOCK;
   }
 
   static bool SmallLeafConstructEnabled() {
@@ -682,6 +709,9 @@ class CUDAHistogramConstructor {
       key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
     }
     key->push_back(static_cast<const void*>(cuda_used_feature_info_.RawDataReadOnly()));
+    key->push_back(use_compact_view_ ?
+      static_cast<const void*>(compact_pair_marginal_descs_.RawDataReadOnly()) : nullptr);
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(compact_pair_num_marginals_)));
     if (shape != nullptr) {
       if (FalcataDebug().diag) {
         fprintf(stderr, "[hybrid-diag] device_tree: layout partcols=%d partjoint=%d construct=%d\n",
@@ -691,7 +721,7 @@ class CUDAHistogramConstructor {
                           shape->smem_bytes, shape->slot, shape->slot_device_slots, shape->slot_min_rows,
                           shape->slot_max_rows, shape->per_pair_min_grid, shape->per_pair_min_rows,
                           shape->whole_row_partitions, static_cast<int>(shape->whole_row_joint),
-                          shape->code5_flat, shape->code5_epilogue_flat}) {
+                          shape->code5_flat, shape->code5_epilogue_mode, shape->code5_priv2}) {
         key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
       }
     }
@@ -1027,6 +1057,10 @@ class CUDAHistogramConstructor {
   /*! \brief dynamic shared bytes for a batched construct launch: the fixed-point table's under a fixed-point launch
    *  (raising the kernel's max-dynamic-shared attribute once), else 0 (static tables) */
   size_t NqFixedSmem(const void* kernel);
+
+  /*! \brief dynamic shared bytes for quantized dense_wide_hist_96k launches (widest partition's packed bins * 4 B,
+   *  raising the kernel's max-dynamic-shared attribute when > 48 KB) */
+  size_t QuantDenseDynSmem(const void* kernel);
 
   /*! \brief whether the batched non-quantized construct of a num_pairs-wide
    *  level takes the deterministic dense construct+merge instead of the atomic
@@ -1543,6 +1577,10 @@ class CUDAHistogramConstructor {
   int compact_pair_joint_max_ = 0;
   /*! \brief all partitions' joint tables together (cells), 0 when not built */
   int compact_pair_joint_total_ = 0;
+  /*! \brief cuda_plan key pair_code5_flat_table: per-tree precomputed marginal descriptors for whole-row code-word
+   *  pair-joint epilogue */
+  CUDAVector<PairJointMarginalDesc> compact_pair_marginal_descs_;
+  int compact_pair_num_marginals_ = 0;
   /*! \brief whether this tree's nibble compact view is row-interleaved, and its row width in bytes */
   bool compact_row_interleave_ = false;
   int compact_row_bytes_ = 0;
@@ -1589,6 +1627,7 @@ class CUDAHistogramConstructor {
   // max-dynamic-shared attribute is already raised to it
   size_t nq_fixed_smem_bytes_ = 0;
   std::vector<const void*> nq_fixed_smem_set_;
+  size_t quant_dense_dyn_smem_bytes_ = 0;
   /*! \brief whether cuda_gradients_hessians_ holds this tree's gradients */
   bool gh_interleave_valid_ = false;
 
