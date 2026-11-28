@@ -81,7 +81,7 @@ CASES = {
             "bagging_freq": 1,
             "lambda_l2": 10.0,
         },
-        "sites": {"level_target_blocks", "live_grid_budget", "saturation_floor"},
+        "sites": {"find_split_cap", "level_target_blocks", "live_grid_budget", "saturation_floor"},
     },
     "stochastic_large": {
         "rows": 400_000,

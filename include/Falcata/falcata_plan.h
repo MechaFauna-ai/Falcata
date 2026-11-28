@@ -315,8 +315,11 @@ struct FalcataPlan {
   bool warp_find = true;            // key: warp_find
   // warp_find under cuda_precision=fp32: route eligible quantized levels to an all-fp32 instantiation of the warp
   // split finder (direct fp32 gains with no fp64 survivor rounds or shared-memory compaction, 32-bit reduction, and
-  // fp32 child outputs/gains) instead of falling back to the block-per-task fp32 kernel. Off restores the block-per-
-  // task fp32 kernel. Quality-gated (fp32 precision mode holds no fp64 bit-parity contract).
+  // fp32 child outputs/gains to avoid 1/64-rate fp64 divisions on consumer GPUs, while keeping per-leaf double
+  // parameters/ridge/min-gain setup) instead of falling back to the block-per-task fp32 kernel. FP64-only warp-finder
+  // keys (find_prune_fp32, find_select_int, find_compact_survivors, find_prune_sure) are ignored under
+  // warp_find_fp32. Off restores the block-per-task fp32 kernel. Covered by unit tests for internal tier determinism
+  // and held-out metric parity against fp64 and warp_find_fp32:off.
   bool warp_find_fp32 = true;       // key: warp_find_fp32
   // warp_find's wide tier (tasks of more than 8 scan positions, one warp each): WarpFindBest's per-task runtime
   // PPL choice is 2 slots per lane up to 64 positions, 4 up to 128, else 8, instead of PPL=8 (<= 256) for every
