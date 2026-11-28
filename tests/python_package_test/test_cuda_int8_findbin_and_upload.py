@@ -13,6 +13,7 @@ double-buffered pinned async staging in UploadDense4BitColumnsColMajor.
 """
 
 import ctypes
+import glob
 import hashlib
 import os
 
@@ -25,6 +26,62 @@ _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
     reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
+
+
+def _load_cudart():
+    names = ["libcudart.so", "libcudart.so.13", "libcudart.so.12"]
+    names += [
+        os.path.join(root, "lib64", "libcudart.so")
+        for root in sorted(glob.glob("/usr/local/cuda*"), reverse=True)
+    ]
+    for name in names:
+        try:
+            rt = ctypes.CDLL(name)
+        except OSError:
+            continue
+        rt.cudaMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
+        rt.cudaMemcpy.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_int,
+        ]
+        rt.cudaFree.argtypes = [ctypes.c_void_p]
+        return rt
+    pytest.skip("no CUDA runtime library found for device-buffer allocation")
+
+
+class _DeviceMatrix:
+    """Device copy of a contiguous 2-D numpy array exposing __cuda_array_interface__."""
+
+    _MEMCPY_H2D = 1
+
+    def __init__(self, arr: np.ndarray):
+        assert arr.ndim == 2
+        assert arr.flags["C_CONTIGUOUS"] or arr.flags["F_CONTIGUOUS"]
+        self._rt = _load_cudart()
+        self._ptr = ctypes.c_void_p()
+        status = self._rt.cudaMalloc(ctypes.byref(self._ptr), arr.nbytes)
+        assert status == 0, f"cudaMalloc failed with status {status}"
+        status = self._rt.cudaMemcpy(
+            self._ptr, ctypes.c_void_p(arr.ctypes.data), arr.nbytes, self._MEMCPY_H2D
+        )
+        assert status == 0, f"cudaMemcpy failed with status {status}"
+        self.__cuda_array_interface__ = {
+            "shape": arr.shape,
+            "typestr": arr.dtype.str,
+            "data": (self._ptr.value, False),
+            "strides": None if arr.flags["C_CONTIGUOUS"] else tuple(arr.strides),
+            "version": 2,
+        }
+
+    def free(self):
+        if self._ptr.value is not None:
+            self._rt.cudaFree(self._ptr)
+            self._ptr = ctypes.c_void_p()
+
+    def __del__(self):
+        self.free()
 
 
 def _dataset_binary_md5(X, params, tmp_path, tag, categorical_feature="auto"):
@@ -311,6 +368,173 @@ def test_cuda_colmajor_pinned_async_upload_bit_identical(rows, cols, feature_fra
         "feature_fraction": feature_fraction,
         "quant_mode": "stochastic",
         "seed": 11,
+        "verbose": -1,
+    }
+    on = _model_md5(X, y, {**params, "cuda_plan": "auto"}, rounds=5)
+    off = _model_md5(
+        X, y, {**params, "cuda_plan": "auto,colmajor_direct:off"}, rounds=5
+    )
+    assert on == off
+
+
+@pytest.mark.parametrize(
+    ("dtype", "sentinel"),
+    [(np.int8, "1.5"), (np.int8, "200"), (np.uint8, "1.5"), (np.uint8, "-1")],
+)
+def test_int8_uint8_non_matching_missing_sentinel_matches_float64(
+    tmp_path, dtype, sentinel
+):
+    """Non-integer or out-of-range missing_sentinel must match float64 byte-for-byte."""
+    X = _make_edge_case_matrix(dtype, rows=4096, seed=83)
+    X_f64 = X.astype(np.float64)
+    base_params = {
+        "device_type": "cpu",
+        "max_bin": 31,
+        "min_data_in_bin": 3,
+        "min_data_in_leaf": 10,
+        "use_missing": True,
+        "enable_bundle": True,
+        "bin_construct_sample_cnt": 2048,
+        "data_random_seed": 31,
+        "verbose": -1,
+    }
+    h_byte = _dataset_binary_md5(
+        X,
+        {**base_params, "missing_sentinel": sentinel},
+        tmp_path,
+        "byte_nonmatch_sentinel",
+        categorical_feature=[10, 11],
+    )
+    h_f64 = _dataset_binary_md5(
+        X_f64,
+        base_params,
+        tmp_path,
+        "f64_nonmatch_sentinel",
+        categorical_feature=[10, 11],
+    )
+    assert h_byte == h_f64
+
+
+@pytest.mark.parametrize("dtype", [np.int8, np.uint8])
+@pytest.mark.parametrize("feature_pre_filter", [True, False])
+def test_int8_uint8_max_bin_by_feature_and_pre_filter_matches_float64(
+    tmp_path, dtype, feature_pre_filter
+):
+    """Per-feature max_bin_by_feature and feature_pre_filter=False must match float64 byte-for-byte."""
+    X = _make_edge_case_matrix(dtype, rows=4096, seed=97)
+    X_f64 = X.astype(np.float64)
+    max_bin_by_feature = [5, 3, 15, 7, 7, 11, 9, 15, 7, 7, 9, 31]
+    params = {
+        "device_type": "cpu",
+        "max_bin_by_feature": max_bin_by_feature,
+        "feature_pre_filter": feature_pre_filter,
+        "min_data_in_bin": 3,
+        "min_data_in_leaf": 10,
+        "enable_bundle": True,
+        "bin_construct_sample_cnt": 2048,
+        "data_random_seed": 37,
+        "verbose": -1,
+    }
+    h_byte = _dataset_binary_md5(
+        X, params, tmp_path, "byte_mbbf", categorical_feature=[10, 11]
+    )
+    h_f64 = _dataset_binary_md5(
+        X_f64, params, tmp_path, "f64_mbbf", categorical_feature=[10, 11]
+    )
+    assert h_byte == h_f64
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("dtype", [np.int8, np.uint8])
+@pytest.mark.parametrize("order", ["C", "F"])
+def test_cuda_device_array_and_chunked_builder_int8_uint8_matches_float64(
+    tmp_path, dtype, order
+):
+    """__cuda_array_interface__ (FLC_DatasetCreateFromMatDevice) and chunked DeviceDatasetBuilder
+    for int8/uint8 must produce byte-identical Datasets to CPU float64.
+    """
+    X = _make_edge_case_matrix(dtype, rows=4096, seed=101)
+    if order == "F":
+        X = np.asfortranarray(X)
+    X_f64 = np.array(X, dtype=np.float64, order=order)
+    cat_cols = [10, 11]
+    common = {
+        "max_bin": 31,
+        "min_data_in_bin": 3,
+        "min_data_in_leaf": 10,
+        "is_enable_sparse": False,
+        "enable_bundle": True,
+        "bin_construct_sample_cnt": 2048,
+        "data_random_seed": 43,
+        "verbose": -1,
+    }
+    h_cpu_f64 = _dataset_binary_md5(
+        X_f64,
+        {**common, "device_type": "cpu"},
+        tmp_path,
+        "cpu_f64_ref",
+        categorical_feature=cat_cols,
+    )
+
+    dev = _DeviceMatrix(X)
+    try:
+        h_dev = _dataset_binary_md5(
+            dev,
+            {**common, "device_type": "cuda"},
+            tmp_path,
+            "cuda_dev_mat",
+            categorical_feature=cat_cols,
+        )
+    finally:
+        dev.free()
+    assert h_dev == h_cpu_f64
+
+    # Chunked streaming path (DeviceDatasetBuilder -> SampleBlockSource -> ConstructFromSampleSource).
+    chunks_np = [
+        np.array(X[:1500], order=order, copy=True),
+        np.array(X[1500:], order=order, copy=True),
+    ]
+    dev_chunks = [_DeviceMatrix(c) for c in chunks_np]
+    try:
+        h_chunked = _dataset_binary_md5(
+            dev_chunks,
+            {**common, "device_type": "cuda"},
+            tmp_path,
+            "cuda_dev_chunked",
+            categorical_feature=cat_cols,
+        )
+    finally:
+        for c in dev_chunks:
+            c.free()
+    assert h_chunked == h_cpu_f64
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("feature_fraction", [0.5, 1.0])
+def test_cuda_colmajor_mixed_4bit_and_8bit_upload_bit_identical(feature_fraction):
+    """Mixed 4-bit and 8-bit DenseBin columns (max_bin=63, 16-bin signed columns with
+    non-zero most_freq_bin -> 8-bit storage) must match colmajor_direct:off under FALCATA_VERIFY=1.
+    """
+    rows = 1_100_001
+    rng = np.random.default_rng(109)
+    # 40 columns of 0..4 (4-bit DenseBin) + 10 columns of -5..10 (16 bins, default_bin=5 -> 8-bit DenseBin)
+    low = rng.integers(0, 5, size=(rows, 40), dtype=np.int8)
+    wide = rng.integers(-5, 11, size=(rows, 10), dtype=np.int8)
+    X = np.ascontiguousarray(np.hstack([low, wide]))
+    y = (
+        0.25 * X[:, 0] - 0.15 * X[:, 40] + 0.1 * X[:, 41] + rng.standard_normal(rows)
+    ).astype(np.float32)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "num_leaves": 31,
+        "max_depth": 6,
+        "min_data_in_leaf": 100,
+        "learning_rate": 0.1,
+        "max_bin": 63,
+        "feature_fraction": feature_fraction,
+        "quant_mode": "stochastic",
+        "seed": 17,
         "verbose": -1,
     }
     on = _model_md5(X, y, {**params, "cuda_plan": "auto"}, rounds=5)

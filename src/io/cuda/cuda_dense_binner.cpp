@@ -220,14 +220,20 @@ class PinnedStagingPool {
     return static_cast<uint8_t*>(ptr);
   }
 
-  // non-fatal best-fit acquire for callers with a pageable fallback
+  // non-fatal best-fit acquire for callers with a pageable fallback; caps
+  // reuse at 2x `bytes` so a small slab never grabs a multi-hundred-MiB
+  // binner staging block
   uint8_t* TryAcquire(int64_t bytes, bool pooled) {
     std::lock_guard<std::mutex> lock(mu_);
+    const int64_t max_reuse = bytes <= std::numeric_limits<int64_t>::max() / 2
+        ? 2 * bytes
+        : std::numeric_limits<int64_t>::max();
     if (pooled) {
       size_t best = free_.size();
       for (size_t i = 0; i < free_.size(); ++i) {
         const int64_t cap = capacity_.at(free_[i]);
-        if (cap >= bytes && (best == free_.size() || cap < capacity_.at(free_[best]))) {
+        if (cap >= bytes && cap <= max_reuse &&
+            (best == free_.size() || cap < capacity_.at(free_[best]))) {
           best = i;
         }
       }
@@ -244,9 +250,32 @@ class PinnedStagingPool {
       return nullptr;
     }
     if (pooled) {
-      capacity_[static_cast<uint8_t*>(ptr)] = bytes;
+      try {
+        free_.reserve(capacity_.size() + 1);
+        capacity_.emplace(static_cast<uint8_t*>(ptr), bytes);
+      } catch (...) {
+        (void)cudaFreeHost(ptr);
+        throw;
+      }
     }
     return static_cast<uint8_t*>(ptr);
+  }
+
+  // non-throwing release for RAII destructors (may run during stack unwinding)
+  void ReleaseNoThrow(uint8_t* ptr) noexcept {
+    if (ptr == nullptr) {
+      return;
+    }
+    try {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (capacity_.count(ptr) != 0) {
+        free_.push_back(ptr);
+      } else {
+        (void)cudaFreeHost(ptr);
+      }
+    } catch (...) {
+      (void)cudaFreeHost(ptr);
+    }
   }
 
   // back to the pool if it came from there, else freed; the caller made sure
@@ -278,7 +307,7 @@ uint8_t* TryAcquirePinnedStaging(size_t bytes) {
 }
 
 void ReleasePinnedStaging(uint8_t* ptr) {
-  PinnedStagingPool::Get().Release(ptr);
+  PinnedStagingPool::Get().ReleaseNoThrow(ptr);
 }
 
 CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,

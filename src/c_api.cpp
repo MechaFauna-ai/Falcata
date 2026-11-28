@@ -1698,14 +1698,15 @@ class SampleBlockSource : public Falcata::SampleColumnSource {
     int c1[256] = {0};
     int c2[256] = {0};
     int c3[256] = {0};
-    int r = 0;
-    for (; r + 4 <= sample_cnt_; r += 4) {
+    const size_t n = static_cast<size_t>(sample_cnt_);
+    size_t r = 0;
+    for (; r + 4 <= n; r += 4) {
       ++c0[p[r]];
       ++c1[p[r + 1]];
       ++c2[p[r + 2]];
       ++c3[p[r + 3]];
     }
-    for (; r < sample_cnt_; ++r) {
+    for (; r < n; ++r) {
       ++c0[p[r]];
     }
     for (int b = 0; b < 256; ++b) {
@@ -1864,11 +1865,21 @@ void GatherHostByteSampleBlockColMajor(const void** data,
       tile_rows = (tile_rows / 64) * 64;
     }
     const int num_tiles = (sample_cnt + tile_rows - 1) / tile_rows;
+    OMP_INIT_EX();
     #pragma omp parallel num_threads(OMP_NUM_THREADS())
     {
-      std::vector<uint8_t> tile(static_cast<size_t>(tile_rows) * static_cast<size_t>(ncol));
+      std::vector<uint8_t> tile;
+      bool tile_ready = false;
+      OMP_LOOP_EX_BEGIN();
+      tile.resize(static_cast<size_t>(tile_rows) * static_cast<size_t>(ncol));
+      tile_ready = true;
+      OMP_LOOP_EX_END();
       #pragma omp for schedule(static)
       for (int t = 0; t < num_tiles; ++t) {
+        OMP_LOOP_EX_BEGIN();
+        if (!tile_ready) {
+          continue;
+        }
         const int r0 = t * tile_rows;
         const int r_cnt = std::min(tile_rows, sample_cnt - r0);
         for (int r = 0; r < r_cnt; ++r) {
@@ -1887,8 +1898,10 @@ void GatherHostByteSampleBlockColMajor(const void** data,
             }
           }
         }
+        OMP_LOOP_EX_END();
       }
     }
+    OMP_THROW_EX();
   } else {
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (int col = 0; col < ncol; ++col) {

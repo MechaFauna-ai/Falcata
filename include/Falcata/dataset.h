@@ -13,6 +13,7 @@
 #include <Falcata/train_share_states.h>
 #include <Falcata/utils/byte_buffer.h>
 #include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
 #include <Falcata/utils/openmp_wrapper.h>
 #include <Falcata/utils/random.h>
 #include <Falcata/utils/text_reader.h>
@@ -79,7 +80,9 @@ class SampleColumnSource {
   virtual void GetByteMostFreqMask(int /*col*/,
                                    int /*num_nonzero*/,
                                    const uint8_t /*is_most_freq*/[256],
-                                   std::vector<uint64_t>* /*mask*/) const {}
+                                   std::vector<uint64_t>* /*mask*/) const {
+    Log::Fatal("GetByteMostFreqMask not implemented");
+  }
 };
 
 /*!

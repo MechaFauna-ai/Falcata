@@ -806,8 +806,9 @@ void CUDARowData::UploadDense4BitColumnsColMajor(uint8_t* dst, const int col_beg
   // - Columns smaller than 1 MiB (and any 8-bit columns, which must be nibble-packed on host) are staged into two
   //   pinned 32 MiB slabs borrowed from the shared staging pool, copying 128 KiB slices in parallel with OpenMP
   //   while cudaMemcpyAsync DMA-transfers the other slab on a non-blocking copy stream.
-  // - Large 4-bit columns (>= 1 MiB) are already contiguous and large enough to saturate driver H2D pipelines without
-  //   a host-to-host staging copy, so they are issued directly via cudaMemcpyAsync on the same non-blocking stream.
+  // - Large 4-bit columns (>= 1 MiB) are issued directly from their pageable buffers via cudaMemcpyAsync on the
+  //   dedicated non-blocking copy stream, avoiding redundant host-to-host DDR5 staging while keeping copies off the
+  //   legacy default stream.
   // Small uploads (< 2 MiB) or pinned-alloc failure fall back cleanly to synchronous pageable staging.
   const size_t column_bytes = colmajor_column_bytes();
   const size_t stride = column_stride == 0 ? column_bytes : column_stride;
@@ -875,121 +876,106 @@ void CUDARowData::UploadDense4BitColumnsColMajor(uint8_t* dst, const int col_beg
         break;
       }
     }
-    uint8_t* slabs[2] = {nullptr, nullptr};
-    cudaStream_t copy_stream = nullptr;
-    cudaEvent_t done[2] = {nullptr, nullptr};
-    bool async_ok = cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) == cudaSuccess;
-    if (async_ok && needs_staging) {
-      slabs[0] = TryAcquirePinnedStaging(kSlabBytes);
-      if (slabs[0] != nullptr) {
-        slabs[1] = TryAcquirePinnedStaging(kSlabBytes);
-      }
-      async_ok = slabs[0] != nullptr && slabs[1] != nullptr &&
-                 cudaEventCreateWithFlags(&done[0], cudaEventDisableTiming) == cudaSuccess &&
-                 cudaEventCreateWithFlags(&done[1], cudaEventDisableTiming) == cudaSuccess;
-    }
-    if (!async_ok) {
-      cudaGetLastError();
-      for (int b = 0; b < 2; ++b) {
-        if (done[b] != nullptr) {
-          cudaEventDestroy(done[b]);
-        }
-      }
-      if (copy_stream != nullptr) {
-        cudaStreamDestroy(copy_stream);
-      }
-      ReleasePinnedStaging(slabs[0]);
-      ReleasePinnedStaging(slabs[1]);
-    } else {
-      auto cleanup = [&]() {
-        if (copy_stream != nullptr) {
-          cudaStreamSynchronize(copy_stream);
+    struct AsyncUploadGuard {
+      cudaStream_t stream = nullptr;
+      cudaEvent_t done[2] = {nullptr, nullptr};
+      uint8_t* slabs[2] = {nullptr, nullptr};
+
+      ~AsyncUploadGuard() noexcept {
+        if (stream != nullptr) {
+          (void)cudaStreamSynchronize(stream);
         }
         for (int b = 0; b < 2; ++b) {
           if (done[b] != nullptr) {
-            cudaEventDestroy(done[b]);
-            done[b] = nullptr;
+            (void)cudaEventDestroy(done[b]);
           }
         }
-        if (copy_stream != nullptr) {
-          cudaStreamDestroy(copy_stream);
-          copy_stream = nullptr;
+        if (stream != nullptr) {
+          (void)cudaStreamDestroy(stream);
         }
-        ReleasePinnedStaging(slabs[0]);
-        ReleasePinnedStaging(slabs[1]);
-        slabs[0] = nullptr;
-        slabs[1] = nullptr;
-      };
-      try {
-        bool in_flight[2] = {false, false};
-        int buf = 0;
-        const int cols_fit = static_cast<int>(kSlabBytes / stride);
-        auto upload_staged_range = [&](int r_begin, int r_end) {
-          if (cols_fit >= 1) {
-            for (int c = r_begin; c < r_end; ) {
+        for (int b = 0; b < 2; ++b) {
+          ReleasePinnedStaging(slabs[b]);
+        }
+      }
+    } res;
+    bool async_ok = cudaStreamCreateWithFlags(&res.stream, cudaStreamNonBlocking) == cudaSuccess;
+    if (async_ok && needs_staging) {
+      res.slabs[0] = TryAcquirePinnedStaging(kSlabBytes);
+      if (res.slabs[0] != nullptr) {
+        res.slabs[1] = TryAcquirePinnedStaging(kSlabBytes);
+      }
+      async_ok = res.slabs[0] != nullptr && res.slabs[1] != nullptr &&
+                 cudaEventCreateWithFlags(&res.done[0], cudaEventDisableTiming) == cudaSuccess &&
+                 cudaEventCreateWithFlags(&res.done[1], cudaEventDisableTiming) == cudaSuccess;
+    }
+    if (!async_ok) {
+      cudaGetLastError();
+    } else {
+      bool in_flight[2] = {false, false};
+      int buf = 0;
+      const int cols_fit = static_cast<int>(kSlabBytes / stride);
+      auto upload_staged_range = [&](int r_begin, int r_end) {
+        if (cols_fit >= 1) {
+          for (int c = r_begin; c < r_end; ) {
+            if (in_flight[buf]) {
+              CUDASUCCESS_OR_FATAL(cudaEventSynchronize(res.done[buf]));
+              in_flight[buf] = false;
+            }
+            const int batch_cols = std::min(r_end - c, cols_fit);
+            pack_batch_columns(c, batch_cols, res.slabs[buf]);
+            CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(out_of(c), res.slabs[buf],
+                                                 static_cast<size_t>(batch_cols) * stride,
+                                                 cudaMemcpyHostToDevice, res.stream));
+            CUDASUCCESS_OR_FATAL(cudaEventRecord(res.done[buf], res.stream));
+            in_flight[buf] = true;
+            buf ^= 1;
+            c += batch_cols;
+          }
+        } else {
+          // Single column exceeds kSlabBytes (>64M rows): stream slices through the 2 pinned slabs.
+          constexpr size_t kSliceBytes = size_t{128} << 10;
+          for (int c = r_begin; c < r_end; ++c) {
+            for (size_t byte_off = 0; byte_off < column_bytes; byte_off += kSlabBytes) {
               if (in_flight[buf]) {
-                CUDASUCCESS_OR_FATAL(cudaEventSynchronize(done[buf]));
+                CUDASUCCESS_OR_FATAL(cudaEventSynchronize(res.done[buf]));
                 in_flight[buf] = false;
               }
-              const int batch_cols = std::min(r_end - c, cols_fit);
-              pack_batch_columns(c, batch_cols, slabs[buf]);
-              CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(out_of(c), slabs[buf],
-                                                   static_cast<size_t>(batch_cols) * stride,
-                                                   cudaMemcpyHostToDevice, copy_stream));
-              CUDASUCCESS_OR_FATAL(cudaEventRecord(done[buf], copy_stream));
+              const size_t chunk = std::min(kSlabBytes, column_bytes - byte_off);
+              const int num_slices = static_cast<int>((chunk + kSliceBytes - 1) / kSliceBytes);
+              #pragma omp parallel for num_threads(num_threads) schedule(dynamic, 1)
+              for (int s = 0; s < num_slices; ++s) {
+                const size_t local_off = static_cast<size_t>(s) * kSliceBytes;
+                const size_t len = std::min(kSliceBytes, chunk - local_off);
+                pack_column_slice(c, byte_off + local_off, len, res.slabs[buf] + local_off);
+              }
+              CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(out_of(c) + byte_off, res.slabs[buf], chunk,
+                                                   cudaMemcpyHostToDevice, res.stream));
+              CUDASUCCESS_OR_FATAL(cudaEventRecord(res.done[buf], res.stream));
               in_flight[buf] = true;
               buf ^= 1;
-              c += batch_cols;
             }
-          } else {
-            // Single column exceeds kSlabBytes (>64M rows): stream slices through the 2 pinned slabs.
-            constexpr size_t kSliceBytes = size_t{128} << 10;
-            for (int c = r_begin; c < r_end; ++c) {
-              for (size_t byte_off = 0; byte_off < column_bytes; byte_off += kSlabBytes) {
-                if (in_flight[buf]) {
-                  CUDASUCCESS_OR_FATAL(cudaEventSynchronize(done[buf]));
-                  in_flight[buf] = false;
-                }
-                const size_t chunk = std::min(kSlabBytes, column_bytes - byte_off);
-                const int num_slices = static_cast<int>((chunk + kSliceBytes - 1) / kSliceBytes);
-                #pragma omp parallel for num_threads(num_threads) schedule(dynamic, 1)
-                for (int s = 0; s < num_slices; ++s) {
-                  const size_t local_off = static_cast<size_t>(s) * kSliceBytes;
-                  const size_t len = std::min(kSliceBytes, chunk - local_off);
-                  pack_column_slice(c, byte_off + local_off, len, slabs[buf] + local_off);
-                }
-                CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(out_of(c) + byte_off, slabs[buf], chunk,
-                                                     cudaMemcpyHostToDevice, copy_stream));
-                CUDASUCCESS_OR_FATAL(cudaEventRecord(done[buf], copy_stream));
-                in_flight[buf] = true;
-                buf ^= 1;
-              }
-              if (stride > column_bytes) {
-                CUDASUCCESS_OR_FATAL(cudaMemsetAsync(out_of(c) + column_bytes, 0,
-                                                     stride - column_bytes, copy_stream));
-              }
+            if (stride > column_bytes) {
+              CUDASUCCESS_OR_FATAL(cudaMemsetAsync(out_of(c) + column_bytes, 0,
+                                                   stride - column_bytes, res.stream));
             }
-          }
-        };
-        for (int c = col_begin; c < col_end; ) {
-          if (is_direct_col(c)) {
-            CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(out_of(c), dense_column_data_[c], column_bytes,
-                                                 cudaMemcpyHostToDevice, copy_stream));
-            ++c;
-          } else {
-            const int run_start = c;
-            while (c < col_end && !is_direct_col(c)) {
-              ++c;
-            }
-            upload_staged_range(run_start, c);
           }
         }
-        CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(copy_stream));
-      } catch (...) {
-        cleanup();
-        throw;
+      };
+      for (int c = col_begin; c < col_end; ) {
+        if (is_direct_col(c)) {
+          // Pageable direct copy on the dedicated non-blocking stream: avoids redundant host-to-host DDR5 staging.
+          CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(out_of(c), dense_column_data_[c], column_bytes,
+                                               cudaMemcpyHostToDevice, res.stream));
+          ++c;
+        } else {
+          const int run_start = c;
+          while (c < col_end && !is_direct_col(c)) {
+            ++c;
+          }
+          upload_staged_range(run_start, c);
+        }
       }
-      cleanup();
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(res.stream));
       return;
     }
   }
