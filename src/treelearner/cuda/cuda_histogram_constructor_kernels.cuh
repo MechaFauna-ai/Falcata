@@ -2507,6 +2507,24 @@ __global__ void CUDAConstructDiscretizedHistogramDenseKernel(
     num_data, static_cast<int>(gridDim.y * blockDim.y));
 }
 
+template <typename BIN_TYPE, bool USE_16BIT_HIST, class PACK = PackRaw8>
+__global__ void CUDAConstructDiscretizedHistogramDenseDynKernel(
+  const CUDALeafSplitsStruct* smaller_leaf_splits,
+  const int32_t* cuda_gradients_and_hessians,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* column_hist_offsets_full,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const data_size_t num_data) {
+  extern __shared__ int32_t shared_hist_packed[];
+  ConstructDiscretizedHistogramDenseInner<BIN_TYPE, USE_16BIT_HIST, PACK>(
+    smaller_leaf_splits, shared_hist_packed, cuda_gradients_and_hessians, data,
+    column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
+    packed_partition_byte_offsets,
+    num_data, static_cast<int>(gridDim.y * blockDim.y));
+}
+
 template <int MAX_PAIRS>
 struct BlockPrefix {
   static constexpr int kMaxPairs = MAX_PAIRS;
@@ -2542,8 +2560,9 @@ __device__ __forceinline__ uint8_t DeviceLevelAnchorHistBits(const data_size_t n
   return max_stat_per_bin < 256 ? 8 : (max_stat_per_bin < 65536 ? 16 : 32);
 }
 
-template <typename BIN_TYPE, int SHARED_HIST_SIZE, class PACK = PackRaw8, bool DL = false>
-__global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
+template <typename BIN_TYPE, class PACK = PackRaw8, bool DL = false>
+__device__ __forceinline__ void ConstructDiscretizedHistogramDenseBatchedBody(
+  int32_t* shared_hist_packed,
   const CUDAHybridPairDescriptor* pair_descs,
   const int32_t* cuda_gradients_and_hessians,
   const BIN_TYPE* data,
@@ -2561,10 +2580,6 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const DenseBlockPrefix block_prefix,
   const CUDADeviceLevelState* dls) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
-  // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
-  // budget shared with the non-quantized kernels, so the int32 array holds half
-  // as many entries in the same bytes, at the alignment its atomics require.
-  __shared__ int32_t shared_hist_packed[SHARED_HIST_SIZE / 2];
   if constexpr (DL) {
     // cuda_plan key device_levels: the level's block map, grid y and rows-per-thread floor from the device
     // (DeviceLevelPairsKernel: dense_block_map / dense_level_row_blocks' host math on the host's descriptors); the
@@ -2686,6 +2701,78 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
       packed_partition_byte_offsets,
       num_data, dim_y, is_feature_used_bytree, bin_used, row_batch, min_rows_per_thread, block_y);
   }
+}
+
+template <typename BIN_TYPE, int SHARED_HIST_SIZE, class PACK = PackRaw8, bool DL = false>
+__global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int32_t* cuda_gradients_and_hessians,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* column_hist_offsets_full,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const data_size_t num_data,
+  const int8_t* is_feature_used_bytree,
+  const uint8_t* bin_used,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const bool row_batch,
+  const data_size_t host_min_rows_per_thread,
+  const DenseBlockPrefix block_prefix,
+  const CUDADeviceLevelState* dls) {
+  // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
+  // budget shared with the non-quantized kernels, so the int32 array holds half
+  // as many entries in the same bytes, at the alignment its atomics require.
+  __shared__ int32_t shared_hist_packed[SHARED_HIST_SIZE / 2];
+  ConstructDiscretizedHistogramDenseBatchedBody<BIN_TYPE, PACK, DL>(
+    shared_hist_packed, pair_descs, cuda_gradients_and_hessians, data,
+    column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
+    packed_partition_byte_offsets, num_data, is_feature_used_bytree, bin_used,
+    min_data_in_leaf, min_sum_hessian_in_leaf, row_batch, host_min_rows_per_thread, block_prefix, dls);
+}
+
+template <typename BIN_TYPE, class PACK = PackRaw8, bool DL = false>
+__global__ void __launch_bounds__(2 * NUM_THREADS_PER_BLOCK)
+CUDAConstructDiscretizedHistogramDenseBatchedDynKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int32_t* cuda_gradients_and_hessians,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* column_hist_offsets_full,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const data_size_t num_data,
+  const int8_t* is_feature_used_bytree,
+  const uint8_t* bin_used,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const bool row_batch,
+  const data_size_t host_min_rows_per_thread,
+  const DenseBlockPrefix block_prefix,
+  const CUDADeviceLevelState* dls) {
+  extern __shared__ int32_t shared_hist_packed[];
+  ConstructDiscretizedHistogramDenseBatchedBody<BIN_TYPE, PACK, DL>(
+    shared_hist_packed, pair_descs, cuda_gradients_and_hessians, data,
+    column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
+    packed_partition_byte_offsets, num_data, is_feature_used_bytree, bin_used,
+    min_data_in_leaf, min_sum_hessian_in_leaf, row_batch, host_min_rows_per_thread, block_prefix, dls);
+}
+
+template <typename BIN_TYPE>
+bool TryEnsureQuantDenseDynSharedMemoryForBin(const size_t smem_bytes) {
+  const void* const kernels[] = {
+      reinterpret_cast<const void*>(&CUDAConstructDiscretizedHistogramDenseBatchedDynKernel<BIN_TYPE, PackRaw8, false>),
+      reinterpret_cast<const void*>(&CUDAConstructDiscretizedHistogramDenseBatchedDynKernel<BIN_TYPE, PackRaw8, true>),
+      reinterpret_cast<const void*>(&CUDAConstructDiscretizedHistogramDenseDynKernel<BIN_TYPE, true, PackRaw8>),
+      reinterpret_cast<const void*>(&CUDAConstructDiscretizedHistogramDenseDynKernel<BIN_TYPE, false, PackRaw8>),
+  };
+  for (const void* k : kernels) {
+    if (!TryEnsureKernelMaxDynamicSharedMemory(k, smem_bytes)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 template <int N, bool PREFETCH, bool CODE5 = false>
@@ -2965,7 +3052,7 @@ __device__ __forceinline__ void Code5WordAdd(int32_t* shared_joint,
   }
 }
 
-template <bool USE_16BIT_HIST, int kB, bool FLAT, bool EPILOGUE_FLAT, int CODE_BITS>
+template <bool USE_16BIT_HIST, int kB, bool FLAT, int EPILOGUE_MODE, int CODE_BITS>
 __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordInner(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
   int32_t* shared_joint,
@@ -2980,7 +3067,9 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
   const int whole_row_partitions,
   const uint32_t whole_row_joint,
   const data_size_t min_rows_per_thread,
-  const int block_y) {
+  const int block_y,
+  const PairJointMarginalDesc* marginal_descs,
+  const int num_marginals) {
   constexpr int kCodesPerWord = Code5CodesPerWord(CODE_BITS);
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   const data_size_t num_data_per_thread = max((num_data_in_smaller_leaf + dim_y - 1) / dim_y, min_rows_per_thread);
@@ -3102,12 +3191,35 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
   }
   __syncthreads();
   // marginals of each of the thread's bytes, by the per-byte rule of ConstructDiscretizedHistogramPairJointInner.
-  // EPILOGUE_FLAT (cuda_plan key pair_code5_epilogue, a template bool: a runtime branch here would keep both
-  // code paths' live ranges in one register allocation for no gain): one flat threadIdx.y-strided item index over
-  // every (slot, marginal) pair instead of 6 serial per-slot passes, where most of blockDim.y's warps have no
-  // marginal to add for a given slot (few bins per feature). Same cells, same per-cell wrapping sum, same
-  // (slot, marginal) visitation order, only a different thread owns each item: bit-identical.
-  if (EPILOGUE_FLAT) {
+  // EPILOGUE_MODE == 2 (cuda_plan key pair_code5_flat_table): precomputed per-marginal table, all threads in block
+  // flush with coalesced 8B descriptor loads and coalesced global atomics, zero partition walks.
+  // EPILOGUE_MODE == 1 (cuda_plan key pair_code5_epilogue): flat (slot, marginal) threadIdx.y-strided index.
+  // EPILOGUE_MODE == 0: 6 serial per-slot passes.
+  if constexpr (EPILOGUE_MODE == 2) {
+    for (int m = static_cast<int>(thread_idx); m < num_marginals; m += static_cast<int>(num_threads_per_block)) {
+      const uint2 raw = __ldg(reinterpret_cast<const uint2*>(marginal_descs) + m);
+      const uint32_t meta = raw.x;
+      const uint32_t hist_pos = raw.y;
+      const int32_t* cell = shared_joint + (meta & 0xffffu);
+      const uint32_t count = (meta >> 16) & 0xffu;
+      const uint32_t stride = meta >> 24;
+      uint32_t sum = 0;
+      for (uint32_t c = 0; c < count; ++c) {
+        sum += static_cast<uint32_t>(cell[c * stride]);
+      }
+      const int32_t packed_grad_hess = static_cast<int32_t>(sum);
+      if (packed_grad_hess == 0) continue;
+      if (USE_16BIT_HIST) {
+        atomicAdd(reinterpret_cast<int32_t*>(smaller_leaf_splits->hist_in_leaf) + hist_pos, packed_grad_hess);
+      } else {
+        const int64_t packed_grad_hess_int64 =
+            (static_cast<int64_t>(static_cast<int16_t>(packed_grad_hess >> 16)) << 32) |
+            (static_cast<int64_t>(packed_grad_hess & 0x0000ffff));
+        atomicAdd(reinterpret_cast<atomic_add_long_t*>(smaller_leaf_splits->hist_in_leaf) + hist_pos,
+                  (atomic_add_long_t)(packed_grad_hess_int64));
+      }
+    }
+  } else if constexpr (EPILOGUE_MODE == 1) {
     // pass 1: the per-slot item counts only, to get the flat range and its per-slot offsets (selected below by
     // compile-time-unrolled comparison, never by a runtime index into a register array, which would spill to
     // local memory). The other per-slot fields are not kept here: pass 2 recomputes them for the one winning slot.
@@ -3236,15 +3348,18 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
   const uint32_t whole_row_joint, \
   const data_size_t level_min_rows_per_thread, \
   const PairJointBlockPrefix block_prefix, \
+  const PairJointMarginalDesc* marginal_descs, \
+  const int num_marginals, \
   const CUDADeviceLevelState* dls
 
 #define FALCATA_PAIR_JOINT_BATCHED_ARGS \
   pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full, \
   feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf, \
   min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total, \
-  num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_prefix, dls
+  num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_prefix, \
+  marginal_descs, num_marginals, dls
 
-template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false, bool EPILOGUE_FLAT = false,
+template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false, int EPILOGUE_MODE = 0,
           int CODE_BITS = 5>  // NOLINT(whitespace/indent_namespace)
 __device__ __forceinline__ void PairJointBatchedBlock(FALCATA_PAIR_JOINT_BATCHED_PARAMS, int32_t* shared_joint,
                                                       const unsigned int pair_index, const int block_y,
@@ -3283,10 +3398,11 @@ __device__ __forceinline__ void PairJointBatchedBlock(FALCATA_PAIR_JOINT_BATCHED
   const bool direct = ALL_ROWS && num_data_smaller == num_data;
 #define FALCATA_PAIR_JOINT_INNER(B16, DIRECT) \
     if (WORDS) { \
-      ConstructDiscretizedHistogramPairJointCode5WordInner<B16, BATCH, FLAT, EPILOGUE_FLAT, CODE_BITS>( \
+      ConstructDiscretizedHistogramPairJointCode5WordInner<B16, BATCH, FLAT, EPILOGUE_MODE, CODE_BITS>( \
         smaller_struct, shared_joint, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, \
         column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, \
-        dim_y, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_y); \
+        dim_y, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_y, \
+        marginal_descs, num_marginals); \
     } else { \
       ConstructDiscretizedHistogramPairJointInner<B16, DIRECT, BATCH, CODE5>( \
         smaller_struct, shared_joint, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, \
@@ -3309,7 +3425,7 @@ __device__ __forceinline__ void PairJointBatchedBlock(FALCATA_PAIR_JOINT_BATCHED
 #undef FALCATA_PAIR_JOINT_INNER
 }
 
-template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false, bool EPILOGUE_FLAT = false,
+template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false, int EPILOGUE_MODE = 0,
           int CODE_BITS = 5, bool DL = false>  // NOLINT(whitespace/indent_namespace)
 __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
@@ -3343,11 +3459,12 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
         break;
       }
       const int pair = DeviceLevelBlockPair(dls, vb);
-      PairJointBatchedBlock<ALL_ROWS, BATCH, CODE5, WORDS, FLAT, EPILOGUE_FLAT, CODE_BITS>(
+      PairJointBatchedBlock<ALL_ROWS, BATCH, CODE5, WORDS, FLAT, EPILOGUE_MODE, CODE_BITS>(
         pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full,
         feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf,
         min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total,
-        num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows, block_prefix, dls, shared_joint,
+        num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows, block_prefix,
+        marginal_descs, num_marginals, dls, shared_joint,
         static_cast<unsigned int>(pair), vb - dls->construct_block_start[pair], dls->construct_grid_y,
         dls->live_pairs);
       if (direct) {
@@ -3367,13 +3484,13 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
     level_grid_y = block_prefix.grid_y;
     level_num_pairs = block_prefix.num_pairs;
   }
-  PairJointBatchedBlock<ALL_ROWS, BATCH, CODE5, WORDS, FLAT, EPILOGUE_FLAT, CODE_BITS>(
+  PairJointBatchedBlock<ALL_ROWS, BATCH, CODE5, WORDS, FLAT, EPILOGUE_MODE, CODE_BITS>(
     FALCATA_PAIR_JOINT_BATCHED_ARGS, shared_joint, pair_index, block_y, level_grid_y, level_num_pairs);
 }
 
 template <bool ALL_ROWS, bool CODE5 = false, bool DL = false>
 __global__ void CUDAConstructDiscretizedHistogramPairJointBatchedKernel(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
-  PairJointBatchedBody<ALL_ROWS, 16, CODE5, false, false, false, 5, DL>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
+  PairJointBatchedBody<ALL_ROWS, 16, CODE5, false, false, 0, 5, DL>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
 }
 
 #if CUDART_VERSION >= 12040
@@ -3390,14 +3507,14 @@ __global__ void CUDAConstructDiscretizedHistogramPairJointBatchedKernel(FALCATA_
 template <bool ALL_ROWS, int BATCH, int MAXREG, bool CODE5 = false, bool DL = false>
 __global__ void FALCATA_PAIR_JOINT_MAXNREG(MAXREG)
 CUDAConstructDiscretizedHistogramPairJointCappedKernel(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
-  PairJointBatchedBody<ALL_ROWS, BATCH, CODE5, false, false, false, 5, DL>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
+  PairJointBatchedBody<ALL_ROWS, BATCH, CODE5, false, false, 0, 5, DL>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
 }
 
 #undef FALCATA_PAIR_JOINT_MAXNREG
 
-template <int BATCH, bool FLAT, bool EPILOGUE_FLAT, int CODE_BITS, bool DL = false>
+template <int BATCH, bool FLAT, int EPILOGUE_MODE, int CODE_BITS, bool DL = false>
 __global__ void CUDAConstructDiscretizedHistogramPairJointCode5WordKernel(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
-  PairJointBatchedBody<false, BATCH, true, true, FLAT, EPILOGUE_FLAT, CODE_BITS, DL>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
+  PairJointBatchedBody<false, BATCH, true, true, FLAT, EPILOGUE_MODE, CODE_BITS, DL>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
 }
 
 #undef FALCATA_PAIR_JOINT_BATCHED_ARGS
@@ -3465,7 +3582,7 @@ inline int PairJointResidentWarps(const int threads) {
 using PairJointKernelFn = void (*)(const CUDAHybridPairDescriptor*, const int32_t*, const uint8_t*, const uint32_t*,
                                    int, const uint32_t*, const int*, const int*, data_size_t, data_size_t, double, int,
                                    int, int, int, int, uint32_t, data_size_t, PairJointBlockPrefix,
-                                   const CUDADeviceLevelState*);
+                                   const PairJointMarginalDesc*, int, const CUDADeviceLevelState*);
 
 struct PairJointCappedBuild {
   PairJointKernelFn gather;
@@ -3503,38 +3620,42 @@ inline int PairJointCode5MaxThreads(const PairJointKernelFn kernel) {
   return attr.maxThreadsPerBlock;
 }
 
-inline PairJointKernelFn PairJointCode5WordKernel(const bool flat, const bool epilogue_flat, const int code_bits) {
-  if (code_bits == kCodeRadix) {
-    return flat ? (epilogue_flat ?
-                   CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, kCodeRadix> :
-                   CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, kCodeRadix>) :
-                  CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, kCodeRadix>;
-  }
-  if (code_bits == 6) {
-    return flat ? (epilogue_flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, 6> :
-                                    CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, 6>) :
-                  CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, 6>;
-  }
-  return flat ? (epilogue_flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, 5> :
-                                  CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, 5>) :
-                CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, 5>;
+inline PairJointKernelFn PairJointCode5WordKernel(const bool flat, const int epilogue_mode, const int code_bits) {
+  auto select = [&](auto bits_tag) -> PairJointKernelFn {
+    constexpr int BITS = decltype(bits_tag)::value;
+    if (!flat) {
+      return CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, 0, BITS>;
+    }
+    if (epilogue_mode == 2) {
+      return CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, 2, BITS>;
+    }
+    if (epilogue_mode == 1) {
+      return CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, 1, BITS>;
+    }
+    return CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, 0, BITS>;
+  };
+  if (code_bits == kCodeRadix) return select(std::integral_constant<int, kCodeRadix>{});
+  if (code_bits == 6) return select(std::integral_constant<int, 6>{});
+  return select(std::integral_constant<int, 5>{});
 }
 
-inline PairJointKernelFn PairJointCode5WordKernelDL(const bool flat, const bool epilogue_flat, const int code_bits) {
-  if (code_bits == kCodeRadix) {
-    return flat ? (epilogue_flat ?
-                   CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, kCodeRadix, true> :
-                   CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, kCodeRadix, true>) :
-                  CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, kCodeRadix, true>;
-  }
-  if (code_bits == 6) {
-    return flat ? (epilogue_flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, 6, true> :
-                                    CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, 6, true>) :
-                  CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, 6, true>;
-  }
-  return flat ? (epilogue_flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, 5, true> :
-                                  CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, 5, true>) :
-                CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, 5, true>;
+inline PairJointKernelFn PairJointCode5WordKernelDL(const bool flat, const int epilogue_mode, const int code_bits) {
+  auto select = [&](auto bits_tag) -> PairJointKernelFn {
+    constexpr int BITS = decltype(bits_tag)::value;
+    if (!flat) {
+      return CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, 0, BITS, true>;
+    }
+    if (epilogue_mode == 2) {
+      return CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, 2, BITS, true>;
+    }
+    if (epilogue_mode == 1) {
+      return CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, 1, BITS, true>;
+    }
+    return CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, 0, BITS, true>;
+  };
+  if (code_bits == kCodeRadix) return select(std::integral_constant<int, kCodeRadix>{});
+  if (code_bits == 6) return select(std::integral_constant<int, 6>{});
+  return select(std::integral_constant<int, 5>{});
 }
 
 struct PairJointCode5WordShape {
@@ -3544,7 +3665,7 @@ struct PairJointCode5WordShape {
 
 inline PairJointCode5WordShape PairJointCode5WordShapeFor(const int row_words, const size_t smem_bytes,
                                                           const int num_grad_quant_bins, const bool flat,
-                                                          const bool tallest, const bool epilogue_flat,
+                                                          const bool tallest, const int epilogue_mode,
                                                           const int code_bits) {
   struct Entry {
     int device;
@@ -3554,7 +3675,7 @@ inline PairJointCode5WordShape PairJointCode5WordShapeFor(const int row_words, c
     size_t smem_bytes;
     int bins;
     bool tallest;
-    bool epilogue_flat;
+    int epilogue_mode;
     PairJointCode5WordShape shape;
   };
   static thread_local std::vector<Entry> entries;
@@ -3563,11 +3684,11 @@ inline PairJointCode5WordShape PairJointCode5WordShapeFor(const int row_words, c
   for (const Entry& e : entries) {
     if (e.device == device && e.code_bits == code_bits && e.flat == flat && e.row_words == row_words &&
         e.smem_bytes == smem_bytes &&
-        e.bins == num_grad_quant_bins && e.tallest == tallest && e.epilogue_flat == epilogue_flat) {
+        e.bins == num_grad_quant_bins && e.tallest == tallest && e.epilogue_mode == epilogue_mode) {
       return e.shape;
     }
   }
-  const PairJointKernelFn kernel = PairJointCode5WordKernel(flat, epilogue_flat, code_bits);
+  const PairJointKernelFn kernel = PairJointCode5WordKernel(flat, epilogue_mode, code_bits);
   cudaFuncAttributes attr;
   CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr, kernel));
   // the kernel's largest block on this device (registers included), in warps of the device's width
@@ -3589,7 +3710,7 @@ inline PairJointCode5WordShape PairJointCode5WordShapeFor(const int row_words, c
   }
   const int num_sms = FalcataDeviceSMCount(device, kSMSitePairJointShape);
   const PairJointCode5WordShape shape{best_rows, best_rows > 0 ? best_blocks * std::max(1, num_sms) : 0};
-  entries.push_back({device, code_bits, flat, row_words, smem_bytes, num_grad_quant_bins, tallest, epilogue_flat, shape});
+  entries.push_back({device, code_bits, flat, row_words, smem_bytes, num_grad_quant_bins, tallest, epilogue_mode, shape});
   return shape;
 }
 
@@ -4157,7 +4278,59 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
       }
     }
     };
-    if (cuda_row_data_->dense_wide_hist()) {
+    if (cuda_row_data_->dense_wide_hist_dynamic()) {
+      CHECK(!cuda_row_data_->is_sparse() && !cuda_row_data_->is_4bit_packed());
+      CHECK_GT(cuda_row_data_->quant_hist_slots(), static_cast<int>(SHARED_HIST_SIZE) * 2);
+      if (USE_GLOBAL_MEM_BUFFER) {
+        if (num_bits_in_histogram_bins <= 16) {
+          CUDAConstructDiscretizedHistogramDenseKernel_GlobalMemory<BIN_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
+            cuda_smaller_leaf_splits,
+            reinterpret_cast<const int32_t*>(cuda_gradients_),
+            RowMajorBin<BIN_TYPE>(),
+            cuda_row_data_->cuda_column_hist_offsets(),
+            cuda_row_data_->cuda_partition_hist_offsets(),
+            cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+            num_data_,
+            reinterpret_cast<int32_t*>(cuda_hist_buffer_.RawData()));
+        } else {
+          CUDAConstructDiscretizedHistogramDenseKernel_GlobalMemory<BIN_TYPE, SHARED_HIST_SIZE, false><<<grid_dim, block_dim, 0, current_stream()>>>(
+            cuda_smaller_leaf_splits,
+            reinterpret_cast<const int32_t*>(cuda_gradients_),
+            RowMajorBin<BIN_TYPE>(),
+            cuda_row_data_->cuda_column_hist_offsets(),
+            cuda_row_data_->cuda_partition_hist_offsets(),
+            cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+            num_data_,
+            reinterpret_cast<int32_t*>(cuda_hist_buffer_.RawData()));
+        }
+      } else if (num_bits_in_histogram_bins <= 16) {
+        auto* kernel = &CUDAConstructDiscretizedHistogramDenseDynKernel<BIN_TYPE, true, PackRaw8>;
+        const size_t dyn_smem = QuantDenseDynSmem(reinterpret_cast<const void*>(kernel));
+        kernel<<<grid_dim, block_dim, dyn_smem, current_stream()>>>(
+          cuda_smaller_leaf_splits,
+          reinterpret_cast<const int32_t*>(cuda_gradients_),
+          RowMajorBin<BIN_TYPE>(),
+          cuda_row_data_->cuda_column_hist_offsets(),
+          cuda_row_data_->cuda_partition_hist_offsets(),
+          cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+          nullptr,
+          num_data_);
+        CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
+      } else {
+        auto* kernel = &CUDAConstructDiscretizedHistogramDenseDynKernel<BIN_TYPE, false, PackRaw8>;
+        const size_t dyn_smem = QuantDenseDynSmem(reinterpret_cast<const void*>(kernel));
+        kernel<<<grid_dim, block_dim, dyn_smem, current_stream()>>>(
+          cuda_smaller_leaf_splits,
+          reinterpret_cast<const int32_t*>(cuda_gradients_),
+          RowMajorBin<BIN_TYPE>(),
+          cuda_row_data_->cuda_column_hist_offsets(),
+          cuda_row_data_->cuda_partition_hist_offsets(),
+          cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+          nullptr,
+          num_data_);
+        CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
+      }
+    } else if (cuda_row_data_->dense_wide_hist()) {
       CHECK_EQ(cuda_row_data_->quant_hist_slots(), static_cast<int>(SHARED_HIST_SIZE) * 2);
       launch_leaf_quant(std::integral_constant<size_t, SHARED_HIST_SIZE * 2>{});
     } else {
@@ -5332,11 +5505,17 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     if (SmallLeafConstructEnabled() && small_leaf_rows > 0 &&
         dense_dls == nullptr &&
         max_num_data_in_smaller_leaf <= small_leaf_rows && !(use_compact_view_ && code5_valid_)) {
+      // Small-leaf direct kernel uses no shared table, so cap block height at NUM_THREADS_PER_BLOCK (504)
+      // even when dense_wide_hist_96k doubles BatchedConstructThreads() for the dynamic shared-memory kernel.
+      const int small_block_y = std::max(
+          1, std::min(static_cast<int>(block_dim.y),
+                      NUM_THREADS_PER_BLOCK / std::max(1, static_cast<int>(block_dim.x))));
+      const dim3 small_block_dim(block_dim.x, small_block_y);
       const int8_t* feat_used =
         any_feature_unused_bytree_ ? column_used_bytree_device() : nullptr;
       if (use_compact_view_) {
 #define FALCATA_LAUNCH_SMALL_LEAF_QUANT(PACKT, DATA, COLOFF, PARTOFF, BYTEOFF, FUSED) \
-        CUDAConstructDiscretizedHistogramDenseSmallLeafBatchedKernel<BIN_TYPE, PACKT><<<grid_dim, block_dim, 0, cuda_stream_>>>( \
+        CUDAConstructDiscretizedHistogramDenseSmallLeafBatchedKernel<BIN_TYPE, PACKT><<<grid_dim, small_block_dim, 0, cuda_stream_>>>( \
           pair_descs, \
           reinterpret_cast<const int32_t*>(cuda_gradients_), \
           DATA, COLOFF, cuda_row_data_->cuda_partition_hist_offsets(), PARTOFF, BYTEOFF, \
@@ -5465,9 +5644,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
                                 code5_flat_smem_bytes <= CurrentDeviceLaunchLimits().shared_bytes_per_block;
         const size_t code5_word_smem_bytes = code5_flat ? code5_flat_smem_bytes : pair_smem_bytes;
         const bool code5_tall = FalcataPlan::Get().pair_code5_slots && FalcataPlan::Get().pair_code5_tall;
-        // cuda_plan key pair_code5_epilogue: the flat (slot, marginal) flush, composed only with the branch-free
-        // adds (code5_flat) this was measured on
-        const bool code5_epilogue_flat = code5_flat && FalcataPlan::Get().pair_code5_epilogue;
+        // cuda_plan key pair_code5_flat_table / pair_code5_epilogue: epilogue mode (2 = flat_table, 1 = epilogue_flat, 0 = default)
+        const int code5_epilogue_mode =
+            (code5_flat && FalcataPlan::Get().pair_code5_flat_table && compact_pair_num_marginals_ > 0) ? 2 :
+            (code5_flat && FalcataPlan::Get().pair_code5_epilogue) ? 1 : 0;
         // cuda_plan key pair_code5_slots: the code-word level's one rows-per-thread (0: the generic sizing)
         data_size_t slot_rows_per_thread = 0;
         if (whole_rows && !level_all_rows && code5_valid_ && FalcataPlan::Get().pair_code5 &&
@@ -5476,7 +5656,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           // cuda_plan key pair_code5_tall: the tallest block where the grid is sized to the slots
           const PairJointCode5WordShape word_shape = PairJointCode5WordShapeFor(
             code5_row_words_, code5_word_smem_bytes, use_quantized_grad_ ? num_grad_quant_bins_ : 0, code5_flat,
-            code5_tall, code5_epilogue_flat, code5_bits_);
+            code5_tall, code5_epilogue_mode, code5_bits_);
           code5_word_rows = word_shape.rows;
           if (code5_word_rows > 0) {
             int word_grid_y = HybridBatchedConstructGridDimYQuant(
@@ -5596,6 +5776,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           whole_rows ? static_cast<uint32_t>(compact_pair_joint_total_) : 0u, \
           pair_min_rows_per_thread, \
           block_prefix, \
+          compact_pair_marginal_descs_.RawDataReadOnly(), \
+          compact_pair_num_marginals_, \
           static_cast<const CUDADeviceLevelState*>(nullptr)
 #define FALCATA_LAUNCH_PAIR_JOINT_DATA(KERNEL, DATA) \
         KERNEL<<<launch_grid_dim, pair_block_dim, pair_smem_bytes, cuda_stream_>>>(FALCATA_PAIR_JOINT_LAUNCH_ARGS(DATA))
@@ -5613,8 +5795,12 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
             static_cast<int>(pair_block_dim.x * pair_block_dim.y) <= PairJointCode5MaxThreads(code5_kernel);
         if (code5_word_rows > 0) {
           // (cuda_plan key pair_code_radix: the mixed-radix code view)
-          DiagConstructKernel(code5_bits_ == kCodeRadix ? "pair_code5_words (mixed radix)" : "pair_code5_words");
-          PairJointCode5WordKernel(code5_flat, code5_epilogue_flat, code5_bits_)<<<launch_grid_dim, pair_block_dim, code5_word_smem_bytes, cuda_stream_>>>(
+          DiagConstructKernel(
+              code5_bits_ == kCodeRadix
+                  ? (code5_epilogue_mode == 2 ? "pair_code5_words (mixed radix) [flat_table]"
+                                              : "pair_code5_words (mixed radix)")
+                  : (code5_epilogue_mode == 2 ? "pair_code5_words [flat_table]" : "pair_code5_words"));
+          PairJointCode5WordKernel(code5_flat, code5_epilogue_mode, code5_bits_)<<<launch_grid_dim, pair_block_dim, code5_word_smem_bytes, cuda_stream_>>>(
             FALCATA_PAIR_JOINT_LAUNCH_ARGS(compact_data_uint8_t_.RawDataReadOnly()));
           // a new launch shape: a rejected launch must not leave the histogram unbuilt silently
           CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
@@ -5742,7 +5928,54 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       }
     }
     };
-    if (cuda_row_data_->dense_wide_hist()) {
+    if (cuda_row_data_->dense_wide_hist_dynamic()) {
+      CHECK(!cuda_row_data_->is_4bit_packed() && !compact_is_4bit_);
+      CHECK_GT(cuda_row_data_->quant_hist_slots(), static_cast<int>(SHARED_HIST_SIZE) * 2);
+      DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch (dense_wide_hist_96k)" : "unbatched (dense_wide_hist_96k)");
+      auto* kernel = dense_dls != nullptr
+        ? &CUDAConstructDiscretizedHistogramDenseBatchedDynKernel<BIN_TYPE, PackRaw8, true>
+        : &CUDAConstructDiscretizedHistogramDenseBatchedDynKernel<BIN_TYPE, PackRaw8, false>;
+      const size_t dyn_smem = QuantDenseDynSmem(reinterpret_cast<const void*>(kernel));
+      if (use_compact_view_) {
+        for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
+          kernel<<<dense_chunk.grid, block_dim, dyn_smem, cuda_stream_>>>(
+            pair_descs + dense_chunk.pair_base,
+            reinterpret_cast<const int32_t*>(cuda_gradients_),
+            reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
+            compact_column_hist_offsets_.RawData(),
+            cuda_row_data_->cuda_partition_hist_offsets(),
+            compact_feature_partition_column_index_offsets_.RawData(),
+            nullptr,
+            num_data_,
+            nullptr,
+            nullptr,
+            static_cast<data_size_t>(min_data_in_leaf_),
+            min_sum_hessian_in_leaf_,
+            FalcataPlan::Get().row_batch,
+            dense_min_rows_per_thread, dense_chunk.prefix, dense_dls);
+          CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
+        }
+      } else {
+        for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
+          kernel<<<dense_chunk.grid, block_dim, dyn_smem, cuda_stream_>>>(
+            pair_descs + dense_chunk.pair_base,
+            reinterpret_cast<const int32_t*>(cuda_gradients_),
+            RowMajorBin<BIN_TYPE>(),
+            cuda_row_data_->cuda_column_hist_offsets(),
+            cuda_row_data_->cuda_partition_hist_offsets(),
+            cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+            nullptr,
+            num_data_,
+            any_feature_unused_bytree_ ? column_used_bytree_device() : nullptr,
+            any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
+            static_cast<data_size_t>(min_data_in_leaf_),
+            min_sum_hessian_in_leaf_,
+            FalcataPlan::Get().row_batch,
+            dense_min_rows_per_thread, dense_chunk.prefix, dense_dls);
+          CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
+        }
+      }
+    } else if (cuda_row_data_->dense_wide_hist()) {
       CHECK_EQ(cuda_row_data_->quant_hist_slots(), static_cast<int>(SHARED_HIST_SIZE) * 2);
       launch_dense_quant(std::integral_constant<size_t, SHARED_HIST_SIZE * 2>{});
     } else {

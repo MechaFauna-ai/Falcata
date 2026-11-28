@@ -341,25 +341,83 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
   if (FalcataPlan::Get().dense_wide_hist && FalcataPlan::Get().quant_training && !is_sparse_ &&
       max_bin_per_col > 16 && num_partitions > 1) {
     const int standard_max_columns = max_num_column_per_partition_;
-    const int wide_num_partitions = DivideCUDAFeatureGroupsWithCap(
-      train_data, column_hist_offsets, max_num_bin_per_partition * 2, std::min(column_cap, 504));
     // the 504-thread construct block runs 504 / columns row lanes of one column per thread (the widest partition's
-    // columns, see CalcConstructHistogramBatchedKernelDim). The wide division is kept only if its block has at least
-    // two row lanes and at least as many threads as the standard one: with fewer threads per row sweep the removed
-    // partition's per-row chain does not pay for the lost lanes (same binary off vs on: 300 columns at 31 bins, 198 x 2
-    // -> 300 x 1 threads, 0.89x; 150 columns at 63 bins bagged, 97 x 5 -> 150 x 3, 0.977x; higgs' 28 columns,
-    // 24 x 21 -> 28 x 18 = 504 threads, 1.044x)
+    // columns, see CalcConstructHistogramBatchedKernelDim). The 2x static division is kept only if its block has at
+    // least two row lanes and at least as many threads as the standard one: with fewer threads per row sweep the
+    // removed partition's per-row chain does not pay for the lost lanes (same binary off vs on: 300 columns at 31
+    // bins, 198 x 2 -> 300 x 1 threads, 0.89x; 150 columns at 63 bins bagged, 97 x 5 -> 150 x 3, 0.977x; higgs' 28
+    // columns, 24 x 21 -> 28 x 18 = 504 threads, 1.044x)
     const auto block_threads = [](const int columns) {
       const int c = std::max(1, columns);
       return c * std::max(1, 504 / c);
     };
-    const int wide_max_columns = max_num_column_per_partition_;
-    if (wide_num_partitions < num_partitions && 504 / std::max(1, wide_max_columns) >= 2 &&
-        block_threads(wide_max_columns) >= block_threads(standard_max_columns)) {
-      quant_hist_slots_ = shared_hist_size_ * 2;
-      num_partitions = wide_num_partitions;
-    } else {
+    int best_mult = 1;
+    int best_num_partitions = num_partitions;
+    {
+      const int wide_num_partitions = DivideCUDAFeatureGroupsWithCap(
+        train_data, column_hist_offsets, max_num_bin_per_partition * 2, std::min(column_cap, 504));
+      const int wide_max_columns = max_num_column_per_partition_;
+      if (wide_num_partitions < best_num_partitions && 504 / std::max(1, wide_max_columns) >= 2 &&
+          block_threads(wide_max_columns) >= block_threads(standard_max_columns)) {
+        best_mult = 2;
+        best_num_partitions = wide_num_partitions;
+      }
+    }
+    // cuda_plan key dense_wide_hist_96k: opt-in dynamic shared memory up to 4x (96 KB, 24576 bins under SP) when the
+    // active device gives >= 96 KB opt-in SMEM per block, and 8x (192 KB, 49152 bins under SP) when opt-in >= 196 KB.
+    // The batched dynamic kernel launches 2 * 504 threads/block so 1 block/SM keeps ~30-32 warps/SM while reducing
+    // partition count; keeping cand_partitions >= 4 preserves partition-axis SM parallelism on narrow few-partition
+    // shapes (on Year 4->1 partitions regressed +12.8% steady due to 1 block/SM + smaller L1, whereas on Epsilon
+    // 84->21 partitions won -4.1% steady), and 504 / max_columns >= 2 ensures >= 2 row lanes on 504-thread launches
+    // and >= 4 on 1008-thread launches.
+    if (FalcataPlan::Get().dense_wide_hist_96k && best_num_partitions > 4) {
+      int device = gpu_device_id_;
+      if (device < 0) {
+        if (cudaGetDevice(&device) != cudaSuccess) {
+          cudaGetLastError();
+          device = 0;
+        }
+      }
+      int opt_in_bytes = 0;
+      if (cudaDeviceGetAttribute(&opt_in_bytes, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
+        cudaGetLastError();
+        opt_in_bytes = 0;
+      }
+      const int dyn_mults[] = {4, 8};
+      for (const int mult : dyn_mults) {
+        const size_t table_bytes =
+            static_cast<size_t>(max_num_bin_per_partition) * static_cast<size_t>(mult) * sizeof(int32_t);
+        const size_t min_opt_in = mult >= 8 ? table_bytes + 4 * 1024 : table_bytes;
+        if (static_cast<size_t>(opt_in_bytes) < min_opt_in) {
+          continue;
+        }
+        const int cand_partitions = DivideCUDAFeatureGroupsWithCap(
+          train_data, column_hist_offsets, max_num_bin_per_partition * static_cast<uint32_t>(mult),
+          std::min(column_cap, 504));
+        const int cand_max_columns = max_num_column_per_partition_;
+        if (cand_partitions < best_num_partitions && cand_partitions >= 4 &&
+            504 / std::max(1, cand_max_columns) >= 2) {
+          uint32_t cand_max_bins = 1;
+          for (size_t p = 1; p < partition_hist_offsets_.size(); ++p) {
+            cand_max_bins = std::max(cand_max_bins, partition_hist_offsets_[p] - partition_hist_offsets_[p - 1]);
+          }
+          const size_t cand_smem_bytes =
+              ((static_cast<size_t>(cand_max_bins) * sizeof(int32_t)) + 15) & ~static_cast<size_t>(15);
+          if (TryEnsureQuantDenseDynSharedMemory(bit_type_, cand_smem_bytes)) {
+            best_mult = mult;
+            best_num_partitions = cand_partitions;
+          }
+        }
+      }
+    }
+    if (best_mult == 1) {
       num_partitions = DivideCUDAFeatureGroupsWithCap(train_data, column_hist_offsets, max_num_bin_per_partition, column_cap);
+      quant_hist_slots_ = shared_hist_size_;
+    } else {
+      num_partitions = DivideCUDAFeatureGroupsWithCap(
+        train_data, column_hist_offsets, max_num_bin_per_partition * static_cast<uint32_t>(best_mult),
+        std::min(column_cap, 504));
+      quant_hist_slots_ = shared_hist_size_ * best_mult;
     }
   }
   CHECK_EQ(num_partitions, num_feature_partitions_);

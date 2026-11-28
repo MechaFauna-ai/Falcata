@@ -30,6 +30,11 @@
 
 namespace Falcata {
 
+/*! \brief Non-fatally verify and raise cudaFuncAttributeMaxDynamicSharedMemorySize on the quantized dense dynamic
+ *  construct kernels for \p bit_type (8/16/32) on the active device. Clears any CUDA error and returns false if the
+ *  driver rejects the requested size so CUDARowData can fall back to the 48 KB static table. */
+bool TryEnsureQuantDenseDynSharedMemory(uint8_t bit_type, size_t smem_bytes);
+
 class CUDARowData {
  public:
   CUDARowData(const Dataset* train_data,
@@ -88,11 +93,12 @@ class CUDARowData {
 
   int shared_hist_size() const { return shared_hist_size_; }
 
-  /*! \brief cuda_plan key dense_wide_hist: the 16-bit slot count the quantized dense construct kernels' shared
-   *  histogram (SHARED_HIST_SIZE / 2 packed int32 bins) is instantiated for: shared_hist_size_, or 2x it when the
-   *  feature partitions were divided against the 2x table (dense_wide_hist()) */
+  /*! \brief cuda_plan key dense_wide_hist / dense_wide_hist_96k: the 16-bit slot count the quantized dense construct
+   *  kernels' shared histogram (quant_hist_slots() / 2 packed int32 bins) is sized for: shared_hist_size_ (1x static),
+   *  2x it (48 KB static), or 4x/8x it (opt-in dynamic shared memory, dense_wide_hist_dynamic()). */
   int quant_hist_slots() const { return quant_hist_slots_; }
   bool dense_wide_hist() const { return quant_hist_slots_ != shared_hist_size_; }
+  bool dense_wide_hist_dynamic() const { return quant_hist_slots_ > shared_hist_size_ * 2; }
 
   // Host-side accessors for the CompactView path in CUDAHistogramConstructor.
   const std::vector<int>& host_feature_partition_column_index_offsets() const { return feature_partition_column_index_offsets_; }

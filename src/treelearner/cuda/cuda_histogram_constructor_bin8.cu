@@ -19,6 +19,8 @@ template void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInn
 template void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0<nq_fixed_t, SP_SHARED_HIST_SIZE, uint8_t, true>(const CUDAHybridPairDescriptor*, const int, const data_size_t, const data_size_t*);
 template void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0<nq_fixed_t, SP_SHARED_HIST_SIZE, uint8_t, false>(const CUDAHybridPairDescriptor*, const int, const data_size_t, const data_size_t*);
 
+template bool TryEnsureQuantDenseDynSharedMemoryForBin<uint8_t>(size_t);
+
 }  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -12,6 +12,8 @@ row of exactly one word group past a multiple of six slots.
 
 import hashlib
 import os
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -74,3 +76,89 @@ def test_pair_code_radix_is_bit_identical_cuda(
     on = _model_md5({**params, "cuda_plan": "auto"}, X, y, 15)
     off = _model_md5({**params, "cuda_plan": "auto,pair_code_radix:off"}, X, y, 15)
     assert on == off
+
+
+def _probe_pair_code5_flat_table_diag(plan):
+    rows, num_features = 40009, 1200
+    rng = np.random.default_rng(29)
+    levels = rng.integers(5, 6, size=num_features)
+    X = (rng.random((rows, num_features)) * levels).astype(np.int64).astype(np.float64)
+    w = rng.standard_normal(40)
+    y = X[:, :40] @ w + rng.standard_normal(rows)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "num_leaves": 127,
+        "max_depth": 8,
+        "max_bin": 15,
+        "feature_fraction": 0.25,
+        "min_data_in_leaf": 5,
+        "learning_rate": 0.1,
+        "use_quantized_grad": True,
+        "quant_mode": "stochastic",
+        "verbosity": 1,
+        "seed": 42,
+        "metric": "None",
+        "cuda_plan": plan,
+    }
+    ds = flc.Dataset(X, label=y, params=params)
+    flc.train(params, ds, num_boost_round=3)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("values", "nan_frac", "quant", "bagging"),
+    [
+        ((5, 6), 0.0, "stochastic", 1.0),  # 5-bit code5
+        ((5, 6), 0.08, "fixedpoint", 1.0),  # mixed-radix code
+        ((5, 6), 0.08, "stochastic", 0.6),  # bagged mixed-radix code
+    ],
+)
+def test_pair_code5_flat_table_is_bit_identical_cuda(values, nan_frac, quant, bagging):
+    """pair_code5_flat_table must match the baseline epilogue bit-for-bit."""
+    rows, num_features = 40009, 1200
+    rng = np.random.default_rng(29)
+    levels = rng.integers(values[0], values[1], size=num_features)
+    X = (rng.random((rows, num_features)) * levels).astype(np.int64).astype(np.float64)
+    if nan_frac > 0:
+        X[rng.random(X.shape) < nan_frac] = np.nan
+    w = rng.standard_normal(40)
+    y = np.nan_to_num(X[:, :40]) @ w + rng.standard_normal(rows)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "num_leaves": 127,
+        "max_depth": 8,
+        "max_bin": 15,
+        "feature_fraction": 0.25,
+        "min_data_in_leaf": 5,
+        "learning_rate": 0.1,
+        "use_quantized_grad": True,
+        "quant_mode": quant,
+        "verbose": -1,
+        "seed": 42,
+        "metric": "None",
+    }
+    if bagging < 1.0:
+        params["bagging_fraction"] = bagging
+        params["bagging_freq"] = 1
+    on = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:on"}, X, y, 10)
+    off = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:off"}, X, y, 10)
+    assert on == off
+
+
+@_REQUIRES_CUDA
+def test_pair_code5_flat_table_engages_diag_cuda():
+    """FALCATA_DEBUG=diag must confirm pair_code5_flat_table engages when on and not when off."""
+    child = "import runpy,sys; runpy.run_path(sys.argv[1])['_probe_pair_code5_flat_table_diag'](sys.argv[2])"
+    for plan, expected in [("auto,pair_code5_flat_table:on", True), ("auto,pair_code5_flat_table:off", False)]:
+        res = subprocess.run(
+            [sys.executable, "-c", child, __file__, plan],
+            env=dict(os.environ, FALCATA_DEBUG="diag"),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        out = res.stdout + "\n" + res.stderr
+        assert res.returncode == 0, out
+        assert ("[flat_table]" in out) is expected, out

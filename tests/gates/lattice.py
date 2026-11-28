@@ -929,7 +929,9 @@ def build_cells():
         "apply_genbit_rows",
         "pair_code5_epilogue",
     ]
-    night6_flip = "auto," + ",".join(f"{k}:off" for k in night6_keys[:6]) + ",pair_code5_epilogue:on"
+    night6_flip = (
+        "auto," + ",".join(f"{k}:off" for k in night6_keys[:6]) + ",pair_code5_flat_table:off,pair_code5_epilogue:on"
+    )
     for profile in ["sampled", "dense"]:
         for key in night6_keys[:6]:
             cell(
@@ -984,7 +986,11 @@ def build_cells():
         ("-partword", partword, "sampledwide5/quant-partword"),
         ("-deep", deep, "sampledwide5/quant-deep"),
     ]:
-        for name, plan in [("pair_code5_epilogue_on", "auto,pair_code5_epilogue:on"), ("night6", night6_flip)]:
+        for name, plan in [
+            ("pair_code5_epilogue_on", "auto,pair_code5_flat_table:off,pair_code5_epilogue:on"),
+            ("pair_code5_flat_table", "auto,pair_code5_flat_table:off"),
+            ("night6", night6_flip),
+        ]:
             cell(
                 f"sampledwide5/flip-{name}{suffix}",
                 "sampledwide5",
@@ -1072,7 +1078,8 @@ def build_cells():
     code6_flips = [
         ("pair_code_wide", "pair_code_wide:off"),
         ("code6_branchy", "pair_code5_flat:off"),
-        ("code6_epilogue", "pair_code5_epilogue:on"),
+        ("code6_epilogue", "pair_code5_flat_table:off,pair_code5_epilogue:on"),
+        ("code6_flat_table", "pair_code5_flat_table:off"),
     ]
     for base_profile, suffix, base_params in [
         ("sampledwide", "ff30", ff30),
@@ -1464,6 +1471,12 @@ def build_cells():
                     f"{profile}/flip-split_packed_read8_cost-{name}",
                     profile,
                     {**params, "cuda_plan": "auto,split_packed_read8_cost:off"},
+                    equal_to=base,
+                )
+                cell(
+                    f"{profile}/flip-dense_wide_hist_96k-{name}",
+                    profile,
+                    {**params, "cuda_plan": "auto,dense_wide_hist_96k:off"},
                     equal_to=base,
                 )
             if name == "quant-bagged":

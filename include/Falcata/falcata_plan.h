@@ -539,6 +539,11 @@ struct FalcataPlan {
   // the allocation). Same cells, same per-cell wrapping sum, same visitation order: bit-identical. Off by default:
   // with pair_code5_slots / pair_code5_tall's tall blocks the flat flush made a Numerai round 0.5% slower (RTX 5090).
   bool pair_code5_epilogue = false;  // key: pair_code5_epilogue
+  // pair_code5_flat_table: precomputed flat marginal flush table (PairJointMarginalDesc, 8 bytes/marginal, uploaded via
+  // TreeStartMetaBatch) so all threads of the block flush marginals with coalesced loads and global atomics, zero
+  // partition walks, and shorter register live ranges across the hot row loop. Composed with pair_code5_flat.
+  // Same cells, same integer sums: bit-identical.
+  bool pair_code5_flat_table = true;  // key: pair_code5_flat_table
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
   // spreading a few rows over every block row (each block zeroes and flushes
@@ -939,6 +944,12 @@ struct FalcataPlan {
   // Otherwise the standard table and partitions. The histogram's layout, bins and integer sums are the same:
   // bit-identical.
   bool dense_wide_hist = true;      // key: dense_wide_hist
+  // dense_wide_hist opt-in dynamic shared memory up to 4x (96 KB, 24576 bins) on GPUs with >= 96 KB opt-in SMEM
+  // per block (and 8x = 192 KB, 49152 bins where opt-in >= 196 KB), with 2 * 504 threads/block so 1 block/SM keeps
+  // full warp occupancy while reducing partition count on wide multi-partition data (>= 4 resulting partitions,
+  // avoiding SM-parallelism and L1 regressions on narrow few-partition shapes like Year). Off restores the 48 KB
+  // static cap. Bit-identical.
+  bool dense_wide_hist_96k = true;  // key: dense_wide_hist_96k
   // quantized two-sync level prefix: K = min(floor(log2(num_leaves)), max_depth - 1, 10), with no depth cap when
   // max_depth is unlimited. Only eligible depth-limited host flows use this prefix (where device_tree's depth bound
   // holds, the complete device tree replaces it). Where the leaf budget cannot bind, run device-driven: the host enqueues
@@ -1118,6 +1129,7 @@ struct FalcataPlan {
     if (key == "pair_code5_slots") return &pair_code5_slots;
     if (key == "pair_code5_tall") return &pair_code5_tall;
     if (key == "pair_code5_epilogue") return &pair_code5_epilogue;
+    if (key == "pair_code5_flat_table") return &pair_code5_flat_table;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "dense_level_row_blocks") return &dense_level_row_blocks;
     if (key == "dense_block_map") return &dense_block_map;
@@ -1168,6 +1180,7 @@ struct FalcataPlan {
     if (key == "shape_memo") return &shape_memo;
     if (key == "wide_partitions") return &wide_partitions;
     if (key == "dense_wide_hist") return &dense_wide_hist;
+    if (key == "dense_wide_hist_96k") return &dense_wide_hist_96k;
     if (key == "device_levels") return &device_levels;
     if (key == "device_tree") return &device_tree;
     if (key == "device_tree_lean_end") return &device_tree_lean_end;
