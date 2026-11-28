@@ -730,6 +730,7 @@ set(
       src/treelearner/feature_parallel_tree_learner.cpp
       src/treelearner/gpu_tree_learner.cpp
       src/treelearner/gradient_discretizer.cpp
+      src/treelearner/linear_leaf_solver.cpp
       src/treelearner/linear_tree_learner.cpp
       src/treelearner/serial_tree_learner.cpp
       src/treelearner/tree_learner.cpp
