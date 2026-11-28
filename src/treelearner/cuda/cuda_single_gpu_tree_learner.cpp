@@ -3663,6 +3663,7 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
   cudaStream_t apply_stream_saved = cuda_data_partition_->ExchangeApplyStream(find_stream);
   cudaStream_t hist_stream_saved = cuda_histogram_constructor_->ExchangeHistStream(find_stream);
+  CHECK_EQ(cuda_histogram_constructor_->hist_stream(), find_stream);
   struct RestoreDeviceLevelStreams {
     CUDADataPartition* partition;
     CUDAHistogramConstructor* histogram;
@@ -3910,6 +3911,7 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cfg.max_depth)));
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cfg.gap_block_dim)));
     key.push_back(static_cast<const void*>(device_level_flag_device_));
+    key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(DeviceLevelPdlGraphChainEnabled() ? 1 : 0)));
   }
   if (cfg.whole_tree) {
     // Append only: leave prefix keys and old field indices unchanged; map allocation is independent.
@@ -3962,7 +3964,7 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       key.push_back(static_cast<const void*>(device_bynode_cfg_.table));
     }
     key.push_back(reinterpret_cast<const void*>(
-      static_cast<uintptr_t>((FalcataPlan::Get().pdl_graph_chain ? 1 : 0) |
+      static_cast<uintptr_t>((DeviceLevelPdlGraphChainEnabled() ? 1 : 0) |
                              (cuda_data_partition_->ShouldWarmClearDeviceLevelLeafMap() ? 2 : 0))));
   }
   if (!cuda_histogram_constructor_->DeviceLevelGraphCapturable()) {

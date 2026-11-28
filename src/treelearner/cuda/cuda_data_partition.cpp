@@ -83,6 +83,8 @@ void CUDADataPartition::Init() {
     if (cudaGetDevice(&device) == cudaSuccess &&
         cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, device) == cudaSuccess) {
       l2_cache_bytes_ = static_cast<size_t>(std::max(l2, 0));
+    } else {
+      (void)cudaGetLastError();
     }
   }
   // allocate CUDA memory

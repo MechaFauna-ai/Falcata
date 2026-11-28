@@ -796,7 +796,10 @@ struct FalcataPlan {
   bool pdl_level_chain = true;      // key: pdl_level_chain
   // complete programmatic dependent launch across the remaining level-chain edges inside device_levels / device_tree
   // (DeviceLevelReset -> Select -> GenBit, HybridSplitInnerFusedBatch -> Construct, Fix/Subtract/Copy -> Find, plus
-  // AggregateBatch and nonquant/cat device-level chain); gated by pdl_level_chain. Bit-identical.
+  // nonquant/cat device-level chain), and also extends PDL to the host-level batched aggregate
+  // (HybridAggregateBlockOffsetBatchKernel), fix/subtract (FixHistogramDiscretizedBatchedKernel,
+  // SubtractHistogramDiscretized*), and find (FindBestSplits*ForLevel*) kernels (all consumers call
+  // PdlWaitForProducer()); gated by pdl_level_chain. Bit-identical.
   bool pdl_graph_chain = true;      // key: pdl_graph_chain
   // warm-clear cudaMemsetAsync of the row -> leaf map before the complete device tree's final inline apply
   // (key device_tree_map_clear: auto|on|off):

@@ -249,6 +249,10 @@ void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_l
   DeviceLevelResetKernel<<<1, 32, 0, stream>>>(config, num_leaves);
 }
 
+bool DeviceLevelPdlGraphChainEnabled() {
+  return PdlGraphChainEnabled();
+}
+
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
                              cudaStream_t stream, const int max_leaves) {
   // the select holds MAX_SPLITS splits of 2 * MAX_SPLITS leaves: the register-batched block kDeviceLevelMaxPairs
