@@ -29,6 +29,12 @@
 #include "cuda/cuda_score_updater.hpp"
 #include "score_updater.hpp"
 
+#ifdef USE_CUDA
+namespace Falcata {
+class CUDAMulticlassTrainer;
+}  // namespace Falcata
+#endif  // USE_CUDA
+
 namespace Falcata {
 
 using json11_internal_lightgbm::Json;
@@ -694,6 +700,12 @@ class GBDT : public GBDTBase {
   * \param train_data_changes Whether ResetTrainingData rebuilds the train score updater and buffers itself
   */
   void OnBoostingOnGPUChanged(bool train_data_changes);
+  /*! \brief cuda_plan key multiclass_concurrent: whether this multiclass GBDT iteration can run concurrently
+   *  across per-class non-blocking CUDA streams on a single host thread. */
+  bool MulticlassConcurrentUsable() const;
+  /*! \brief Concurrent multiclass body of TrainOneIter (called after Boosting() and Bagging()). */
+  bool TrainOneIterMulticlassConcurrent(const score_t* gradients, const score_t* hessians,
+                                        std::vector<double>* init_scores);
   #endif  // USE_CUDA
 
   /*! \brief current iteration */
@@ -807,6 +819,10 @@ class GBDT : public GBDTBase {
   Json forced_splits_json_;
   bool linear_tree_;
   std::unique_ptr<SampleStrategy> data_sample_strategy_;
+#ifdef USE_CUDA
+  /*! \brief cuda_plan key multiclass_concurrent: declared after tree_learner_ so it destroys before slot 0 */
+  std::unique_ptr<CUDAMulticlassTrainer> multiclass_trainer_;
+#endif  // USE_CUDA
 };
 
 }  // namespace Falcata

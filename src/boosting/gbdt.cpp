@@ -5,6 +5,7 @@
  */
 #include "gbdt.h"
 
+#include <Falcata/falcata_plan.h>
 #include <Falcata/metric.h>
 #include <Falcata/network.h>
 #include <Falcata/objective_function.h>
@@ -28,6 +29,8 @@
 #ifdef USE_CUDA
 #include <cuda_runtime.h>
 #include <Falcata/cuda/cuda_tree.hpp>
+#include "../treelearner/cost_effective_gradient_boosting.hpp"
+#include "../treelearner/cuda/cuda_multiclass_trainer.hpp"
 #endif  // USE_CUDA
 
 namespace Falcata {
@@ -214,10 +217,16 @@ GBDT::GBDT()
 }
 
 GBDT::~GBDT() {
+#ifdef USE_CUDA
+  multiclass_trainer_.reset();
+#endif  // USE_CUDA
 }
 
 void GBDT::Init(const Config* config, const Dataset* train_data, const ObjectiveFunction* objective_function,
                 const std::vector<const Metric*>& training_metrics) {
+#ifdef USE_CUDA
+  multiclass_trainer_.reset();
+#endif  // USE_CUDA
   CHECK_NOTNULL(train_data);
   CheckSingleTargetLabels(objective_function, train_data, "training");
   train_data_ = train_data;
@@ -489,6 +498,9 @@ void GBDT::Train(int snapshot_freq, const std::string& model_output_path) {
 double ObtainAutomaticInitialScore(const ObjectiveFunction* fobj, int class_id);
 
 void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const size_t ncol) {
+#ifdef USE_CUDA
+  multiclass_trainer_.reset();
+#endif  // USE_CUDA
   if (leaf_value_dim_ > 1) {
     Log::Fatal(
         "Refitting vector-leaf models is not supported yet "
@@ -650,6 +662,7 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
     return VectorTrainOneIter();
   }
   Common::FunctionTimer fun_timer("GBDT::TrainOneIter", global_timer);
+  const bool custom_objective = (gradients != nullptr && hessians != nullptr);
   std::vector<double> init_scores(num_tree_per_iteration_, 0.0);
   // boosting first
   if (gradients == nullptr || hessians == nullptr) {
@@ -706,6 +719,17 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
   if (objective_function_ == nullptr && is_use_subset && bag_data_cnt < num_data_ && !boosting_on_gpu_ && !data_sample_strategy_->IsHessianChange()) {
     ResetGradientBuffers();
   }
+
+#ifdef USE_CUDA
+  if (!custom_objective && MulticlassConcurrentUsable()) {
+    return TrainOneIterMulticlassConcurrent(gradients, hessians, &init_scores);
+  }
+  if (multiclass_trainer_ != nullptr) {
+    multiclass_trainer_.reset();
+  }
+#else
+  (void)custom_objective;
+#endif  // USE_CUDA
 
   bool should_continue = false;
   for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
@@ -781,6 +805,122 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
   ++iter_;
   return false;
 }
+
+#ifdef USE_CUDA
+bool GBDT::MulticlassConcurrentUsable() const {
+  if (!FalcataPlan::Get().multiclass_concurrent) {
+    return false;
+  }
+  if (!boosting_on_gpu_ || config_ == nullptr || config_->device_type != std::string("cuda") ||
+      config_->boosting != std::string("gbdt")) {
+    return false;
+  }
+  if (num_tree_per_iteration_ <= 1 || leaf_value_dim_ != 1 || train_data_ == nullptr ||
+      train_data_->num_features() <= 0) {
+    return false;
+  }
+  if (objective_function_ == nullptr || objective_function_->IsRenewTreeOutput()) {
+    return false;
+  }
+  if (linear_tree_ || config_->linear_tree || !config_->forcedsplits_filename.empty() ||
+      !forced_splits_json_.is_null()) {
+    return false;
+  }
+  if (data_sample_strategy_ == nullptr || data_sample_strategy_->is_use_subset() ||
+      data_sample_strategy_->bag_data_cnt() != num_data_ || config_->bagging_by_query ||
+      config_->bagging_freq != 0) {
+    return false;
+  }
+  if (!config_->interaction_constraints_vector.empty() || !config_->monotone_constraints.empty()) {
+    return false;
+  }
+  if (CostEfficientGradientBoosting::IsEnable(config_.get())) {
+    return false;
+  }
+  if (config_->use_quantized_grad && config_->quant_train_renew_leaf) {
+    return false;
+  }
+  if (!CUDAMulticlassTrainer::Supports(tree_learner_.get())) {
+    return false;
+  }
+  int active = 0;
+  for (int c = 0; c < num_tree_per_iteration_; ++c) {
+    if (class_need_train_[c]) {
+      ++active;
+    }
+  }
+  if (active < 2) {
+    return false;
+  }
+  return true;
+}
+
+bool GBDT::TrainOneIterMulticlassConcurrent(const score_t* gradients, const score_t* hessians,
+                                            std::vector<double>* init_scores) {
+  if (multiclass_trainer_ == nullptr) {
+    multiclass_trainer_.reset(new CUDAMulticlassTrainer(
+        config_.get(), train_data_, is_constant_hessian_, boosting_on_gpu_, tree_learner_.get()));
+  }
+  const bool is_first_iter = models_.size() < static_cast<size_t>(num_tree_per_iteration_);
+  const bool apply_bias_on_stream = valid_score_updater_.empty();
+  std::vector<std::unique_ptr<Tree>> trained_trees;
+  multiclass_trainer_->TrainRound(gradients, hessians, class_need_train_, is_first_iter,
+                                  shrinkage_rate_, *init_scores, apply_bias_on_stream,
+                                  train_score_updater_.get(), &trained_trees);
+
+  bool should_continue = false;
+  for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
+    std::unique_ptr<Tree> new_tree = std::move(trained_trees[cur_tree_id]);
+    if (new_tree == nullptr) {
+      new_tree.reset(new Tree(2, false, false));
+    }
+    if (new_tree->num_leaves() > 1) {
+      should_continue = true;
+      CHECK(new_tree->is_cuda_tree());
+      if (!valid_score_updater_.empty()) {
+        // Stream 0 already waited on every slot's score_done_event_ inside TrainRound;
+        // score validation sets BEFORE AddBias (matching GBDT::TrainOneIter order).
+        for (auto& score_updater : valid_score_updater_) {
+          score_updater->AddScore(new_tree.get(), cur_tree_id);
+        }
+        if (std::fabs((*init_scores)[cur_tree_id]) > kEpsilon) {
+          new_tree->AddBias((*init_scores)[cur_tree_id]);
+        }
+      }
+    } else {
+      if (is_first_iter) {
+        if (objective_function_ != nullptr && !config_->boost_from_average && !train_score_updater_->has_init_score()) {
+          (*init_scores)[cur_tree_id] = ObtainAutomaticInitialScore(objective_function_, cur_tree_id);
+          train_score_updater_->AddScore((*init_scores)[cur_tree_id], cur_tree_id);
+          for (auto& score_updater : valid_score_updater_) {
+            score_updater->AddScore((*init_scores)[cur_tree_id], cur_tree_id);
+          }
+        }
+        new_tree->AsConstantTree((*init_scores)[cur_tree_id], num_data_);
+      } else {
+        new_tree->AsConstantTree(0, num_data_);
+      }
+    }
+    CheckLeafOutputsAreFinite(new_tree.get(), iter_, cur_tree_id);
+    models_.push_back(std::move(new_tree));
+  }
+
+  if (!should_continue) {
+    Log::Warning("Stopped training because there are no more leaves that meet the split requirements");
+    if (models_.size() > static_cast<size_t>(num_tree_per_iteration_)) {
+      for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
+        models_.pop_back();
+      }
+    } else {
+      ++iter_;
+    }
+    return true;
+  }
+
+  ++iter_;
+  return false;
+}
+#endif  // USE_CUDA
 
 bool GBDT::VectorTrainOneIter() {
   Common::FunctionTimer fun_timer("GBDT::TrainOneIter", global_timer);
@@ -1155,6 +1295,9 @@ double GBDT::GetLowerBoundValue() const {
 
 void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction* objective_function,
                              const std::vector<const Metric*>& training_metrics) {
+#ifdef USE_CUDA
+  multiclass_trainer_.reset();
+#endif  // USE_CUDA
   if (leaf_value_dim_ > 1) {
     Log::Fatal(
         "Continuing training from a vector-leaf model is not supported by the "
@@ -1328,6 +1471,11 @@ void GBDT::ResetConfig(const Config* config) {
                         !data_sample_strategy_->IsHessianChange();  // for sample strategy with Hessian change, fall back to boosting on CPU
       tree_learner_->ResetBoostingOnGPU(boosting_on_gpu_);
     }
+#ifdef USE_CUDA
+    if (multiclass_trainer_ != nullptr) {
+      multiclass_trainer_->ResetConfig(new_config.get());
+    }
+#endif  // USE_CUDA
 
     if (train_data_ != nullptr) {
       data_sample_strategy_->ResetSampleConfig(new_config.get(), false);
@@ -1343,6 +1491,11 @@ void GBDT::ResetConfig(const Config* config) {
       if (tree_learner_ != nullptr) {
         tree_learner_->ResetConfig(config_.get());
       }
+#ifdef USE_CUDA
+      if (multiclass_trainer_ != nullptr) {
+        multiclass_trainer_->ResetConfig(config_.get());
+      }
+#endif  // USE_CUDA
       if (train_data_ != nullptr) {
         data_sample_strategy_->ResetSampleConfig(config_.get(), false);
       }
@@ -1356,6 +1509,11 @@ void GBDT::ResetConfig(const Config* config) {
     }
   }
   config_.reset(new_config.release());
+#ifdef USE_CUDA
+  if (multiclass_trainer_ != nullptr && !MulticlassConcurrentUsable()) {
+    multiclass_trainer_.reset();
+  }
+#endif  // USE_CUDA
 }
 
 void GBDT::ResetGradientBuffers() {

@@ -409,40 +409,43 @@ void CUDAColumnData::CopySubrow(
 
 void CUDAColumnData::SetCompactColumnView(const std::vector<int>& column_to_compact_slot,
                                           void* compact_buf,
-                                          size_t bytes_per_col) {
+                                          size_t bytes_per_col,
+                                          cudaStream_t stream) {
   // Repoint cuda_data_by_column_ at the per-tree compact buffer. data_by_column_
   // (the owning unique_ptr<CUDAVector<uint8_t>>s) is left untouched; we only
   // override the GPU-side pointer table that kernels read.
-  std::vector<uint8_t*> view(num_columns_, nullptr);
+  compact_column_host_view_.assign(num_columns_, nullptr);
   uint8_t* base = reinterpret_cast<uint8_t*>(compact_buf);
   for (int c = 0; c < num_columns_; ++c) {
     if (column_is_sparse(c)) {
-      // The compact buffer is gathered from the ROW matrix, whose encoding
-      // differs from a sparse column's (0 there means "the most-frequent bin",
-      // which the row matrix spells out). Publishing those bytes would make the
-      // split-apply kernels route this feature's rows by the wrong rule, so
-      // this column keeps its own buffer.
-      view[c] = OriginalColumnPointer(c);
+      compact_column_host_view_[c] = OriginalColumnPointer(c);
       continue;
     }
     if (c < static_cast<int>(column_to_compact_slot.size()) && column_to_compact_slot[c] >= 0) {
       const size_t off = static_cast<size_t>(column_to_compact_slot[c]) * bytes_per_col;
-      view[c] = base + off;
+      compact_column_host_view_[c] = base + off;
     }
   }
-  cuda_data_by_column_.InitFromHostVector(view);
-  // Keep a host-readable mirror so GetColumnData() can return the split column's
-  // device pointer in the skip-allocation path (data_by_column_ stays null there).
-  compact_column_host_view_ = view;
-  // The gather writes a byte per value, whatever the source column was. Sparse
-  // columns are in the view too, but pointing at their ORIGINAL buffers -- they
-  // keep their original encoding.
   for (int c = 0; c < num_columns_; ++c) {
-    if (view[c] != nullptr && !column_is_sparse(c)) {
+    if (compact_column_host_view_[c] != nullptr && !column_is_sparse(c)) {
       column_bit_type_[c] = 8;
     }
   }
-  cuda_column_bit_type_.InitFromHostVector(column_bit_type_);
+  if (stream != nullptr) {
+    if (cuda_data_by_column_.Size() != compact_column_host_view_.size()) {
+      cuda_data_by_column_.Resize(compact_column_host_view_.size());
+    }
+    CopyFromHostToCUDADeviceAsync<uint8_t*>(cuda_data_by_column_.RawData(), compact_column_host_view_.data(),
+                                            compact_column_host_view_.size(), stream, __FILE__, __LINE__);
+    if (cuda_column_bit_type_.Size() != column_bit_type_.size()) {
+      cuda_column_bit_type_.Resize(column_bit_type_.size());
+    }
+    CopyFromHostToCUDADeviceAsync<uint8_t>(cuda_column_bit_type_.RawData(), column_bit_type_.data(),
+                                           column_bit_type_.size(), stream, __FILE__, __LINE__);
+  } else {
+    cuda_data_by_column_.InitFromHostVector(compact_column_host_view_);
+    cuda_column_bit_type_.InitFromHostVector(column_bit_type_);
+  }
   packed_column_view_active_ = false;
   original_column_view_active_ = false;
   ++column_view_generation_;

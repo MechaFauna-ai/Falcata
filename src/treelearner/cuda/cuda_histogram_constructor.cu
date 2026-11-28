@@ -78,7 +78,7 @@ __global__ void MetaBatchScatterKernel(const uint8_t* __restrict__ staged, const
   }
 }
 
-void LaunchMetaBatchScatter(const uint8_t* staged, const MetaBatchSegments& segments) {
+void LaunchMetaBatchScatter(const uint8_t* staged, const MetaBatchSegments& segments, cudaStream_t stream) {
   if (segments.count <= 0) {
     return;
   }
@@ -88,7 +88,7 @@ void LaunchMetaBatchScatter(const uint8_t* staged, const MetaBatchSegments& segm
   }
   constexpr uint32_t kThreads = 256;
   const uint32_t blocks_x = std::min<uint32_t>(256, (max_bytes + kThreads * 4 - 1) / (kThreads * 4));
-  MetaBatchScatterKernel<<<dim3(std::max<uint32_t>(1, blocks_x), static_cast<unsigned int>(segments.count)), kThreads>>>(
+  MetaBatchScatterKernel<<<dim3(std::max<uint32_t>(1, blocks_x), static_cast<unsigned int>(segments.count)), kThreads, 0, stream>>>(
     staged, segments);
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
@@ -182,7 +182,8 @@ void LaunchInterleaveGradHessKernel(
   const score_t* hessians,
   float2* gradients_hessians,
   data_size_t num_data,
-  uint32_t* absmax_bits) {
+  uint32_t* absmax_bits,
+  cudaStream_t stream) {
   // no rows, nothing to interleave: an empty grid is an invalid launch whose error would stay pending for an
   // unrelated check
   if (num_data <= 0) {
@@ -190,7 +191,7 @@ void LaunchInterleaveGradHessKernel(
   }
   const int block_size = 1024;
   const int num_blocks = static_cast<int>((num_data + block_size - 1) / block_size);
-  InterleaveGradHessKernel<<<num_blocks, block_size>>>(
+  InterleaveGradHessKernel<<<num_blocks, block_size, 0, stream>>>(
     gradients, hessians, gradients_hessians, num_data, absmax_bits);
   // the construct kernels read the interleaved pairs: a rejected launch must not leave them stale
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
@@ -716,9 +717,9 @@ void CUDAHistogramConstructor::LaunchZeroHistSlotsKernel(const std::vector<int>&
     // every slot of a level at most: one allocation (a growth would synchronize the device)
     cuda_zero_slots_.Resize(std::max(slots.size(), static_cast<size_t>(num_leaves_) + 2));
   }
-  // pageable source: the copy is staged before it returns, so the caller's vector may change at once; the legacy
-  // stream orders it before the kernel, as the memsets it replaces were ordered before the next construct
-  CopyFromHostToCUDADeviceAsync<int>(cuda_zero_slots_.RawData(), slots.data(), slots.size(), 0, __FILE__, __LINE__);
+  // pageable source: the copy is staged before it returns, so the caller's vector may change at once; exec_stream_
+  // (or legacy stream) orders it before the kernel
+  CopyFromHostToCUDADeviceAsync<int>(cuda_zero_slots_.RawData(), slots.data(), slots.size(), exec_stream_, __FILE__, __LINE__);
   constexpr int kThreads = 256;
   const size_t num_words = slot_size / 2;
   const int blocks_x = static_cast<int>(std::max<size_t>(1, std::min<size_t>(64, (num_words + kThreads - 1) / kThreads)));
@@ -726,8 +727,8 @@ void CUDAHistogramConstructor::LaunchZeroHistSlotsKernel(const std::vector<int>&
   constexpr int kMaxSlotsPerLaunch = 65535;
   for (int first = 0; first < num_slots; first += kMaxSlotsPerLaunch) {
     const int count = std::min(kMaxSlotsPerLaunch, num_slots - first);
-    ZeroHistSlotsKernel<<<dim3(blocks_x, count), kThreads, 0, 0>>>(cuda_hist_.RawData(),
-                                                                   cuda_zero_slots_.RawData() + first, slot_size);
+    ZeroHistSlotsKernel<<<dim3(blocks_x, count), kThreads, 0, exec_stream_>>>(cuda_hist_.RawData(),
+                                                                              cuda_zero_slots_.RawData() + first, slot_size);
   }
 }
 
@@ -1724,9 +1725,7 @@ uint64_t* CUDAHistogramConstructor::CountScratch(int* rows) {
   const size_t slab_bytes = cuda_det_dense_slots_.Size() * sizeof(hist_t);
   *rows = static_cast<int>(slab_bytes / CountScratchRowBytes(count_codes_->wide));
   if (count_scratch_dirty_) {
-    // the deterministic construct wrote its slot rows here since the last zeroing: the count scratch starts from
-    // zero (on the legacy default stream: the blocking histogram streams order after it)
-    CUDASUCCESS_OR_FATAL(cudaMemsetAsync(base, 0, slab_bytes, 0));
+    CUDASUCCESS_OR_FATAL(cudaMemsetAsync(base, 0, slab_bytes, exec_stream_));
     count_scratch_dirty_ = false;
   }
   return base;
@@ -2016,18 +2015,18 @@ __global__ void NonquantFixedScaleKernel(const uint32_t* absmax_bits, const int 
 }
 
 void LaunchNonquantFixedScale(const score_t* gradients, const score_t* hessians, const data_size_t n,
-                              const bool absmax_ready, uint32_t* absmax_bits, int* scale, double* inv_scale) {
+                              const bool absmax_ready, uint32_t* absmax_bits, int* scale, double* inv_scale,
+                              cudaStream_t stream) {
   int lg_n = 0;
   while (lg_n < 62 && (static_cast<int64_t>(1) << lg_n) < static_cast<int64_t>(std::max<data_size_t>(n, 1))) {
     ++lg_n;
   }
-  // legacy default stream, like the gradient interleave: ordered before the construct streams
   if (!absmax_ready) {  // (zeroed by the caller)
     constexpr int kThreads = 256;
     const int blocks = static_cast<int>(std::min<int64_t>(1024, (static_cast<int64_t>(n) + kThreads - 1) / kThreads));
-    NonquantFixedAbsMaxKernel<<<std::max(blocks, 1), kThreads, 0, 0>>>(gradients, hessians, n, absmax_bits);
+    NonquantFixedAbsMaxKernel<<<std::max(blocks, 1), kThreads, 0, stream>>>(gradients, hessians, n, absmax_bits);
   }
-  NonquantFixedScaleKernel<<<1, 1, 0, 0>>>(absmax_bits, lg_n, scale, inv_scale);
+  NonquantFixedScaleKernel<<<1, 1, 0, stream>>>(absmax_bits, lg_n, scale, inv_scale);
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 

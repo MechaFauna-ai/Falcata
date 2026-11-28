@@ -539,14 +539,14 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
     constexpr int kChunkWarpThreads = 256;
     const int chunk_grid = (num_reduce_blocks_ * WARPSIZE + kChunkWarpThreads - 1) / kChunkWarpThreads;
     if (const_hess) {
-      LaunchLevelChainKernel(pdl_reduce, ReduceMinMaxChunkWarpKernel<true>, dim3(chunk_grid), dim3(kChunkWarpThreads), 0, nullptr,
+      LaunchLevelChainKernel(pdl_reduce, ReduceMinMaxChunkWarpKernel<true>, dim3(chunk_grid), dim3(kChunkWarpThreads), 0, stream_,
         num_data, num_reduce_blocks_, input_gradients, input_hessians,
         grad_min_block_buffer_.RawData(),
         grad_max_block_buffer_.RawData(),
         hess_min_block_buffer_.RawData(),
         hess_max_block_buffer_.RawData());
     } else {
-      LaunchLevelChainKernel(pdl_reduce, ReduceMinMaxChunkWarpKernel<false>, dim3(chunk_grid), dim3(kChunkWarpThreads), 0, nullptr,
+      LaunchLevelChainKernel(pdl_reduce, ReduceMinMaxChunkWarpKernel<false>, dim3(chunk_grid), dim3(kChunkWarpThreads), 0, stream_,
         num_data, num_reduce_blocks_, input_gradients, input_hessians,
         grad_min_block_buffer_.RawData(),
         grad_max_block_buffer_.RawData(),
@@ -556,23 +556,23 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
 #endif
   } else {
     LaunchLevelChainKernel(pdl_reduce, ReduceMinMaxKernel, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0,
-      nullptr,
+      stream_,
       num_data, input_gradients, input_hessians,
       grad_min_block_buffer_.RawData(),
       grad_max_block_buffer_.RawData(),
       hess_min_block_buffer_.RawData(),
       hess_max_block_buffer_.RawData());
   }
-  // cuda_plan key async_tree_start: these kernels share the legacy default stream and the host reads none of
+  // cuda_plan key async_tree_start: these kernels share the stream and the host reads none of
   // their outputs in between, so the device syncs between them only add launch gaps
-  const bool device_syncs = !AsyncTreeStart();
+  const bool device_syncs = stream_ == nullptr && !AsyncTreeStart();
   if (device_syncs) {
     SynchronizeCUDADevice(__FILE__, __LINE__);
   }
   // cuda_plan key pdl_level_chain: the tree-start chain (block min/max, discretize, scale snapshot) launched as
-  // programmatic dependents of the kernel before each on the legacy default stream, where no device sync separates them
+  // programmatic dependents of the kernel before each on the stream, where no device sync separates them
   const bool pdl = !device_syncs && PdlLevelChainEnabled();
-  LaunchLevelChainKernel(pdl, ReduceBlockMinMaxKernel, dim3(1), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, nullptr,
+  LaunchLevelChainKernel(pdl, ReduceBlockMinMaxKernel, dim3(1), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, stream_,
     num_reduce_blocks_,
     num_grad_quant_bins_,
     grad_min_block_buffer_.RawData(),
@@ -605,23 +605,32 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
     // rank uses its local histogram, which is acceptable (the scale is only a
     // resolution knob and these buffers are not all-reduced here); single-GPU is
     // the validated path.
-    SetCUDAMemory<unsigned int>(grad_mag_hist_buffer_.RawData(), 0, kNumMagBuckets, __FILE__, __LINE__);
+    if (stream_ != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaMemsetAsync(grad_mag_hist_buffer_.RawData(), 0,
+                                           static_cast<size_t>(kNumMagBuckets) * sizeof(unsigned int), stream_));
+    } else {
+      SetCUDAMemory<unsigned int>(grad_mag_hist_buffer_.RawData(), 0, kNumMagBuckets, __FILE__, __LINE__);
+    }
     const size_t mag_hist_shared_bytes = static_cast<size_t>(kNumMagBuckets) * sizeof(unsigned int);
-    ComputeGradMagHistogramKernel<<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE, mag_hist_shared_bytes>>>(
+    ComputeGradMagHistogramKernel<<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE, mag_hist_shared_bytes, stream_>>>(
       num_data, input_gradients,
       grad_max_block_buffer_.RawDataReadOnly(),
       num_grad_quant_bins_,
       kNumMagBuckets,
       grad_mag_hist_buffer_.RawData());
-    SynchronizeCUDADevice(__FILE__, __LINE__);
-    ComputeRobustGradScaleKernel<<<1, 1>>>(
+    if (stream_ == nullptr) {
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+    }
+    ComputeRobustGradScaleKernel<<<1, 1, 0, stream_>>>(
       kNumMagBuckets,
       num_grad_quant_bins_,
       num_data,
       grad_mag_hist_buffer_.RawDataReadOnly(),
       grad_min_block_buffer_.RawData(),
       grad_max_block_buffer_.RawData());
-    SynchronizeCUDADevice(__FILE__, __LINE__);
+    if (stream_ == nullptr) {
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+    }
   }
 
   // iter_ advances once per tree and classes train in fixed order, so
@@ -635,9 +644,13 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
     if (ef_inbag_mask_.Size() < static_cast<size_t>(num_data)) {
       ef_inbag_mask_.Resize(static_cast<size_t>(num_data));
     }
-    SetCUDAMemory<uint8_t>(ef_inbag_mask_.RawData(), 0, static_cast<size_t>(num_data), __FILE__, __LINE__);
+    if (stream_ != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaMemsetAsync(ef_inbag_mask_.RawData(), 0, static_cast<size_t>(num_data), stream_));
+    } else {
+      SetCUDAMemory<uint8_t>(ef_inbag_mask_.RawData(), 0, static_cast<size_t>(num_data), __FILE__, __LINE__);
+    }
     const int mask_blocks = CUDABlockCount(ef_inbag_count_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE);
-    BuildInbagMaskKernel<<<mask_blocks, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(
+    BuildInbagMaskKernel<<<mask_blocks, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE, 0, stream_>>>(
       ef_inbag_count_, ef_inbag_indices_, ef_inbag_mask_.RawData());
     ef_mask = ef_inbag_mask_.RawData();
   }
@@ -665,41 +678,41 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
   if (stochastic_rounding_) {
     // Stochastic path never uses the robust scale (it is a fixed-point-only mode).
     if (copy_hess) {
-      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<true, false, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, nullptr,
+      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<true, false, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, stream_,
         DiscretizeGradientsKernel_ARGS);
     } else if (const_hess) {
-      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<true, false, false, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, nullptr,
+      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<true, false, false, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, stream_,
         DiscretizeGradientsKernel_ARGS);
     } else {
-      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<true, false, false>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, nullptr,
+      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<true, false, false>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, stream_,
         DiscretizeGradientsKernel_ARGS);
     }
   } else if (robust_scale_) {
     if (copy_hess) {
-      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, true, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, nullptr,
+      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, true, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, stream_,
         DiscretizeGradientsKernel_ARGS);
     } else if (const_hess) {
-      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, true, false, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, nullptr,
+      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, true, false, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, stream_,
         DiscretizeGradientsKernel_ARGS);
     } else {
-      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, true, false>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, nullptr,
+      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, true, false>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, stream_,
         DiscretizeGradientsKernel_ARGS);
     }
   } else {
     if (copy_hess) {
-      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, false, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, nullptr,
+      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, false, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, stream_,
         DiscretizeGradientsKernel_ARGS);
     } else if (const_hess) {
-      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, false, false, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, nullptr,
+      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, false, false, true>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, stream_,
         DiscretizeGradientsKernel_ARGS);
     } else {
-      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, false, false>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, nullptr,
+      LaunchLevelChainKernel(pdl, DiscretizeGradientsKernel<false, false, false>, dim3(num_reduce_blocks_), dim3(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE), 0, stream_,
         DiscretizeGradientsKernel_ARGS);
     }
   }
   // the scales the find kernels dequantize with: per-plane for the gradient,
   // plane 0's for the shared hessian
-  LaunchLevelChainKernel(pdl, SnapshotPlaneScalesKernel, dim3(1), dim3(1), 0, nullptr,
+  LaunchLevelChainKernel(pdl, SnapshotPlaneScalesKernel, dim3(1), dim3(1), 0, stream_,
     grad_max_block_buffer_.RawDataReadOnly(),
     hess_max_block_buffer_.RawDataReadOnly(),
     plane_grad_scale_.RawData() + plane,

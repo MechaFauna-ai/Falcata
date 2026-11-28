@@ -129,6 +129,7 @@ ALL_KEYS = {
     "bagged_code_view": True,
     "oob_node_table": True,
     "bagging_fused_scan": True,
+    "multiclass_concurrent": True,
     # random forest keys (boosting=rf only: no-ops on the gbdt cells below)
     "forest_batched": True,
     "forest_count_hist": True,

@@ -17,7 +17,8 @@ namespace Falcata {
 
 CUDATree::CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
   const int gpu_device_id, const bool has_categorical_feature,
-  uint8_t* pooled_device_buffer, int leaf_value_dim, CUDATreeCatArena* cat_arena):
+  uint8_t* pooled_device_buffer, int leaf_value_dim, CUDATreeCatArena* cat_arena,
+  cudaStream_t external_stream, cudaStream_t init_stream):
 Tree(max_leaves, track_branch_features, is_linear, leaf_value_dim),
 num_threads_per_block_add_prediction_to_score_(1024) {
   is_cuda_tree_ = true;
@@ -46,12 +47,12 @@ num_threads_per_block_add_prediction_to_score_(1024) {
     cuda_cat_boundaries_.Resize(max_leaves);
     cuda_cat_boundaries_inner_.Resize(max_leaves);
   }
-  InitCUDAMemory(pooled_device_buffer);
+  InitCUDAMemory(pooled_device_buffer, external_stream, init_stream);
   if (leaf_value_dim_ > 1) {
     cuda_leaf_values_vec_.Resize(static_cast<size_t>(max_leaves_) * leaf_value_dim_);
     // the root's vector output must start defined (a stump reads it back)
-    CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_values_vec_.RawData()), 0,
-      static_cast<size_t>(leaf_value_dim_) * sizeof(double)));
+    CUDASUCCESS_OR_FATAL(cudaMemsetAsync(reinterpret_cast<void*>(cuda_leaf_values_vec_.RawData()), 0,
+      static_cast<size_t>(leaf_value_dim_) * sizeof(double), init_stream));
   }
 }
 
@@ -65,7 +66,7 @@ CUDATree::CUDATree(const Tree* host_tree):
 CUDATree::~CUDATree() {
   // CUDAVector members handle their own deallocation. ToHost() may have
   // already destroyed the stream — guard against double-destroy.
-  if (cuda_stream_ != nullptr) {
+  if (cuda_stream_ != nullptr && owns_stream_) {
     gpuAssert(cudaStreamDestroy(cuda_stream_), __FILE__, __LINE__);
   }
   if (prepared_leaf_value_ != nullptr) {
@@ -86,7 +87,7 @@ void CUDATree::PrepareRetainedLeafValues(const int num_leaves) {
   prepared_leaf_value_size_ = static_cast<size_t>(num_leaves);
 }
 
-void CUDATree::InitCUDAMemory(uint8_t* pooled_device_buffer) {
+void CUDATree::InitCUDAMemory(uint8_t* pooled_device_buffer, cudaStream_t external_stream, cudaStream_t init_stream) {
   if (pooled_device_buffer != nullptr) {
     // carve every per-tree array from the caller-owned slab as non-owning views:
     // no per-tree cudaMalloc, and the whole set reads back with one D2H copy in
@@ -137,13 +138,18 @@ void CUDATree::InitCUDAMemory(uint8_t* pooled_device_buffer) {
     cuda_internal_count_.Resize(static_cast<size_t>(max_leaves_));
     cuda_split_gain_.Resize(static_cast<size_t>(max_leaves_));
   }
-  // async memsets on the default stream, stream-ordered before every consumer
-  // (SetCUDAMemory would pay one full device sync each)
-  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_value_.RawData()), 0, sizeof(double)));
-  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_weight_.RawData()), 0, sizeof(double)));
-  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_parent_.RawData()), -1, sizeof(int)));
-  CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_stream_));
-  if (!pooled_) {
+  // async memsets on init_stream (or default stream), stream-ordered before every consumer
+  CUDASUCCESS_OR_FATAL(cudaMemsetAsync(reinterpret_cast<void*>(cuda_leaf_value_.RawData()), 0, sizeof(double), init_stream));
+  CUDASUCCESS_OR_FATAL(cudaMemsetAsync(reinterpret_cast<void*>(cuda_leaf_weight_.RawData()), 0, sizeof(double), init_stream));
+  CUDASUCCESS_OR_FATAL(cudaMemsetAsync(reinterpret_cast<void*>(cuda_leaf_parent_.RawData()), -1, sizeof(int), init_stream));
+  if (external_stream != nullptr) {
+    cuda_stream_ = external_stream;
+    owns_stream_ = false;
+  } else {
+    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_stream_));
+    owns_stream_ = true;
+  }
+  if (!pooled_ && init_stream == nullptr) {
     SynchronizeCUDADevice(__FILE__, __LINE__);
   }
 }
@@ -451,9 +457,19 @@ inline void CUDATree::Shrinkage(double rate) {
   LaunchShrinkageKernel(rate);
 }
 
+void CUDATree::ShrinkageOnStream(double rate, cudaStream_t stream) {
+  Tree::Shrinkage(rate);
+  LaunchShrinkageKernel(rate, stream);
+}
+
 inline void CUDATree::AddBias(double val) {
   Tree::AddBias(val);
   LaunchAddBiasKernel(val);
+}
+
+void CUDATree::AddBiasOnStream(double val, cudaStream_t stream) {
+  Tree::AddBias(val);
+  LaunchAddBiasKernel(val, stream);
 }
 
 bool CUDATree::LaunchSlabReadback(void* readback_staging_device, size_t readback_staging_bytes) const {
@@ -468,7 +484,7 @@ bool CUDATree::LaunchSlabReadback(void* readback_staging_device, size_t readback
 
 void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device,
                       size_t readback_staging_bytes, const std::function<void()>& after_device_copy,
-                      bool slab_in_staging) {
+                      bool slab_in_staging, cudaStream_t stream) {
   left_child_.resize(max_leaves_ - 1);
   right_child_.resize(max_leaves_ - 1);
   split_feature_inner_.resize(max_leaves_ - 1);
@@ -498,14 +514,18 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
     const uint8_t* slab = reinterpret_cast<const uint8_t*>(cuda_threshold_.RawData());
     const uint8_t* p = nullptr;
     if (readback_staging_device != nullptr && readback_staging_bytes >= slab_bytes) {
-      // cuda_plan key readback_kernel: copy kernel on the default stream into the caller's mapped pinned buffer
+      // cuda_plan key readback_kernel: copy kernel on stream (or default stream) into the caller's mapped pinned buffer
       // (cuda_plan key final_readback_first: already copied there and synchronized, see LaunchSlabReadback)
-      // CopyFromCUDADeviceToMappedHost syncs stream 0 before returning, so p is safe to read immediately
       if (!slab_in_staging) {
         CopyFromCUDADeviceToMappedHost(readback_staging_device, readback_staging_host, slab, slab_bytes,
-                                       __FILE__, __LINE__);
+                                       __FILE__, __LINE__, stream);
       }
       p = static_cast<const uint8_t*>(readback_staging_host);
+    } else if (stream != nullptr) {
+      staging.resize(slab_bytes);
+      CopyFromCUDADeviceToHostAsync<uint8_t>(staging.data(), slab, slab_bytes, stream, __FILE__, __LINE__);
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
+      p = staging.data();
     } else {
       staging.resize(slab_bytes);
       CopyFromCUDADeviceToHost<uint8_t>(staging.data(), slab, slab_bytes, __FILE__, __LINE__);
@@ -582,7 +602,7 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
       num_leaves_size * static_cast<size_t>(leaf_value_dim_), __FILE__, __LINE__);
   }
 
-  ShrinkHostVectorsAndReleaseDevice();
+  ShrinkHostVectorsAndReleaseDevice(stream);
 }
 
 bool CUDATree::ReadCategoricalRecordOneCopy() {
@@ -611,7 +631,11 @@ bool CUDATree::ReadCategoricalRecordOneCopy() {
   if (packed.size() < total) {
     packed.resize(total);
   }
-  // legacy-stream copy: waits for the pack kernel on the (blocking) tree stream
+  // legacy-stream copy: waits for the pack kernel on the (blocking) tree stream;
+  // when using a non-blocking external stream, sync it explicitly before copying
+  if (!owns_stream_ && cuda_stream_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
+  }
   CopyFromCUDADeviceToHost<uint32_t>(packed.data(), staging.RawData(), total, __FILE__, __LINE__);
   cat_boundaries_.resize(num_boundaries);
   cat_boundaries_inner_.resize(num_boundaries);
@@ -631,7 +655,7 @@ bool CUDATree::ReadCategoricalRecordOneCopy() {
   return true;
 }
 
-void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
+void CUDATree::ShrinkHostVectorsAndReleaseDevice(cudaStream_t stream) {
   // Shrink host vectors to actual size before they're kept long-term in the
   // Booster's model list. With max_leaves_=8192 but actual num_leaves_~125 on
   // Numerai prod, this drops per-tree CPU memory from ~650 KB to ~10 KB.
@@ -650,7 +674,9 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
     internal_value_.resize(n_internal); internal_value_.shrink_to_fit();
     internal_weight_.resize(n_internal); internal_weight_.shrink_to_fit();
     internal_count_.resize(n_internal); internal_count_.shrink_to_fit();
-    leaf_value_.resize(n_leaves); leaf_value_.shrink_to_fit();
+    if (leaf_value_.size() != n_leaves) {
+      leaf_value_.resize(n_leaves); leaf_value_.shrink_to_fit();
+    }
     leaf_weight_.resize(n_leaves); leaf_weight_.shrink_to_fit();
     leaf_count_.resize(n_leaves); leaf_count_.shrink_to_fit();
     leaf_depth_.resize(n_leaves); leaf_depth_.shrink_to_fit();
@@ -664,25 +690,24 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
   // below frees device memory (the retained leaf values are copied out on the default stream, ahead of the next
   // tree's writes to the slab): the host need not wait for the device, e.g. for a leaf-map pass queued after the
   // tree's copy (CUDASingleGPUTreeLearner::FlushEarlyLeafMap)
-  if (!(pooled_ && FalcataPlan::Get().final_readback_first)) {
+  if (stream == nullptr && !(pooled_ && FalcataPlan::Get().final_readback_first)) {
     SynchronizeCUDADevice(__FILE__, __LINE__);
   }
 
-  // Free per-tree GPU buffers no longer needed after ToHost. Without this,
-  // accumulated per-tree GPU memory OOMs a 32GB device after ~6k trees on
-  // the Numerai prod config. cuda_leaf_value_ is the only field needed
-  // post-train (AddPredictionToScore reads it); shrink to actual num_leaves_.
-  // For pooled trees the slab is reused by the next tree, so the retained leaf
-  // values must be materialized into owned memory in every case (Resize on a
-  // view copies-then-owns; Materialize covers num_leaves_ == max_leaves_).
   if (prepared_leaf_value_ != nullptr) {
-    if (cuda_leaf_value_.IsView() && num_leaves_ > 0 && num_leaves_ < max_leaves_ &&
-        cuda_leaf_value_.Size() >= static_cast<size_t>(num_leaves_) &&
-        prepared_leaf_value_size_ == static_cast<size_t>(num_leaves_)) {
-      // cuda_plan key tree_end_prealloc: the bytes Resize would copy, into the buffer allocated at the final level,
-      // on the same legacy default stream without the host wait (the readers are later work on that stream)
-      CopyFromCUDADeviceToCUDADeviceAsync<double>(prepared_leaf_value_, cuda_leaf_value_.RawData(),
-                                                  static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
+    const bool size_ok = stream != nullptr ?
+      (prepared_leaf_value_size_ >= static_cast<size_t>(num_leaves_)) :
+      (num_leaves_ < max_leaves_ && prepared_leaf_value_size_ == static_cast<size_t>(num_leaves_));
+    if (cuda_leaf_value_.IsView() && num_leaves_ > 0 &&
+        cuda_leaf_value_.Size() >= static_cast<size_t>(num_leaves_) && size_ok) {
+      // cuda_plan key tree_end_prealloc / multiclass_concurrent: async D2D into the preallocated owned buffer
+      if (stream != nullptr) {
+        CopyFromCUDADeviceToCUDADeviceAsync<double>(prepared_leaf_value_, cuda_leaf_value_.RawData(),
+                                                    static_cast<size_t>(num_leaves_), stream, __FILE__, __LINE__);
+      } else {
+        CopyFromCUDADeviceToCUDADeviceAsync<double>(prepared_leaf_value_, cuda_leaf_value_.RawData(),
+                                                    static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
+      }
       cuda_leaf_value_.Adopt(prepared_leaf_value_, static_cast<size_t>(num_leaves_));
     } else {
       DeallocateCUDAMemory<double>(&prepared_leaf_value_, __FILE__, __LINE__);
@@ -690,7 +715,16 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
     prepared_leaf_value_ = nullptr;
     prepared_leaf_value_size_ = 0;
   }
-  if (num_leaves_ > 0 && num_leaves_ < max_leaves_ && cuda_leaf_value_.Size() > 0) {
+  if (stream != nullptr && cuda_leaf_value_.IsView() && num_leaves_ > 0) {
+    // materialize on `stream` without touching stream 0
+    double* owned = nullptr;
+    AllocateCUDAMemory<double>(&owned, static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
+    CopyFromCUDADeviceToCUDADeviceAsync<double>(owned, cuda_leaf_value_.RawData(),
+                                                static_cast<size_t>(num_leaves_), stream, __FILE__, __LINE__);
+    cuda_leaf_value_.Adopt(owned, static_cast<size_t>(num_leaves_));
+  }
+  if (num_leaves_ > 0 && num_leaves_ < max_leaves_ && cuda_leaf_value_.Size() > 0 &&
+      cuda_leaf_value_.Size() != static_cast<size_t>(num_leaves_)) {
     cuda_leaf_value_.Resize(static_cast<size_t>(num_leaves_));
   }
   cuda_leaf_value_.Materialize();
@@ -720,7 +754,9 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
 
   // Destroy the per-tree CUDA stream — only used during construction.
   if (cuda_stream_ != nullptr) {
-    gpuAssert(cudaStreamDestroy(cuda_stream_), __FILE__, __LINE__);
+    if (owns_stream_) {
+      gpuAssert(cudaStreamDestroy(cuda_stream_), __FILE__, __LINE__);
+    }
     cuda_stream_ = nullptr;
   }
 }
@@ -765,7 +801,7 @@ void CUDATree::ReturnCategoricalArena() {
   cat_arena_ = nullptr;
 }
 
-void CUDATree::RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits) {
+void CUDATree::RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits, cudaStream_t stream) {
   // Host replay of SplitKernel, one split at a time in classic (greedy) order.
   // The host mirrors are in their constructor state (the selective growth phase
   // never calls Split/SplitBatch), so leaf_parent_[0] == -1 and leaf_depth_[0]
@@ -851,16 +887,54 @@ void CUDATree::RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& split
   // upload the final leaf values into the (still max_leaves_-sized, possibly
   // pooled-view) device array: AddPredictionToScore, Shrinkage and the leaf
   // renewal kernels read them
+  if (stream != nullptr) {
+    // Shrink leaf_value_ BEFORE the async H2D copy so ShrinkHostVectorsAndReleaseDevice never reallocates
+    // the source buffer while the copy is in flight.
+    if (num_leaves_ > 0 && num_leaves_ < max_leaves_) {
+      leaf_value_.resize(static_cast<size_t>(num_leaves_));
+      leaf_value_.shrink_to_fit();
+    }
+    if (prepared_leaf_value_ != nullptr && prepared_leaf_value_size_ >= static_cast<size_t>(num_leaves_) &&
+        cuda_leaf_value_.IsView()) {
+      CopyFromHostToCUDADeviceAsync<double>(prepared_leaf_value_, leaf_value_.data(),
+        static_cast<size_t>(num_leaves_), stream, __FILE__, __LINE__);
+      cuda_leaf_value_.Adopt(prepared_leaf_value_, static_cast<size_t>(num_leaves_));
+      prepared_leaf_value_ = nullptr;
+      prepared_leaf_value_size_ = 0;
+    } else {
+      CopyFromHostToCUDADeviceAsync<double>(cuda_leaf_value_.RawData(), leaf_value_.data(),
+        static_cast<size_t>(num_leaves_), stream, __FILE__, __LINE__);
+    }
+    if (leaf_value_dim_ > 1) {
+      CopyFromHostToCUDADeviceAsync<double>(cuda_leaf_values_vec_.RawData(), leaf_values_vec_.data(),
+        static_cast<size_t>(num_leaves_) * leaf_value_dim_, stream, __FILE__, __LINE__);
+    }
+    // Wait for the small host-to-device leaf_value_ upload before returning so a caller's
+    // immediate ShrinkageOnStream() cannot mutate host leaf_value_ while the H2D is in flight.
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
+    ShrinkHostVectorsAndReleaseDevice(stream);
+    return;
+  }
   CopyFromHostToCUDADevice<double>(cuda_leaf_value_.RawData(), leaf_value_.data(),
     static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
   if (leaf_value_dim_ > 1) {
     CopyFromHostToCUDADevice<double>(cuda_leaf_values_vec_.RawData(), leaf_values_vec_.data(),
       static_cast<size_t>(num_leaves_) * leaf_value_dim_, __FILE__, __LINE__);
   }
-  ShrinkHostVectorsAndReleaseDevice();
+  ShrinkHostVectorsAndReleaseDevice(stream);
 }
 
-void CUDATree::SyncLeafOutputFromHostToCUDA() {
+void CUDATree::SyncLeafOutputFromHostToCUDA(cudaStream_t stream) {
+  if (stream != nullptr) {
+    CopyFromHostToCUDADeviceAsync<double>(cuda_leaf_value_.RawData(), leaf_value_.data(), leaf_value_.size(), stream,
+                                          __FILE__, __LINE__);
+    if (leaf_value_dim_ > 1) {
+      const size_t count = std::min(leaf_values_vec_.size(), cuda_leaf_values_vec_.Size());
+      CopyFromHostToCUDADeviceAsync<double>(cuda_leaf_values_vec_.RawData(), leaf_values_vec_.data(), count, stream,
+                                            __FILE__, __LINE__);
+    }
+    return;
+  }
   CopyFromHostToCUDADevice<double>(cuda_leaf_value_.RawData(), leaf_value_.data(), leaf_value_.size(), __FILE__, __LINE__);
   if (leaf_value_dim_ > 1) {
     const size_t count = std::min(leaf_values_vec_.size(), cuda_leaf_values_vec_.Size());

@@ -95,6 +95,23 @@ class CUDABestSplitFinder {
     hist_subtract_done_events_ = subtract_done_events;
   }
 
+  /*! \brief cuda_plan key multiclass_concurrent: route all finder launches and readbacks through a caller-owned
+   *  non-blocking stream (nullptr restores the owned streams created in Init). */
+  void SetExecStream(cudaStream_t stream) {
+    if (stream != nullptr) {
+      if (owned_cuda_streams_.empty()) {
+        owned_cuda_streams_ = cuda_streams_;
+      }
+      for (size_t i = 0; i < cuda_streams_.size(); ++i) {
+        cuda_streams_[i] = stream;
+      }
+    } else if (!owned_cuda_streams_.empty()) {
+      cuda_streams_ = owned_cuda_streams_;
+      owned_cuda_streams_.clear();
+    }
+    exec_stream_ = stream;
+  }
+
   /*! \brief select which histogram pipeline's completion events the next
    *  FindBestSplitsForLeaf call waits on (hybrid level-batched growth) */
   void SetActiveHistPipeline(const int pipeline) { active_hist_pipeline_ = pipeline; }
@@ -755,6 +772,8 @@ class CUDABestSplitFinder {
   double path_smooth_;
   double max_delta_step_;
   std::vector<cudaStream_t> cuda_streams_;
+  std::vector<cudaStream_t> owned_cuda_streams_;
+  cudaStream_t exec_stream_ = nullptr;
   /*! \brief histogram subtraction completion events (not owned); used to order
    *  the per-leaf FindBestSplits kernels after histogram subtraction. */
   const cudaEvent_t* hist_subtract_done_events_ = nullptr;

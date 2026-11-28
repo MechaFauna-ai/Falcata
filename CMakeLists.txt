@@ -758,6 +758,7 @@ set(
       src/treelearner/cuda/cuda_best_split_finder.cpp
       src/treelearner/cuda/cuda_data_partition.cpp
       src/treelearner/cuda/cuda_forest_trainer.cpp
+      src/treelearner/cuda/cuda_multiclass_trainer.cpp
       src/treelearner/cuda/cuda_histogram_constructor.cpp
       src/treelearner/cuda/cuda_leaf_splits.cpp
       src/treelearner/cuda/cuda_single_gpu_tree_learner.cpp

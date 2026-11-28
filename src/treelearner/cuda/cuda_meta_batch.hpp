@@ -32,8 +32,27 @@ struct MetaBatchSegments {
   int count;
 };
 
-// defined in cuda_histogram_constructor.cu; launches on the legacy default stream
-void LaunchMetaBatchScatter(const uint8_t* staged, const MetaBatchSegments& segments);
+// defined in cuda_histogram_constructor.cu; launches on `stream` (nullptr = legacy default stream)
+void LaunchMetaBatchScatter(const uint8_t* staged, const MetaBatchSegments& segments, cudaStream_t stream = nullptr);
+
+// stream for tree-start metadata uploads on this thread (nullptr = legacy default stream)
+inline cudaStream_t& CurrentTreeStartStream() {
+  static thread_local cudaStream_t stream = nullptr;
+  return stream;
+}
+
+class TreeStartStreamScope {
+ public:
+  explicit TreeStartStreamScope(cudaStream_t stream) : prev_(CurrentTreeStartStream()) {
+    CurrentTreeStartStream() = stream;
+  }
+  ~TreeStartStreamScope() {
+    CurrentTreeStartStream() = prev_;
+  }
+
+ private:
+  cudaStream_t prev_;
+};
 
 class TreeStartMetaBatch {
  public:
@@ -49,8 +68,8 @@ class TreeStartMetaBatch {
       const uint8_t* src = static_cast<const uint8_t*>(host_src);
       std::vector<uint8_t>& kept = NextKept();
       kept.assign(src, src + bytes);
-      CopyFromHostToCUDADeviceAsync<uint8_t>(static_cast<uint8_t*>(device_dst), kept.data(), bytes, 0,
-                                             __FILE__, __LINE__);
+      CopyFromHostToCUDADeviceAsync<uint8_t>(static_cast<uint8_t*>(device_dst), kept.data(), bytes,
+                                             CurrentTreeStartStream(), __FILE__, __LINE__);
       return;
     }
     if (segments_.count == kMetaBatchMaxSegments) {
@@ -64,10 +83,11 @@ class TreeStartMetaBatch {
     segments_.bytes[segments_.count] = static_cast<uint32_t>(bytes);
     ++segments_.count;
   }
-  // one H2D copy of the staged bytes and one scatter kernel, both on the legacy default stream; the arena is only
-  // rewritten by the next flush's copy, which the stream orders behind this scatter. For a pageable source the CUDA
-  // documentation promises staging before return only for the synchronous cudaMemcpy, so the staged bytes are kept
-  // unmodified until Release() (as TreeStartUploads keeps its copies) and the next flush stages into another buffer.
+  // one H2D copy of the staged bytes and one scatter kernel, both on CurrentTreeStartStream() (default: legacy
+  // default stream); the arena is only rewritten by the next flush's copy, which the stream orders behind this
+  // scatter. For a pageable source the CUDA documentation promises staging before return only for the synchronous
+  // cudaMemcpy, so the staged bytes are kept unmodified until Release() (as TreeStartUploads keeps its copies) and
+  // the next flush stages into another buffer.
   void Flush() {
     if (segments_.count == 0) {
       return;
@@ -75,8 +95,9 @@ class TreeStartMetaBatch {
     if (device_.Size() < host_.size()) {
       device_.Resize(host_.size() * 2);
     }
-    CopyFromHostToCUDADeviceAsync<uint8_t>(device_.RawData(), host_.data(), host_.size(), 0, __FILE__, __LINE__);
-    LaunchMetaBatchScatter(device_.RawDataReadOnly(), segments_);
+    cudaStream_t stream = CurrentTreeStartStream();
+    CopyFromHostToCUDADeviceAsync<uint8_t>(device_.RawData(), host_.data(), host_.size(), stream, __FILE__, __LINE__);
+    LaunchMetaBatchScatter(device_.RawDataReadOnly(), segments_, stream);
     std::swap(host_, NextKept());  // a swap keeps both heap buffers: the copy's source stays where it is
     Discard();
   }

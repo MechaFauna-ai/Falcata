@@ -56,10 +56,12 @@ CUDADataPartition::CUDADataPartition(
 }
 
 CUDADataPartition::~CUDADataPartition() {
-  // Init creates the streams; the vector is empty when it never ran
-  for (cudaStream_t stream : cuda_streams_) {
+  // Init creates the streams; if SetExecStream redirected cuda_streams_, destroy the saved owned streams
+  std::vector<cudaStream_t>& to_destroy = owned_cuda_streams_.empty() ? cuda_streams_ : owned_cuda_streams_;
+  for (cudaStream_t stream : to_destroy) {
     CUDASUCCESS_OR_FATAL(cudaStreamDestroy(stream));
   }
+  owned_cuda_streams_.clear();
   cuda_streams_.clear();
   cuda_streams_.shrink_to_fit();
   if (indices_copy_done_event_ != nullptr) {
@@ -139,14 +141,23 @@ void CUDADataPartition::BeforeTrain() {
     LaunchBeforeTrainLeafInit();
     return;
   }
-  // async memsets on the default stream (SetCUDAMemory would pay one full
-  // device sync each); the synchronous copies below order after them
-  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_num_data_.RawData()), 0, sizeof(data_size_t) * static_cast<size_t>(num_leaves_)));
-  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_data_start_.RawData()), 0, sizeof(data_size_t) * static_cast<size_t>(num_leaves_)));
-  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_data_end_.RawData()), 0, sizeof(data_size_t) * static_cast<size_t>(num_leaves_)));
+  // async memsets on exec_stream_ (or default stream)
+  CUDASUCCESS_OR_FATAL(cudaMemsetAsync(reinterpret_cast<void*>(cuda_leaf_num_data_.RawData()), 0,
+    sizeof(data_size_t) * static_cast<size_t>(num_leaves_), exec_stream_));
+  CUDASUCCESS_OR_FATAL(cudaMemsetAsync(reinterpret_cast<void*>(cuda_leaf_data_start_.RawData()), 0,
+    sizeof(data_size_t) * static_cast<size_t>(num_leaves_), exec_stream_));
+  CUDASUCCESS_OR_FATAL(cudaMemsetAsync(reinterpret_cast<void*>(cuda_leaf_data_end_.RawData()), 0,
+    sizeof(data_size_t) * static_cast<size_t>(num_leaves_), exec_stream_));
   if (!use_bagging_) {
-    CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_leaf_num_data_.RawData(), cuda_num_data_.RawData(), 1, __FILE__, __LINE__);
-    CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_leaf_data_end_.RawData(), cuda_num_data_.RawData(), 1, __FILE__, __LINE__);
+    if (exec_stream_ != nullptr) {
+      CopyFromCUDADeviceToCUDADeviceAsync<data_size_t>(cuda_leaf_num_data_.RawData(), cuda_num_data_.RawData(), 1,
+        exec_stream_, __FILE__, __LINE__);
+      CopyFromCUDADeviceToCUDADeviceAsync<data_size_t>(cuda_leaf_data_end_.RawData(), cuda_num_data_.RawData(), 1,
+        exec_stream_, __FILE__, __LINE__);
+    } else {
+      CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_leaf_num_data_.RawData(), cuda_num_data_.RawData(), 1, __FILE__, __LINE__);
+      CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_leaf_data_end_.RawData(), cuda_num_data_.RawData(), 1, __FILE__, __LINE__);
+    }
   } else {
     UploadTreeStartMeta<data_size_t>(cuda_leaf_num_data_.RawData(), &num_used_indices_, 1);
     UploadTreeStartMeta<data_size_t>(cuda_leaf_data_end_.RawData(), &num_used_indices_, 1);
@@ -317,6 +328,8 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
       split_info_early_written_ = false;
       CUDASUCCESS_OR_FATAL(cudaEventSynchronize(aggregate_done_event_));
       apply_in_flight_ = true;
+    } else if (exec_stream_ != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream_));
     } else {
       SynchronizeCUDADevice(__FILE__, __LINE__);
     }
@@ -326,9 +339,13 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
   split_info_early_written_ = false;
   EnsurePinnedSplitInfoCapacity(num_ints);
   if (FalcataPlan::Get().readback_kernel && pinned_split_info_device_ != nullptr) {
-    // cuda_plan key readback_kernel: a copy kernel on the same default stream, then that stream's sync (see the key)
+    // cuda_plan key readback_kernel: a copy kernel on exec_stream_ (or default stream), then that stream's sync
     CopyFromCUDADeviceToMappedHost(pinned_split_info_device_, pinned_split_info_, cuda_split_info_buffer_.RawData(),
-                                   num_ints * sizeof(int), __FILE__, __LINE__);
+                                   num_ints * sizeof(int), __FILE__, __LINE__, exec_stream_);
+  } else if (exec_stream_ != nullptr) {
+    CopyFromCUDADeviceToHostAsync<int>(pinned_split_info_, cuda_split_info_buffer_.RawData(),
+      num_ints, exec_stream_, __FILE__, __LINE__);
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream_));
   } else {
     CopyFromCUDADeviceToHost<int>(pinned_split_info_, cuda_split_info_buffer_.RawData(),
       num_ints, __FILE__, __LINE__);
@@ -357,6 +374,21 @@ void CUDADataPartition::SetLeafDataLayout(const std::vector<data_size_t>& leaf_n
   EnsureLevelPartitioned();  // cuda_plan key final_map_only
   level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
   if (num_leaves <= 0) {
+    return;
+  }
+  if (exec_stream_ != nullptr) {
+    layout_leaf_num_data_.assign(leaf_num_data.begin(), leaf_num_data.begin() + num_leaves);
+    layout_leaf_data_start_.assign(leaf_data_start.begin(), leaf_data_start.begin() + num_leaves);
+    layout_leaf_data_end_.resize(static_cast<size_t>(num_leaves));
+    for (int i = 0; i < num_leaves; ++i) {
+      layout_leaf_data_end_[i] = leaf_data_start[i] + leaf_num_data[i];
+    }
+    CopyFromHostToCUDADeviceAsync<data_size_t>(cuda_leaf_num_data_.RawData(), layout_leaf_num_data_.data(),
+      static_cast<size_t>(num_leaves), exec_stream_, __FILE__, __LINE__);
+    CopyFromHostToCUDADeviceAsync<data_size_t>(cuda_leaf_data_start_.RawData(), layout_leaf_data_start_.data(),
+      static_cast<size_t>(num_leaves), exec_stream_, __FILE__, __LINE__);
+    CopyFromHostToCUDADeviceAsync<data_size_t>(cuda_leaf_data_end_.RawData(), layout_leaf_data_end_.data(),
+      static_cast<size_t>(num_leaves), exec_stream_, __FILE__, __LINE__);
     return;
   }
   std::vector<data_size_t> leaf_data_end(num_leaves);

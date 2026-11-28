@@ -381,7 +381,7 @@ __global__ void CUDAInitSetValuesKernel(
 
 void CUDALeafSplits::LaunchInitValuesEmptyKernel() {
   // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the other leaf's value init)
-  LaunchLevelChainKernel(PdlLevelChainEnabled(), InitValuesEmptyKernel, dim3(1), dim3(1), 0, nullptr,
+  LaunchLevelChainKernel(PdlLevelChainEnabled(), InitValuesEmptyKernel, dim3(1), dim3(1), 0, stream_,
                          cuda_struct_.RawData());
 }
 
@@ -392,11 +392,11 @@ void CUDALeafSplits::LaunchInitValuesKernel(
   const data_size_t num_used_indices,
   hist_t* cuda_hist_in_leaf) {
   if (cuda_bagging_data_indices == nullptr) {
-    CUDAInitValuesKernel1<false><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
+    CUDAInitValuesKernel1<false><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS, 0, stream_>>>(
       cuda_gradients_, cuda_hessians_, num_used_indices, nullptr, cuda_sum_of_gradients_buffer_.RawData(),
       cuda_sum_of_hessians_buffer_.RawData());
   } else {
-    CUDAInitValuesKernel1<true><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
+    CUDAInitValuesKernel1<true><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS, 0, stream_>>>(
       cuda_gradients_, cuda_hessians_, num_used_indices, cuda_bagging_data_indices, cuda_sum_of_gradients_buffer_.RawData(),
       cuda_sum_of_hessians_buffer_.RawData());
   }
@@ -417,7 +417,7 @@ void CUDALeafSplits::LaunchInitValuesKernel(
       cuda_sum_of_hessians_buffer_.RawData(), num_used_indices,
       cuda_data_indices_in_leaf, cuda_hist_in_leaf, cuda_struct_.RawData());
   } else {
-    CUDAInitValuesKernel2<<<1, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
+    CUDAInitValuesKernel2<<<1, NUM_THREADS_PER_BLOCK_LEAF_SPLITS, 0, stream_>>>(
       lambda_l1, lambda_l2, max_delta_step,
       num_blocks_init_from_gradients_,
       cuda_sum_of_gradients_buffer_.RawData(),
@@ -450,12 +450,12 @@ void CUDALeafSplits::LaunchInitValuesKernel(
     constexpr int kChunkWarpThreads = 256;
     const int chunk_grid = (num_blocks_init_from_gradients_ * WARPSIZE + kChunkWarpThreads - 1) / kChunkWarpThreads;
     if (cuda_bagging_data_indices == nullptr) {
-      CUDAInitValuesChunkWarpKernel<false><<<chunk_grid, kChunkWarpThreads>>>(
+      CUDAInitValuesChunkWarpKernel<false><<<chunk_grid, kChunkWarpThreads, 0, stream_>>>(
         reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, nullptr, num_blocks_init_from_gradients_,
         cuda_sum_of_gradients_buffer_.RawData(), cuda_sum_of_hessians_buffer_.RawData(),
         cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
     } else {
-      CUDAInitValuesChunkWarpKernel<true><<<chunk_grid, kChunkWarpThreads>>>(
+      CUDAInitValuesChunkWarpKernel<true><<<chunk_grid, kChunkWarpThreads, 0, stream_>>>(
         reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, cuda_bagging_data_indices,
         num_blocks_init_from_gradients_, cuda_sum_of_gradients_buffer_.RawData(),
         cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale,
@@ -463,11 +463,11 @@ void CUDALeafSplits::LaunchInitValuesKernel(
     }
 #endif
   } else if (cuda_bagging_data_indices == nullptr) {
-    CUDAInitValuesKernel3<false><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
+    CUDAInitValuesKernel3<false><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS, 0, stream_>>>(
       reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, nullptr, cuda_sum_of_gradients_buffer_.RawData(),
       cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
   } else {
-    CUDAInitValuesKernel3<true><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
+    CUDAInitValuesKernel3<true><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS, 0, stream_>>>(
       reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, cuda_bagging_data_indices, cuda_sum_of_gradients_buffer_.RawData(),
       cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
   }
@@ -493,7 +493,7 @@ void CUDALeafSplits::LaunchInitValuesKernel(
   } else {
     // cuda_plan key pdl_level_chain: a programmatic dependent of the per-chunk sums launched just before
     LaunchLevelChainKernel(PdlLevelChainEnabled(), CUDAInitValuesKernel4, dim3(1), dim3(NUM_THREADS_PER_BLOCK_LEAF_SPLITS),
-      0, nullptr,
+      0, stream_,
       lambda_l1, lambda_l2, max_delta_step,
       num_blocks_init_from_gradients_,
       cuda_sum_of_gradients_buffer_.RawData(),

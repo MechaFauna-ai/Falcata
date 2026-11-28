@@ -674,17 +674,22 @@ __global__ void CopyToMappedHostKernel(const int4* __restrict__ src16, int4* __r
 }
 
 void CopyFromCUDADeviceToMappedHost(void* dst_device, void* dst_host, const void* src, size_t size_in_bytes,
-                                    const char* file, const int line) {
+                                    const char* file, const int line, cudaStream_t stream) {
   if (size_in_bytes == 0 || dst_device == nullptr) {
-    CUDASUCCESS_OR_FATAL_OUTER(cudaMemcpy(dst_host, src, size_in_bytes, cudaMemcpyDeviceToHost));
+    if (stream != nullptr) {
+      CUDASUCCESS_OR_FATAL_OUTER(cudaMemcpyAsync(dst_host, src, size_in_bytes, cudaMemcpyDeviceToHost, stream));
+      CUDASUCCESS_OR_FATAL_OUTER(cudaStreamSynchronize(stream));
+    } else {
+      CUDASUCCESS_OR_FATAL_OUTER(cudaMemcpy(dst_host, src, size_in_bytes, cudaMemcpyDeviceToHost));
+    }
     return;
   }
-  LaunchCopyToMappedHost(dst_device, src, size_in_bytes, file, line);
-  CUDASUCCESS_OR_FATAL_OUTER(cudaStreamSynchronize(0));
+  LaunchCopyToMappedHost(dst_device, src, size_in_bytes, file, line, stream);
+  CUDASUCCESS_OR_FATAL_OUTER(cudaStreamSynchronize(stream));
 }
 
 void LaunchCopyToMappedHost(void* dst_device, const void* src, size_t size_in_bytes, const char* file,
-                            const int line) {
+                            const int line, cudaStream_t stream) {
   const bool aligned = ((reinterpret_cast<uintptr_t>(src) | reinterpret_cast<uintptr_t>(dst_device)) & 15u) == 0;
   const size_t num16 = aligned ? size_in_bytes / 16 : 0;
   const size_t body_bytes = num16 * 16;
@@ -692,7 +697,7 @@ void LaunchCopyToMappedHost(void* dst_device, const void* src, size_t size_in_by
   constexpr int kThreads = 256;
   const size_t num_items = num16 > num_tail ? num16 : num_tail;
   const unsigned int num_blocks = static_cast<unsigned int>((num_items + kThreads - 1) / kThreads);
-  CopyToMappedHostKernel<<<num_blocks, kThreads>>>(
+  CopyToMappedHostKernel<<<num_blocks, kThreads, 0, stream>>>(
     reinterpret_cast<const int4*>(src), reinterpret_cast<int4*>(dst_device), num16,
     reinterpret_cast<const uint8_t*>(src) + body_bytes, reinterpret_cast<uint8_t*>(dst_device) + body_bytes, num_tail);
   CUDASUCCESS_OR_FATAL_OUTER(cudaGetLastError());

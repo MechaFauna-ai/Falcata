@@ -183,7 +183,8 @@ class CUDATree : public Tree {
   explicit CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
     const int gpu_device_id, const bool has_categorical_feature,
     uint8_t* pooled_device_buffer = nullptr, int leaf_value_dim = 1,
-    CUDATreeCatArena* cat_arena = nullptr);
+    CUDATreeCatArena* cat_arena = nullptr,
+    cudaStream_t external_stream = nullptr, cudaStream_t init_stream = nullptr);
 
   /*! \brief bytes needed by the pooled per-tree device arrays (16 arrays of
    *  max_leaves entries + the batched split descriptors), 8-byte aligned */
@@ -294,7 +295,7 @@ class CUDATree : public Tree {
    *  output before the call (it seeds the internal_value_ chain), and in
    *  vector-leaf mode leaf_values_vec_[0, T) must hold the root's per-target
    *  outputs. */
-  void RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits);
+  void RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits, cudaStream_t stream = nullptr);
 
   /*! \brief categorical level record: apply one whole level, numerical and categorical splits, in level order
    *  (splits[k].num_leaves_at_split must equal the tree's num_leaves before split k, as in SplitBatch; the entries
@@ -391,24 +392,15 @@ class CUDATree : public Tree {
                                     const CUDASplitInfo* cuda_split_info);
 
   inline void Shrinkage(double rate) override;
+  void ShrinkageOnStream(double rate, cudaStream_t stream);
 
   inline void AddBias(double val) override;
+  void AddBiasOnStream(double val, cudaStream_t stream);
 
-  /*! \brief read the tree back to the host vectors and release the per-tree device arrays. readback_staging_*
-   *  (cuda_plan key readback_kernel, optional): a caller-owned mapped pinned buffer of readback_staging_bytes bytes
-   *  and its device alias; when it holds the pooled slab, the slab is copied into it by a kernel on the default
-   *  stream (CopyFromCUDADeviceToMappedHost) instead of a cudaMemcpy into a pageable staging vector.
-   *  after_device_copy (cuda_plan key final_readback_first, optional) is called right after the device arrays are
-   *  read back and before the host-side scatter and the device release: GPU work that reads none of the tree's
-   *  arrays can be queued there and run while the host finishes the copy. slab_in_staging (cuda_plan key
-   *  final_readback_first): the staging buffer already holds this pooled tree's final slab (LaunchSlabReadback,
-   *  followed by its producer-stream synchronization), so no copy is issued. A whole
-   *  active-prefix readback provides every field prefix read here at the same
-   *  full-L offsets; unused slab bytes need not be initialized. */
   void ToHost(void* readback_staging_host = nullptr, void* readback_staging_device = nullptr,
               size_t readback_staging_bytes = 0,
               const std::function<void()>& after_device_copy = std::function<void()>(),
-              bool slab_in_staging = false);
+              bool slab_in_staging = false, cudaStream_t stream = nullptr);
 
   /*! \brief cuda_plan key final_readback_first: launch, without a synchronize, the copy kernel ToHost would launch
    *  for a pooled tree's slab into readback_staging_device (the device alias of a mapped pinned buffer of
@@ -426,14 +418,23 @@ class CUDATree : public Tree {
                                const data_size_t* exact_counts, const int* device_journal,
                                int max_total_splits, cudaStream_t stream) const;
 
-  void SyncLeafOutputFromHostToCUDA();
+  void SyncLeafOutputFromHostToCUDA(cudaStream_t stream = nullptr);
 
   void SyncLeafOutputFromCUDAToHost();
 
   /*! \brief cuda_plan key tree_end_prealloc: allocate the owned device buffer ToHost keeps the leaf values in, for
    *  a tree expected to end with num_leaves leaves; ToHost uses it only if the tree ends with exactly that many
-   *  leaves on the pooled slab, and frees it otherwise */
+   *  leaves on the pooled slab (or any <= num_leaves when stream != nullptr), and frees it otherwise */
   void PrepareRetainedLeafValues(int num_leaves);
+  /*! \brief adopt an externally allocated device buffer (size >= max_leaves) as prepared_leaf_value_ so ToHost /
+   *  RebuildFromHostSplits materialize cuda_leaf_value_ with zero cudaMalloc while concurrent streams are active */
+  void AdoptPreparedRetainedLeafValues(double* ptr, size_t size) {
+    if (prepared_leaf_value_ != nullptr) {
+      DeallocateCUDAMemory<double>(&prepared_leaf_value_, __FILE__, __LINE__);
+    }
+    prepared_leaf_value_ = ptr;
+    prepared_leaf_value_size_ = size;
+  }
 
  private:
   double* prepared_leaf_value_ = nullptr;
@@ -442,7 +443,7 @@ class CUDATree : public Tree {
   /*! \brief shared tail of ToHost() and RebuildFromHostSplits(): shrink the host
    *  vectors to num_leaves_, materialize the retained device leaf values and
    *  release every other per-tree device array + the per-tree stream */
-  void ShrinkHostVectorsAndReleaseDevice();
+  void ShrinkHostVectorsAndReleaseDevice(cudaStream_t stream = nullptr);
 
   /*! \brief part of ShrinkHostVectorsAndReleaseDevice(): keep exact-size owned copies of the inner bitsets and
    *  boundaries (AddPredictionToScore reads them for the tree's lifetime) and give the growth buffers back to the
@@ -463,7 +464,8 @@ class CUDATree : public Tree {
 
   void LaunchPackCategoricalRecordKernel(uint32_t* out, size_t words_bound, size_t words_inner_bound);
 
-  void InitCUDAMemory(uint8_t* pooled_device_buffer);
+  void InitCUDAMemory(uint8_t* pooled_device_buffer, cudaStream_t external_stream = nullptr,
+                      cudaStream_t init_stream = nullptr);
 
   void InitCUDA();
 
@@ -489,9 +491,9 @@ class CUDATree : public Tree {
                                         data_size_t num_data, double* score,
                                         int* leaf_index_out = nullptr) const;
 
-  void LaunchShrinkageKernel(const double rate);
+  void LaunchShrinkageKernel(const double rate, cudaStream_t stream = nullptr);
 
-  void LaunchAddBiasKernel(const double val);
+  void LaunchAddBiasKernel(const double val, cudaStream_t stream = nullptr);
 
   void LaunchSetVectorLeafValuesFromSplitKernel(const int left_leaf_index,
     const int right_leaf_index, const CUDASplitInfo* cuda_split_info);
@@ -548,7 +550,8 @@ class CUDATree : public Tree {
   /*! \brief whether the per-tree arrays are views into a pooled slab */
   bool pooled_ = false;
 
-  cudaStream_t cuda_stream_;
+  cudaStream_t cuda_stream_ = nullptr;
+  bool owns_stream_ = true;
 
  public:
   /*! \brief stream the tree-structure kernels (SplitBatch/SplitCategorical)

@@ -177,7 +177,8 @@ class CUDAColumnData {
   // by the caller via column_to_compact_slot[c] (-1 if not in sample).
   void SetCompactColumnView(const std::vector<int>& column_to_compact_slot,
                             void* compact_buf,
-                            size_t bytes_per_col);
+                            size_t bytes_per_col,
+                            cudaStream_t stream = nullptr);
 
   // Restore the GPU pointer table to the original per-column allocations.
   // Any consumer that reads columns the CURRENT tree did not sample -- tree

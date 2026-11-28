@@ -1006,6 +1006,11 @@ struct FalcataPlan {
   // the main array; bagged trees before the bag is copied into it (a new bag, or RestoreBagOrder's copy at every score
   // update, which also covers a bag kept for several trees). No row is read from the swapped-out buffer: bit-identical.
   bool index_parity_canonical = true;  // key: index_parity_canonical
+  // single-host-thread multi-stream concurrent multiclass GBDT round execution:
+  // each class tree of an iteration runs on its own non-blocking CUDA stream and
+  // learner slot (sharing immutable column/row data), overlapping GPU execution
+  // across classes and eliminating per-class host-GPU stalls. Bit-identical.
+  bool multiclass_concurrent = true;  // key: multiclass_concurrent
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
@@ -1175,6 +1180,7 @@ struct FalcataPlan {
     if (key == "device_level_graph") return &device_level_graph;
     if (key == "device_level_graph_update") return &device_level_graph_update;
     if (key == "index_parity_canonical") return &index_parity_canonical;
+    if (key == "multiclass_concurrent") return &multiclass_concurrent;
     return nullptr;
   }
 

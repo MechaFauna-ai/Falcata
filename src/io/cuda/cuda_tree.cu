@@ -742,14 +742,14 @@ __global__ void ShrinkageKernel(const double rate, double* cuda_leaf_value, cons
   }
 }
 
-void CUDATree::LaunchShrinkageKernel(const double rate) {
+void CUDATree::LaunchShrinkageKernel(const double rate, cudaStream_t stream) {
   const int num_threads_per_block = 1024;
   const int num_blocks = (num_leaves_ + num_threads_per_block - 1) / num_threads_per_block;
-  ShrinkageKernel<<<num_blocks, num_threads_per_block>>>(rate, cuda_leaf_value_.RawData(), num_leaves_);
+  ShrinkageKernel<<<num_blocks, num_threads_per_block, 0, stream>>>(rate, cuda_leaf_value_.RawData(), num_leaves_);
   if (leaf_value_dim_ > 1 && cuda_leaf_values_vec_.Size() > 0) {
     const int num_values = num_leaves_ * leaf_value_dim_;
     const int num_vec_blocks = (num_values + num_threads_per_block - 1) / num_threads_per_block;
-    ShrinkageKernel<<<num_vec_blocks, num_threads_per_block>>>(rate, cuda_leaf_values_vec_.RawData(), num_values);
+    ShrinkageKernel<<<num_vec_blocks, num_threads_per_block, 0, stream>>>(rate, cuda_leaf_values_vec_.RawData(), num_values);
   }
 }
 
@@ -760,14 +760,14 @@ __global__ void AddBiasKernel(const double val, double* cuda_leaf_value, const i
   }
 }
 
-void CUDATree::LaunchAddBiasKernel(const double val) {
+void CUDATree::LaunchAddBiasKernel(const double val, cudaStream_t stream) {
   const int num_threads_per_block = 1024;
   const int num_blocks = (num_leaves_ + num_threads_per_block - 1) / num_threads_per_block;
-  AddBiasKernel<<<num_blocks, num_threads_per_block>>>(val, cuda_leaf_value_.RawData(), num_leaves_);
+  AddBiasKernel<<<num_blocks, num_threads_per_block, 0, stream>>>(val, cuda_leaf_value_.RawData(), num_leaves_);
   if (leaf_value_dim_ > 1 && cuda_leaf_values_vec_.Size() > 0) {
     const int num_values = num_leaves_ * leaf_value_dim_;
     const int num_vec_blocks = (num_values + num_threads_per_block - 1) / num_threads_per_block;
-    AddBiasKernel<<<num_vec_blocks, num_threads_per_block>>>(val, cuda_leaf_values_vec_.RawData(), num_values);
+    AddBiasKernel<<<num_vec_blocks, num_threads_per_block, 0, stream>>>(val, cuda_leaf_values_vec_.RawData(), num_values);
   }
 }
 
