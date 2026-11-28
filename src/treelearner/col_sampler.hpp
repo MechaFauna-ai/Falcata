@@ -38,6 +38,7 @@ class ColSampler {
   }
 
   void SetTrainingData(const Dataset* train_data) {
+    InvalidatePeek();
     train_data_ = train_data;
     is_feature_used_.resize(train_data_->num_features(), 1);
     valid_feature_indices_ = train_data->ValidFeatureIndices();
@@ -53,6 +54,7 @@ class ColSampler {
   }
 
   void SetConfig(const Config* config) {
+    InvalidatePeek();
     fraction_bytree_ = config->feature_fraction;
     fraction_bynode_ = config->feature_fraction_bynode;
     // reset_parameter can change interaction_constraints too; a copy made only at construction kept the old ones
@@ -77,6 +79,15 @@ class ColSampler {
 
   void ResetByTree() {
     if (need_reset_bytree_) {
+      if (peeked_valid_ && peeked_rng_before_ == random_.State() &&
+          peeked_mask_.size() == is_feature_used_.size()) {
+        is_feature_used_.swap(peeked_mask_);
+        used_feature_indices_.swap(peeked_used_feature_indices_);
+        random_ = peeked_rng_after_;
+        peeked_valid_ = false;
+        return;
+      }
+      peeked_valid_ = false;
       // std::fill, not memset: with no used features the vector is empty and data() may be
       // null, which memset must not receive even for 0 bytes (UBSan: nonnull-attribute)
       std::fill(is_feature_used_.begin(), is_feature_used_.end(), 0);
@@ -91,6 +102,7 @@ class ColSampler {
         is_feature_used_[inner_feature_index] = 1;
       }
     } else {
+      peeked_valid_ = false;
       std::fill(is_feature_used_.begin(), is_feature_used_.end(), 1);
     }
   }
@@ -101,6 +113,38 @@ class ColSampler {
   /*! \brief The current per-tree sample (indices into the valid features; meaningful when need_reset_bytree()) */
   const std::vector<int>& used_feature_indices() const { return used_feature_indices_; }
 
+  /*! \brief Drop any cached next-tree peek without touching RNG state. */
+  void InvalidatePeek() { peeked_valid_ = false; }
+
+  /*!
+   * \brief Compute the next tree's per-tree feature mask without mutating this sampler's RNG state or active mask.
+   *        Caches the sample + post-draw RNG state so an immediate ResetByTree() consumes it in O(1) while any
+   *        early stopping, config reset, or intervening RNG draw leaves random_ untouched and falls back cleanly.
+   */
+  bool PeekNextByTree(std::vector<int8_t>* mask_out) {
+    if (!need_reset_bytree_) {
+      return false;
+    }
+    const unsigned int cur_state = random_.State();
+    if (!peeked_valid_ || peeked_rng_before_ != cur_state ||
+        peeked_mask_.size() != is_feature_used_.size()) {
+      peeked_rng_before_ = cur_state;
+      Random peek_rng = random_;
+      peeked_used_feature_indices_ = peek_rng.Sample(
+          static_cast<int>(valid_feature_indices_.size()), used_cnt_bytree_);
+      peeked_rng_after_ = peek_rng;
+      peeked_mask_.assign(is_feature_used_.size(), 0);
+      for (const int idx : peeked_used_feature_indices_) {
+        const int used_feature = valid_feature_indices_[idx];
+        const int inner_feature_index = train_data_->InnerFeatureIndex(used_feature);
+        peeked_mask_[inner_feature_index] = 1;
+      }
+      peeked_valid_ = true;
+    }
+    *mask_out = peeked_mask_;
+    return true;
+  }
+
   /*!
    * \brief Install a per-tree sample drawn by another sampler of the same config and data (the CUDA forest trainer,
    *        cuda_plan key forest_batched, draws every tree's sample in tree order with one sampler and hands each to
@@ -108,6 +152,7 @@ class ColSampler {
    *        without a per-tree sample. Does not touch the shared stream.
    */
   void SetByTreeSample(const std::vector<int>& used_feature_indices) {
+    InvalidatePeek();
     if (!need_reset_bytree_) {
       return;
     }
@@ -119,6 +164,7 @@ class ColSampler {
   }
 
   std::vector<int8_t> GetByNode(const Tree* tree, int leaf) {
+    InvalidatePeek();
     // get interaction constraints for current branch
     std::unordered_set<int> allowed_features;
     if (!interaction_constraints_.empty()) {
@@ -301,6 +347,11 @@ class ColSampler {
   int used_cnt_bytree_;
   int seed_;
   Random random_;
+  bool peeked_valid_ = false;
+  unsigned int peeked_rng_before_ = 0;
+  Random peeked_rng_after_{0};
+  std::vector<int8_t> peeked_mask_;
+  std::vector<int> peeked_used_feature_indices_;
   std::vector<int8_t> is_feature_used_;
   std::vector<int> used_feature_indices_;
   std::vector<int> valid_feature_indices_;

@@ -160,6 +160,21 @@ class CUDABestSplitFinder {
 
   void BeforeTrain(const std::vector<int8_t>& is_feature_used_bytree);
 
+  struct PrecomputedBeforeTrain {
+    std::vector<int> used_task_indices;
+    std::vector<int> warp_find_order;
+    int num_used_tasks = 0;
+    int warp_find_num_narrow_used = 0;
+    int warp_find_order_pad = 0;
+    bool warp_find_order_used = false;
+    bool update_all_tasks_cache = false;
+    bool warp_find_order_all_tasks = false;
+  };
+  bool PrecomputeBeforeTrain(const std::vector<int8_t>& is_feature_used_bytree,
+                             PrefillMetaBatch* batch,
+                             PrecomputedBeforeTrain* out) const;
+  void ApplyPrecomputedBeforeTrain(PrecomputedBeforeTrain* pre);
+
   /*! \brief vector-leaf (multi-target) mode: attach a per-slot payload slab
    *  (kNumVecPayloadFields * num_targets doubles) to every task and leaf
    *  best-split slot, so the vector find kernel can record per-target child

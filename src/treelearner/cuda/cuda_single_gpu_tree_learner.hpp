@@ -698,9 +698,30 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> compact_column_to_orig_;        // [slot] -> original column index
   std::vector<int> orig_column_to_compact_slot_;   // [col] -> slot, or -1
   // Per-slot precomputed metadata for the new (slot, row)-launched transpose:
+  std::vector<size_t> slot_p_byte_host_;
+  std::vector<int> slot_p_stride_host_;
+  std::vector<int> slot_col_in_p_host_;
+  bool slot_p_device_uploaded_ = false;
   CUDAVector<size_t> cuda_slot_p_byte_;
   CUDAVector<int> cuda_slot_p_stride_;
   CUDAVector<int> cuda_slot_col_in_p_;
+  void UploadCompactSlotMetadataIfNeeded();
+  void InvalidatePrefillMeta();
+  void MaybePrefillNextCompactView();
+  bool prefill_launched_this_tree_ = false;
+  std::vector<int8_t> prefill_next_mask_;
+  // Cross-tree overlapped metadata pre-staging (cuda_plan key compact_prefill_dt)
+  PrefillMetaBatch prefill_meta_batch_;
+  bool prefill_meta_ready_ = false;
+  std::vector<int8_t> prefill_meta_bitmap_;
+  CUDABestSplitFinder::PrecomputedBeforeTrain prefill_finder_state_;
+  CUDAHistogramConstructor::PrecomputedFeatureState prefill_hist_feature_state_;
+  // Static all-columns packed view + cached DeviceLevelFeatureSource generation
+  bool static_packed_view_active_ = false;
+  uint64_t static_packed_view_sig_ = 0;
+  int static_packed_view_k_ = -1;
+  const CUDAColumnData* device_level_feature_source_col_data_ = nullptr;
+  uint64_t device_level_feature_source_gen_ = 0;
   uint64_t compact_col_signature_ = 0;
   // Published-view generation when compact_col_signature_'s view was installed;
   // a mismatch means someone replaced the table and we must reinstall.
@@ -808,9 +829,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // Outlier-robust gradient scale within fixed-point mode (default ON when
   // fixedpoint_quant_ is on; disabled by cuda_plan=auto,robust_scale:off).
   bool fixedpoint_robust_scale_ = false;
-  // Compact-view prefill: the previous Train() already drew this tree's
-  // column sample (BeforeTrain must not draw again; cuda_plan compact_prefill)
-  bool next_tree_col_sample_ready_ = false;
 
   /*! \brief quantized training: the batched construct's saturation floor for this device (160 x SM count / 170,
    *  clamped to [10, 5120]; 0 = the plan's value), see Init */

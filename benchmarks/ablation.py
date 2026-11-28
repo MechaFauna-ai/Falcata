@@ -58,6 +58,7 @@ ALL_KEYS = {
     "compact_dense_wide_skip": True,
     "small_leaf_construct": True,
     "compact_prefill": False,
+    "compact_prefill_dt": True,
     "colmajor_fill": True,
     "tiled_fill": True,
     "colmajor_direct": True,

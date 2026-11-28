@@ -29,10 +29,12 @@
 namespace Falcata {
 
 // cuda_plan key async_tree_start: the tree start's KB-scale host -> device metadata uploads go on the legacy default
-// stream the synchronous cudaMemcpy used, without the host wait for the device; GPU order is unchanged. Not with
-// compact_prefill: its fill on a non-blocking stream shares the fill metadata and relies on the host order.
+// stream the synchronous cudaMemcpy used, without the host wait for the device; GPU order is unchanged.
+// Legacy compact_prefill (without compact_prefill_dt) shared the fill metadata and relied on host order;
+// modernized compact_prefill_dt uses dedicated alt metadata and coexists cleanly with AsyncTreeStart().
 inline bool AsyncTreeStart() {
-  return FalcataPlan::Get().async_tree_start && !FalcataPlan::Get().compact_prefill;
+  const FalcataPlan& plan = FalcataPlan::Get();
+  return plan.async_tree_start && (!plan.compact_prefill || plan.compact_prefill_dt);
 }
 // For a pageable source the CUDA documentation promises staging before return only for the synchronous cudaMemcpy;
 // cudaMemcpyAsync "might be synchronous". So the source of an async upload must stay unmodified until a host

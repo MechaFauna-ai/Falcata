@@ -783,6 +783,24 @@ class CUDAHistogramConstructor {
   // features not selected by feature_fraction sampling.
   void SetFeatureUsedBytree(const std::vector<int8_t>& is_feature_used_bytree);
 
+  struct PrecomputedFeatureState {
+    bool any_feature_unused = false;
+    bool used_feature_info_ok = false;
+    int num_used_feature_info = 0;
+  };
+  bool PrecomputeSetFeatureUsedBytree(const std::vector<int8_t>& is_feature_used_bytree,
+                                      PrefillMetaBatch* batch,
+                                      PrecomputedFeatureState* out) const;
+  void ApplyPrecomputedSetFeatureUsedBytree(const PrecomputedFeatureState& pre);
+
+  /*! \brief Whether GPU compact data prefill into compact_data_uint8_t_alt_ avoids splitting a used fused root hist. */
+  bool ShouldPrefillCompactData(bool root_is_every_row, bool fused_root_shape) const;
+
+  /*! \brief Whether the alt compact buffer has been allocated (so a swap may hand a live buffer back to alt). */
+  bool has_alt_compact_buffer() const { return compact_data_uint8_t_alt_.Size() > 0; }
+
+  cudaStream_t prefetch_stream() const { return prefetch_stream_; }
+
   // Build a compact view of the bin matrix that contains ONLY the columns
   // selected by this tree's feature_fraction sample. Applies at ANY
   // 0 < feature_fraction < 1 (the only gates are "no columns sampled out" and
@@ -795,18 +813,25 @@ class CUDAHistogramConstructor {
   // the full-data path when sampling is disabled or the layout is unsupported.
   bool BuildCompactView(const std::vector<int8_t>& is_feature_used_bytree);
 
-  /*! \brief Prefill the NEXT tree's compact column view into the inactive
-   *  (alt) buffer on prefetch_stream_, overlapping the current tree's
-   *  training (cuda_plan key compact_prefill). The fill only reads the static
-   *  row-major bin matrix plus next-tree slot tables, so the produced bytes
-   *  are identical to what BuildCompactView would fill synchronously —
-   *  BuildCompactView detects the matching bitmap, swaps buffers and skips
-   *  its fill. Device-resident fill paths only (host-mapped sources fall back
-   *  to the synchronous path). No-op when the compact view is ineligible. */
-  void PrefillNextCompactView(const std::vector<int8_t>& is_feature_used_bytree);
+  /*! \brief Prefill the NEXT tree's compact column view (nibble, 8-bit, codec,
+   *  or pair_code5/code6/radix view) and its compact metadata into the inactive
+   *  (alt) buffers on low-priority prefetch_stream_, overlapping the current
+   *  tree's GPU execution (cuda_plan key compact_prefill_dt / compact_prefill).
+   *  The fill only reads static dataset storage and dedicated prefill metadata,
+   *  leaving the active tree's buffers and metadata untouched. */
+  void PrefillNextCompactView(const std::vector<int8_t>& is_feature_used_bytree,
+                              bool allow_code5 = false);
 
-  /*! \brief Drop any pending prefill (config/data/bagging reset). */
+  /*! \brief Drop any pending prefill (config/data/bagging reset or destructor). */
   void InvalidateCompactPrefill();
+
+  /*! \brief Record that the previous tree's stream-0 / blocking-stream work has
+   *  been queued, so the next prefill into *_alt_ buffers waits for it on the GPU. */
+  void RecordPrevTreeDone();
+
+  /*! \brief Order `stream` after the prefill event that produced this tree's
+   *  compact view (no-op if this tree's compact view was built synchronously). */
+  void WaitForCompactPrefillOnStream(cudaStream_t stream);
 
   bool compact_view_active() const { return use_compact_view_; }
 
@@ -1380,9 +1405,11 @@ class CUDAHistogramConstructor {
   CUDAVector<uint8_t> compact_data_uint8_t_;
   CUDAVector<uint8_t> compact_data_uint8_t_alt_;
   cudaEvent_t fill_done_event_alt_ = nullptr;
+  cudaEvent_t prefill_meta_done_event_ = nullptr;
+  cudaEvent_t prev_tree_done_event_ = nullptr;
   cudaStream_t prefetch_stream_ = nullptr;
 
-  // --- compact-view prefill (cuda_plan key compact_prefill) -----------------
+  // --- compact-view prefill (cuda_plan keys compact_prefill_dt / compact_prefill) ---
   /*! \brief Host layout scan shared by the sync fill and the prefill. */
   struct CompactLayout {
     std::vector<int> part_col_offsets;        // [P+1] cumulative compact cols
@@ -1399,17 +1426,78 @@ class CUDAHistogramConstructor {
     /*! \brief nibble rows stored contiguously across partitions (see PackedPartitionRows) */
     bool row_interleave = false;
   };
+  struct PrefillHostState {
+    std::vector<int> src_cols_host;
+    std::vector<size_t> slot_byte_host;
+    std::vector<int> slot_stride_host;
+    std::vector<int> slot_col_host;
+    int pair_joint_max = 0;
+    int pair_joint_total = 0;
+    bool row_interleave = false;
+    int row_bytes = 0;
+    int max_compact_per_p = 0;
+    int total_compact = 0;
+    bool is_4bit = false;
+    PackCodecId codec = PackCodecId::kNibble4;
+    bool code5_valid = false;
+    int code5_row_words = 0;
+    int code5_bits = 5;
+    bool nibble_pending = false;
+    int nibble_pending_slots = 0;
+    const uint8_t* nibble_pending_src = nullptr;
+  };
   bool ScanCompactLayout(const std::vector<int8_t>& is_feature_used_bytree,
                          CompactLayout* layout) const;
+  size_t CompactBufferUpperBound(const CompactLayout& layout) const;
+  void EnsureCompactPartitionHistOffsets();
+  void BuildCompactMetaHost(const CompactLayout& layout,
+                            std::vector<int>* src_cols_host,
+                            std::vector<size_t>* slot_byte_host,
+                            std::vector<int>* slot_stride_host,
+                            std::vector<int>* slot_col_host,
+                            std::vector<uint32_t>* col_meta_h,
+                            int* pair_joint_max,
+                            int* pair_joint_total,
+                            int* max_compact_per_p) const;
   /*! \brief Build fill metadata from a layout and launch the device fill
-   *  kernel into dst on the given stream. async_meta=true stages the metadata
-   *  through pinned memory with cudaMemcpyAsync (prefill; must not touch the
-   *  synchronizing default stream while training kernels are in flight). */
+   *  kernel into dst on the given stream. */
   void LaunchCompactFill(const CompactLayout& layout, uint8_t* dst,
                          cudaStream_t stream, bool async_meta);
   /*! \brief bitmap the pending prefill was built for; empty = no prefill */
   std::vector<int8_t> prefill_bitmap_;
   bool prefill_valid_ = false;
+  bool prefill_in_flight_ = false;
+  bool prefill_meta_pending_ = false;
+  bool prev_tree_done_recorded_ = false;
+  bool compact_view_from_prefill_ = false;
+  bool compact_partition_hist_offsets_uploaded_ = false;
+  PrefillHostState prefill_host_;
+  // Double-buffered compact layout & code5 metadata (swapped in lockstep with compact_data_uint8_t_alt_)
+  CUDAVector<int> compact_packed_partition_byte_offsets_alt_;
+  CUDAVector<int> compact_feature_partition_column_index_offsets_alt_;
+  CUDAVector<uint32_t> compact_column_hist_offsets_alt_;
+  CUDAVector<uint8_t> code5_table_alt_;
+  CUDAVector<size_t> code5_bs_src_nib0_alt_;
+  CUDAVector<size_t> code5_bs_src_nib1_alt_;
+  CUDAVector<int> code5_bs_src_stride_nib_alt_;
+  CUDAVector<size_t> code5_bs_dst_byte_alt_;
+  CUDAVector<int> code5_bs_dst_stride_alt_;
+  // Dedicated prefill-only fill metadata (never touched by live LaunchCompactFill)
+  CUDAVector<size_t> prefill_bs_src_nib0_;
+  CUDAVector<size_t> prefill_bs_src_nib1_;
+  CUDAVector<int> prefill_bs_src_stride_nib_;
+  CUDAVector<size_t> prefill_bs_dst_byte_;
+  CUDAVector<int> prefill_bs_dst_stride_;
+  CUDAVector<size_t> prefill_slot_src_byte_;
+  CUDAVector<int> prefill_slot_src_stride_;
+  CUDAVector<size_t> prefill_slot_dst_byte_;
+  CUDAVector<int> prefill_slot_dst_stride_;
+  CUDAVector<size_t> prefill_col_src_nib_base_;
+  CUDAVector<int> prefill_col_src_stride_nib_;
+  CUDAVector<size_t> prefill_ws_dst_byte_;
+  CUDAVector<int> prefill_ws_dst_stride_;
+  CUDAVector<int> prefill_ws_first_col_;
+  CUDAVector<uint8_t> prefill_ws_ndig_;
   /*! \brief global column-major nibble copy of the packed bin matrix
    *  (cuda_plan key colmajor_fill; empty = unavailable, colmajor_pad_ == 0).
    *  Fill metadata for it is stride-1 with base col*colmajor_pad_. */
