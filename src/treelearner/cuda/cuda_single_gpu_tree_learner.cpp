@@ -867,13 +867,12 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
       while (p + 1 < static_cast<int>(src_part_col_offsets_h.size()) &&
              orig_col >= src_part_col_offsets_h[p + 1]) ++p;
       const int p_start = src_part_col_offsets_h[p];
-      const int p_end = src_part_col_offsets_h[p + 1];
       if (gather_src_is_4bit) {
         slot_p_byte_h[s] = static_cast<size_t>(packed_offsets_h[p]) * static_cast<size_t>(num_data);
         slot_p_stride_h[s] = packed_offsets_h[p + 1] - packed_offsets_h[p];
       } else {
         slot_p_byte_h[s] = static_cast<size_t>(p_start) * static_cast<size_t>(num_data);
-        slot_p_stride_h[s] = p_end - p_start;
+        slot_p_stride_h[s] = row_data->dense_partition_row_stride(p);
       }
       slot_col_in_p_h[s] = orig_col - p_start;
     }
@@ -899,7 +898,8 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   bool packed_read8 = !gather_src_is_4bit && FalcataPlan::Get().split_packed_read8 && tree_is_sampled;
   if (packed_read8 && FalcataPlan::Get().split_packed_read8_cost) {
     // the gather source's row width: the compact matrix holds the sampled columns, the full matrix every column
-    const int src_row_bytes = compact_src ? num_compact_cols : num_total_cols;
+    const int src_row_bytes = compact_src ? num_compact_cols :
+      (row_data->dense_row_stride() > 0 ? row_data->dense_row_stride() : num_total_cols);
     packed_read8 = SplitPackedRead8Pays(num_data, src_row_bytes, num_compact_cols, config_->max_depth,
                                         config_->num_leaves, l2_cache_bytes_);
   }

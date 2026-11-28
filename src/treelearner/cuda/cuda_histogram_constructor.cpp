@@ -557,8 +557,7 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
   for (int p = 0; p < num_partitions; ++p) {
     const int p_start = src_part_col_offsets[p];
     const int p_end = src_part_col_offsets[p + 1];
-    const int p_num = p_end - p_start;
-    layout->src_part_stride.push_back(p_num);
+    layout->src_part_stride.push_back(cuda_row_data_->dense_partition_row_stride(p));
     for (int c = p_start; c < p_end; ++c) {
       if (column_used[c]) {
         layout->src_local_col.push_back(c - p_start);

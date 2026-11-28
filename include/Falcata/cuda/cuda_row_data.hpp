@@ -94,6 +94,14 @@ class CUDARowData {
   int quant_hist_slots() const { return quant_hist_slots_; }
   bool dense_wide_hist() const { return quant_hist_slots_ != shared_hist_size_; }
 
+  /*! \brief cuda_plan key dense_vec_narrow: padded per-row byte stride (16 or 32) for single-partition narrow 8-bit
+   *  quantized dense row data; 0 when unpadded (row stride == partition column count) */
+  int dense_row_stride() const { return dense_row_stride_; }
+  int dense_partition_row_stride(int p) const {
+    return dense_row_stride_ > 0 ? dense_row_stride_ :
+      (feature_partition_column_index_offsets_[p + 1] - feature_partition_column_index_offsets_[p]);
+  }
+
   // Host-side accessors for the CompactView path in CUDAHistogramConstructor.
   const std::vector<int>& host_feature_partition_column_index_offsets() const { return feature_partition_column_index_offsets_; }
   const std::vector<uint32_t>& host_column_hist_offsets() const { return column_hist_offsets_; }
@@ -238,6 +246,8 @@ class CUDARowData {
   int shared_hist_size_;
   /*! \brief see quant_hist_slots() */
   int quant_hist_slots_ = 0;
+  /*! \brief see dense_row_stride() */
+  int dense_row_stride_ = 0;
   /*! \brief whether to use double precision in histograms per block */
   bool gpu_use_dp_;
   /*! \brief colmajor_direct: Init may leave the 4-bit row-major matrix off the device */

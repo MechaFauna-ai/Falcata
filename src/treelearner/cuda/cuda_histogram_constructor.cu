@@ -2139,6 +2139,15 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
   shape->block_y = block_dim_y;
   shape->grid_x = grid_dim_x;
   shape->block_x = block_dim_x;
+  if (DenseVecNarrowEligible()) {
+    shape->pair_mode = 0;
+    shape->kernel_kind = 1;  // cuda_plan key dense_vec_narrow: warp-cooperative sub-warp narrow kernel
+    shape->block_x = DenseVecNarrowBlockX();
+    shape->block_y = DenseVecNarrowBlockY();
+    shape->grid_x = 1;
+    shape->smem_bytes = static_cast<int>(DenseVecNarrowSmemBytes());
+    return;
+  }
   const int bins = use_quantized_grad_ ? num_grad_quant_bins_ : 0;
   const FalcataPlan& plan = FalcataPlan::Get();
   if (!use_quantized_grad_ || !(use_compact_view_ && compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4 && plan.pair_hist &&

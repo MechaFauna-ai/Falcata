@@ -40,6 +40,22 @@ bool RowData4BitVerifyEnabled() {
   return FalcataVerifyEnabled();
 }
 
+// cuda_plan key dense_vec_narrow: row padding + streaming sub-warp gathers pay when the unpadded narrow 8-bit row
+// matrix exceeds the GPU's L2 cache (random-row gathers spill to DRAM, where 32B sector splits cost up to 1.88x);
+// L2-resident matrices (e.g. fraud 8.3 MB, covtype EFB 7.5 MB) keep the unpadded 2D kernel.
+bool DenseVecNarrowSpillsL2(const int gpu_device_id, const data_size_t num_data, const int num_cols) {
+  const char* force = std::getenv("FALCATA_TEST_FORCE_DENSE_VEC_NARROW");
+  if (force != nullptr && force[0] == '1') {
+    return true;
+  }
+  int l2_bytes = 0;
+  const int dev = gpu_device_id < 0 ? 0 : gpu_device_id;
+  if (cudaDeviceGetAttribute(&l2_bytes, cudaDevAttrL2CacheSize, dev) != cudaSuccess || l2_bytes <= 0) {
+    return false;
+  }
+  return static_cast<uint64_t>(num_data) * static_cast<uint64_t>(num_cols) > static_cast<uint64_t>(l2_bytes);
+}
+
 // Shape-specialized construct prototype: for low-bin, many-feature
 // data (e.g. numerai ~6 bins/feature) the 504-column-per-partition cap forces
 // block_dim_y = NUM_THREADS_PER_BLOCK / max_col_per_part = 1, i.e. every column
@@ -174,6 +190,20 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
   if (!is_sparse_ && bit_type_ == 8 && large_bin_partitions_.empty() &&
       num_feature_partitions_ > 0 && RowData4BitEnabled()) {
     is_4bit_packed_ = widest_column_bins <= 16;
+  }
+  // cuda_plan key dense_vec_narrow: pad single-partition narrow 8-bit quantized dense rows to 4/8/16/32 bytes when the
+  // row matrix exceeds the GPU's L2 cache so TX = dense_row_stride / 4 threads per row coalesce into one aligned
+  // 4..32B sector load without DRAM sector splits.
+  dense_row_stride_ = 0;
+  if (FalcataPlan::Get().dense_vec_narrow && FalcataPlan::Get().quant_training &&
+      !is_sparse_ && bit_type_ == 8 && !is_4bit_packed_ && large_bin_partitions_.empty() &&
+      num_feature_partitions_ == 1) {
+    const int num_cols = feature_partition_column_index_offsets_.back();
+    const uint32_t num_bins = partition_hist_offsets_.back();
+    if (num_cols >= 1 && num_cols <= 32 && num_bins <= 12288 &&
+        DenseVecNarrowSpillsL2(gpu_device_id_, num_data_, num_cols)) {
+      dense_row_stride_ = num_cols <= 4 ? 4 : (num_cols <= 8 ? 8 : (num_cols <= 16 ? 16 : 32));
+    }
   }
   // The row-major device copy is the single largest allocation training makes,
   // and 4-bit packing halves it. The decision is all-or-nothing across the
@@ -354,8 +384,16 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
       return c * std::max(1, 504 / c);
     };
     const int wide_max_columns = max_num_column_per_partition_;
-    if (wide_num_partitions < num_partitions && 504 / std::max(1, wide_max_columns) >= 2 &&
-        block_threads(wide_max_columns) >= block_threads(standard_max_columns)) {
+    // cuda_plan key dense_vec_narrow: a single-partition narrow 8-bit dataset (<= 32 columns, <= 12288 bins) runs the
+    // 1D 256-thread vectorized kernel rather than the 504-thread 2D block, so merging into 1 partition always wins even
+    // when wide_max_columns does not evenly divide 504 (e.g. 25..32 columns except 28).
+    const bool narrow_single_part = FalcataPlan::Get().dense_vec_narrow && bit_type_ == 8 &&
+      large_bin_partitions_.empty() && wide_num_partitions == 1 && wide_max_columns <= 32 &&
+      DenseVecNarrowSpillsL2(gpu_device_id_, num_data_, wide_max_columns);
+    if (wide_num_partitions < num_partitions &&
+        (narrow_single_part ||
+         (504 / std::max(1, wide_max_columns) >= 2 &&
+          block_threads(wide_max_columns) >= block_threads(standard_max_columns)))) {
       quant_hist_slots_ = shared_hist_size_ * 2;
       num_partitions = wide_num_partitions;
     } else {
@@ -540,13 +578,17 @@ void CUDARowData::GetDenseDataPartitionedToBuffer(const BIN_TYPE* row_wise_data,
         const int partition_column_start = feature_partition_column_index_offsets_[i];
         const int partition_column_end = feature_partition_column_index_offsets_[i + 1];
         const int num_columns_in_cur_partition = partition_column_end - partition_column_start;
+        const int row_stride = dense_row_stride_ > 0 ? dense_row_stride_ : num_columns_in_cur_partition;
         for (data_size_t data_index = start; data_index < end; ++data_index) {
-          const size_t data_offset = offset + static_cast<size_t>(data_index) * num_columns_in_cur_partition;
+          const size_t data_offset = offset + static_cast<size_t>(data_index) * row_stride;
           const size_t read_data_offset = static_cast<size_t>(data_index) * num_total_columns;
           for (int column_index = 0; column_index < num_columns_in_cur_partition; ++column_index) {
             const size_t true_column_index = read_data_offset + column_index + partition_column_start;
             const BIN_TYPE bin = row_wise_data[true_column_index];
             out_data[data_offset + column_index] = bin;
+          }
+          for (int column_index = num_columns_in_cur_partition; column_index < row_stride; ++column_index) {
+            out_data[data_offset + column_index] = static_cast<BIN_TYPE>(0);
           }
         }
       }
@@ -556,27 +598,12 @@ void CUDARowData::GetDenseDataPartitionedToBuffer(const BIN_TYPE* row_wise_data,
 template <typename BIN_TYPE>
 void CUDARowData::GetDenseDataPartitioned(const BIN_TYPE* row_wise_data, std::vector<BIN_TYPE>* partitioned_data) {
   const int num_total_columns = feature_partition_column_index_offsets_.back();
-  partitioned_data->resize(static_cast<size_t>(num_total_columns) * static_cast<size_t>(num_data_), 0);
+  const size_t total_elems = dense_row_stride_ > 0
+    ? static_cast<size_t>(dense_row_stride_) * static_cast<size_t>(num_data_)
+    : static_cast<size_t>(num_total_columns) * static_cast<size_t>(num_data_);
+  partitioned_data->resize(total_elems, 0);
   BIN_TYPE* out_data = partitioned_data->data();
-  Threading::For<data_size_t>(0, num_data_, 512,
-    [this, num_total_columns, row_wise_data, out_data] (int /*thread_index*/, data_size_t start, data_size_t end) {
-      for (size_t i = 0; i < feature_partition_column_index_offsets_.size() - 1; ++i) {
-        const int num_prev_columns = static_cast<int>(feature_partition_column_index_offsets_[i]);
-        const size_t offset = static_cast<size_t>(num_data_) * static_cast<size_t>(num_prev_columns);
-        const int partition_column_start = feature_partition_column_index_offsets_[i];
-        const int partition_column_end = feature_partition_column_index_offsets_[i + 1];
-        const int num_columns_in_cur_partition = partition_column_end - partition_column_start;
-        for (data_size_t data_index = start; data_index < end; ++data_index) {
-          const size_t data_offset = offset + static_cast<size_t>(data_index) * num_columns_in_cur_partition;
-          const size_t read_data_offset = static_cast<size_t>(data_index) * num_total_columns;
-          for (int column_index = 0; column_index < num_columns_in_cur_partition; ++column_index) {
-            const size_t true_column_index = read_data_offset + column_index + partition_column_start;
-            const BIN_TYPE bin = row_wise_data[true_column_index];
-            out_data[data_offset + column_index] = bin;
-          }
-        }
-      }
-    });
+  GetDenseDataPartitionedToBuffer<BIN_TYPE>(row_wise_data, out_data);
 }
 
 bool CUDARowData::CollectDenseColumnData(const Dataset* train_data,
@@ -628,19 +655,24 @@ void CUDARowData::BuildDensePartitionedFromColumns(
           const int partition_column_start = feature_partition_column_index_offsets_[i];
           const int partition_column_end = feature_partition_column_index_offsets_[i + 1];
           const int num_columns_in_cur_partition = partition_column_end - partition_column_start;
+          const int row_stride = dense_row_stride_ > 0 ? dense_row_stride_ : num_columns_in_cur_partition;
           BIN_TYPE* partition_out_data = out_data + static_cast<size_t>(num_data_) * static_cast<size_t>(partition_column_start);
+          if (row_stride > num_columns_in_cur_partition) {
+            std::memset(partition_out_data + static_cast<size_t>(tile_start) * row_stride, 0,
+                        static_cast<size_t>(tile_end - tile_start) * static_cast<size_t>(row_stride) * sizeof(BIN_TYPE));
+          }
           for (int column_index = partition_column_start; column_index < partition_column_end; ++column_index) {
             BIN_TYPE* column_out_data = partition_out_data + (column_index - partition_column_start);
             const void* one_column_data = column_data[column_index];
             const uint8_t column_bit_type = column_bit_types[column_index];
             if (column_bit_type == 4) {
-              TransposeColumnTile4Bit<BIN_TYPE>(one_column_data, tile_start, tile_end, num_columns_in_cur_partition, column_out_data);
+              TransposeColumnTile4Bit<BIN_TYPE>(one_column_data, tile_start, tile_end, row_stride, column_out_data);
             } else if (column_bit_type == 8) {
-              TransposeColumnTile<BIN_TYPE, uint8_t>(one_column_data, tile_start, tile_end, num_columns_in_cur_partition, column_out_data);
+              TransposeColumnTile<BIN_TYPE, uint8_t>(one_column_data, tile_start, tile_end, row_stride, column_out_data);
             } else if (column_bit_type == 16) {
-              TransposeColumnTile<BIN_TYPE, uint16_t>(one_column_data, tile_start, tile_end, num_columns_in_cur_partition, column_out_data);
+              TransposeColumnTile<BIN_TYPE, uint16_t>(one_column_data, tile_start, tile_end, row_stride, column_out_data);
             } else if (column_bit_type == 32) {
-              TransposeColumnTile<BIN_TYPE, uint32_t>(one_column_data, tile_start, tile_end, num_columns_in_cur_partition, column_out_data);
+              TransposeColumnTile<BIN_TYPE, uint32_t>(one_column_data, tile_start, tile_end, row_stride, column_out_data);
             } else {
               Log::Fatal("Unknown column bit type %d", static_cast<int>(column_bit_type));
             }
@@ -656,7 +688,9 @@ void CUDARowData::InitDenseData(const Dataset* train_data, const BIN_TYPE* host_
   std::vector<const void*> column_data;
   std::vector<uint8_t> column_bit_types;
   const bool use_fast_build = fast_enabled && CollectDenseColumnData(train_data, &column_data, &column_bit_types);
-  const size_t total_size = static_cast<size_t>(feature_partition_column_index_offsets_.back()) * static_cast<size_t>(num_data_);
+  const size_t total_size = dense_row_stride_ > 0
+    ? static_cast<size_t>(dense_row_stride_) * static_cast<size_t>(num_data_)
+    : static_cast<size_t>(feature_partition_column_index_offsets_.back()) * static_cast<size_t>(num_data_);
   if (use_fast_build) {
     Log::Debug("CUDARowData: fast dense row data build from column bins (disable with FALCATA_FAST_ROWDATA=0)");
     // new[] leaves the staging buffer uninitialized on purpose; the transpose writes every element

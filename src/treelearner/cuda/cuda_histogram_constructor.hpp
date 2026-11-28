@@ -673,6 +673,7 @@ class CUDAHistogramConstructor {
       whole_code_words || !use_compact_view_ ? 0 : std::max(1, max_num_compact_cols_per_partition_))));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(code5_valid_ ? 1 : 0)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(use_compact_view_ ? 1 : 0)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(DenseVecNarrowEligible() ? 1 : 0)));
     // the per-tree layout values the construct and fix/subtract launches pass by value
     for (const int v : {num_compact_columns_, whole_code_words ? 0 : compact_pair_joint_max_,
                         compact_pair_joint_total_, compact_row_bytes_,
@@ -704,6 +705,41 @@ class CUDAHistogramConstructor {
   void DeviceLevelConstructShape(CUDADeviceLevelConstructShape* shape);
   /*! \brief cuda_plan key device_levels: a device level's pair-joint construct launch (see DeviceLevelConstructShape) */
   void LaunchDeviceLevelPairJoint(const CUDAHybridPairDescriptor* pair_descs);
+  /*! \brief cuda_plan key dense_vec_narrow: whether quantized dense constructs take the 1D vectorized narrow kernel */
+  bool DenseVecNarrowEligible() const {
+    if (!FalcataPlan::Get().dense_vec_narrow || !use_quantized_grad_ ||
+        use_compact_view_ || any_feature_unused_bytree_ || cuda_row_data_ == nullptr) {
+      return false;
+    }
+    if (cuda_row_data_->dense_row_stride() <= 0) {
+      return false;
+    }
+    const auto& part_hist = cuda_row_data_->host_partition_hist_offsets();
+    if (part_hist.size() < 2) {
+      return false;
+    }
+    const uint32_t num_items = part_hist[1] - part_hist[0];
+    return static_cast<size_t>(num_items) * sizeof(int32_t) <=
+           CurrentDeviceLaunchLimits().shared_bytes_per_block;
+  }
+  int DenseVecNarrowBlockX() const {
+    return cuda_row_data_->dense_row_stride() / 4;
+  }
+  int DenseVecNarrowBlockY() const {
+    const int tx = DenseVecNarrowBlockX();
+    const int bins = use_quantized_grad_ ? num_grad_quant_bins_ : 0;
+    // 256 threads/block (8, 32) at low quant_bins keeps shallow-level block counts above SM count;
+    // at high quant_bins (>= 32, e.g. fixedpoint bins=64), 512 threads/block (8, 64) doubles shared zero/flush bandwidth
+    // while keeping 94% of the packed-cell row budget (64 * 15 = 960 <= 1023).
+    const int target_y = (tx >= 8 && bins < 32) ? 32 : 64;
+    return HybridQuantConstructBlockDimY(target_y, bins);
+  }
+  size_t DenseVecNarrowSmemBytes() const {
+    const auto& part_hist = cuda_row_data_->host_partition_hist_offsets();
+    const uint32_t num_items = part_hist[1] - part_hist[0];
+    const size_t bytes = static_cast<size_t>(std::max<uint32_t>(1u, num_items)) * sizeof(int32_t);
+    return (bytes + 15) & ~size_t{15};
+  }
   int DeviceLevelConstructMinGridDimY() const { return min_grid_dim_y_; }
   int DeviceLevelNumGradQuantBins() const { return use_quantized_grad_ ? num_grad_quant_bins_ : 0; }
   /*! \brief the learner resolved the quantization bin count again (CUDASingleGPUTreeLearner::ResetIsConstantHessian):
