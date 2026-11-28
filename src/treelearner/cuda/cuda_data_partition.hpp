@@ -61,6 +61,7 @@ struct CUDAHybridApplySplitInput {
  *  layout), the block offset buffers use [block_offset_start, +num_blocks+1). */
 struct CUDADeviceLevelState;
 struct CUDADeviceLevelConfig;
+class ObjectiveFunction;
 
 struct CUDAHybridApplyDescriptor {
   const void* column_data;
@@ -344,6 +345,12 @@ class CUDADataPartition: public NCCLInfo {
                          int num_leaves);
 
   void UpdateTrainScore(const Tree* tree, double* cuda_scores);
+
+  /*! \brief cuda_plan key score_grad_fuse: fuse unbagged training score update with the
+   *  objective's next-round gradient/hessian computation in a single pass over scores */
+  bool UpdateTrainScoreAndGetGradients(const Tree* tree, double* cuda_scores,
+                                       const ObjectiveFunction* objective_function,
+                                       score_t* gradients, score_t* hessians);
 
   /*! \brief The bag's rows back in bag order in the index array (the next bagged tree starts from that order) */
   void RestoreBagOrder();

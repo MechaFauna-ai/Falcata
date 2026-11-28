@@ -59,6 +59,9 @@ class NCCLGBDT: public GBDT_T {
     Log::Fatal("ResetConfig is not supported for NCCLGBDT.");
   }
 
+ protected:
+  bool SupportsScoreGradFuse() const override { return false; }
+
  private:
   struct BoostingThreadData {
     int gpu_index;

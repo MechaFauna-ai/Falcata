@@ -16,6 +16,7 @@
 #include <vector>
 
 namespace Falcata {
+class ObjectiveFunction;
 /*!
 * \brief Used to store and update score for data
 */
@@ -91,6 +92,22 @@ class ScoreUpdater {
     const size_t offset = static_cast<size_t>(num_data_) * cur_tree_id;
     tree_learner->AddPredictionToScore(tree, score_.data() + offset);
   }
+  #ifdef USE_CUDA
+  /*!
+  * \brief cuda_plan key score_grad_fuse: fuse unbagged training score update with
+  *        next-round gradient/hessian computation on CUDA.
+  * \return True if both score and gradients/hessians were updated.
+  */
+  virtual inline bool AddScoreAndGetGradients(
+    const TreeLearner* /*tree_learner*/,
+    const Tree* /*tree*/,
+    int /*cur_tree_id*/,
+    const ObjectiveFunction* /*objective_function*/,
+    score_t* /*gradients*/,
+    score_t* /*hessians*/) {
+    return false;
+  }
+  #endif  // USE_CUDA
   /*!
   * \brief Using tree model to get prediction number, then adding to scores for parts of data
   *        Used for prediction of training out-of-bag data

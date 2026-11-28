@@ -32,6 +32,10 @@ class CUDAScoreUpdater: public ScoreUpdater {
 
   void AddScore(const TreeLearner* tree_learner, const Tree* tree, int cur_tree_id) override;
 
+  bool AddScoreAndGetGradients(
+    const TreeLearner* tree_learner, const Tree* tree, int cur_tree_id,
+    const ObjectiveFunction* objective_function, score_t* gradients, score_t* hessians) override;
+
   inline void AddScore(const Tree* tree, const data_size_t* data_indices,
                        data_size_t data_cnt, int cur_tree_id) override;
 

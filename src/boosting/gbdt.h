@@ -111,6 +111,9 @@ class GBDT : public GBDTBase {
     }
     num_iteration_for_pred_ = static_cast<int>(models_.size()) / num_tree_per_iteration_;
     ValidateLeafValueDimensions();
+    #ifdef USE_CUDA
+    fused_gradients_ready_ = false;
+    #endif  // USE_CUDA
   }
 
   void ShuffleModels(int start_iter, int end_iter) override {
@@ -140,6 +143,9 @@ class GBDT : public GBDTBase {
         models_.push_back(std::move(new_tree));
       }
     }
+    #ifdef USE_CUDA
+    fused_gradients_ready_ = false;
+    #endif  // USE_CUDA
   }
 
   /*!
@@ -592,6 +598,9 @@ class GBDT : public GBDTBase {
           tree_idx, models_[tree_idx]->leaf_value_dim());
     }
     models_[tree_idx]->SetLeafOutput(leaf_idx, val);
+    #ifdef USE_CUDA
+    fused_gradients_ready_ = false;
+    #endif  // USE_CUDA
   }
 
   /*!
@@ -645,6 +654,14 @@ class GBDT : public GBDTBase {
   * \param cur_tree_id Current tree for multiclass training
   */
   virtual void UpdateScore(const Tree* tree, const int cur_tree_id);
+
+  /*! \brief Subclasses that mutate train scores outside UpdateScore (DART, RF, NCCLGBDT) return false */
+  virtual bool SupportsScoreGradFuse() const { return true; }
+
+  #ifdef USE_CUDA
+  /*! \brief Whether cuda_plan key score_grad_fuse may fuse this tree's score update with next-round GetGradients */
+  bool CanFuseScoreAndGradients(const Tree* tree, int cur_tree_id) const;
+  #endif  // USE_CUDA
 
   /*!
   * \brief eval results for one metric
@@ -767,6 +784,8 @@ class GBDT : public GBDTBase {
   mutable std::vector<double> host_score_;
   /*! \brief Buffer for scores when boosting is not on GPU but evaluation is, used only with device_type=cuda */
   mutable CUDAVector<double> cuda_score_;
+  /*! \brief cuda_plan key score_grad_fuse: true when the previous UpdateScore fused next-round GetGradients */
+  bool fused_gradients_ready_ = false;
   #endif  // USE_CUDA
 
   /*! \brief Number of training data */

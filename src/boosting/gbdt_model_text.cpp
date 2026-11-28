@@ -600,6 +600,9 @@ void GBDT::ValidateLeafValueDimensions() {
 bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
   // use serialized string to restore this object
   models_.clear();
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  #endif  // USE_CUDA
   falb_without_diagnostics_ = false;
   // A serialized model is text and never contains a NUL byte. The line
   // cursors below advance across '\n'/'\r' only, and GetLine/SkipNewLine

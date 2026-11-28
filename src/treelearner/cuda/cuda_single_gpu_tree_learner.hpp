@@ -53,6 +53,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   void AddPredictionToScore(const Tree* tree, double* out_score) const override;
 
+  bool AddPredictionToScoreAndGetGradients(
+    const Tree* tree, double* out_score, const ObjectiveFunction* objective_function,
+    score_t* out_gradients, score_t* out_hessians) const override;
+
   void RestoreBagOrder() override;
 
   void RenewTreeOutput(Tree* tree, const ObjectiveFunction* obj, std::function<double(const label_t*, int)> residual_getter,

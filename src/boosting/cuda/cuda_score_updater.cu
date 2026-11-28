@@ -8,6 +8,8 @@
 
 #ifdef USE_CUDA
 
+#include <cstdint>
+
 namespace Falcata {
 
 __global__ void AddScoreConstantKernel(
@@ -20,10 +22,38 @@ __global__ void AddScoreConstantKernel(
   }
 }
 
+__global__ void AddScoreConstantVec2Kernel(
+  const double val,
+  const data_size_t num_data,
+  double* score) {
+  const data_size_t pair_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
+  const data_size_t base = pair_index * 2;
+  if (base + 1 < num_data) {
+    double2* vec_score = reinterpret_cast<double2*>(score);
+    double2 v = vec_score[pair_index];
+    v.x += val;
+    v.y += val;
+    vec_score[pair_index] = v;
+  } else if (base < num_data) {
+    score[base] += val;
+  }
+}
+
 void CUDAScoreUpdater::LaunchAddScoreConstantKernel(const double val, const size_t offset) {
-  const int num_blocks = (num_data_ + num_threads_per_block_) / num_threads_per_block_;
+  if (num_data_ <= 0) {
+    return;
+  }
+  double* dst = cuda_score_.RawData() + offset;
   Log::Debug("Adding init score = %lf", val);
-  AddScoreConstantKernel<<<num_blocks, num_threads_per_block_>>>(val, num_data_, cuda_score_.RawData() + offset);
+  if ((reinterpret_cast<uintptr_t>(dst) & 0xfu) == 0) {
+    const data_size_t num_pairs = (num_data_ + 1) / 2;
+    const int threads = 256;
+    const int num_blocks = (num_pairs + threads - 1) / threads;
+    AddScoreConstantVec2Kernel<<<num_blocks, threads>>>(val, num_data_, dst);
+  } else {
+    const int num_blocks = (num_data_ + num_threads_per_block_ - 1) / num_threads_per_block_;
+    AddScoreConstantKernel<<<num_blocks, num_threads_per_block_>>>(val, num_data_, dst);
+  }
 }
 
 __global__ void MultiplyScoreConstantKernel(
@@ -36,9 +66,37 @@ __global__ void MultiplyScoreConstantKernel(
   }
 }
 
+__global__ void MultiplyScoreConstantVec2Kernel(
+  const double val,
+  const data_size_t num_data,
+  double* score) {
+  const data_size_t pair_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
+  const data_size_t base = pair_index * 2;
+  if (base + 1 < num_data) {
+    double2* vec_score = reinterpret_cast<double2*>(score);
+    double2 v = vec_score[pair_index];
+    v.x *= val;
+    v.y *= val;
+    vec_score[pair_index] = v;
+  } else if (base < num_data) {
+    score[base] *= val;
+  }
+}
+
 void CUDAScoreUpdater::LaunchMultiplyScoreConstantKernel(const double val, const size_t offset) {
-  const int num_blocks = (num_data_ + num_threads_per_block_) / num_threads_per_block_;
-  MultiplyScoreConstantKernel<<<num_blocks, num_threads_per_block_>>>(val, num_data_, cuda_score_.RawData() + offset);
+  if (num_data_ <= 0) {
+    return;
+  }
+  double* dst = cuda_score_.RawData() + offset;
+  if ((reinterpret_cast<uintptr_t>(dst) & 0xfu) == 0) {
+    const data_size_t num_pairs = (num_data_ + 1) / 2;
+    const int threads = 256;
+    const int num_blocks = (num_pairs + threads - 1) / threads;
+    MultiplyScoreConstantVec2Kernel<<<num_blocks, threads>>>(val, num_data_, dst);
+  } else {
+    const int num_blocks = (num_data_ + num_threads_per_block_ - 1) / num_threads_per_block_;
+    MultiplyScoreConstantKernel<<<num_blocks, num_threads_per_block_>>>(val, num_data_, dst);
+  }
 }
 
 // score += leaf_const + sum(coeff * raw), or the leaf's constant output when a used raw value is NaN: Tree's
@@ -102,13 +160,29 @@ __global__ void FillDoubleKernel(double* out, const double val, const size_t n) 
   }
 }
 
+__global__ void FillDoubleVec2Kernel(double* out, const double val, const size_t n) {
+  const size_t pair_idx = static_cast<size_t>(threadIdx.x) + static_cast<size_t>(blockIdx.x) * blockDim.x;
+  const size_t base = pair_idx * 2;
+  if (base + 1 < n) {
+    reinterpret_cast<double2*>(out)[pair_idx] = make_double2(val, val);
+  } else if (base < n) {
+    out[base] = val;
+  }
+}
+
 void LaunchFillDoubleKernel(double* out, const double val, const size_t n) {
   if (n == 0) {
     return;
   }
   const int threads = 256;
-  const size_t blocks = (n + threads - 1) / threads;
-  FillDoubleKernel<<<static_cast<unsigned int>(blocks), threads>>>(out, val, n);
+  if ((reinterpret_cast<uintptr_t>(out) & 0xfu) == 0) {
+    const size_t num_pairs = (n + 1) / 2;
+    const size_t blocks = (num_pairs + threads - 1) / threads;
+    FillDoubleVec2Kernel<<<static_cast<unsigned int>(blocks), threads>>>(out, val, n);
+  } else {
+    const size_t blocks = (n + threads - 1) / threads;
+    FillDoubleKernel<<<static_cast<unsigned int>(blocks), threads>>>(out, val, n);
+  }
 }
 
 }  // namespace Falcata

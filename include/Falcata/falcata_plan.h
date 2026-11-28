@@ -873,6 +873,14 @@ struct FalcataPlan {
   // metadata uploads) while the gradients are computed instead of after. Host-memory gradients keep the synchronize.
   // Off with compact_prefill (its non-blocking stream). Same kernels, same GPU order: bit-identical.
   bool gradients_no_sync = true;    // key: gradients_no_sync
+  // fuse the tree-end training score update (AddPredictionToScore) with the next iteration's gradient/hessian
+  // computation (GetGradients) in one device kernel for single-tree-per-iteration unbagged CUDA GBDT (regression L2,
+  // binary logloss, L1, huber, quantile): updates score[i] += leaf_value[leaf[i]] in registers and immediately
+  // computes and stores grad[i], hess[i], eliminating a full DRAM round-trip of the 8N-byte score array every round.
+  // The next iteration's Boosting() consumes the ready device gradients; any state mutation (RollbackOneIter,
+  // ResetConfig, ResetTrainingData, RefitTree, custom objective, etc.) clears the flag. Same arithmetic in the same
+  // order: bit-identical.
+  bool score_grad_fuse = true;      // key: score_grad_fuse
   // a pooled CUDA tree's retained device leaf values (the one device array ToHost keeps for shrinkage and score
   // updates) go into a buffer allocated when the host-launched flow issues a final batched level (the tree's leaf
   // count after it is known then, and the host would otherwise wait for that level's readback), and the slab's leaf
@@ -1159,6 +1167,7 @@ struct FalcataPlan {
     if (key == "invalidate_async") return &invalidate_async;
     if (key == "level_apply_first") return &level_apply_first;
     if (key == "gradients_no_sync") return &gradients_no_sync;
+    if (key == "score_grad_fuse") return &score_grad_fuse;
     if (key == "tree_end_prealloc") return &tree_end_prealloc;
     if (key == "const_hess_reads") return &const_hess_reads;
     if (key == "dirty_final_slots") return &dirty_final_slots;

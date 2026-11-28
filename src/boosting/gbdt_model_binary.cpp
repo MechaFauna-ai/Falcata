@@ -725,6 +725,9 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
 }
 
 bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
+  #ifdef USE_CUDA
+  fused_gradients_ready_ = false;
+  #endif  // USE_CUDA
   ByteReader r(buffer, len);
   if (len < 4 || std::memcmp(buffer, kMagic, 4) != 0) {
     Log::Fatal("FALB: not a Falcata binary model (bad magic)");
