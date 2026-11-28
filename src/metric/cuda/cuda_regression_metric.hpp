@@ -137,6 +137,8 @@ class CUDAPoissonMetric : public CUDARegressionMetricInterface<PoissonMetric, CU
 
   virtual ~CUDAPoissonMetric() {}
 
+  std::vector<double> Eval(const double* score, const ObjectiveFunction* objective) const override;
+
   __device__ inline static double MetricOnPointCUDA(label_t label, double score,  double /*alpha*/) {
     // 1e-10f (float literal) on purpose: the CPU PoissonMetric uses the same value,
     // and 1e-10 would change results relative to device_type=cpu

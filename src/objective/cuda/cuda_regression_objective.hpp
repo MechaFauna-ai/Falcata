@@ -183,6 +183,10 @@ class CUDARegressionPoissonLoss : public CUDARegressionObjectiveInterface<Regres
 
   bool NeedConvertOutputCUDA() const override { return true; }
 
+  CUDAOutputTransform GetCUDAOutputTransform(double* /*param*/) const override {
+    return CUDAOutputTransform::kExp;
+  }
+
   double LaunchCalcInitScoreKernel(const int class_id) const override;
 
   void LaunchCheckLabelKernel() const;

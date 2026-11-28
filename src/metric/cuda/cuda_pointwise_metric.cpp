@@ -15,19 +15,11 @@ namespace Falcata {
 
 template <typename HOST_METRIC, typename CUDA_METRIC>
 void CUDAPointwiseMetricInterface<HOST_METRIC, CUDA_METRIC>::Init(const Metadata& metadata, data_size_t num_data) {
+  // HOST_METRIC::Init (called by CUDAMetricInterface::Init) computes and caches this->sum_weights_ once.
   CUDAMetricInterface<HOST_METRIC>::Init(metadata, num_data);
   const int max_num_reduce_blocks = CUDABlockCount(this->num_data_, NUM_DATA_PER_EVAL_THREAD);
-  if (this->cuda_weights_ == nullptr) {
-    reduce_block_buffer_.Resize(max_num_reduce_blocks);
-  } else {
-    reduce_block_buffer_.Resize(max_num_reduce_blocks * 2);
-  }
-  const int max_num_reduce_blocks_inner = CUDABlockCount(max_num_reduce_blocks, NUM_DATA_PER_EVAL_THREAD);
-  if (this->cuda_weights_ == nullptr) {
-    reduce_block_buffer_inner_.Resize(max_num_reduce_blocks_inner);
-  } else {
-    reduce_block_buffer_inner_.Resize(max_num_reduce_blocks_inner * 2);
-  }
+  reduce_block_buffer_.Resize(static_cast<size_t>(max_num_reduce_blocks));
+  reduce_block_buffer_inner_.Resize(1);
 }
 
 // Regression metrics

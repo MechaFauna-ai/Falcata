@@ -16,6 +16,7 @@
 #include "xentropy_metric.hpp"
 
 #include "cuda/cuda_binary_metric.hpp"
+#include "cuda/cuda_multiclass_metric.hpp"
 #include "cuda/cuda_regression_metric.hpp"
 
 namespace Falcata {
@@ -60,14 +61,11 @@ Metric* Metric::CreateMetric(const std::string& type, const Config& config) {
       Log::Warning("Metric map is not implemented in cuda version. Fall back to evaluation on CPU.");
       return new MapMetric(config);
     } else if (type == std::string("multi_logloss")) {
-      Log::Warning("Metric multi_logloss is not implemented in cuda version. Fall back to evaluation on CPU.");
-      return new MultiSoftmaxLoglossMetric(config);
+      return new CUDAMultiSoftmaxLoglossMetric(config);
     } else if (type == std::string("multi_error")) {
-      Log::Warning("Metric multi_error is not implemented in cuda version. Fall back to evaluation on CPU.");
-      return new MultiErrorMetric(config);
+      return new CUDAMultiErrorMetric(config);
     } else if (type == std::string("multi_rmse") || type == std::string("multi_regression")) {
-      Log::Warning("Metric %s is not implemented in cuda version. Fall back to evaluation on CPU.", type.c_str());
-      return new MultiRMSEMetric(config);
+      return new CUDAMultiRMSEMetric(config);
     } else if (type == std::string("cross_entropy")) {
       Log::Warning("Metric cross_entropy is not implemented in cuda version. Fall back to evaluation on CPU.");
       return new CrossEntropyMetric(config);

@@ -134,6 +134,17 @@ class ObjectiveFunction {
 
   #ifdef USE_CUDA
   /*!
+  * \brief Closed-form output transform of a CUDA objective so CUDA metrics can fuse it into their eval kernels
+  */
+  enum class CUDAOutputTransform {
+    kOther = 0,
+    kIdentity = 1,
+    kSigmoid = 2,
+    kExp = 3,
+    kSoftmax = 4,
+  };
+
+  /*!
   * \brief Convert output for CUDA version
   */
   virtual const double* ConvertOutputCUDA(data_size_t /*num_data*/, const double* input, double* /*output*/) const {
@@ -141,6 +152,10 @@ class ObjectiveFunction {
   }
 
   virtual bool NeedConvertOutputCUDA () const { return false; }
+
+  virtual CUDAOutputTransform GetCUDAOutputTransform(double* /*param*/) const {
+    return NeedConvertOutputCUDA() ? CUDAOutputTransform::kOther : CUDAOutputTransform::kIdentity;
+  }
 
   virtual void SetNCCLInfo(
     ncclComm_t /*nccl_communicator*/,
