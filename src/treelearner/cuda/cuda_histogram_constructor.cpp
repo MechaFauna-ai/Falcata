@@ -2095,8 +2095,9 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
     return;
   }
   if (use_quantized_grad_ && any_pair_needs_bit_change_copy) {
-    // one int32 region of num_total_bin_ entries per pair (BitChangeScratchEntries: hist_t storage units, half
-    // as many); only reached when a level actually contains a >16-bit parent with a <=16-bit larger child
+    // one 16-byte-aligned int32 region of BitChangePairStride(num_total_bin_) entries per pair
+    // (BitChangeScratchEntries: hist_t storage units, half as many); only reached when a level
+    // actually contains a >16-bit parent with a <=16-bit larger child
     const size_t needed = BitChangeScratchEntries(num_pairs);
     if (hist_buffer_for_num_bit_change_.Size() < needed) {
       hist_buffer_for_num_bit_change_.Resize(needed);
@@ -2169,6 +2170,8 @@ void CUDAHistogramConstructor::FixOnlyHistogramsForLevel(
   }
   if (!need_fix_histogram_features_.empty()) {
     LaunchFixOnlyHistogramBatchedKernel(pair_descs, num_pairs);
+  } else if (FalcataDebug().diag) {
+    fprintf(stderr, "[hybrid-diag] final_level_sub_in_find: pairs=%d fix=none\n", num_pairs);
   }
   CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
 }

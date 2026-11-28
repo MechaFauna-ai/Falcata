@@ -2707,7 +2707,9 @@ void CUDAHistogramConstructor::LaunchFixOnlyHistogramBatchedKernel(
     return;
   }
   CHECK(use_quantized_grad_);
+  const char* fix_route = "batched";
   if (any_feature_unused_bytree_ && used_feature_info_ok_ && FalcataPlan::Get().fix_subtract_fused) {
+    fix_route = "used_features";
     // cuda_plan key fix_subtract_fused: fix only the sampled features of the smaller leaf, one block per pair
     const int threads = std::max(32, (num_used_feature_info_ + 31) / 32 * 32);  // <= 512 (host gate)
     LaunchLevelChainKernel(PdlLevelChainEnabled(), FixOnlyUsedFeaturesBatchedKernel, dim3(num_pairs),
@@ -2716,36 +2718,39 @@ void CUDAHistogramConstructor::LaunchFixOnlyHistogramBatchedKernel(
       num_used_feature_info_,
       pair_descs,
       device_level_state_);
-    CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
-    return;
-  }
-  const int block = fix_subtract_masked_block_ > 0 ? fix_subtract_masked_block_ : FIX_HISTOGRAM_BLOCK_SIZE;
-  if (device_level_whole_tree_ && LiveGridPays(num_need_fix, num_pairs)) {
-    const dim3 grid(static_cast<unsigned int>(num_need_fix), LiveGridRows(num_need_fix, num_pairs));
-    LaunchLevelChainKernel(PdlLevelChainEnabled(), FixHistogramDiscretizedLiveKernel,
-      grid, dim3(block), 0, cuda_stream_,
-      cuda_feature_num_bins_.RawData(),
-      cuda_feature_hist_offsets_.RawData(),
-      cuda_feature_most_freq_bins_.RawData(),
-      cuda_need_fix_histogram_features_.RawData(),
-      cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
-      pair_descs,
-      any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-      device_level_state_);
   } else {
-    const dim3 fix_grid(static_cast<unsigned int>(num_need_fix), num_pairs);
-    LaunchLevelChainKernel(PdlLevelChainEnabled(), FixHistogramDiscretizedBatchedKernel,
-      fix_grid, dim3(block), 0, cuda_stream_,
-      cuda_feature_num_bins_.RawData(),
-      cuda_feature_hist_offsets_.RawData(),
-      cuda_feature_most_freq_bins_.RawData(),
-      cuda_need_fix_histogram_features_.RawData(),
-      cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
-      pair_descs,
-      any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-      device_level_state_);
+    const int block = fix_subtract_masked_block_ > 0 ? fix_subtract_masked_block_ : FIX_HISTOGRAM_BLOCK_SIZE;
+    if (device_level_whole_tree_ && LiveGridPays(num_need_fix, num_pairs)) {
+      fix_route = "live";
+      const dim3 grid(static_cast<unsigned int>(num_need_fix), LiveGridRows(num_need_fix, num_pairs));
+      LaunchLevelChainKernel(PdlLevelChainEnabled(), FixHistogramDiscretizedLiveKernel,
+        grid, dim3(block), 0, cuda_stream_,
+        cuda_feature_num_bins_.RawData(),
+        cuda_feature_hist_offsets_.RawData(),
+        cuda_feature_most_freq_bins_.RawData(),
+        cuda_need_fix_histogram_features_.RawData(),
+        cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
+        pair_descs,
+        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+        device_level_state_);
+    } else {
+      const dim3 fix_grid(static_cast<unsigned int>(num_need_fix), num_pairs);
+      LaunchLevelChainKernel(PdlLevelChainEnabled(), FixHistogramDiscretizedBatchedKernel,
+        fix_grid, dim3(block), 0, cuda_stream_,
+        cuda_feature_num_bins_.RawData(),
+        cuda_feature_hist_offsets_.RawData(),
+        cuda_feature_most_freq_bins_.RawData(),
+        cuda_need_fix_histogram_features_.RawData(),
+        cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
+        pair_descs,
+        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+        device_level_state_);
+    }
   }
   CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
+  if (FalcataDebug().diag) {
+    fprintf(stderr, "[hybrid-diag] final_level_sub_in_find: pairs=%d fix=%s\n", num_pairs, fix_route);
+  }
 }
 
 void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
@@ -2755,9 +2760,10 @@ void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
   // stages one bin entry per thread (FixHistogramGroupInner)
   static_assert(2 * kFixGroupChunk * kFixGroupFeatures == FIX_HISTOGRAM_BLOCK_SIZE,
                 "FixHistogramGroupInner stages one element per thread of the block");
+  const bool vec4 = FalcataPlan::Get().hist_subtract_vec4;
   const int num_subtract_blocks = FixSubtractSmallLeafSubtractBlocks();
   dim3 grid_dim(FixSubtractSmallLeafGridX(), num_pairs);
-  if (FalcataPlan::Get().hist_subtract_vec4) {
+  if (vec4) {
     FixSubtractHistogramSmallLeafBatchedKernel<true><<<grid_dim, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
       num_total_bin_,
       num_subtract_blocks,
@@ -2787,6 +2793,10 @@ void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
       any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
       hist_fp32_,
       device_level_state_);
+  }
+  if (device_level_whole_tree_ && FalcataDebug().diag) {
+    fprintf(stderr, "[hybrid-diag] nonquant_subtract: pairs=%d hist_fp32=%d vec4=%d\n",
+            num_pairs, hist_fp32_ ? 1 : 0, vec4 ? 1 : 0);
   }
 }
 
@@ -2828,6 +2838,10 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
         hist_fp32_,
         device_level_state_);
+    }
+    if (device_level_whole_tree_ && FalcataDebug().diag) {
+      fprintf(stderr, "[hybrid-diag] nonquant_subtract: pairs=%d hist_fp32=%d vec4=%d\n",
+              num_pairs, hist_fp32_ ? 1 : 0, vec4 ? 1 : 0);
     }
   } else {
     // cuda_plan key device_levels: a device-driven level's pairs are guarded by the device's live count, and its
@@ -2961,8 +2975,8 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
       // once per enqueued level (direct enqueues and captures; a graph replay enqueues nothing): the routes taken and
       // the inputs of the live-grid decision (live iff grid_x * pairs > budget)
       fprintf(stderr, "[hybrid-diag] device_tree_live_grid: pairs=%d budget=%" PRId64 " fix_subtract=%s grid_x=%d "
-              "copy=%s copy_grid_x=%d\n", num_pairs, LiveGridBudget(), fix_route, fix_grid_x, copy_route,
-              num_subtract_blocks);
+              "copy=%s copy_grid_x=%d vec4=%d\n", num_pairs, LiveGridBudget(), fix_route, fix_grid_x, copy_route,
+              num_subtract_blocks, vec4 ? 1 : 0);
     }
   }
 }

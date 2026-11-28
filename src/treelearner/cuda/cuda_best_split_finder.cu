@@ -2990,7 +2990,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   if (num_used_tasks_ == 0) {
     return;  // no usable feature this tree; the sync masks every lane not-found
   }
-  const bool use_warp = warp_find_eligible_ && !FalcataFP32GainEnabled();
+  const bool use_warp = WarpFindDiscretizedActive();
   CHECK(!subtract_on_fly || use_warp);
   const int num_launch_tasks = compact_tasks ? num_used_tasks_ : num_tasks_;
   // the warp launch's order (BeforeTrain): the narrow tasks first, eight per warp, then the wide ones, one per warp
