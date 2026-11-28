@@ -661,11 +661,12 @@ struct FalcataPlan {
   // global scratch the kernel staged them in (num_class doubles per thread, six passes). The same max,
   // the same exponentials summed in class order, one division per class: bit-identical.
   bool softmax_registers = true;  // key: softmax_registers
-  // binary logloss gradients (with or without sample and label weights): the response and hessian evaluated with ~16 FP64 operations per row (the
-  // exponential's tail in fp32, an fp32 reciprocal refined by one double Newton step) instead of ~50 (libdevice exp, a
-  // correctly rounded division), to a proven relative error bound; a row's floats are stored from it only when every
-  // double within the bound rounds to the same float (its distance to the nearest float rounding midpoint), otherwise
-  // the original double expression runs. The same stored floats: bit-identical.
+  // binary logloss and Poisson regression gradients (with or without sample and label weights): the response and
+  // hessian evaluated with reduced FP64 operations per row (the exponential's tail in fp32, and for binary an fp32
+  // reciprocal refined by one double Newton step) instead of libdevice exp (and division), to a proven relative error
+  // bound; a row's floats are stored from it only when every double within the bound rounds to the same float (its
+  // distance to the nearest float rounding midpoint), otherwise the original double expression runs. The same stored
+  // floats: bit-identical.
   bool gradient_fp64_lean = true;  // key: gradient_fp64_lean
   // random forest (boosting=rf) on the CUDA device with the CUDA objective (ObjectiveFunction::CreateObjectiveFunction
   // excluded rf from it), so the forest boosts on the device like gbdt: the constant gradients and hessians are

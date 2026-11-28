@@ -9,6 +9,7 @@
 
 #include "cuda_regression_objective.hpp"
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -61,16 +62,19 @@ CUDARegressionFairLoss::~CUDARegressionFairLoss() {}
 
 
 CUDARegressionPoissonLoss::CUDARegressionPoissonLoss(const Config& config):
-CUDARegressionObjectiveInterface<RegressionPoissonLoss>(config) {}
+CUDARegressionObjectiveInterface<RegressionPoissonLoss>(config),
+exp_max_delta_step_(std::exp(max_delta_step_)) {}
 
 CUDARegressionPoissonLoss::CUDARegressionPoissonLoss(const std::vector<std::string>& strs):
-CUDARegressionObjectiveInterface<RegressionPoissonLoss>(strs) {}
+CUDARegressionObjectiveInterface<RegressionPoissonLoss>(strs),
+exp_max_delta_step_(std::exp(max_delta_step_)) {}
 
 CUDARegressionPoissonLoss::~CUDARegressionPoissonLoss() {}
 
 void CUDARegressionPoissonLoss::Init(const Metadata& metadata, data_size_t num_data) {
   CUDARegressionObjectiveInterface<RegressionPoissonLoss>::Init(metadata, num_data);
   LaunchCheckLabelKernel();
+  LaunchComputeExpMaxDeltaStepKernel();
 }
 
 double CUDARegressionPoissonLoss::LaunchCalcInitScoreKernel(const int class_id) const {

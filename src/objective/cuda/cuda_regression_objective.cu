@@ -9,10 +9,14 @@
 
 #include "cuda_regression_objective.hpp"
 
+#include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/falcata_plan.h>
+
 #include <algorithm>
+#include <cmath>
+#include <type_traits>
 
 #include "../../treelearner/cuda/cuda_pdl_launch.hpp"
-#include <Falcata/cuda/cuda_algorithms.hpp>
 
 namespace Falcata {
 
@@ -358,21 +362,169 @@ void CUDARegressionPoissonLoss::LaunchCheckLabelKernel() const {
   }
 }
 
+namespace {
+
+constexpr bool kPoissonLeanScoreIsFloat = std::is_same<score_t, float>::value;
+
+__device__ const double kPoissonLeanExp2Table[64] = {  // 2^(j/64), j = 0..63, rounded to nearest double
+  0x1.0000000000000p+0, 0x1.02c9a3e778061p+0, 0x1.059b0d3158574p+0, 0x1.0874518759bc8p+0,
+  0x1.0b5586cf9890fp+0, 0x1.0e3ec32d3d1a2p+0, 0x1.11301d0125b51p+0, 0x1.1429aaea92de0p+0,
+  0x1.172b83c7d517bp+0, 0x1.1a35beb6fcb75p+0, 0x1.1d4873168b9aap+0, 0x1.2063b88628cd6p+0,
+  0x1.2387a6e756238p+0, 0x1.26b4565e27cddp+0, 0x1.29e9df51fdee1p+0, 0x1.2d285a6e4030bp+0,
+  0x1.306fe0a31b715p+0, 0x1.33c08b26416ffp+0, 0x1.371a7373aa9cbp+0, 0x1.3a7db34e59ff7p+0,
+  0x1.3dea64c123422p+0, 0x1.4160a21f72e2ap+0, 0x1.44e086061892dp+0, 0x1.486a2b5c13cd0p+0,
+  0x1.4bfdad5362a27p+0, 0x1.4f9b2769d2ca7p+0, 0x1.5342b569d4f82p+0, 0x1.56f4736b527dap+0,
+  0x1.5ab07dd485429p+0, 0x1.5e76f15ad2148p+0, 0x1.6247eb03a5585p+0, 0x1.6623882552225p+0,
+  0x1.6a09e667f3bcdp+0, 0x1.6dfb23c651a2fp+0, 0x1.71f75e8ec5f74p+0, 0x1.75feb564267c9p+0,
+  0x1.7a11473eb0187p+0, 0x1.7e2f336cf4e62p+0, 0x1.82589994cce13p+0, 0x1.868d99b4492edp+0,
+  0x1.8ace5422aa0dbp+0, 0x1.8f1ae99157736p+0, 0x1.93737b0cdc5e5p+0, 0x1.97d829fde4e50p+0,
+  0x1.9c49182a3f090p+0, 0x1.a0c667b5de565p+0, 0x1.a5503b23e255dp+0, 0x1.a9e6b5579fdbfp+0,
+  0x1.ae89f995ad3adp+0, 0x1.b33a2b84f15fbp+0, 0x1.b7f76f2fb5e47p+0, 0x1.bcc1e904bc1d2p+0,
+  0x1.c199bdd85529cp+0, 0x1.c67f12e57d14bp+0, 0x1.cb720dcef9069p+0, 0x1.d072d4a07897cp+0,
+  0x1.d5818dcfba487p+0, 0x1.da9e603db3285p+0, 0x1.dfc97337b9b5fp+0, 0x1.e502ee78b3ff6p+0,
+  0x1.ea4afa2a490dap+0, 0x1.efa1bee615a27p+0, 0x1.f50765b6e4540p+0, 0x1.fa7c1819e90d8p+0
+};
+
+__device__ __forceinline__ float PoissonLeanApproxFloat(const double v) {
+  const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(v));  // NOLINT(runtime/int)
+  const int biased = static_cast<int>((bits >> 52) & 0x7ffu);
+  if (biased <= 1023 - 127) {
+    return 0.0f;
+  }
+  if (biased >= 1023 + 128) {
+    return (bits >> 63) ? -INFINITY : INFINITY;
+  }
+  const unsigned int sign = static_cast<unsigned int>(bits >> 63) << 31;
+  const unsigned int fbits = sign | (static_cast<unsigned int>(biased - 1023 + 127) << 23) |
+                             static_cast<unsigned int>((bits >> 29) & 0x7fffffu);
+  return __int_as_float(static_cast<int>(fbits));
+}
+
+__device__ __forceinline__ double PoissonLeanFloatToDouble(const float f) {
+  const unsigned int fbits = static_cast<unsigned int>(__float_as_int(f));
+  const unsigned long long sign = static_cast<unsigned long long>(fbits >> 31) << 63;  // NOLINT(runtime/int)
+  if ((fbits & 0x7fffffffu) == 0) {
+    return __longlong_as_double(static_cast<long long>(sign));  // NOLINT(runtime/int)
+  }
+  const unsigned long long biased = ((fbits >> 23) & 0xffu) - 127 + 1023;  // NOLINT(runtime/int)
+  return __longlong_as_double(static_cast<long long>(sign | (biased << 52) |  // NOLINT(runtime/int)
+                                                     (static_cast<unsigned long long>(fbits & 0x7fffffu) << 29)));  // NOLINT(runtime/int)
+}
+
+__device__ __forceinline__ bool PoissonLeanWideNormal(const double v) {
+  const int biased = static_cast<int>((static_cast<unsigned long long>(__double_as_longlong(v)) >> 52) & 0x7ffu);  // NOLINT(runtime/int)
+  return biased >= 64 && biased <= 2047 - 64;
+}
+
+__device__ __forceinline__ bool PoissonLeanSettledFloat(const double v, const float margin_ulps, float* out) {
+  const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(v));  // NOLINT(runtime/int)
+  const int biased = static_cast<int>((bits >> 52) & 0x7ffu);
+  const int low = static_cast<int>(bits & ((1ull << 29) - 1));
+  const int dist = low >= (1 << 28) ? low - (1 << 28) : (1 << 28) - low;
+  if (biased < 1023 - 125 || biased > 1023 + 126 || !(margin_ulps < static_cast<float>(1 << 27)) ||
+      dist <= static_cast<int>(margin_ulps) + 1) {
+    return false;
+  }
+  const unsigned long long magnitude = (bits & 0x7fffffffffffffffull) + (1ull << 28);  // NOLINT(runtime/int)
+  const unsigned int fbits = static_cast<unsigned int>(bits >> 63) << 31 |
+                             (static_cast<unsigned int>(magnitude >> 29) - (static_cast<unsigned int>(1023 - 127) << 23));
+  *out = __int_as_float(static_cast<int>(fbits));
+  return true;
+}
+
+// cuda_plan key gradient_fp64_lean for Poisson regression: Cody-Waite range reduction + FP32 tail / FP64 Horner exp(x)
+// (~6 FP64 ops vs libdevice exp's ~25), relative error < 2^-46.5 (total vs libdevice exp < 2^-46 = 128 double ULPs of
+// exp_score). Gradient cancellation in (exp_score - label) amplifies error by exp_score / |exp_score - label|; the
+// settled-float check guarantees every double within a >2x safety margin rounds to the exact same float as the
+// original double path, otherwise falling back to libdevice exp. Compiled out under SCORE_T_USE_DOUBLE.
+template <bool USE_WEIGHT>
+__device__ __forceinline__ bool PoissonLean(const double score, const double label, const double exp_max_delta_step,
+                                            const double sample_weight, float* out_gradient, float* out_hessian) {
+  const unsigned long long x_magnitude =  // NOLINT(runtime/int)
+      static_cast<unsigned long long>(__double_as_longlong(score)) & 0x7fffffffffffffffull;  // NOLINT(runtime/int)
+  if (!(x_magnitude <= 0x4054000000000000ull)) {  // |score| <= 80 (NaN fails)
+    return false;
+  }
+  const float kf = rintf(PoissonLeanApproxFloat(score) * 92.3324826168936f);  // 64 / ln2
+  const int k = static_cast<int>(kf);
+  const double kd = PoissonLeanFloatToDouble(kf);
+  double r = fma(-kd, 0x1.62e42fefa39efp-7, score);  // ln2/64, high and low parts
+  r = fma(-kd, 0x1.abc9e3b39803fp-62, r);
+  const float rf = PoissonLeanApproxFloat(r);
+  float t = 1.38888888888888889e-03f;  // 1/6!
+  t = fmaf(t, rf, 8.33333333333333333e-03f);  // 1/5!
+  t = fmaf(t, rf, 4.16666666666666667e-02f);  // 1/4!
+  t = fmaf(t, rf, 1.66666666666666667e-01f);  // 1/3!
+  double p = fma(PoissonLeanFloatToDouble(t), r, 0.5);
+  p = fma(p, r, 1.0);
+  p = fma(p, r, 1.0);
+  const double scaled = p * kPoissonLeanExp2Table[k & 63];
+  const double e = __longlong_as_double(__double_as_longlong(scaled) + (static_cast<long long>(k >> 6) << 52));  // NOLINT(runtime/int)
+  const double g_raw = e - label;
+  double g = g_raw;
+  double h = e * exp_max_delta_step;
+  if (USE_WEIGHT) {
+    if (!PoissonLeanWideNormal(g_raw) || !PoissonLeanWideNormal(h)) {
+      return false;
+    }
+    g = g * sample_weight;
+    h = h * sample_weight;
+  }
+  const float abs_g_raw_f = PoissonLeanApproxFloat(fabs(g_raw));
+  if (!(abs_g_raw_f > 0.0f)) {
+    return false;
+  }
+  const float g_ratio = PoissonLeanApproxFloat(e) / abs_g_raw_f;
+  float g_out, h_out;
+  if (!PoissonLeanSettledFloat(g, 256.0f * g_ratio + 16.0f, &g_out) ||
+      !PoissonLeanSettledFloat(h, 256.0f + 16.0f, &h_out)) {
+    return false;
+  }
+  *out_gradient = g_out;
+  *out_hessian = h_out;
+  return true;
+}
+
+__global__ void ComputeExpScalarKernel(const double x, double* out) {
+  *out = exp(x);
+}
+
+}  // namespace
+
+void CUDARegressionPoissonLoss::LaunchComputeExpMaxDeltaStepKernel() {
+  if (cuda_block_buffer_.Size() > 0) {
+    // Evaluate exp(max_delta_step_) once on device so the hoisted constant is bit-identical to device exp().
+    ComputeExpScalarKernel<<<1, 1>>>(max_delta_step_, cuda_block_buffer_.RawData());
+    CopyFromCUDADeviceToHost<double>(&exp_max_delta_step_, cuda_block_buffer_.RawData(), 1, __FILE__, __LINE__);
+  } else {
+    exp_max_delta_step_ = std::exp(max_delta_step_);
+  }
+}
+
 template <bool USE_WEIGHT>
 __global__ void GetGradientsKernel_Poisson(const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights, const data_size_t num_data,
-  const double max_delta_step, score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  const double exp_max_delta_step, score_t* cuda_out_gradients, score_t* cuda_out_hessians, const bool lean) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
-  const double exp_max_delta_step = std::exp(max_delta_step);
   if (data_index < num_data) {
+    const double score = cuda_scores[data_index];
+    const label_t label = cuda_labels[data_index];
+    const score_t weight = USE_WEIGHT ? static_cast<score_t>(cuda_weights[data_index]) : static_cast<score_t>(1.0f);
+    if (kPoissonLeanScoreIsFloat && lean) {
+      float lean_gradient, lean_hessian;
+      if (PoissonLean<USE_WEIGHT>(score, static_cast<double>(label), exp_max_delta_step,
+                                  static_cast<double>(weight), &lean_gradient, &lean_hessian)) {
+        cuda_out_gradients[data_index] = lean_gradient;
+        cuda_out_hessians[data_index] = lean_hessian;
+        return;
+      }
+    }
+    const double exp_score = exp(score);
     if (!USE_WEIGHT) {
-      const double exp_score = exp(cuda_scores[data_index]);
-      cuda_out_gradients[data_index] = static_cast<score_t>(exp_score - cuda_labels[data_index]);
+      cuda_out_gradients[data_index] = static_cast<score_t>(exp_score - label);
       cuda_out_hessians[data_index] = static_cast<score_t>(exp_score * exp_max_delta_step);
     } else {
-      const double exp_score = exp(cuda_scores[data_index]);
-      const score_t weight = static_cast<score_t>(cuda_weights[data_index]);
-      cuda_out_gradients[data_index] = static_cast<score_t>((exp_score - cuda_labels[data_index]) * weight);
+      cuda_out_gradients[data_index] = static_cast<score_t>((exp_score - label) * weight);
       cuda_out_hessians[data_index] = static_cast<score_t>(exp_score * exp_max_delta_step * weight);
     }
   }
@@ -380,12 +532,13 @@ __global__ void GetGradientsKernel_Poisson(const double* cuda_scores, const labe
 
 void CUDARegressionPoissonLoss::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
   const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_REGRESSION);
+  const bool lean = FalcataPlan::Get().gradient_fp64_lean;
   if (cuda_weights_ == nullptr) {
     GetGradientsKernel_Poisson<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
-      score, cuda_labels_, nullptr, num_data_, max_delta_step_, gradients, hessians);
+      score, cuda_labels_, nullptr, num_data_, exp_max_delta_step_, gradients, hessians, lean);
   } else {
     GetGradientsKernel_Poisson<true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
-      score, cuda_labels_, cuda_weights_, num_data_, max_delta_step_, gradients, hessians);
+      score, cuda_labels_, cuda_weights_, num_data_, exp_max_delta_step_, gradients, hessians, lean);
   }
 }
 

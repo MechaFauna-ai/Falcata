@@ -16,26 +16,11 @@
 
 namespace Falcata {
 
-// Softmax over a row's len values, which sit `stride` elements apart: the scratch is class-major (class k of row r at
-// k * num_rows + r, the layout of the scores), so the threads of a warp, consecutive rows, touch consecutive doubles
-// on every pass. (A row-major scratch put them num_class doubles apart, an uncoalesced access per pass.)
-// Softmax in double on purpose: the CPU objective computes it in double, and a float softmax changes most
-// gradients and breaks CPU parity.
-__device__ void SoftmaxCUDA(double* softmax_buffer, const int len, const size_t stride) {
-  double wmax = softmax_buffer[0];
-  for (int i = 1; i < len; ++i) {
-    wmax = max(softmax_buffer[i * stride], wmax);
-  }
-  double wsum = 0.0f;
-  for (int i = 0; i < len; ++i) {
-    softmax_buffer[i * stride] = exp(softmax_buffer[i * stride] - wmax);
-    wsum += softmax_buffer[i * stride];
-  }
-  for (int i = 0; i < len; ++i) {
-    softmax_buffer[i * stride] /= static_cast<double>(wsum);
-  }
-}
-
+// Softmax over a row's num_class values in 2 global passes over cuda_softmax_buffer (1 write + 1 read) instead of 6:
+// pass 1 reads cuda_scores directly for wmax, pass 2 reads cuda_scores and writes exp(s - wmax) once to scratch while
+// accumulating wsum in class order, pass 3 reads scratch once to divide by wsum and write grad/hess with label and
+// weight hoisted outside the class loop. Class-major layout keeps consecutive rows coalesced across a warp, and double
+// math in class order preserves bit-identity with the CPU objective and the register kernel.
 template <bool USE_WEIGHT>
 __global__ void GetGradientsKernel_MulticlassSoftmax(
   const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights,
@@ -46,44 +31,46 @@ __global__ void GetGradientsKernel_MulticlassSoftmax(
   if (data_index < num_data) {
     const size_t stride = static_cast<size_t>(num_data);
     double* softmax_result = cuda_softmax_buffer + data_index;
-    for (int k = 0; k < num_class; ++k) {
-      softmax_result[k * stride] = cuda_scores[stride * k + data_index];
+    double wmax = cuda_scores[data_index];
+    for (int k = 1; k < num_class; ++k) {
+      wmax = max(cuda_scores[stride * k + data_index], wmax);
     }
-    SoftmaxCUDA(softmax_result, num_class, stride);
-    if (!USE_WEIGHT) {
-      for (int k = 0; k < num_class; ++k) {
-        const double p = softmax_result[k * stride];
-        size_t idx = static_cast<size_t>(num_data) * k + data_index;
-        if (static_cast<int>(cuda_labels[data_index]) == k) {
-          cuda_out_gradients[idx] = static_cast<score_t>(p - 1.0f);
-        } else {
-          cuda_out_gradients[idx] = static_cast<score_t>(p);
-        }
+    double wsum = 0.0f;
+    for (int k = 0; k < num_class; ++k) {
+      const double e = exp(cuda_scores[stride * k + data_index] - wmax);
+      softmax_result[k * stride] = e;
+      wsum += e;
+    }
+    const int label = static_cast<int>(cuda_labels[data_index]);
+    const double weight = USE_WEIGHT ? static_cast<double>(cuda_weights[data_index]) : 1.0;
+    for (int k = 0; k < num_class; ++k) {
+      const double p = softmax_result[k * stride] / static_cast<double>(wsum);
+      const size_t idx = stride * k + data_index;
+      if (!USE_WEIGHT) {
+        cuda_out_gradients[idx] = static_cast<score_t>(label == k ? p - 1.0f : p);
         cuda_out_hessians[idx] = static_cast<score_t>(factor * p * (1.0f - p));
-      }
-    } else {
-      for (int k = 0; k < num_class; ++k) {
-        const double p = softmax_result[k * stride];
-        const double weight = cuda_weights[data_index];
-        size_t idx = static_cast<size_t>(num_data) * k + data_index;
-        if (static_cast<int>(cuda_labels[data_index]) == k) {
-          cuda_out_gradients[idx] = static_cast<score_t>((p - 1.0f) * weight);
-        } else {
-          cuda_out_gradients[idx] = static_cast<score_t>(p * weight);
-        }
+      } else {
+        cuda_out_gradients[idx] = static_cast<score_t>(label == k ? (p - 1.0f) * weight : p * weight);
         cuda_out_hessians[idx] = static_cast<score_t>((factor * p * (1.0f - p)) * weight);
       }
     }
   }
 }
 
+// MAX_CLASS=32 holds 32 doubles (64 32-bit registers) per thread; at __launch_bounds__(1024) the 64-register cap forced
+// 120 B of local-memory stack spills per thread. Using 256-thread blocks for MAX_CLASS >= 32 lifts the cap so the array
+// stays in registers with zero spills.
+template <int MAX_CLASS>
+constexpr int SoftmaxRegistersBlockSize() {
+  return MAX_CLASS >= 32 ? 256 : GET_GRADIENTS_BLOCK_SIZE_MULTICLASS;
+}
+
 // cuda_plan key softmax_registers: GetGradientsKernel_MulticlassSoftmax with the row's class scores in registers
-// instead of the global scratch (num_class doubles per thread, 6 passes over it). MAX_CLASS is a capacity:
-// classes k >= num_class are never read, and the loops (unrolled over the capacity) run SoftmaxCUDA's operations in
-// its order: the max from class 0 up, the exponentials summed from 0.0 in class order, one division per class. The
-// same doubles: bit-identical.
+// instead of the global scratch. MAX_CLASS is a capacity: classes k >= num_class are never read, and the loops
+// (unrolled over the capacity) run the softmax operations in class order: the max from class 0 up, the exponentials
+// summed from 0.0 in class order, one division per class. The same doubles: bit-identical.
 template <bool USE_WEIGHT, int MAX_CLASS>
-__global__ void __launch_bounds__(GET_GRADIENTS_BLOCK_SIZE_MULTICLASS) GetGradientsKernel_MulticlassSoftmaxRegisters(
+__global__ void __launch_bounds__(SoftmaxRegistersBlockSize<MAX_CLASS>()) GetGradientsKernel_MulticlassSoftmaxRegisters(
   const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights,
   const double factor, const int num_class, const data_size_t num_data,
   score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
@@ -133,47 +120,52 @@ __global__ void __launch_bounds__(GET_GRADIENTS_BLOCK_SIZE_MULTICLASS) GetGradie
 }
 
 template <bool USE_WEIGHT, int MAX_CLASS>
-static bool LaunchMulticlassSoftmaxRegisters(const int num_blocks, const double* scores, const label_t* labels,
+static bool LaunchMulticlassSoftmaxRegisters(const double* scores, const label_t* labels,
                                              const label_t* weights, const double factor, const int num_class,
                                              const data_size_t num_data, score_t* gradients, score_t* hessians) {
   if (num_class > MAX_CLASS) {
     return false;
   }
-  GetGradientsKernel_MulticlassSoftmaxRegisters<USE_WEIGHT, MAX_CLASS><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_MULTICLASS>>>(
+  constexpr int kBlockSize = SoftmaxRegistersBlockSize<MAX_CLASS>();
+  const int num_blocks = CUDABlockCount(num_data, kBlockSize);
+  GetGradientsKernel_MulticlassSoftmaxRegisters<USE_WEIGHT, MAX_CLASS><<<num_blocks, kBlockSize>>>(
     scores, labels, weights, factor, num_class, num_data, gradients, hessians);
   return true;
 }
 
 void CUDAMulticlassSoftmax::LaunchGetGradientsKernel(const double* scores, score_t* gradients, score_t* hessians) const {
-  const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_MULTICLASS - 1) / GET_GRADIENTS_BLOCK_SIZE_MULTICLASS;
+  if (num_data_ <= 0) {
+    return;
+  }
   if (FalcataPlan::Get().softmax_registers) {
-    // class capacities 8 / 16 / 32 (at 32 the 64-register cap of __launch_bounds__(1024) spills part of the array to
-    // thread-interleaved local memory, still coalesced); wider class counts keep the scratch kernel
+    // class capacities 8 / 16 (1024 threads) and 32 (256 threads, zero spills); wider class counts take the 2-pass scratch kernel
     const bool launched = cuda_weights_ == nullptr ?
-      (LaunchMulticlassSoftmaxRegisters<false, 8>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
+      (LaunchMulticlassSoftmaxRegisters<false, 8>(scores, cuda_labels_, cuda_weights_, factor_, num_class_,
                                                   num_data_, gradients, hessians) ||
-       LaunchMulticlassSoftmaxRegisters<false, 16>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
+       LaunchMulticlassSoftmaxRegisters<false, 16>(scores, cuda_labels_, cuda_weights_, factor_, num_class_,
                                                    num_data_, gradients, hessians) ||
-       LaunchMulticlassSoftmaxRegisters<false, 32>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
+       LaunchMulticlassSoftmaxRegisters<false, 32>(scores, cuda_labels_, cuda_weights_, factor_, num_class_,
                                                    num_data_, gradients, hessians)) :
-      (LaunchMulticlassSoftmaxRegisters<true, 8>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
+      (LaunchMulticlassSoftmaxRegisters<true, 8>(scores, cuda_labels_, cuda_weights_, factor_, num_class_,
                                                  num_data_, gradients, hessians) ||
-       LaunchMulticlassSoftmaxRegisters<true, 16>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
+       LaunchMulticlassSoftmaxRegisters<true, 16>(scores, cuda_labels_, cuda_weights_, factor_, num_class_,
                                                   num_data_, gradients, hessians) ||
-       LaunchMulticlassSoftmaxRegisters<true, 32>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
+       LaunchMulticlassSoftmaxRegisters<true, 32>(scores, cuda_labels_, cuda_weights_, factor_, num_class_,
                                                   num_data_, gradients, hessians));
     if (launched) {
       return;
     }
   }
+  double* softmax_buffer = EnsureSoftmaxBuffer(num_data_);
+  const int num_blocks = CUDABlockCount(num_data_, GET_GRADIENTS_BLOCK_SIZE_MULTICLASS);
   if (cuda_weights_ == nullptr) {
     GetGradientsKernel_MulticlassSoftmax<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_MULTICLASS>>>(
       scores, cuda_labels_, cuda_weights_, factor_, num_class_, num_data_,
-      cuda_softmax_buffer_.RawData(), gradients, hessians);
+      softmax_buffer, gradients, hessians);
   } else {
     GetGradientsKernel_MulticlassSoftmax<true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_MULTICLASS>>>(
       scores, cuda_labels_, cuda_weights_, factor_, num_class_, num_data_,
-      cuda_softmax_buffer_.RawData(), gradients, hessians);
+      softmax_buffer, gradients, hessians);
   }
 }
 
@@ -181,32 +173,34 @@ __global__ void ConvertOutputCUDAKernel_MulticlassSoftmax(
   const int num_class, const data_size_t num_data, const double* input, double* cuda_softmax_buffer, double* output) {
   const data_size_t data_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   if (data_index < num_data) {
-    // class-major scratch at the call's row stride: num_data <= the training rows the buffer holds per class
+    // 2-pass class-major scratch (aliasing-safe even if input == output)
     const size_t stride = static_cast<size_t>(num_data);
-    double* cuda_softmax_buffer_ptr = cuda_softmax_buffer + data_index;
-    for (int class_index = 0; class_index < num_class; ++class_index) {
-      cuda_softmax_buffer_ptr[class_index * stride] = input[stride * class_index + data_index];
+    double* softmax_ptr = cuda_softmax_buffer + data_index;
+    double wmax = input[data_index];
+    for (int class_index = 1; class_index < num_class; ++class_index) {
+      wmax = max(input[stride * class_index + data_index], wmax);
     }
-    SoftmaxCUDA(cuda_softmax_buffer_ptr, num_class, stride);
+    double wsum = 0.0f;
     for (int class_index = 0; class_index < num_class; ++class_index) {
-      output[stride * class_index + data_index] = cuda_softmax_buffer_ptr[class_index * stride];
+      const double e = exp(input[stride * class_index + data_index] - wmax);
+      softmax_ptr[class_index * stride] = e;
+      wsum += e;
+    }
+    for (int class_index = 0; class_index < num_class; ++class_index) {
+      output[stride * class_index + data_index] = softmax_ptr[class_index * stride] / static_cast<double>(wsum);
     }
   }
 }
 
 const double* CUDAMulticlassSoftmax::LaunchConvertOutputCUDAKernel(
   const data_size_t num_data, const double* input, double* output) const {
-  // the grid covers the rows the caller passes; the softmax scratch is sized for the training rows (Init)
-  if (num_data > num_data_) {
-    Log::Fatal("CUDAMulticlassSoftmax::ConvertOutputCUDA: %d rows exceed the %d rows its scratch buffer holds",
-               num_data, num_data_);
-  }
   if (num_data <= 0) {
     return output;
   }
-  const int num_blocks = (num_data + GET_GRADIENTS_BLOCK_SIZE_MULTICLASS - 1) / GET_GRADIENTS_BLOCK_SIZE_MULTICLASS;
+  double* softmax_buffer = EnsureSoftmaxBuffer(num_data);
+  const int num_blocks = CUDABlockCount(num_data, GET_GRADIENTS_BLOCK_SIZE_MULTICLASS);
   ConvertOutputCUDAKernel_MulticlassSoftmax<<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_MULTICLASS>>>(
-    num_class_, num_data, input, cuda_softmax_buffer_.RawData(), output);
+    num_class_, num_data, input, softmax_buffer, output);
   return output;
 }
 

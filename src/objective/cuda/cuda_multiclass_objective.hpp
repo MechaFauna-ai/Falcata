@@ -37,8 +37,10 @@ class CUDAMulticlassSoftmax: public CUDAObjectiveInterface<MulticlassSoftmax> {
 
   const double* LaunchConvertOutputCUDAKernel(const data_size_t num_data, const double* input, double* output) const;
 
-  // CUDA memory, held by this object
-  CUDAVector<double> cuda_softmax_buffer_;
+  double* EnsureSoftmaxBuffer(const data_size_t num_rows) const;
+
+  // CUDA memory, lazily allocated only when the scratch kernel or ConvertOutputCUDA runs
+  mutable CUDAVector<double> cuda_softmax_buffer_;
 };
 
 

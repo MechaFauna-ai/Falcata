@@ -35,6 +35,33 @@ __device__ __forceinline__ double LambdarankSigmoid(const LambdarankLambdaTables
   }
 }
 
+// Exact pair-index decoding for LambdaRank: row r >= 0 starts at T(r) = (2 * s + r - 1) * r / 2, so with m = r + s >= 1
+// and n = 2 * pair_index + s * (s - 1), m is the unique integer with m * (m - 1) <= n < m * (m + 1).
+// For in-shared-memory queries (query_item_count <= 2048), n < 2^22 is exact in both int32 and float, and
+// sqrtf(float(n)) + 0.5f lands within +/-1 of m, so one branchless integer adjustment is exact with zero FP64 ops.
+__device__ __forceinline__ data_size_t DecodeLambdarankPairRow32(const data_size_t pair_index, const data_size_t s) {
+  const int32_t n = 2 * static_cast<int32_t>(pair_index) + static_cast<int32_t>(s) * (static_cast<int32_t>(s) - 1);
+  int32_t m = static_cast<int32_t>(sqrtf(static_cast<float>(n)) + 0.5f);
+  m -= (m * (m - 1) > n);
+  m += (m * (m + 1) <= n);
+  return static_cast<data_size_t>(m - static_cast<int32_t>(s));
+}
+
+// General pair-index decoding for queries exceeding 2048 items: uses int64_t so s * (s - 1) never overflows, with FP32
+// sqrtf initial guess and exact integer refinement (0-1 steps for queries up to ~4M items).
+__device__ __forceinline__ data_size_t DecodeLambdarankPairRow64(const data_size_t pair_index, const data_size_t s) {
+  const int64_t s64 = static_cast<int64_t>(s);
+  const int64_t n = 2 * static_cast<int64_t>(pair_index) + s64 * (s64 - 1);
+  int64_t m = static_cast<int64_t>(sqrtf(static_cast<float>(n)) + 0.5f);
+  while (m * (m - 1) > n) {
+    --m;
+  }
+  while (m * (m + 1) <= n) {
+    ++m;
+  }
+  return static_cast<data_size_t>(m - s64);
+}
+
 template <bool MAX_ITEM_GREATER_THAN_1024, data_size_t NUM_RANK_LABEL>
 __global__ void GetGradientsKernel_LambdarankNDCG(const double* cuda_scores, const label_t* cuda_labels, const data_size_t num_data,
   const data_size_t num_queries, const data_size_t* cuda_query_boundaries, const double* cuda_inverse_max_dcgs,
@@ -125,9 +152,7 @@ __global__ void GetGradientsKernel_LambdarankNDCG(const double* cuda_scores, con
     const data_size_t num_pairs = (num_j_per_i + s) * num_items_i / 2;
     double thread_sum_lambdas = 0.0f;
     for (data_size_t pair_index = static_cast<data_size_t>(threadIdx.x); pair_index < num_pairs; pair_index += static_cast<data_size_t>(blockDim.x)) {
-      const double square = 2 * static_cast<double>(pair_index) + s * s - s;
-      const double sqrt_result = floor(sqrt(square));
-      const data_size_t row_index = static_cast<data_size_t>(floor(sqrt(square - sqrt_result)) + 1 - s);
+      const data_size_t row_index = DecodeLambdarankPairRow32(pair_index, s);
       const data_size_t i = num_items_i - 1 - row_index;
       const data_size_t j = num_j_per_i - (pair_index - (2 * s + row_index - 1) * row_index / 2);
       if (cuda_label_pointer[shared_indices[i]] != cuda_label_pointer[shared_indices[j]] && shared_scores[shared_indices[j]] != kMinScore) {
@@ -271,9 +296,7 @@ __global__ void GetGradientsKernel_LambdarankNDCG_Sorted(
     const data_size_t num_pairs = (num_j_per_i + s) * num_items_i / 2;
     double thread_sum_lambdas = 0.0f;
     for (data_size_t pair_index = static_cast<data_size_t>(threadIdx.x); pair_index < num_pairs; pair_index += static_cast<data_size_t>(blockDim.x)) {
-      const double square = 2 * static_cast<double>(pair_index) + s * s - s;
-      const double sqrt_result = floor(sqrt(square));
-      const data_size_t row_index = static_cast<data_size_t>(floor(sqrt(square - sqrt_result)) + 1 - s);
+      const data_size_t row_index = DecodeLambdarankPairRow64(pair_index, s);
       const data_size_t i = num_items_i - 1 - row_index;
       const data_size_t j = num_j_per_i - (pair_index - (2 * s + row_index - 1) * row_index / 2);
       if (j > i) {
@@ -785,9 +808,6 @@ void CUDALambdarankNDCG::LaunchGetGradientsKernel(const double* score, score_t* 
   // no position bias here: Metadata::SetPosition refuses positions in a CUDA build
   const int num_blocks = (num_queries_ + NUM_QUERY_PER_BLOCK - 1) / NUM_QUERY_PER_BLOCK;
   const data_size_t num_rank_label = static_cast<int>(label_gain_.size());
-  const int device_index = GetCUDADevice(__FILE__, __LINE__);
-  cudaDeviceProp device_prop;
-  CUDASUCCESS_OR_FATAL(cudaGetDeviceProperties(&device_prop, device_index));
 
   #define GetGradientsKernel_LambdarankNDCG_ARGS \
     score, cuda_labels_, num_data_, \
@@ -809,7 +829,7 @@ void CUDALambdarankNDCG::LaunchGetGradientsKernel(const double* score, score_t* 
   if (max_items_in_query_aligned_ <= 1024) {
     if (deterministic_) {
       const int det_blocks = num_blocks;
-      if (num_rank_label <= 32 && device_prop.warpSize == 32) {
+      if (num_rank_label <= 32 && device_warp_size_ == 32) {
         GetGradientsKernel_LambdarankNDCG_Deterministic<false, 32><<<det_blocks, DET_LAMBDARANK_BLOCK_DIM>>>(GetGradientsKernel_LambdarankNDCG_ARGS);
       } else if (num_rank_label <= 64) {
         GetGradientsKernel_LambdarankNDCG_Deterministic<false, 64><<<det_blocks, DET_LAMBDARANK_BLOCK_DIM>>>(GetGradientsKernel_LambdarankNDCG_ARGS);
@@ -824,7 +844,7 @@ void CUDALambdarankNDCG::LaunchGetGradientsKernel(const double* score, score_t* 
       } else {
         GetGradientsKernel_LambdarankNDCG_Deterministic<false, 2048><<<det_blocks, DET_LAMBDARANK_BLOCK_DIM>>>(GetGradientsKernel_LambdarankNDCG_ARGS);
       }
-    } else if (num_rank_label <= 32 && device_prop.warpSize == 32) {
+    } else if (num_rank_label <= 32 && device_warp_size_ == 32) {
       GetGradientsKernel_LambdarankNDCG<false, 32><<<num_blocks, max_items_in_query_aligned_>>>(GetGradientsKernel_LambdarankNDCG_ARGS);
     } else if (num_rank_label <= 64) {
       GetGradientsKernel_LambdarankNDCG<false, 64><<<num_blocks, max_items_in_query_aligned_>>>(GetGradientsKernel_LambdarankNDCG_ARGS);
@@ -841,7 +861,7 @@ void CUDALambdarankNDCG::LaunchGetGradientsKernel(const double* score, score_t* 
     }
   } else if (max_items_in_query_aligned_ <= 2048) {
     if (deterministic_) {
-      if (num_rank_label <= 32 && device_prop.warpSize == 32) {
+      if (num_rank_label <= 32 && device_warp_size_ == 32) {
         GetGradientsKernel_LambdarankNDCG_Deterministic<true, 32><<<num_blocks, DET_LAMBDARANK_BLOCK_DIM>>>(GetGradientsKernel_LambdarankNDCG_ARGS);
       } else if (num_rank_label <= 64) {
         GetGradientsKernel_LambdarankNDCG_Deterministic<true, 64><<<num_blocks, DET_LAMBDARANK_BLOCK_DIM>>>(GetGradientsKernel_LambdarankNDCG_ARGS);
@@ -856,7 +876,7 @@ void CUDALambdarankNDCG::LaunchGetGradientsKernel(const double* score, score_t* 
       } else {
         GetGradientsKernel_LambdarankNDCG_Deterministic<true, 2048><<<num_blocks, DET_LAMBDARANK_BLOCK_DIM>>>(GetGradientsKernel_LambdarankNDCG_ARGS);
       }
-    } else if (num_rank_label <= 32 && device_prop.warpSize == 32) {
+    } else if (num_rank_label <= 32 && device_warp_size_ == 32) {
       GetGradientsKernel_LambdarankNDCG<true, 32><<<num_blocks, 1024>>>(GetGradientsKernel_LambdarankNDCG_ARGS);
     } else if (num_rank_label <= 64) {
       GetGradientsKernel_LambdarankNDCG<true, 64><<<num_blocks, 1024>>>(GetGradientsKernel_LambdarankNDCG_ARGS);
@@ -874,7 +894,7 @@ void CUDALambdarankNDCG::LaunchGetGradientsKernel(const double* score, score_t* 
   } else {
     BitonicArgSortItemsGlobal(score, num_queries_, cuda_query_boundaries_, cuda_item_indices_buffer_.RawData());
     if (deterministic_) {
-      if (num_rank_label <= 32 && device_prop.warpSize == 32) {
+      if (num_rank_label <= 32 && device_warp_size_ == 32) {
         GetGradientsKernel_LambdarankNDCG_Sorted_Deterministic<32><<<num_blocks, DET_LAMBDARANK_BLOCK_DIM>>>(GetGradientsKernel_LambdarankNDCG_Sorted_ARGS);
       } else if (num_rank_label <= 64) {
         GetGradientsKernel_LambdarankNDCG_Sorted_Deterministic<64><<<num_blocks, DET_LAMBDARANK_BLOCK_DIM>>>(GetGradientsKernel_LambdarankNDCG_Sorted_ARGS);
@@ -889,7 +909,7 @@ void CUDALambdarankNDCG::LaunchGetGradientsKernel(const double* score, score_t* 
       } else {
         GetGradientsKernel_LambdarankNDCG_Sorted_Deterministic<2048><<<num_blocks, DET_LAMBDARANK_BLOCK_DIM>>>(GetGradientsKernel_LambdarankNDCG_Sorted_ARGS);
       }
-    } else if (num_rank_label <= 32 && device_prop.warpSize == 32) {
+    } else if (num_rank_label <= 32 && device_warp_size_ == 32) {
       GetGradientsKernel_LambdarankNDCG_Sorted<32><<<num_blocks, 1024>>>(GetGradientsKernel_LambdarankNDCG_Sorted_ARGS);
     } else if (num_rank_label <= 64) {
       GetGradientsKernel_LambdarankNDCG_Sorted<64><<<num_blocks, 1024>>>(GetGradientsKernel_LambdarankNDCG_Sorted_ARGS);
@@ -908,7 +928,6 @@ void CUDALambdarankNDCG::LaunchGetGradientsKernel(const double* score, score_t* 
   if (cuda_weights_ != nullptr) {
     LambdarankApplyWeightsKernel<<<(num_data_ + 255) / 256, 256>>>(cuda_weights_, num_data_, gradients, hessians);
   }
-  SynchronizeCUDADevice(__FILE__, __LINE__);
 
   #undef GetGradientsKernel_LambdarankNDCG_ARGS
   #undef GetGradientsKernel_LambdarankNDCG_Sorted_ARGS
@@ -1216,7 +1235,6 @@ void CUDARankXENDCG::LaunchGetGradientsKernel(const double* score, score_t* grad
       gradients,
       hessians);
   }
-  SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
 
