@@ -781,7 +781,10 @@ void CUDABestSplitFinder::FindBestSplitsForLevelVector(
   }
   EnsureHybridLevelCapacity(num_pairs);
   // order the batched find after the whole batched histogram phase of this level
-  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
+  // (under device_levels, histogram and finder share find_stream)
+  if (device_level_state_ == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
+  }
   LaunchFindBestSplitsForLevelKernelVector(pair_descs, num_pairs, plane_slab, quant);
   LaunchSyncBestSplitForLevelKernel(pair_descs, num_pairs, /*gate_on_desc_counts=*/false);
 }
@@ -797,7 +800,10 @@ void CUDABestSplitFinder::FindBestSplitsForLevel(
   }
   EnsureHybridLevelCapacity(num_pairs);
   // order the batched find after the whole batched histogram phase of this level
-  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
+  // (under device_levels, histogram and finder share find_stream)
+  if (device_level_state_ == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
+  }
   if (grad_scale != nullptr && hess_scale != nullptr) {
     LaunchFindBestSplitsDiscretizedForLevelKernel(pair_descs, num_pairs, grad_scale, hess_scale);
   } else {

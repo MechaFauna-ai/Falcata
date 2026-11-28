@@ -41,6 +41,8 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   const double hessian_ridge_quanta,
   CUDASplitInfo* cuda_best_split_info,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: fix / subtract / copy histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs exits before any read
   // (stale descriptors)
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
@@ -203,14 +205,15 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner(
       cuda_best_split_info_.RawData(), \
       \
       device_level_state_
+  const bool pdl = PdlGraphChainEnabled();
   if (FalcataFP32GainEnabled()) {
-    FindBestSplitsDiscretizedForLevelKernel<false, USE_L1, USE_SMOOTHING, float>
-      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
-        FindBestSplitsDiscretizedForLevelKernel_ARGS);
+    LaunchLevelChainKernel(pdl, FindBestSplitsDiscretizedForLevelKernel<false, USE_L1, USE_SMOOTHING, float>,
+      grid_dim, dim3(NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER), 0, cuda_streams_[0],
+      FindBestSplitsDiscretizedForLevelKernel_ARGS);
   } else {
-    FindBestSplitsDiscretizedForLevelKernel<false, USE_L1, USE_SMOOTHING, double>
-      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
-        FindBestSplitsDiscretizedForLevelKernel_ARGS);
+    LaunchLevelChainKernel(pdl, FindBestSplitsDiscretizedForLevelKernel<false, USE_L1, USE_SMOOTHING, double>,
+      grid_dim, dim3(NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER), 0, cuda_streams_[0],
+      FindBestSplitsDiscretizedForLevelKernel_ARGS);
   }
   #undef FindBestSplitsDiscretizedForLevelKernel_ARGS
 }

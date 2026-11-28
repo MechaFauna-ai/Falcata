@@ -82,6 +82,12 @@ static inline bool PdlLevelChainEnabled() {
 #endif
 }
 
+// cuda_plan key pdl_graph_chain: extends programmatic dependent launches across the remaining device-level chain edges
+// (reset -> select -> gen-bit, fused split-inner -> construct, fix/subtract/copy -> find); off when pdl_level_chain is off
+static inline bool PdlGraphChainEnabled() {
+  return PdlLevelChainEnabled() && FalcataPlan::Get().pdl_graph_chain;
+}
+
 // launch `kernel` on `stream`, as a programmatic dependent of the stream's previous kernel when `pdl` is set (from
 // PdlLevelChainEnabled; the kernel must call PdlWaitForProducer before touching memory); launch errors surface either
 // way

@@ -30,6 +30,7 @@ namespace Falcata {
 namespace {
 
 __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const int num_leaves) {
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: level 0 select may get resident while reset drains
   CUDADeviceLevelState* st = cfg.state;
   if (threadIdx.x == 0) {
     if (cfg.whole_tree && cfg.tree_leaf_value != nullptr) {
@@ -74,6 +75,7 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
 template <int MAX_SPLITS, bool GLOBAL = false>
 __global__ void DeviceLevelSelectKernel(const CUDADeviceLevelConfig cfg, const int level) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the level sync's leaf entries are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: gen-bit / cat-bitset may get resident while select drains
   if constexpr (GLOBAL || MAX_SPLITS == kDeviceTreeSharedSplits) {
     DeviceLevelSelectBlock<MAX_SPLITS, GLOBAL>(cfg, level);
   } else {

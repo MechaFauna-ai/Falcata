@@ -60,6 +60,9 @@ struct FalcataPlan {
   static constexpr int kPinBinsAuto = 0;
   static constexpr int kPinBinsAlways = 1;
   static constexpr int kPinBinsNever = 2;
+  static constexpr int kDeviceTreeMapClearAuto = 0;
+  static constexpr int kDeviceTreeMapClearOn = 1;
+  static constexpr int kDeviceTreeMapClearOff = 2;
   // the int8 tile binning's fixed shape (construct_tile_bin; rule 2: portable hardware guarantees, not tuned):
   // a tile is 128 columns wide, one 128-byte line of an int8 input row (the unit its coalesced reads fetch), and
   // at most 48 KB of shared memory, the dynamic shared memory every CUDA device grants a block without opt-in
@@ -791,6 +794,20 @@ struct FalcataPlan {
   // for the producer's completion and memory before its first access to memory the chain writes, so it reads and
   // writes what an ordinary launch would. Bit-identical.
   bool pdl_level_chain = true;      // key: pdl_level_chain
+  // complete programmatic dependent launch across the remaining level-chain edges inside device_levels / device_tree
+  // (DeviceLevelReset -> Select -> GenBit, HybridSplitInnerFusedBatch -> Construct, Fix/Subtract/Copy -> Find, plus
+  // AggregateBatch and nonquant/cat device-level chain); gated by pdl_level_chain. Bit-identical.
+  bool pdl_graph_chain = true;      // key: pdl_graph_chain
+  // warm-clear cudaMemsetAsync of the row -> leaf map before the complete device tree's final inline apply
+  // (key device_tree_map_clear: auto|on|off):
+  //  - auto: warm-clear only when num_data * sizeof(int) is in (L2/8, L2/2], where avoiding scattered DRAM RFO reads
+  //    beats the non-PDL memset barrier while the map still fits in L2 alongside the final apply's working set;
+  //    smaller maps (<= L2/8) and L2-overflowing maps (> L2/2) skip the memset (keeping the PDL chain unbroken and
+  //    avoiding a wasted full DRAM write pass + L2 eviction).
+  //  - on: always run the warm-clear memset (previous behavior).
+  //  - off: never run the warm-clear memset.
+  // Splits + terminal gaps overwrite every real row, and early/stump unrolls run MaterializeHybridLeafMap: bit-identical.
+  int device_tree_map_clear = kDeviceTreeMapClearAuto;  // key: device_tree_map_clear
   // the tree start's zero store of the row -> leaf map (the index fill's second 4-byte store per row; under bagging
   // the scatter over the bag rows) is skipped where the tree's flow writes every in-bag row's leaf before any reader
   // of the map: the two-sync level prefix with the batched apply (its tree end materializes the map from the final
@@ -1149,6 +1166,7 @@ struct FalcataPlan {
     if (key == "skip_empty_tail") return &skip_empty_tail;
     if (key == "gap_copy_once") return &gap_copy_once;
     if (key == "pdl_level_chain") return &pdl_level_chain;
+    if (key == "pdl_graph_chain") return &pdl_graph_chain;
     if (key == "leaf_map_no_zero") return &leaf_map_no_zero;
     if (key == "leaf_map_small_blocks") return &leaf_map_small_blocks;
     if (key == "early_leaf_map") return &early_leaf_map;
@@ -1311,6 +1329,20 @@ struct FalcataPlan {
           plan.pin_bins = kPinBinsNever;
         } else {
           Log::Fatal("cuda_plan: bad value \"%s\" for key \"pin_bins\" (expected auto|always|never)", kv[1].c_str());
+        }
+        overridden = true;
+        continue;
+      }
+      if (kv[0] == std::string("device_tree_map_clear")) {
+        if (kv[1] == std::string("auto")) {
+          plan.device_tree_map_clear = kDeviceTreeMapClearAuto;
+        } else if (kv[1] == std::string("on") || kv[1] == std::string("1") || kv[1] == std::string("true")) {
+          plan.device_tree_map_clear = kDeviceTreeMapClearOn;
+        } else if (kv[1] == std::string("off") || kv[1] == std::string("0") || kv[1] == std::string("false")) {
+          plan.device_tree_map_clear = kDeviceTreeMapClearOff;
+        } else {
+          Log::Fatal("cuda_plan: bad value \"%s\" for key \"device_tree_map_clear\" (expected auto|on|off)",
+                     kv[1].c_str());
         }
         overridden = true;
         continue;

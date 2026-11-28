@@ -913,6 +913,8 @@ __global__ void SubtractHistogramBatchedKernel(
   const uint8_t* bin_used,
   const bool hist_fp32,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: construct / fix histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: find may get resident while subtract drains
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs exits before any read
   // (stale descriptors)
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
@@ -953,6 +955,8 @@ __global__ void FixHistogramBatchedKernel(
   const int8_t* feature_used,
   const bool hist_fp32,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: construct / convert histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: subtract may get resident while fix drains
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
@@ -983,6 +987,8 @@ __global__ void FixSubtractHistogramSmallLeafBatchedKernel(
   const int8_t* feature_used,
   const bool hist_fp32,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: construct / convert histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: find may get resident while fix/subtract drains
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
@@ -1019,6 +1025,8 @@ __global__ void SubtractHistogramDiscretizedBatchedKernel(
   hist_t* num_bit_change_buffer,
   const uint8_t* bin_used,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: construct / fix histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: copy / find may get resident while subtract drains
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
@@ -1071,6 +1079,7 @@ __global__ void CopyChangedNumBitHistogramBatchedKernel(
   const uint8_t* bin_used,
   const CUDADeviceLevelState* dls) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the subtract's change buffer is complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: find may get resident while bit-change copy drains
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
@@ -1102,6 +1111,8 @@ __global__ void FixHistogramDiscretizedBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int8_t* feature_used,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: construct histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: subtract may get resident while fix drains
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
@@ -1202,6 +1213,8 @@ __global__ void SubtractHistogramDiscretizedLiveKernel(
   hist_t* num_bit_change_buffer,
   const uint8_t* bin_used,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: construct / fix histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: copy / find may get resident while subtract drains
   const unsigned int global_thread_index_gate = threadIdx.x + blockIdx.x * blockDim.x;
   if (bin_used != nullptr && global_thread_index_gate < static_cast<unsigned int>(num_total_bin) &&
       !bin_used[global_thread_index_gate]) {
@@ -1235,6 +1248,7 @@ __global__ void CopyChangedNumBitHistogramLiveKernel(
   const uint8_t* bin_used,
   const CUDADeviceLevelState* dls) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the subtract's change buffer is complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: find may get resident while bit-change copy drains
   const unsigned int global_thread_index = threadIdx.x + blockIdx.x * blockDim.x;
   if (global_thread_index >= static_cast<unsigned int>(num_total_bin) ||
       (bin_used != nullptr && !bin_used[global_thread_index])) {
@@ -1285,6 +1299,7 @@ __global__ void __launch_bounds__(512) FixSubtractUsedFeaturesBatchedKernel(
   hist_t* num_bit_change_buffer,
   const CUDADeviceLevelState* dls) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the construct's histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: find may get resident while fix/subtract drains
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.x)) {
     return;  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
   }
@@ -1896,6 +1911,8 @@ __global__ void ConvertFixedHistBatchedKernel(
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: fixed-point construct histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: fix / subtract may get resident while convert drains
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
@@ -1918,7 +1935,8 @@ int CUDAHistogramConstructor::LaunchConvertFixedHistBatched(
   constexpr int kThreads = 256;
   const int num_items = 2 * num_total_bin_;
   const int blocks_x = (num_items + kThreads - 1) / kThreads;
-  ConvertFixedHistBatchedKernel<<<dim3(blocks_x, num_pairs), kThreads, 0, cuda_stream_>>>(
+  LaunchLevelChainKernel(device_level_state_ != nullptr && PdlGraphChainEnabled(), ConvertFixedHistBatchedKernel,
+    dim3(blocks_x, num_pairs), dim3(kThreads), 0, cuda_stream_,
     pair_descs, num_items, nq_inv_scale_.RawDataReadOnly(),
     any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
     static_cast<data_size_t>(min_data_in_leaf_), min_sum_hessian_in_leaf_,
@@ -2250,7 +2268,8 @@ void CUDAHistogramConstructor::LaunchDeviceLevelPairJoint(const CUDAHybridPairDe
     // The slotted whole-tree code-word path needs no more physical workers than its known resident capacity.
     grid_y = std::min(grid_y, sh.slot_device_slots);
   }
-  kernel<<<dim3(grid_x, grid_y, 1), dim3(sh.block_x, sh.block_y), static_cast<size_t>(sh.smem_bytes), cuda_stream_>>>(
+  LaunchLevelChainKernel(PdlGraphChainEnabled(), kernel,
+    dim3(grid_x, grid_y, 1), dim3(sh.block_x, sh.block_y), static_cast<size_t>(sh.smem_bytes), cuda_stream_,
     pair_descs,
     reinterpret_cast<const int32_t*>(cuda_gradients_),
     data,
@@ -2316,7 +2335,8 @@ void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
                 "FixHistogramGroupInner stages one element per thread of the block");
   const int num_subtract_blocks = FixSubtractSmallLeafSubtractBlocks();
   dim3 grid_dim(FixSubtractSmallLeafGridX(), num_pairs);
-  FixSubtractHistogramSmallLeafBatchedKernel<<<grid_dim, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
+  LaunchLevelChainKernel(device_level_state_ != nullptr && PdlGraphChainEnabled(),
+    FixSubtractHistogramSmallLeafBatchedKernel, grid_dim, dim3(FIX_HISTOGRAM_BLOCK_SIZE), 0, cuda_stream_,
     num_total_bin_,
     num_subtract_blocks,
     cuda_feature_num_bins_.RawData(),
@@ -2337,11 +2357,12 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
   const int num_pairs,
   const bool any_pair_needs_bit_change_copy) {
   if (!use_quantized_grad_) {
+    const bool nq_pdl = device_level_state_ != nullptr && PdlGraphChainEnabled();
     const int num_subtract_threads = 2 * num_total_bin_;
     const int num_subtract_blocks = (num_subtract_threads + SUBTRACT_BLOCK_SIZE - 1) / SUBTRACT_BLOCK_SIZE;
     if (need_fix_histogram_features_.size() > 0) {
       dim3 fix_grid(static_cast<unsigned int>(need_fix_histogram_features_.size()), num_pairs);
-      FixHistogramBatchedKernel<<<fix_grid, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
+      LaunchLevelChainKernel(nq_pdl, FixHistogramBatchedKernel, fix_grid, dim3(FIX_HISTOGRAM_BLOCK_SIZE), 0, cuda_stream_,
         cuda_feature_num_bins_.RawData(),
         cuda_feature_hist_offsets_.RawData(),
         cuda_feature_most_freq_bins_.RawData(),
@@ -2353,7 +2374,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         device_level_state_);
     }
     dim3 subtract_grid(num_subtract_blocks, num_pairs);
-    SubtractHistogramBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
+    LaunchLevelChainKernel(nq_pdl, SubtractHistogramBatchedKernel, subtract_grid, dim3(SUBTRACT_BLOCK_SIZE), 0, cuda_stream_,
       num_total_bin_,
       pair_descs,
       any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
@@ -2413,9 +2434,11 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
     } else {
       fix_grid_x = num_subtract_blocks;
       fix_route = "batched-subtract";
+      const bool pdl_graph = PdlGraphChainEnabled();
       if (need_fix_histogram_features_.size() > 0) {
         dim3 fix_grid(static_cast<unsigned int>(need_fix_histogram_features_.size()), num_pairs);
-        FixHistogramDiscretizedBatchedKernel<<<fix_grid, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
+        LaunchLevelChainKernel(pdl_graph, FixHistogramDiscretizedBatchedKernel, fix_grid,
+          dim3(FIX_HISTOGRAM_BLOCK_SIZE), 0, cuda_stream_,
           cuda_feature_num_bins_.RawData(),
           cuda_feature_hist_offsets_.RawData(),
           cuda_feature_most_freq_bins_.RawData(),
@@ -2428,14 +2451,16 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
       if (live_tree && LiveGridPays(num_subtract_blocks, num_pairs)) {
         fix_route = "live-subtract";
         const dim3 grid(num_subtract_blocks, LiveGridRows(num_subtract_blocks, num_pairs));
-        SubtractHistogramDiscretizedLiveKernel<<<grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
+        LaunchLevelChainKernel(pdl_graph, SubtractHistogramDiscretizedLiveKernel, grid,
+          dim3(SUBTRACT_BLOCK_SIZE), 0, cuda_stream_,
           num_total_bin_,
           pair_descs,
           hist_buffer_for_num_bit_change_.RawData(),
           any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
           dls);
       } else {
-        SubtractHistogramDiscretizedBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
+        LaunchLevelChainKernel(pdl_graph, SubtractHistogramDiscretizedBatchedKernel, subtract_grid,
+          dim3(SUBTRACT_BLOCK_SIZE), 0, cuda_stream_,
           num_total_bin_,
           pair_descs,
           hist_buffer_for_num_bit_change_.RawData(),

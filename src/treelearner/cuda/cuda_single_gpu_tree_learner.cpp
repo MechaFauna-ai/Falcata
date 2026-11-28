@@ -3961,6 +3961,9 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(device_bynode_cfg_.num_tasks)));
       key.push_back(static_cast<const void*>(device_bynode_cfg_.table));
     }
+    key.push_back(reinterpret_cast<const void*>(
+      static_cast<uintptr_t>((FalcataPlan::Get().pdl_graph_chain ? 1 : 0) |
+                             (cuda_data_partition_->ShouldWarmClearDeviceLevelLeafMap() ? 2 : 0))));
   }
   if (!cuda_histogram_constructor_->DeviceLevelGraphCapturable()) {
     return false;  // the construct would rewrite this tree's compact view first (a per-tree state, not a launch)
@@ -4038,8 +4041,8 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     throw;
   }
   CUDASUCCESS_OR_FATAL(cudaStreamEndCapture(find_stream, &graph->graph));
-  if (FalcataDebug().diag && cfg.whole_tree && inline_all_map) {
-    // Validate the actual captured memset extent and FULL-completion edges, including with PDL enabled.
+  if (FalcataDebug().diag) {
+    // Validate captured PDL edges and, for whole trees with inline_all_map, the warm-clear memset node contract.
     // Graph support already requires CUDA>=12.4, including the edge-data query API (no lossy legacy query).
 #if CUDART_VERSION >= 13000
     const auto get_edges = cudaGraphGetEdges;
@@ -4054,39 +4057,60 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     std::vector<cudaGraphEdgeData> edges(edge_count);
     CUDASUCCESS_OR_FATAL(cudaGraphGetNodes(graph->graph, nodes.data(), &node_count));
     CUDASUCCESS_OR_FATAL(get_edges(graph->graph, from.data(), to.data(), edges.data(), &edge_count));
-    int clears = 0;
-    for (const cudaGraphNode_t node : nodes) {
-      cudaGraphNodeType type;
-      CUDASUCCESS_OR_FATAL(cudaGraphNodeGetType(node, &type));
-      if (type != cudaGraphNodeTypeMemset) {
-        continue;
-      }
-      cudaMemsetParams params = {};
-      CUDASUCCESS_OR_FATAL(cudaGraphMemsetNodeGetParams(node, &params));
-      if (params.dst != cuda_data_partition_->cuda_data_index_to_leaf_index()) {
-        continue;
-      }
-      const size_t bytes = params.width * params.height * params.elementSize;
-      CHECK_EQ(bytes, static_cast<size_t>(num_data_) * sizeof(int));
-      CHECK_EQ(params.value, 0u);
-      int incoming = 0;
-      int outgoing = 0;
-      for (size_t i = 0; i < edge_count; ++i) {
-        if (from[i] == node || to[i] == node) {
-          CHECK_EQ(static_cast<int>(edges[i].type), static_cast<int>(cudaGraphDependencyTypeDefault));
-          CHECK_EQ(static_cast<int>(edges[i].from_port), 0);
-          CHECK_EQ(static_cast<int>(edges[i].to_port), 0);
-          incoming += to[i] == node ? 1 : 0;
-          outgoing += from[i] == node ? 1 : 0;
+    int pdl_edges = 0;
+    int default_edges = 0;
+    int k2k_default = 0;
+    for (size_t i = 0; i < edge_count; ++i) {
+      if (edges[i].type == cudaGraphDependencyTypeProgrammatic) {
+        ++pdl_edges;
+      } else {
+        ++default_edges;
+        cudaGraphNodeType from_type = cudaGraphNodeTypeEmpty;
+        cudaGraphNodeType to_type = cudaGraphNodeTypeEmpty;
+        CUDASUCCESS_OR_FATAL(cudaGraphNodeGetType(from[i], &from_type));
+        CUDASUCCESS_OR_FATAL(cudaGraphNodeGetType(to[i], &to_type));
+        if (from_type == cudaGraphNodeTypeKernel && to_type == cudaGraphNodeTypeKernel) {
+          ++k2k_default;
         }
       }
-      CHECK_GT(incoming, 0);
-      CHECK_GT(outgoing, 0);
-      ++clears;
-      fprintf(stderr, "[hybrid-diag] device_tree_warm_clear_graph: bytes=%zu incoming_full=%d outgoing_full=%d\n",
-              bytes, incoming, outgoing);
     }
-    CHECK_EQ(clears, 1);
+    fprintf(stderr, "[hybrid-diag] device_level_graph_edges: nodes=%zu edges=%zu pdl=%d default=%d k2k_default=%d\n",
+            node_count, edge_count, pdl_edges, default_edges, k2k_default);
+    if (cfg.whole_tree && inline_all_map) {
+      int clears = 0;
+      for (const cudaGraphNode_t node : nodes) {
+        cudaGraphNodeType type;
+        CUDASUCCESS_OR_FATAL(cudaGraphNodeGetType(node, &type));
+        if (type != cudaGraphNodeTypeMemset) {
+          continue;
+        }
+        cudaMemsetParams params = {};
+        CUDASUCCESS_OR_FATAL(cudaGraphMemsetNodeGetParams(node, &params));
+        if (params.dst != cuda_data_partition_->cuda_data_index_to_leaf_index()) {
+          continue;
+        }
+        const size_t bytes = params.width * params.height * params.elementSize;
+        CHECK_EQ(bytes, static_cast<size_t>(num_data_) * sizeof(int));
+        CHECK_EQ(params.value, 0u);
+        int incoming = 0;
+        int outgoing = 0;
+        for (size_t i = 0; i < edge_count; ++i) {
+          if (from[i] == node || to[i] == node) {
+            CHECK_EQ(static_cast<int>(edges[i].type), static_cast<int>(cudaGraphDependencyTypeDefault));
+            CHECK_EQ(static_cast<int>(edges[i].from_port), 0);
+            CHECK_EQ(static_cast<int>(edges[i].to_port), 0);
+            incoming += to[i] == node ? 1 : 0;
+            outgoing += from[i] == node ? 1 : 0;
+          }
+        }
+        CHECK_GT(incoming, 0);
+        CHECK_GT(outgoing, 0);
+        ++clears;
+        fprintf(stderr, "[hybrid-diag] device_tree_warm_clear_graph: bytes=%zu incoming_full=%d outgoing_full=%d\n",
+                bytes, incoming, outgoing);
+      }
+      CHECK_EQ(clears, cuda_data_partition_->ShouldWarmClearDeviceLevelLeafMap() ? 1 : 0);
+    }
   }
   // cuda_plan key device_level_graph_update: whole-tree keys that keep changing (a sampled feature set every tree)
   // retarget the least recently used exec to this capture in place: the same launches and parameters as a new

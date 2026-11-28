@@ -1509,6 +1509,7 @@ __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
   const int num_split_descs_param,
   const int total_flat_blocks_param,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: select / cat-bitsets descriptors are complete and visible
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   __shared__ uint16_t shared_mem_buffer[WARPSIZE];
   (void)cuda_data_index_to_leaf_index;
@@ -1556,6 +1557,7 @@ __global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS
   const int num_split_descs_param,
   const int total_flat_blocks_param,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: select / cat-bitsets descriptors are complete and visible
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   constexpr int kBlock = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS;
   __shared__ uint16_t shared_mem_buffer[WARPSIZE];
@@ -1618,6 +1620,8 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
   data_size_t* level_smaller_counts,
   int* split_info_mirror_base,
   const CUDADeviceLevelState* dls) {
+  PdlWaitForProducer();  // cuda_plan key pdl_graph_chain: the gen-bit pass's block counts are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: the next level-chain kernel may get resident
   // cuda_plan key device_levels: a worst-case launch's split past the level's live splits
   if (DeviceLevelBeyondLiveSplits(dls, blockIdx.x)) {
     return;
@@ -2191,6 +2195,7 @@ template <int ROWS, bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED, bool DL = f
 __global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION) HybridSplitInnerFusedBatchKernel(
   FALCATA_SPLIT_INNER_FUSED_PARAMS) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the aggregate's offsets are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: construct may get resident while apply/pairs drain
   __shared__ uint16_t shared_warp_scan[WARPSIZE];
   HybridSplitInnerFusedBatchBody<ROWS, USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED, 0, DL>(FALCATA_SPLIT_INNER_FUSED_ARGS,
                                                                                      shared_warp_scan);
@@ -2209,6 +2214,7 @@ __global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS
 HybridSplitInnerFusedBatchRowsKernel(
   FALCATA_SPLIT_INNER_FUSED_PARAMS) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the aggregate's offsets are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_graph_chain: construct may get resident while apply/pairs drain
   __shared__ uint16_t shared_warp_scan[WARPSIZE];
   HybridSplitInnerFusedBatchBody<ROWS, USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED,
                                  SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS, DL>(FALCATA_SPLIT_INNER_FUSED_ARGS,
@@ -2392,22 +2398,25 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   // cuda_plan key apply_genbit_rows: the flat gen-bit at twice apply_row_batch's rows per thread with a compile-time
   // block, where the occupancy API gives it strictly more rows in flight per SM than the default build
   constexpr int kGenBitWideRows = 2 * kApplyRows;
+  const bool genbit_pdl = dls != nullptr && PdlGraphChainEnabled();
   if (apply_row_batch && FalcataPlan::Get().apply_genbit_rows &&
       ApplyRowsTakes(HybridGenBitVectorFlatRowsKernel<kGenBitWideRows>, block_dim / kGenBitWideRows, kGenBitWideRows,
                      HybridGenBitVectorUpdateLeafIndexBatchKernel<kApplyRows>, block_dim / kApplyRows, kApplyRows)) {
     auto* genbit = dls != nullptr ? HybridGenBitVectorFlatRowsKernel<kGenBitWideRows, true> :
                                     HybridGenBitVectorFlatRowsKernel<kGenBitWideRows, false>;
-    genbit<<<flat_grid, block_dim / kGenBitWideRows, 0, cuda_streams_[0]>>>(
+    LaunchLevelChainKernel(genbit_pdl, genbit, dim3(flat_grid), dim3(block_dim / kGenBitWideRows), 0, cuda_streams_[0],
       descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
       cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(), num_splits,
       total_flat_blocks, dls);
   } else if (apply_row_batch) {
-    HybridGenBitVectorUpdateLeafIndexBatchKernel<kApplyRows><<<flat_grid, block_dim / kApplyRows, 0, cuda_streams_[0]>>>(
+    LaunchLevelChainKernel(genbit_pdl, HybridGenBitVectorUpdateLeafIndexBatchKernel<kApplyRows>, dim3(flat_grid),
+      dim3(block_dim / kApplyRows), 0, cuda_streams_[0],
       descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
       cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
       cuda_data_index_to_leaf_index_.RawData(), num_splits, total_flat_blocks, dls);
   } else {
-    HybridGenBitVectorUpdateLeafIndexBatchKernel<1><<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
+    LaunchLevelChainKernel(genbit_pdl, HybridGenBitVectorUpdateLeafIndexBatchKernel<1>, dim3(flat_grid),
+      dim3(block_dim), 0, cuda_streams_[0],
       descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
       cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
       cuda_data_index_to_leaf_index_.RawData(), num_splits, total_flat_blocks, dls);
@@ -2436,7 +2445,8 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
       cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
       cuda_level_smaller_counts_.RawData(), aggregate_mirror, dls);
   } else {
-    HybridAggregateBlockOffsetBatchKernel<<<num_splits, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
+    LaunchLevelChainKernel(PdlGraphChainEnabled(), HybridAggregateBlockOffsetBatchKernel, dim3(num_splits),
+      dim3(AGGREGATE_BLOCK_SIZE_DATA_PARTITION), 0, cuda_streams_[0],
       descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
       cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
       cuda_level_smaller_counts_.RawData(), aggregate_mirror, dls);
@@ -2454,7 +2464,7 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   // cuda_plan key device_levels: only the fused tree-structure and gap ids read the device counts
   CHECK(dls == nullptr || (struct_fused && gap_fused));
   if (struct_fused || gap_fused) {
-    if (dls != nullptr && write_leaf_map) {
+    if (dls != nullptr && write_leaf_map && ShouldWarmClearDeviceLevelLeafMap()) {
       // Whole-tree static final apply: warm every real row's map sector before the scattered child/gap stores,
       // as the host map-only route does. Early/stump unrolls still run their complete fallback mapper afterward.
       CUDASUCCESS_OR_FATAL(cudaMemsetAsync(cuda_data_index_to_leaf_index_.RawData(), 0,
