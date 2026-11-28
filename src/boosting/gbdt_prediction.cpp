@@ -84,6 +84,41 @@ void GBDT::ConvertRawToPrediction(double* output, const PredictRange& range) con
   }
 }
 
+Boosting::OutputConversion GBDT::DescribeOutputConversion(const PredictRange& range) const {
+  OutputConversion conv;
+  conv.average_divisor = (average_output_ && range.num_iteration > 1) ? range.num_iteration : 0;
+  if (objective_function_ == nullptr) {
+    conv.kind = OutputConversion::kNone;
+    return conv;
+  }
+  const ObjectiveFunction::OutputTransform t = objective_function_->DescribeOutputTransform();
+  switch (t.kind) {
+    case ObjectiveFunction::OutputTransformKind::kNone:
+      conv.kind = OutputConversion::kNone;
+      break;
+    case ObjectiveFunction::OutputTransformKind::kSigmoid:
+      conv.kind = OutputConversion::kSigmoid;
+      conv.param = t.param;
+      break;
+    case ObjectiveFunction::OutputTransformKind::kSoftmax:
+      conv.kind = OutputConversion::kSoftmax;
+      break;
+    case ObjectiveFunction::OutputTransformKind::kExp:
+      conv.kind = OutputConversion::kExp;
+      break;
+    case ObjectiveFunction::OutputTransformKind::kRegSqrt:
+      conv.kind = OutputConversion::kRegSqrt;
+      break;
+    case ObjectiveFunction::OutputTransformKind::kSoftplus:
+      conv.kind = OutputConversion::kSoftplus;
+      break;
+    default:
+      conv.kind = OutputConversion::kHostOnly;
+      break;
+  }
+  return conv;
+}
+
 Boosting::TreeRangeView GBDT::RangeShape(const PredictRange& range) const {
   TreeRangeView view;
   view.num_tree_per_iteration = num_tree_per_iteration_;

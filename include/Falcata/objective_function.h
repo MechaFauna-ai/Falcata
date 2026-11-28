@@ -83,6 +83,30 @@ class ObjectiveFunction {
     output[0] = input[0];
   }
 
+  /*!
+  * \brief Built-in output transform kind for device-side prediction conversion.
+  *        Objectives that do not override DescribeOutputTransform default to kHostOnly
+  *        and fall back to ConvertOutput on the host.
+  */
+  enum class OutputTransformKind : int {
+    kNone = 0,       // identity (raw score is the prediction)
+    kSigmoid = 1,    // 1.0 / (1.0 + exp(-param * x))
+    kSoftmax = 2,    // row-wise softmax over num_output classes
+    kExp = 3,        // exp(x)
+    kRegSqrt = 4,    // Sign(x) * x * x
+    kSoftplus = 5,   // max(x, 0.0) + log1p(exp(-fabs(x)))
+    kHostOnly = 6,   // custom or unsupported on device: fall back to host ConvertOutput
+  };
+
+  struct OutputTransform {
+    OutputTransformKind kind = OutputTransformKind::kHostOnly;
+    double param = 1.0;
+  };
+
+  virtual OutputTransform DescribeOutputTransform() const {
+    return OutputTransform{OutputTransformKind::kHostOnly, 1.0};
+  }
+
   virtual std::string ToString() const = 0;
 
   ObjectiveFunction() = default;

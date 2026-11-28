@@ -138,6 +138,10 @@ class MulticlassSoftmax: public ObjectiveFunction {
     Common::Softmax(input, output, num_class_);
   }
 
+  OutputTransform DescribeOutputTransform() const override {
+    return OutputTransform{OutputTransformKind::kSoftmax, 1.0};
+  }
+
   const char* GetName() const override {
     return "multiclass";
   }
@@ -245,6 +249,10 @@ class MulticlassOVA: public ObjectiveFunction {
     for (int i = 0; i < num_class_; ++i) {
       output[i] = 1.0f / (1.0f + std::exp(-sigmoid_ * input[i]));
     }
+  }
+
+  OutputTransform DescribeOutputTransform() const override {
+    return OutputTransform{OutputTransformKind::kSigmoid, sigmoid_};
   }
 
   std::string ToString() const override {

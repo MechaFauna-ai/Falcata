@@ -155,6 +155,10 @@ class RegressionL2loss: public ObjectiveFunction {
     }
   }
 
+  OutputTransform DescribeOutputTransform() const override {
+    return OutputTransform{sqrt_ ? OutputTransformKind::kRegSqrt : OutputTransformKind::kNone, 1.0};
+  }
+
   std::string ToString() const override {
     std::stringstream str_buf;
     str_buf << GetName();
@@ -467,6 +471,10 @@ class RegressionPoissonLoss: public RegressionL2loss {
 
   void ConvertOutput(const double* input, double* output) const override {
     output[0] = std::exp(input[0]);
+  }
+
+  OutputTransform DescribeOutputTransform() const override {
+    return OutputTransform{OutputTransformKind::kExp, 1.0};
   }
 
   const char* GetName() const override {

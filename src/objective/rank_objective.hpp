@@ -109,6 +109,10 @@ class RankingObjective : public ObjectiveFunction {
 
   bool NeedAccuratePrediction() const override { return false; }
 
+  OutputTransform DescribeOutputTransform() const override {
+    return OutputTransform{OutputTransformKind::kNone, 1.0};
+  }
+
  protected:
   int seed_;
   data_size_t num_queries_;

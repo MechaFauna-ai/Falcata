@@ -16,8 +16,21 @@ namespace Falcata {
 namespace {
 
 constexpr int kRowBlockSize = 256;
+constexpr int kCombineBlockSize = 128;
 constexpr int kMissingZero = 1;   // MissingType::Zero
 constexpr int kMissingNaN = 2;    // MissingType::NaN
+
+__device__ __forceinline__ int FastDiv(int n, const FastDiv32& fd) {
+  return static_cast<int>(__umulhi(static_cast<uint32_t>(n), fd.mul) >> fd.shift);
+}
+
+inline size_t CombineSharedBytes(int max_spans) {
+  int levels = 1;
+  while ((static_cast<uint64_t>(1) << levels) <= static_cast<uint64_t>(max_spans) && levels < 31) {
+    ++levels;
+  }
+  return static_cast<size_t>(levels) * kCombineBlockSize * sizeof(double);
+}
 
 __device__ __forceinline__ uint32_t ThresholdBits(float t) { return __float_as_uint(t); }
 __device__ __forceinline__ uint32_t ThresholdBits(double t) { return static_cast<uint32_t>(__double2loint(t)); }
@@ -572,12 +585,19 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
                                               int64_t tile, int span, int chunk, unsigned char* smem) {
   const int K = num_tree_per_iteration;
   const int tile_rows = plan.tile_rows;
+  const int tile_rows_shift = plan.tile_rows_shift;
+  const int tile_rows_mask = tile_rows - 1;
   const int k0 = chunk * plan.out_chunk;
   const int kb = min(plan.out_chunk, K - k0);
+  const FastDiv32 kb_div = (k0 + plan.out_chunk > K) ? plan.last_kb_div : plan.out_chunk_div;
   const int pairs = tile_rows * kb;            // (row, output) pairs of the block; pair = r + tile_rows * kk
   const int WG = plan.wave_groups;
+  const int wg_shift = plan.wg_shift;
+  const int wg_mask = WG - 1;
   const int seg = plan.seg;
-  const int segs = WG / seg;
+  const int seg_shift = plan.seg_shift;
+  const int seg_mask = seg - 1;
+  const int segs = WG >> seg_shift;
   const int part_stride = pairs | 1;
   const int pair_cap = tile_rows * plan.out_chunk;
   double* part = reinterpret_cast<double*>(smem);                          // [WG][part_stride]
@@ -606,7 +626,7 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
               if (threadIdx.x < pre) {
                 dst[threadIdx.x] = SnapZero(__ldg(src + threadIdx.x));
               }
-              const int vec_n = (num_col - pre) / 4;
+              const int vec_n = (num_col - pre) >> 2;
               const float4* src4 = reinterpret_cast<const float4*>(src + pre);
               for (int j = threadIdx.x; j < vec_n; j += blockDim.x) {
                 const float4 v = __ldg(src4 + j);
@@ -635,8 +655,9 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
       const int total = tile_rows * stage_cols;
       const bool column_major = rows.row_stride == 1 && rows.col_stride != 1;
       for (int i = threadIdx.x; i < total; i += blockDim.x) {
-        const int rr = column_major ? i % tile_rows : i / stage_cols;
-        const int f = column_major ? i / tile_rows : i - rr * stage_cols;
+        const int rr = column_major ? (i & tile_rows_mask)
+                                    : (stage_cols == 1 ? i : FastDiv(i, plan.stage_cols_div));
+        const int f = column_major ? (i >> tile_rows_shift) : (i - rr * stage_cols);
         const int64_t r = row0 + rr;
         xs[static_cast<size_t>(rr) * x_stride + f] = r < rows.num_row && f < num_col
             ? SnapZero(__ldg(rows.data + r * rows.row_stride + static_cast<int64_t>(f) * rows.col_stride)) : TIn(0);
@@ -648,9 +669,9 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   const int g_span = span * plan.span_groups;
   const int span_end = min(g_span + plan.span_groups, num_groups);
   // a task's unit is TG consecutive groups (an aligned subtree it adds itself); a wave holds WG units
-  const int waves = (span_end - g_span + WG * TG - 1) / (WG * TG);
+  const int waves = (span_end - g_span + WG * TG - 1) >> (wg_shift + (TG == 8 ? 3 : 0));
   const int tasks = pairs * WG;
-  const int lane = threadIdx.x % 32;
+  const int lane = threadIdx.x & 31;
   for (int w = 0; w < waves; ++w) {
     const int gw0 = g_span + w * WG * TG;
     // 1. one task per (row, output, group); rows vary fastest, so a warp's lanes share trees
@@ -658,17 +679,19 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
       // small batches: a group's trees are shared by group_lanes adjacent lanes, each walking its consecutive part;
       // the in-order sum is chained through the lanes by shuffles, so it is the same sum
       const int GL = plan.group_lanes;
-      const int per_lane = kPairwiseGroupIterations / GL;
-      const int lane_tasks = tasks * GL;
-      const int rounded_lanes = (lane_tasks + 31) / 32 * 32;
+      const int gl_shift = plan.gl_shift;
+      const int gl_mask = GL - 1;
+      const int per_lane = kPairwiseGroupIterations >> gl_shift;
+      const int lane_tasks = tasks << gl_shift;
+      const int rounded_lanes = (lane_tasks + 31) & ~31;
       for (int base = threadIdx.x - lane; base < rounded_lanes; base += blockDim.x) {
         const int t = base + lane;
-        const int j = t % GL;
-        const int task = t / GL;
-        const int r = task % tile_rows;
-        const int rest = task / tile_rows;
-        const int kk = rest % kb;
-        const int gw = rest / kb;
+        const int j = t & gl_mask;
+        const int task = t >> gl_shift;
+        const int r = task & tile_rows_mask;
+        const int rest = task >> tile_rows_shift;
+        const int gw = kb == 1 ? rest : FastDiv(rest, kb_div);
+        const int kk = kb == 1 ? 0 : rest - gw * kb;
         const int g = gw0 + gw;
         double v[4];
         int count = 0;
@@ -694,70 +717,70 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
               }
             }
           }
-          acc = __shfl_sync(0xffffffffu, acc, (lane & ~(GL - 1)) + l);
+          acc = __shfl_sync(0xffffffffu, acc, (lane & ~gl_mask) + l);
         }
         if (t < lane_tasks && j == 0) {
-          part[gw * part_stride + r + tile_rows * kk] = acc;
+          part[gw * part_stride + r + (kk << tile_rows_shift)] = acc;
         }
       }
     } else {
-    for (int t = threadIdx.x; t < tasks; t += blockDim.x) {
-      const int r = t % tile_rows;
-      const int rest = t / tile_rows;
-      const int kk = rest % kb;
-      const int gw = rest / kb;
-      // the unit's groups, added by the aligned tree in registers: l0, l1, l2 hold the pending subtrees of 1, 2 and 4
-      // groups; after the last group (TG is a power of two) x is the unit's subtree
-      double x = 0.0, l0 = 0.0, l1 = 0.0, l2 = 0.0;
-      #pragma unroll
-      for (int q = 0; q < TG; ++q) {
-        const int g = gw0 + gw * TG + q;
-        double p = 0.0;
-        if (r < valid_rows && g < num_groups) {
-          const int it0 = g * kPairwiseGroupIterations;
-          const int count = min(kPairwiseGroupIterations, num_iteration - it0);
-          const int tree0 = tree_begin + it0 * K + k0 + kk;
-          if (STAGE) {
-            const StagedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride};
-            p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
-          } else {
-            const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
-            p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
-          }
-        }
-        x = p;
-        if (q & 1) {
-          x = __dadd_rn(l0, x);
-          if (q & 2) {
-            x = __dadd_rn(l1, x);
-            if (q & 4) {
-              x = __dadd_rn(l2, x);
+      for (int t = threadIdx.x; t < tasks; t += blockDim.x) {
+        const int r = t & tile_rows_mask;
+        const int rest = t >> tile_rows_shift;
+        const int gw = kb == 1 ? rest : FastDiv(rest, kb_div);
+        const int kk = kb == 1 ? 0 : rest - gw * kb;
+        // the unit's groups, added by the aligned tree in registers: l0, l1, l2 hold the pending subtrees of 1, 2 and 4
+        // groups; after the last group (TG is a power of two) x is the unit's subtree
+        double x = 0.0, l0 = 0.0, l1 = 0.0, l2 = 0.0;
+        #pragma unroll
+        for (int q = 0; q < TG; ++q) {
+          const int g = gw0 + gw * TG + q;
+          double p = 0.0;
+          if (r < valid_rows && g < num_groups) {
+            const int it0 = g * kPairwiseGroupIterations;
+            const int count = min(kPairwiseGroupIterations, num_iteration - it0);
+            const int tree0 = tree_begin + it0 * K + k0 + kk;
+            if (STAGE) {
+              const StagedRow<TIn> row{xs + static_cast<int64_t>(r) * x_stride};
+              p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
             } else {
-              l2 = x;
+              const GlobalRow<TIn> row{rows.data + (row0 + r) * rows.row_stride, num_col, rows.col_stride};
+              p = AnyGroupSum<TIn, TThr, HAS_CAT, HAS_LINEAR, COMPACT, ILP>(forest, row, tree0, K, count);
+            }
+          }
+          x = p;
+          if (q & 1) {
+            x = __dadd_rn(l0, x);
+            if (q & 2) {
+              x = __dadd_rn(l1, x);
+              if (q & 4) {
+                x = __dadd_rn(l2, x);
+              } else {
+                l2 = x;
+              }
+            } else {
+              l1 = x;
             }
           } else {
-            l1 = x;
+            l0 = x;
           }
-        } else {
-          l0 = x;
         }
+        part[gw * part_stride + r + (kk << tile_rows_shift)] = x;
       }
-      part[gw * part_stride + r + tile_rows * kk] = x;
-    }
     }
     __syncthreads();
     // 2. aligned segments of `seg` group sums by warp shuffles; lanes hold consecutive groups of one pair
-    const int rounded = (tasks + 31) / 32 * 32;
+    const int rounded = (tasks + 31) & ~31;
     for (int base = threadIdx.x - lane; base < rounded; base += blockDim.x) {
       const int u = base + lane;
-      const int pair = u / WG;
-      const int gw = u % WG;
+      const int pair = u >> wg_shift;
+      const int gw = u & wg_mask;
       double v = u < tasks ? part[gw * part_stride + pair] : 0.0;
       for (int off = 1; off < seg; off <<= 1) {
         v = __dadd_rn(v, __shfl_xor_sync(0xffffffffu, v, off));
       }
-      if (u < tasks && gw % seg == 0) {
-        segsum[(gw / seg) * pairs + pair] = v;
+      if (u < tasks && (gw & seg_mask) == 0) {
+        segsum[(gw >> seg_shift) * pairs + pair] = v;
       }
     }
     __syncthreads();
@@ -771,8 +794,8 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   }
   __syncthreads();
   for (int pair = threadIdx.x; pair < pairs; pair += blockDim.x) {
-    const int r = pair % tile_rows;
-    const int k = k0 + pair / tile_rows;
+    const int r = pair & tile_rows_mask;
+    const int k = k0 + (pair >> tile_rows_shift);
     if (r < valid_rows) {
       const double v = PairwiseFinish(stack + pair, pairs, static_cast<unsigned>(waves * segs));
       if (plan.num_spans == 1) {
@@ -810,7 +833,7 @@ __global__ void PredictPairwiseJobsKernel(const PairwiseJob<TIn>* jobs, int num_
   }
   const PairwiseJob<TIn>& job = jobs[lo];
   const int64_t local = block - job.block_begin;
-  const int64_t row_tiles = (job.rows.num_row + job.plan.tile_rows - 1) / job.plan.tile_rows;
+  const int64_t row_tiles = (job.rows.num_row + job.plan.tile_rows - 1) >> job.plan.tile_rows_shift;
   const int64_t rest = local / row_tiles;
   PairwiseBlock<TIn, TIn, HAS_CAT, false, COMPACT, STAGE, ILP, TG>(
       job.forest, job.rows, job.tree_begin, job.num_iteration, job.num_tree_per_iteration, job.plan, job.out,
@@ -818,9 +841,11 @@ __global__ void PredictPairwiseJobsKernel(const PairwiseJob<TIn>* jobs, int num_
       static_cast<int>(rest / job.plan.num_spans), smem);
 }
 
-// the jobs' span sums, added by the aligned tree: one thread per (job, row, output) cell
+// the jobs' span sums, added by the aligned tree: one thread per (job, row, output) cell;
+// binary-counter stack lives in dynamic shared memory (zero local stack spill, bank-conflict-free)
 template <typename TIn>
 __global__ void PairwiseJobsCombineKernel(const PairwiseJob<TIn>* jobs, int num_jobs, int64_t total_cells) {
+  extern __shared__ __align__(8) double s_stack[];
   const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= total_cells) {
     return;
@@ -840,24 +865,27 @@ __global__ void PairwiseJobsCombineKernel(const PairwiseJob<TIn>* jobs, int num_
   }
   const int64_t cells = job.rows.num_row * job.num_tree_per_iteration;
   const int64_t c = i - job.cell_begin;
-  double stack[32];
+  double* my_stack = s_stack + threadIdx.x;
   for (int s = 0; s < job.plan.num_spans; ++s) {
-    PairwisePush(stack, 1, static_cast<unsigned>(s), job.partials[static_cast<int64_t>(s) * cells + c]);
+    PairwisePush(my_stack, kCombineBlockSize, static_cast<unsigned>(s),
+                 __ldg(job.partials + static_cast<int64_t>(s) * cells + c));
   }
-  job.out[c] = PairwiseFinish(stack, 1, static_cast<unsigned>(job.plan.num_spans));
+  job.out[c] = PairwiseFinish(my_stack, kCombineBlockSize, static_cast<unsigned>(job.plan.num_spans));
 }
 
 // the spans' subtree sums of one (row, output), added by the same aligned tree
 __global__ void PairwiseCombineKernel(const double* partials, int64_t cells, int num_spans, double* out) {
+  extern __shared__ __align__(8) double s_stack[];
   const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= cells) {
     return;
   }
-  double stack[32];
+  double* my_stack = s_stack + threadIdx.x;
   for (int s = 0; s < num_spans; ++s) {
-    PairwisePush(stack, 1, static_cast<unsigned>(s), partials[static_cast<int64_t>(s) * cells + i]);
+    PairwisePush(my_stack, kCombineBlockSize, static_cast<unsigned>(s),
+                 __ldg(partials + static_cast<int64_t>(s) * cells + i));
   }
-  out[i] = PairwiseFinish(stack, 1, static_cast<unsigned>(num_spans));
+  out[i] = PairwiseFinish(my_stack, kCombineBlockSize, static_cast<unsigned>(num_spans));
 }
 
 // ------------------------------------------------------------------ vector leaves and leaf indices
@@ -1064,6 +1092,122 @@ __global__ void PredictContribKernel(const DeviceForestView<TThr> forest, const 
   }
 }
 
+// ------------------------------------------------------------------ device-side ConvertOutput kernels
+
+__global__ void ConvertElementwiseKernel(double* out, int64_t n, int kind, double param, double avg_div) {
+  const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= n) {
+    return;
+  }
+  double x = out[i];
+  if (avg_div > 1.0) {
+    x = __ddiv_rn(x, avg_div);
+  }
+  switch (kind) {
+    case Boosting::OutputConversion::kNone:
+      break;
+    case Boosting::OutputConversion::kSigmoid:
+      x = 1.0 / (1.0 + exp(-param * x));
+      break;
+    case Boosting::OutputConversion::kExp:
+      x = exp(x);
+      break;
+    case Boosting::OutputConversion::kRegSqrt: {
+      const double sign = static_cast<double>((x > 0.0) - (x < 0.0));
+      x = __dmul_rn(__dmul_rn(sign, x), x);
+      break;
+    }
+    case Boosting::OutputConversion::kSoftplus:
+      x = (x < 0.0 ? 0.0 : x) + log1p(exp(-fabs(x)));
+      break;
+    default:
+      break;
+  }
+  out[i] = x;
+}
+
+// single-pass register-resident row-major softmax for num_output <= 32 (W lanes per row, W in {4, 8, 16, 32})
+template <int W>
+__global__ void ConvertSoftmaxSmallKernel(double* out, int64_t num_row, int num_output, double avg_div) {
+  constexpr int kRowsPerBlock = kRowBlockSize / W;
+  const int row_in_block = threadIdx.x / W;
+  const int lane_in_row = threadIdx.x & (W - 1);
+  const int64_t row = static_cast<int64_t>(blockIdx.x) * kRowsPerBlock + row_in_block;
+  double* p = row < num_row ? out + row * num_output : nullptr;
+  double v = 0.0;
+  if (p != nullptr) {
+    v = p[lane_in_row < num_output ? lane_in_row : 0];
+    if (avg_div > 1.0) {
+      v = __ddiv_rn(v, avg_div);
+    }
+  }
+  double m = v;
+  #pragma unroll
+  for (int off = W >> 1; off > 0; off >>= 1) {
+    const double other = __shfl_xor_sync(0xffffffffu, m, off, W);
+    if (other > m) {
+      m = other;
+    }
+  }
+  const double e = (p != nullptr && lane_in_row < num_output) ? exp(v - m) : 0.0;
+  double sum = e;
+  #pragma unroll
+  for (int off = 1; off < W; off <<= 1) {
+    sum += __shfl_xor_sync(0xffffffffu, sum, off, W);
+  }
+  if (p != nullptr && lane_in_row < num_output) {
+    p[lane_in_row] = e / sum;
+  }
+}
+
+// streaming warp-per-row row-major softmax for arbitrary num_output > 32 (zero scratch memory)
+__global__ void ConvertSoftmaxLargeKernel(double* out, int64_t num_row, int num_output, double avg_div) {
+  constexpr int kWarpsPerBlock = kRowBlockSize / 32;
+  const int lane = threadIdx.x & 31;
+  const int64_t row = static_cast<int64_t>(blockIdx.x) * kWarpsPerBlock + (threadIdx.x >> 5);
+  if (row >= num_row) {
+    return;
+  }
+  double* p = out + row * num_output;
+  double m = p[lane];
+  if (avg_div > 1.0) {
+    m = __ddiv_rn(m, avg_div);
+  }
+  for (int c = lane + 32; c < num_output; c += 32) {
+    double v = p[c];
+    if (avg_div > 1.0) {
+      v = __ddiv_rn(v, avg_div);
+    }
+    if (v > m) {
+      m = v;
+    }
+  }
+  #pragma unroll
+  for (int off = 16; off > 0; off >>= 1) {
+    const double other = __shfl_xor_sync(0xffffffffu, m, off);
+    if (other > m) {
+      m = other;
+    }
+  }
+  double sum = 0.0;
+  for (int c = lane; c < num_output; c += 32) {
+    double v = p[c];
+    if (avg_div > 1.0) {
+      v = __ddiv_rn(v, avg_div);
+    }
+    const double e = exp(v - m);
+    p[c] = e;
+    sum += e;
+  }
+  #pragma unroll
+  for (int off = 16; off > 0; off >>= 1) {
+    sum += __shfl_xor_sync(0xffffffffu, sum, off);
+  }
+  for (int c = lane; c < num_output; c += 32) {
+    p[c] /= sum;
+  }
+}
+
 inline unsigned int Blocks(int64_t n, int per_block) {
   return static_cast<unsigned int>((n + per_block - 1) / per_block);
 }
@@ -1075,6 +1219,7 @@ void LaunchRow(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows
 #define FLC_ROW_KERNEL(U)                                                                                      \
   PredictRowKernel<TIn, TThr, HAS_CAT, HAS_LINEAR, U><<<grid, kRowBlockSize, 0, stream>>>(                     \
       forest, rows, tree_begin, num_iteration, num_tree_per_iteration, out)
+#ifdef FALCATA_PREDICT_DEBUG_KERNELS
   if (ilp >= 8) {
     FLC_ROW_KERNEL(8);
   } else if (ilp >= 4) {
@@ -1084,6 +1229,10 @@ void LaunchRow(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>& rows
   } else {
     FLC_ROW_KERNEL(1);
   }
+#else
+  (void)ilp;
+  FLC_ROW_KERNEL(2);
+#endif
 #undef FLC_ROW_KERNEL
 }
 
@@ -1102,6 +1251,7 @@ void LaunchTileWsIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>
                                                          num_tree_per_iteration, plan.tile_rows,               \
                                                          plan.tile_trees, out);                                \
   }
+#ifdef FALCATA_PREDICT_DEBUG_KERNELS
   if (plan.ilp >= 4) {
     FLC_TWS_KERNEL(4)
   } else if (plan.ilp >= 2) {
@@ -1109,6 +1259,9 @@ void LaunchTileWsIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TIn>
   } else {
     FLC_TWS_KERNEL(1)
   }
+#else
+  FLC_TWS_KERNEL(2)
+#endif
 #undef FLC_TWS_KERNEL
 }
 
@@ -1147,6 +1300,7 @@ void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TI
     kernel<<<grid, plan.block_threads, shared, stream>>>(forest, rows, tree_begin, num_iteration,             \
                                                          num_tree_per_iteration, plan, out, partials);         \
   }
+#ifdef FALCATA_PREDICT_DEBUG_KERNELS
   if (plan.task_groups > 1) {
     if (plan.ilp >= 8) {
       FLC_PW_KERNEL(8, 8)
@@ -1160,10 +1314,19 @@ void LaunchPairwiseIlp(const DeviceForestView<TThr>& forest, const DeviceRows<TI
       FLC_PW_KERNEL(4, 1)
     }
   }
+#else
+  if (plan.task_groups > 1) {
+    FLC_PW_KERNEL(8, 8)
+  } else {
+    FLC_PW_KERNEL(8, 1)
+  }
+#endif
 #undef FLC_PW_KERNEL
   if (plan.num_spans > 1) {
     const int64_t cells = rows.num_row * num_tree_per_iteration;
-    PairwiseCombineKernel<<<Blocks(cells, 128), 128, 0, stream>>>(partials, cells, plan.num_spans, out);
+    const size_t combine_smem = CombineSharedBytes(plan.num_spans);
+    PairwiseCombineKernel<<<Blocks(cells, kCombineBlockSize), kCombineBlockSize, combine_smem, stream>>>(
+        partials, cells, plan.num_spans, out);
   }
 }
 
@@ -1355,14 +1518,14 @@ void LaunchPredictPairwiseJobs(const PairwiseJob<T>* jobs, int num_jobs, const P
   const int task_groups = jobs[0].plan.task_groups;   // one value per launch (LaunchJobs groups by it)
   int64_t blocks = 0, cells = 0;
   int threads = 32;
-  bool combine = false;
+  int max_spans = 1;
   for (int j = 0; j < num_jobs; ++j) {
     const PairwiseJob<T>& job = jobs[j];
     blocks = job.block_begin + ((job.rows.num_row + job.plan.tile_rows - 1) / job.plan.tile_rows) *
              job.plan.num_spans * ((job.num_tree_per_iteration + job.plan.out_chunk - 1) / job.plan.out_chunk);
     cells = job.cell_begin + job.rows.num_row * job.num_tree_per_iteration;
     threads = std::max(threads, job.plan.block_threads);
-    combine = combine || job.plan.num_spans > 1;
+    max_spans = std::max(max_spans, job.plan.num_spans);
   }
   if (blocks > std::numeric_limits<int32_t>::max()) {
     Log::Fatal("CUDA predictor: a batch of %lld blocks is too large for one launch",
@@ -1392,8 +1555,46 @@ void LaunchPredictPairwiseJobs(const PairwiseJob<T>* jobs, int num_jobs, const P
     }
   }
 #undef FLC_JOBS_KERNEL
-  if (combine) {
-    PairwiseJobsCombineKernel<T><<<Blocks(cells, 128), 128, 0, stream>>>(device_jobs, num_jobs, cells);
+  if (max_spans > 1) {
+    const size_t combine_smem = CombineSharedBytes(max_spans);
+    PairwiseJobsCombineKernel<T><<<Blocks(cells, kCombineBlockSize), kCombineBlockSize, combine_smem, stream>>>(
+        device_jobs, num_jobs, cells);
+  }
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
+void LaunchConvertOutputKernel(double* out, int64_t num_row, int num_output,
+                               const Boosting::OutputConversion& conv, cudaStream_t stream) {
+  if (num_row <= 0 || num_output <= 0 || conv.is_noop()) {
+    return;
+  }
+  const double avg_div = conv.average_divisor > 1 ? static_cast<double>(conv.average_divisor) : 1.0;
+  if (conv.kind == Boosting::OutputConversion::kSoftmax) {
+    if (num_output <= 4) {
+      constexpr int kW = 4;
+      ConvertSoftmaxSmallKernel<kW><<<Blocks(num_row, kRowBlockSize / kW), kRowBlockSize, 0, stream>>>(
+          out, num_row, num_output, avg_div);
+    } else if (num_output <= 8) {
+      constexpr int kW = 8;
+      ConvertSoftmaxSmallKernel<kW><<<Blocks(num_row, kRowBlockSize / kW), kRowBlockSize, 0, stream>>>(
+          out, num_row, num_output, avg_div);
+    } else if (num_output <= 16) {
+      constexpr int kW = 16;
+      ConvertSoftmaxSmallKernel<kW><<<Blocks(num_row, kRowBlockSize / kW), kRowBlockSize, 0, stream>>>(
+          out, num_row, num_output, avg_div);
+    } else if (num_output <= 32) {
+      constexpr int kW = 32;
+      ConvertSoftmaxSmallKernel<kW><<<Blocks(num_row, kRowBlockSize / kW), kRowBlockSize, 0, stream>>>(
+          out, num_row, num_output, avg_div);
+    } else {
+      constexpr int kWarpsPerBlock = kRowBlockSize / 32;
+      ConvertSoftmaxLargeKernel<<<Blocks(num_row, kWarpsPerBlock), kRowBlockSize, 0, stream>>>(
+          out, num_row, num_output, avg_div);
+    }
+  } else {
+    const int64_t n = num_row * num_output;
+    ConvertElementwiseKernel<<<Blocks(n, kRowBlockSize), kRowBlockSize, 0, stream>>>(
+        out, n, static_cast<int>(conv.kind), conv.param, avg_div);
   }
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }

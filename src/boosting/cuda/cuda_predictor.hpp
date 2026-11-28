@@ -35,8 +35,10 @@ namespace Falcata {
  *  - default: the canonical pairwise sum (PairwisePlan), which lets the trees of one row be spread over many
  *    threads. It is a fixed order that depends only on the iteration range, never on the batch, the plan or the
  *    device, so a row gets the same result in any batch, run and GPU; it differs from the in-order sum by rounding.
- * The normal (transformed) prediction is the raw score passed through Boosting::ConvertRawToPrediction on the host, the
- * same code PredictInRange runs.
+ * The normal (transformed) prediction applies Boosting::ConvertRawToPrediction: on the device asynchronously in the
+ * default mode (and for exact algebraic transforms like forest averaging or reg_sqrt in deterministic mode), falling
+ * back to the host for transcendental transforms in deterministic mode (bit-identical to host libm) and custom
+ * objectives.
  */
 
 /*! \brief flag bits of PackedNode::feature_flags; the feature index uses the bits below kNodeFeatureMask */
@@ -173,6 +175,12 @@ constexpr int kPairwiseGroupIterations = 8;
  *    lanes); aligned segments of `seg` unit sums are added by warp shuffles; the segment sums enter a binary-counter
  *    stack (`levels` deep) per (row, output) that keeps the aligned subtree sums.
  */
+/*! \brief precomputed unsigned 32-bit reciprocal for exact division of non-negative 32-bit ints by d >= 2 */
+struct FastDiv32 {
+  uint32_t mul = 0;
+  uint8_t shift = 0;
+};
+
 struct PairwisePlan {
   int tile_rows = 8;
   int out_chunk = 1;
@@ -188,7 +196,19 @@ struct PairwisePlan {
   int group_lanes = 1;      // lanes that share one group's walks (2, 4 or 8 for small batches)
   int task_groups = 1;      // consecutive groups one task adds in registers (1, 2, 4 or 8; 1 with group_lanes > 1)
   int block_threads = 256;
+  // precomputed shifts (tile_rows, wave_groups, seg, group_lanes are always powers of 2) and fast dividers
+  uint8_t tile_rows_shift = 3;
+  uint8_t wg_shift = 5;
+  uint8_t seg_shift = 5;
+  uint8_t gl_shift = 0;
+  FastDiv32 out_chunk_div;
+  FastDiv32 last_kb_div;
+  FastDiv32 stage_cols_div;
 };
+
+/*! \brief in-place device-side output conversion for built-in objectives (cuda_predictor.cu) */
+void LaunchConvertOutputKernel(double* out, int64_t num_row, int num_output,
+                               const Boosting::OutputConversion& conv, cudaStream_t stream);
 
 /*! \brief launchers (cuda_predictor.cu); out is row-major [num_row][num_output] doubles */
 template <typename TIn, typename TThr>
