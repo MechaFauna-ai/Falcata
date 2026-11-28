@@ -74,6 +74,18 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     int gpu_device_id,
     data_size_t global_num_data) override;
 
+  void SetPrecomputedGradMinMax(
+    const score_t* grad_min_blocks, const score_t* grad_max_blocks,
+    const score_t* hess_min_blocks, const score_t* hess_max_blocks,
+    const score_t* for_gradients, const score_t* for_hessians,
+    data_size_t num_data, int num_blocks) override {
+    if (cuda_gradient_discretizer_ != nullptr) {
+      cuda_gradient_discretizer_->SetPrecomputedBlockMinMax(
+        grad_min_blocks, grad_max_blocks, hess_min_blocks, hess_max_blocks,
+        for_gradients, for_hessians, num_data, num_blocks);
+    }
+  }
+
   /*! \brief enable feature-parallel multi-GPU: this learner constructs and
    *  searches only inner features with index %% num_ranks == rank; per-level
    *  winners are merged host-side through the shared state. Mutually

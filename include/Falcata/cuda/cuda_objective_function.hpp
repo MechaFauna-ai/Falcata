@@ -41,6 +41,9 @@ class CUDAObjectiveInterface: public HOST_OBJECTIVE, public NCCLInfo {
     }
     cuda_labels_ = metadata.cuda_metadata()->cuda_label();
     cuda_weights_ = metadata.cuda_metadata()->cuda_weights();
+    ClearPrecomputedGradMinMax();
+    const_hess_filled_ptr_ = nullptr;
+    const_hess_filled_count_ = 0;
   }
 
   void SetNCCLInfo(
@@ -63,6 +66,7 @@ class CUDAObjectiveInterface: public HOST_OBJECTIVE, public NCCLInfo {
   bool IsCUDAObjective() const override { return true; }
 
   void GetGradients(const double* scores, score_t* gradients, score_t* hessians) const override {
+    ClearPrecomputedGradMinMax();
     LaunchGetGradientsKernel(scores, gradients, hessians);
     if (!GradientsNeedNoSync(gradients, hessians)) {
       SynchronizeCUDADevice(__FILE__, __LINE__);
@@ -72,8 +76,27 @@ class CUDAObjectiveInterface: public HOST_OBJECTIVE, public NCCLInfo {
   // all queries get gradients (a superset); bagging_by_query sampling is applied through the bag
   // indices the tree learner receives
   void GetGradientsWithSampledQueries(const double* scores, const data_size_t /*num_sampled_queries*/, const data_size_t* /*sampled_query_indices*/, score_t* gradients, score_t* hessians) const override {
+    ClearPrecomputedGradMinMax();
     LaunchGetGradientsKernel(scores, gradients, hessians);
     SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
+
+  bool GetPrecomputedGradMinMax(int class_id, ObjectiveFunction::CUDAPrecomputedGradMinMax* out) const override {
+    if (out == nullptr || minmax_num_classes_ <= 0 || class_id < 0 || class_id >= minmax_num_classes_ ||
+        minmax_num_blocks_ <= 0) {
+      return false;
+    }
+    const size_t stride = static_cast<size_t>(minmax_num_blocks_);
+    const score_t* base = cuda_block_minmax_.RawDataReadOnly() + static_cast<size_t>(class_id) * 4 * stride;
+    out->grad_min_blocks = base;
+    out->grad_max_blocks = base + stride;
+    out->hess_min_blocks = base + 2 * stride;
+    out->hess_max_blocks = base + 3 * stride;
+    out->for_gradients = minmax_base_gradients_ + static_cast<size_t>(class_id) * static_cast<size_t>(minmax_num_data_);
+    out->for_hessians = minmax_base_hessians_ + static_cast<size_t>(class_id) * static_cast<size_t>(minmax_num_data_);
+    out->num_data = minmax_num_data_;
+    out->num_blocks = minmax_num_blocks_;
+    return true;
   }
 
   void RenewTreeOutputCUDA(const double* score, const data_size_t* data_indices_in_leaf, const data_size_t* num_data_in_leaf,
@@ -117,8 +140,55 @@ class CUDAObjectiveInterface: public HOST_OBJECTIVE, public NCCLInfo {
     const double* /*score*/, const data_size_t* /*data_indices_in_leaf*/, const data_size_t* /*num_data_in_leaf*/,
     const data_size_t* /*data_start_in_leaf*/, const int /*num_leaves*/, double* /*leaf_value*/) const {}
 
+  void ClearPrecomputedGradMinMax() const {
+    minmax_base_gradients_ = nullptr;
+    minmax_base_hessians_ = nullptr;
+    minmax_num_data_ = 0;
+    minmax_num_blocks_ = 0;
+    minmax_num_classes_ = 0;
+  }
+
+  // cuda_plan key grad_minmax_fuse: allocate (lazily) the [num_classes][4][num_blocks] block min/max buffer and
+  // record which (gradients, hessians) arrays it corresponds to.
+  score_t* PreparePrecomputedGradMinMax(const score_t* gradients, const score_t* hessians,
+                                        const data_size_t num_data, const int num_blocks,
+                                        const int num_classes) const {
+    const size_t total = static_cast<size_t>(num_classes) * 4 * static_cast<size_t>(num_blocks);
+    if (cuda_block_minmax_.Size() < total) {
+      cuda_block_minmax_.Resize(total);
+    }
+    minmax_base_gradients_ = gradients;
+    minmax_base_hessians_ = hessians;
+    minmax_num_data_ = num_data;
+    minmax_num_blocks_ = num_blocks;
+    minmax_num_classes_ = num_classes;
+    return cuda_block_minmax_.RawData();
+  }
+
+  // cuda_plan key const_hess_no_write: after the first unweighted constant-hessian GetGradients call fills `hessians`
+  // with 1.0f for all `count` elements, later calls targeting the same buffer skip rewriting `hessians[i] = 1.0f`.
+  bool SkipConstantHessianWrite(const score_t* hessians, const size_t count) const {
+    if (!FalcataPlan::Get().const_hess_no_write || cuda_weights_ != nullptr || hessians == nullptr || count == 0) {
+      return false;
+    }
+    if (hessians == const_hess_filled_ptr_ && count == const_hess_filled_count_) {
+      return true;
+    }
+    const_hess_filled_ptr_ = hessians;
+    const_hess_filled_count_ = count;
+    return false;
+  }
+
   const label_t* cuda_labels_;
   const label_t* cuda_weights_;
+  mutable CUDAVector<score_t> cuda_block_minmax_;
+  mutable const score_t* minmax_base_gradients_ = nullptr;
+  mutable const score_t* minmax_base_hessians_ = nullptr;
+  mutable data_size_t minmax_num_data_ = 0;
+  mutable int minmax_num_blocks_ = 0;
+  mutable int minmax_num_classes_ = 0;
+  mutable const score_t* const_hess_filled_ptr_ = nullptr;
+  mutable size_t const_hess_filled_count_ = 0;
 };
 
 }  // namespace Falcata

@@ -438,38 +438,41 @@ void CUDALeafSplits::LaunchInitValuesKernel(
   const data_size_t num_used_indices,
   hist_t* cuda_hist_in_leaf,
   const score_t* grad_scale,
-  const score_t* hess_scale) {
+  const score_t* hess_scale,
+  const bool precomputed_chunk_sums) {
+  if (!precomputed_chunk_sums) {
 #if !defined(__HIP_PLATFORM_AMD__)
-  const bool chunk_warp = FalcataPlan::Get().root_sums_warp;
+    const bool chunk_warp = FalcataPlan::Get().root_sums_warp;
 #else
-  const bool chunk_warp = false;  // the warp-per-chunk kernel is CUDA only
+    const bool chunk_warp = false;  // the warp-per-chunk kernel is CUDA only
 #endif
-  if (chunk_warp) {
+    if (chunk_warp) {
 #if !defined(__HIP_PLATFORM_AMD__)
-    // one warp per chunk, eight chunks per 256-thread block
-    constexpr int kChunkWarpThreads = 256;
-    const int chunk_grid = (num_blocks_init_from_gradients_ * WARPSIZE + kChunkWarpThreads - 1) / kChunkWarpThreads;
-    if (cuda_bagging_data_indices == nullptr) {
-      CUDAInitValuesChunkWarpKernel<false><<<chunk_grid, kChunkWarpThreads>>>(
-        reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, nullptr, num_blocks_init_from_gradients_,
-        cuda_sum_of_gradients_buffer_.RawData(), cuda_sum_of_hessians_buffer_.RawData(),
-        cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
-    } else {
-      CUDAInitValuesChunkWarpKernel<true><<<chunk_grid, kChunkWarpThreads>>>(
-        reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, cuda_bagging_data_indices,
-        num_blocks_init_from_gradients_, cuda_sum_of_gradients_buffer_.RawData(),
-        cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale,
-        hess_scale);
-    }
+      // one warp per chunk, eight chunks per 256-thread block
+      constexpr int kChunkWarpThreads = 256;
+      const int chunk_grid = (num_blocks_init_from_gradients_ * WARPSIZE + kChunkWarpThreads - 1) / kChunkWarpThreads;
+      if (cuda_bagging_data_indices == nullptr) {
+        CUDAInitValuesChunkWarpKernel<false><<<chunk_grid, kChunkWarpThreads>>>(
+          reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, nullptr, num_blocks_init_from_gradients_,
+          cuda_sum_of_gradients_buffer_.RawData(), cuda_sum_of_hessians_buffer_.RawData(),
+          cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
+      } else {
+        CUDAInitValuesChunkWarpKernel<true><<<chunk_grid, kChunkWarpThreads>>>(
+          reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, cuda_bagging_data_indices,
+          num_blocks_init_from_gradients_, cuda_sum_of_gradients_buffer_.RawData(),
+          cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale,
+          hess_scale);
+      }
 #endif
-  } else if (cuda_bagging_data_indices == nullptr) {
-    CUDAInitValuesKernel3<false><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
-      reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, nullptr, cuda_sum_of_gradients_buffer_.RawData(),
-      cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
-  } else {
-    CUDAInitValuesKernel3<true><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
-      reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, cuda_bagging_data_indices, cuda_sum_of_gradients_buffer_.RawData(),
-      cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
+    } else if (cuda_bagging_data_indices == nullptr) {
+      CUDAInitValuesKernel3<false><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
+        reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, nullptr, cuda_sum_of_gradients_buffer_.RawData(),
+        cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
+    } else {
+      CUDAInitValuesKernel3<true><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
+        reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, cuda_bagging_data_indices, cuda_sum_of_gradients_buffer_.RawData(),
+        cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
+    }
   }
 
   if (nccl_communicator_ != nullptr) {

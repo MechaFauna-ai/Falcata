@@ -39,6 +39,35 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
     const score_t* input_gradients,
     const score_t* input_hessians) override;
 
+  /*! \brief cuda_plan key discretize_root_sums: discretize plane 0 and fuse the per-1024-row chunk root sums
+   *  (and plane scale snapshot) into DiscretizeGradientsKernel so CUDALeafSplits can skip CUDAInitValuesChunkWarpKernel */
+  void DiscretizeGradientsWithRootSums(
+    const data_size_t num_data,
+    const score_t* input_gradients,
+    const score_t* input_hessians,
+    double* out_block_sum_grad,
+    double* out_block_sum_hess,
+    int64_t* out_block_sum_grad_hess);
+
+  /*! \brief cuda_plan key grad_minmax_fuse: supply precomputed 1024-row block min/max partials produced by the
+   *  objective's GetGradients kernel for this (gradients, hessians) pair (consumed once on plane 0) */
+  void SetPrecomputedBlockMinMax(
+    const score_t* grad_min_blocks, const score_t* grad_max_blocks,
+    const score_t* hess_min_blocks, const score_t* hess_max_blocks,
+    const score_t* for_gradients, const score_t* for_hessians,
+    const data_size_t num_data, const int num_blocks) {
+    precomputed_grad_min_ = grad_min_blocks;
+    precomputed_grad_max_ = grad_max_blocks;
+    precomputed_hess_min_ = hess_min_blocks;
+    precomputed_hess_max_ = hess_max_blocks;
+    precomputed_for_gradients_ = for_gradients;
+    precomputed_for_hessians_ = for_hessians;
+    precomputed_num_data_ = num_data;
+    precomputed_num_blocks_ = num_blocks;
+  }
+
+  int num_reduce_blocks() const { return num_reduce_blocks_; }
+
   /*! \brief vector-leaf multi-target training: one discretized plane per
    *  target. Plane t holds target t's gradients at their OWN scale (targets
    *  differ in gradient magnitude by orders of magnitude, and one shared scale
@@ -152,6 +181,16 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
     // scan then finds the percentile threshold. Allocated unconditionally (a few
     // KB) so toggling the robust flag needs no re-Init.
     grad_mag_hist_buffer_.Resize(kNumMagBuckets);
+    SetCUDAMemory<unsigned int>(grad_mag_hist_buffer_.RawData(), 0, kNumMagBuckets, __FILE__, __LINE__);
+    mag_hist_zeroed_ = true;
+    precomputed_grad_min_ = nullptr;
+    precomputed_grad_max_ = nullptr;
+    precomputed_hess_min_ = nullptr;
+    precomputed_hess_max_ = nullptr;
+    precomputed_for_gradients_ = nullptr;
+    precomputed_for_hessians_ = nullptr;
+    precomputed_num_data_ = 0;
+    precomputed_num_blocks_ = 0;
     if (error_feedback_) {
       // one (hess, grad) float pair per row per class slot, zero-initialized:
       // a fresh model starts with no carried residual
@@ -184,15 +223,33 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   mutable CUDAVector<score_t> plane_hess_scale_;
   mutable CUDAVector<int8_t> ef_residuals_;
   mutable CUDAVector<uint8_t> ef_inbag_mask_;
+  void DiscretizeGradientsForPlaneImpl(
+    const int plane,
+    const data_size_t num_data,
+    const score_t* input_gradients,
+    const score_t* input_hessians,
+    double* out_block_sum_grad,
+    double* out_block_sum_hess,
+    int64_t* out_block_sum_grad_hess);
+
   int num_reduce_blocks_;
   int num_planes_ = 1;
   bool hessians_constant_ = false;
   data_size_t num_data_planes_ = 0;
   bool robust_scale_ = false;
+  bool mag_hist_zeroed_ = false;
   bool error_feedback_ = false;
   int ef_num_slots_ = 1;
   const data_size_t* ef_inbag_indices_ = nullptr;
   data_size_t ef_inbag_count_ = 0;
+  const score_t* precomputed_grad_min_ = nullptr;
+  const score_t* precomputed_grad_max_ = nullptr;
+  const score_t* precomputed_hess_min_ = nullptr;
+  const score_t* precomputed_hess_max_ = nullptr;
+  const score_t* precomputed_for_gradients_ = nullptr;
+  const score_t* precomputed_for_hessians_ = nullptr;
+  data_size_t precomputed_num_data_ = 0;
+  int precomputed_num_blocks_ = 0;
 };
 
 }  // namespace Falcata

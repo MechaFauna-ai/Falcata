@@ -12,6 +12,7 @@
 
 #include "../../treelearner/cuda/cuda_pdl_launch.hpp"
 
+#include <Falcata/cuda/cuda_algorithms.hpp>
 #include <Falcata/cuda/cuda_rocm_interop.h>
 #include <Falcata/falcata_plan.h>
 
@@ -19,6 +20,9 @@
 #include <type_traits>
 
 namespace Falcata {
+
+static_assert(GET_GRADIENTS_BLOCK_SIZE_BINARY == ObjectiveFunction::CUDAPrecomputedGradMinMax::kBlockSize,
+              "grad_minmax_fuse requires 1024-row blocks");
 
 // The label (and weight) sums of the init score: each block's partial sum goes to its own slot of block_sums
 // (labels in [0, num_blocks), weights in [num_blocks, 2 * num_blocks)), and BoostFromScoreKernel_Sum_BinaryLogloss
@@ -323,16 +327,25 @@ __device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool
   return true;
 }
 
-template <bool USE_LABEL_WEIGHT, bool USE_WEIGHT>
+template <bool USE_LABEL_WEIGHT, bool USE_WEIGHT, bool FUSE_MINMAX = false>
 __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, const label_t* cuda_labels,
   const double* cuda_label_weights, const label_t* cuda_weights,
   const double sigmoid, const data_size_t num_data,
-  score_t* cuda_out_gradients, score_t* cuda_out_hessians, const bool lean) {
+  score_t* cuda_out_gradients, score_t* cuda_out_hessians, const bool lean,
+  score_t* out_grad_min = nullptr, score_t* out_grad_max = nullptr,
+  score_t* out_hess_min = nullptr, score_t* out_hess_max = nullptr) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
+  score_t g_min = kMaxScore;
+  score_t g_max = kMinScore;
+  score_t h_min = kMaxScore;
+  score_t h_max = kMinScore;
   if (data_index < num_data) {
     const label_t cuda_label = static_cast<int>(cuda_labels[data_index]);
     const int is_pos = cuda_label > 0 ? 1 : 0;
+    score_t grad_val = 0.0f;
+    score_t hess_val = 0.0f;
+    bool computed = false;
     if (kLeanScoreIsFloat && lean) {
       float lean_gradient, lean_hessian;
       const double lean_label_weight = USE_LABEL_WEIGHT ? cuda_label_weights[is_pos] : 1.0;
@@ -340,38 +353,57 @@ __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, cons
       if (BinaryLoglossLean<USE_LABEL_WEIGHT, USE_WEIGHT>(cuda_scores[data_index], is_pos != 0, sigmoid,
                                                           lean_label_weight, lean_sample_weight, &lean_gradient,
                                                           &lean_hessian)) {
-        cuda_out_gradients[data_index] = lean_gradient;
-        cuda_out_hessians[data_index] = lean_hessian;
-        return;
+        grad_val = lean_gradient;
+        hess_val = lean_hessian;
+        computed = true;
       }
     }
-    const int label = is_pos ? 1 : -1;
-    const double response = -label * sigmoid / (1.0f + exp(label * sigmoid * cuda_scores[data_index]));
-    const double abs_response = fabs(response);
-    if (!USE_WEIGHT) {
-      if (USE_LABEL_WEIGHT) {
-        // label_weights is indexed {0,1} like the CPU's label_weights_[is_pos];
-        // indexing it with label {-1,+1} read one double BEFORE the allocation
-        // for every negative sample (is_unbalance /
-        // scale_pos_weight on device=cuda trained garbage, AUC 0.500 on fraud)
-        const double label_weight = cuda_label_weights[is_pos];
-        cuda_out_gradients[data_index] = static_cast<score_t>(response * label_weight);
-        cuda_out_hessians[data_index] = static_cast<score_t>(abs_response * (sigmoid - abs_response) * label_weight);
+    if (!computed) {
+      const int label = is_pos ? 1 : -1;
+      const double response = -label * sigmoid / (1.0f + exp(label * sigmoid * cuda_scores[data_index]));
+      const double abs_response = fabs(response);
+      if (!USE_WEIGHT) {
+        if (USE_LABEL_WEIGHT) {
+          // label_weights is indexed {0,1} like the CPU's label_weights_[is_pos];
+          // indexing it with label {-1,+1} read one double BEFORE the allocation
+          // for every negative sample (is_unbalance /
+          // scale_pos_weight on device=cuda trained garbage, AUC 0.500 on fraud)
+          const double label_weight = cuda_label_weights[is_pos];
+          grad_val = static_cast<score_t>(response * label_weight);
+          hess_val = static_cast<score_t>(abs_response * (sigmoid - abs_response) * label_weight);
+        } else {
+          grad_val = static_cast<score_t>(response);
+          hess_val = static_cast<score_t>(abs_response * (sigmoid - abs_response));
+        }
       } else {
-        cuda_out_gradients[data_index] = static_cast<score_t>(response);
-        cuda_out_hessians[data_index] = static_cast<score_t>(abs_response * (sigmoid - abs_response));
-      }
-    } else {
-      const double sample_weight = cuda_weights[data_index];
-      if (USE_LABEL_WEIGHT) {
-        const double label_weight = cuda_label_weights[is_pos];
-        cuda_out_gradients[data_index] = static_cast<score_t>(response * label_weight * sample_weight);
-        cuda_out_hessians[data_index] = static_cast<score_t>(abs_response * (sigmoid - abs_response) * label_weight * sample_weight);
-      } else {
-        cuda_out_gradients[data_index] = static_cast<score_t>(response * sample_weight);
-        cuda_out_hessians[data_index] = static_cast<score_t>(abs_response * (sigmoid - abs_response) * sample_weight);
+        const double sample_weight = cuda_weights[data_index];
+        if (USE_LABEL_WEIGHT) {
+          const double label_weight = cuda_label_weights[is_pos];
+          grad_val = static_cast<score_t>(response * label_weight * sample_weight);
+          hess_val = static_cast<score_t>(abs_response * (sigmoid - abs_response) * label_weight * sample_weight);
+        } else {
+          grad_val = static_cast<score_t>(response * sample_weight);
+          hess_val = static_cast<score_t>(abs_response * (sigmoid - abs_response) * sample_weight);
+        }
       }
     }
+    cuda_out_gradients[data_index] = grad_val;
+    cuda_out_hessians[data_index] = hess_val;
+    if (FUSE_MINMAX) {
+      g_min = grad_val;
+      g_max = grad_val;
+      h_min = hess_val;
+      h_max = hess_val;
+    }
+  }
+  if (FUSE_MINMAX) {
+    __shared__ score_t s_gmin[WARPSIZE];
+    __shared__ score_t s_gmax[WARPSIZE];
+    __shared__ score_t s_hmin[WARPSIZE];
+    __shared__ score_t s_hmax[WARPSIZE];
+    ReduceBlockGradHessMinMax(g_min, g_max, h_min, h_max, s_gmin, s_gmax, s_hmin, s_hmax,
+                              out_grad_min, out_grad_max, out_hess_min, out_hess_max,
+                              static_cast<int>(blockIdx.x));
   }
 }
 
@@ -386,19 +418,184 @@ __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, cons
   hessians, \
   FalcataPlan::Get().gradient_fp64_lean
 
+#if !defined(__HIP_PLATFORM_AMD__)
+// cuda_plan key grad_minmax_fuse: one 256-thread block (8 warps, 4 rows/thread) per 1024-row chunk.
+// Saturates all SMs from ~250k rows up while keeping 5-6 blocks/SM (83-100% occupancy on sm_120) so the
+// 8-warp shared min/max reduction never stalls the SM.
+template <bool USE_LABEL_WEIGHT, bool USE_WEIGHT>
+__global__ void GetGradientsChunk256Kernel_BinaryLogloss(
+  const double* cuda_scores, const label_t* cuda_labels,
+  const double* cuda_label_weights, const label_t* cuda_weights,
+  const double sigmoid, const data_size_t num_data,
+  score_t* cuda_out_gradients, score_t* cuda_out_hessians, const bool lean,
+  score_t* out_grad_min, score_t* out_grad_max,
+  score_t* out_hess_min, score_t* out_hess_max) {
+  PdlLaunchDependents();
+  constexpr int kThreads = 256;
+  constexpr int kRowsPerThread = GET_GRADIENTS_BLOCK_SIZE_BINARY / kThreads;  // 4
+  constexpr int kNumWarps = kThreads / WARPSIZE;  // 8
+  const int chunk = static_cast<int>(blockIdx.x);
+  const data_size_t chunk_start = static_cast<data_size_t>(chunk) * GET_GRADIENTS_BLOCK_SIZE_BINARY;
+  const bool full_chunk = chunk_start + GET_GRADIENTS_BLOCK_SIZE_BINARY <= num_data;
+  score_t g_min = kMaxScore;
+  score_t g_max = kMinScore;
+  score_t h_min = kMaxScore;
+  score_t h_max = kMinScore;
+  for (int k = 0; k < kRowsPerThread; ++k) {
+    const data_size_t data_index = chunk_start + static_cast<data_size_t>(k * kThreads + threadIdx.x);
+    if (full_chunk || data_index < num_data) {
+      const label_t cuda_label = static_cast<int>(cuda_labels[data_index]);
+      const int is_pos = cuda_label > 0 ? 1 : 0;
+      score_t grad_val = 0.0f;
+      score_t hess_val = 0.0f;
+      bool computed = false;
+      if (kLeanScoreIsFloat && lean) {
+        float lean_gradient, lean_hessian;
+        const double lean_label_weight = USE_LABEL_WEIGHT ? cuda_label_weights[is_pos] : 1.0;
+        const double lean_sample_weight = USE_WEIGHT ? static_cast<double>(cuda_weights[data_index]) : 1.0;
+        if (BinaryLoglossLean<USE_LABEL_WEIGHT, USE_WEIGHT>(cuda_scores[data_index], is_pos != 0, sigmoid,
+                                                            lean_label_weight, lean_sample_weight, &lean_gradient,
+                                                            &lean_hessian)) {
+          grad_val = lean_gradient;
+          hess_val = lean_hessian;
+          computed = true;
+        }
+      }
+      if (!computed) {
+        const int label = is_pos ? 1 : -1;
+        const double response = -label * sigmoid / (1.0f + exp(label * sigmoid * cuda_scores[data_index]));
+        const double abs_response = fabs(response);
+        if (!USE_WEIGHT) {
+          if (USE_LABEL_WEIGHT) {
+            const double label_weight = cuda_label_weights[is_pos];
+            grad_val = static_cast<score_t>(response * label_weight);
+            hess_val = static_cast<score_t>(abs_response * (sigmoid - abs_response) * label_weight);
+          } else {
+            grad_val = static_cast<score_t>(response);
+            hess_val = static_cast<score_t>(abs_response * (sigmoid - abs_response));
+          }
+        } else {
+          const double sample_weight = cuda_weights[data_index];
+          if (USE_LABEL_WEIGHT) {
+            const double label_weight = cuda_label_weights[is_pos];
+            grad_val = static_cast<score_t>(response * label_weight * sample_weight);
+            hess_val = static_cast<score_t>(abs_response * (sigmoid - abs_response) * label_weight * sample_weight);
+          } else {
+            grad_val = static_cast<score_t>(response * sample_weight);
+            hess_val = static_cast<score_t>(abs_response * (sigmoid - abs_response) * sample_weight);
+          }
+        }
+      }
+      cuda_out_gradients[data_index] = grad_val;
+      cuda_out_hessians[data_index] = hess_val;
+      g_min = SelectMin(g_min, grad_val);
+      g_max = SelectMax(g_max, grad_val);
+      h_min = SelectMin(h_min, hess_val);
+      h_max = SelectMax(h_max, hess_val);
+    }
+  }
+  __shared__ score_t s_gmin[kNumWarps];
+  __shared__ score_t s_gmax[kNumWarps];
+  __shared__ score_t s_hmin[kNumWarps];
+  __shared__ score_t s_hmax[kNumWarps];
+  const uint32_t lane = threadIdx.x % WARPSIZE;
+  const uint32_t warp_id = threadIdx.x / WARPSIZE;
+  g_min = ShuffleReduceMinWarp<score_t>(g_min, WARPSIZE);
+  g_max = ShuffleReduceMaxWarp<score_t>(g_max, WARPSIZE);
+  h_min = ShuffleReduceMinWarp<score_t>(h_min, WARPSIZE);
+  h_max = ShuffleReduceMaxWarp<score_t>(h_max, WARPSIZE);
+  if (lane == 0) {
+    s_gmin[warp_id] = g_min;
+    s_gmax[warp_id] = g_max;
+    s_hmin[warp_id] = h_min;
+    s_hmax[warp_id] = h_max;
+  }
+  __syncthreads();
+  if (warp_id == 0) {
+    g_min = lane < kNumWarps ? s_gmin[lane] : s_gmin[0];
+    g_max = lane < kNumWarps ? s_gmax[lane] : s_gmax[0];
+    h_min = lane < kNumWarps ? s_hmin[lane] : s_hmin[0];
+    h_max = lane < kNumWarps ? s_hmax[lane] : s_hmax[0];
+    for (int offset = kNumWarps / 2; offset > 0; offset >>= 1) {
+      const score_t og_min = __shfl_down_sync(0xffffffff, g_min, offset);
+      const score_t og_max = __shfl_down_sync(0xffffffff, g_max, offset);
+      const score_t oh_min = __shfl_down_sync(0xffffffff, h_min, offset);
+      const score_t oh_max = __shfl_down_sync(0xffffffff, h_max, offset);
+      g_min = SelectMin(g_min, og_min);
+      g_max = SelectMax(g_max, og_max);
+      h_min = SelectMin(h_min, oh_min);
+      h_max = SelectMax(h_max, oh_max);
+    }
+    if (lane == 0) {
+      out_grad_min[chunk] = g_min;
+      out_grad_max[chunk] = g_max;
+      out_hess_min[chunk] = h_min;
+      out_hess_max[chunk] = h_max;
+    }
+  }
+}
+#endif  // !defined(__HIP_PLATFORM_AMD__)
+
 void CUDABinaryLogloss::LaunchGetGradientsKernel(const double* scores, score_t* gradients, score_t* hessians) const {
   const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_BINARY - 1) / GET_GRADIENTS_BLOCK_SIZE_BINARY;
+  const bool fuse_minmax = FalcataPlan::Get().grad_minmax_fuse && FalcataPlan::Get().quant_training && num_data_ > 0;
+  if (fuse_minmax) {
+    score_t* mm = PreparePrecomputedGradMinMax(gradients, hessians, num_data_, num_blocks, 1);
+    score_t* g_min = mm;
+    score_t* g_max = mm + num_blocks;
+    score_t* h_min = mm + 2 * num_blocks;
+    score_t* h_max = mm + 3 * num_blocks;
+#if !defined(__HIP_PLATFORM_AMD__)
+    constexpr int kChunk256Threads = 256;
+    #define GetGradientsChunk256_Binary_ARGS \
+      scores, cuda_label_, cuda_label_weights_.RawData(), cuda_weights_, sigmoid_, num_data_, \
+      gradients, hessians, FalcataPlan::Get().gradient_fp64_lean, g_min, g_max, h_min, h_max
+    if (cuda_label_weights_.Size() == 0) {
+      if (cuda_weights_ == nullptr) {
+        GetGradientsChunk256Kernel_BinaryLogloss<false, false><<<num_blocks, kChunk256Threads>>>(GetGradientsChunk256_Binary_ARGS);
+      } else {
+        GetGradientsChunk256Kernel_BinaryLogloss<false, true><<<num_blocks, kChunk256Threads>>>(GetGradientsChunk256_Binary_ARGS);
+      }
+    } else {
+      if (cuda_weights_ == nullptr) {
+        GetGradientsChunk256Kernel_BinaryLogloss<true, false><<<num_blocks, kChunk256Threads>>>(GetGradientsChunk256_Binary_ARGS);
+      } else {
+        GetGradientsChunk256Kernel_BinaryLogloss<true, true><<<num_blocks, kChunk256Threads>>>(GetGradientsChunk256_Binary_ARGS);
+      }
+    }
+    #undef GetGradientsChunk256_Binary_ARGS
+#else
+    if (cuda_label_weights_.Size() == 0) {
+      if (cuda_weights_ == nullptr) {
+        GetGradientsKernel_BinaryLogloss<false, false, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(
+          GetGradientsKernel_BinaryLogloss_ARGS, g_min, g_max, h_min, h_max);
+      } else {
+        GetGradientsKernel_BinaryLogloss<false, true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(
+          GetGradientsKernel_BinaryLogloss_ARGS, g_min, g_max, h_min, h_max);
+      }
+    } else {
+      if (cuda_weights_ == nullptr) {
+        GetGradientsKernel_BinaryLogloss<true, false, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(
+          GetGradientsKernel_BinaryLogloss_ARGS, g_min, g_max, h_min, h_max);
+      } else {
+        GetGradientsKernel_BinaryLogloss<true, true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(
+          GetGradientsKernel_BinaryLogloss_ARGS, g_min, g_max, h_min, h_max);
+      }
+    }
+#endif
+    return;
+  }
   if (cuda_label_weights_.Size() == 0) {
     if (cuda_weights_ == nullptr) {
-      GetGradientsKernel_BinaryLogloss<false, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(GetGradientsKernel_BinaryLogloss_ARGS);
+      GetGradientsKernel_BinaryLogloss<false, false, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(GetGradientsKernel_BinaryLogloss_ARGS);
     } else {
-      GetGradientsKernel_BinaryLogloss<false, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(GetGradientsKernel_BinaryLogloss_ARGS);
+      GetGradientsKernel_BinaryLogloss<false, true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(GetGradientsKernel_BinaryLogloss_ARGS);
     }
   } else {
     if (cuda_weights_ == nullptr) {
-      GetGradientsKernel_BinaryLogloss<true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(GetGradientsKernel_BinaryLogloss_ARGS);
+      GetGradientsKernel_BinaryLogloss<true, false, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(GetGradientsKernel_BinaryLogloss_ARGS);
     } else {
-      GetGradientsKernel_BinaryLogloss<true, true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(GetGradientsKernel_BinaryLogloss_ARGS);
+      GetGradientsKernel_BinaryLogloss<true, true, false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(GetGradientsKernel_BinaryLogloss_ARGS);
     }
   }
 }

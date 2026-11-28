@@ -57,6 +57,18 @@ class TreeLearner {
   */
   virtual void ResetBoostingOnGPU(const bool /*boosting_on_gpu*/) {}
 
+  #ifdef USE_CUDA
+  /*!
+  * \brief Hand the CUDA tree learner per-1024-row block min/max partials already
+  * computed by the objective's GetGradients kernel (cuda_plan key grad_minmax_fuse).
+  */
+  virtual void SetPrecomputedGradMinMax(
+    const score_t* /*grad_min_blocks*/, const score_t* /*grad_max_blocks*/,
+    const score_t* /*hess_min_blocks*/, const score_t* /*hess_max_blocks*/,
+    const score_t* /*for_gradients*/, const score_t* /*for_hessians*/,
+    data_size_t /*num_data*/, int /*num_blocks*/) {}
+  #endif  // USE_CUDA
+
   virtual void SetForcedSplit(const Json* forced_split_json) = 0;
 
   /*!
