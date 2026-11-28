@@ -78,11 +78,19 @@ if(USE_CCACHE AND NOT MSVC)
       message(STATUS "Not using ccache ${FLC_CCACHE_VERSION} (${CCACHE_PROGRAM}): 4.8 or newer is required")
     else()
       # nvcc folds the working directory into internal symbol names, which ccache does not
-      # hash without -g; a per-build-directory namespace keeps cached objects byte-identical.
+      # hash without -g; a per-build-directory namespace keeps cached CUDA objects
+      # byte-identical. C and C++ objects do not embed the build directory (and ccache
+      # hashes cwd automatically under -g), so passing base_dir lets them share cache
+      # entries across build directories even when referencing generated build headers
+      # (e.g. nanoarrow_config.h).
       foreach(lang C CXX CUDA)
         # CUDA is enabled after this point, so CMake has not yet applied its environment launcher.
         if(NOT DEFINED CMAKE_${lang}_COMPILER_LAUNCHER AND NOT DEFINED ENV{CMAKE_${lang}_COMPILER_LAUNCHER})
-          set(CMAKE_${lang}_COMPILER_LAUNCHER "${CCACHE_PROGRAM};namespace=${CMAKE_BINARY_DIR}")
+          if(lang STREQUAL "CUDA")
+            set(CMAKE_${lang}_COMPILER_LAUNCHER "${CCACHE_PROGRAM};namespace=${CMAKE_BINARY_DIR}")
+          else()
+            set(CMAKE_${lang}_COMPILER_LAUNCHER "${CCACHE_PROGRAM};base_dir=${CMAKE_BINARY_DIR}")
+          endif()
         endif()
       endforeach()
       message(STATUS "Using ccache ${FLC_CCACHE_VERSION}: ${CCACHE_PROGRAM}")
