@@ -655,8 +655,21 @@ class CUDAHistogramConstructor {
     const int rounded = ((cc + 15) / 16) * 16;
     return cc <= NUM_THREADS_PER_BLOCK ? std::min(rounded, NUM_THREADS_PER_BLOCK) : rounded;
   }
-  /*! \brief cuda_plan key device_graph_indirect: coarse bucket for dynamic shared memory (4 KB granularity) */
+  /*! \brief cuda_plan key device_graph_indirect: bucketed (block_dim_x, block_dim_y) for compact dense constructs */
+  void BucketDenseCompactBlockDim(const int quant_bins, int* block_dim_x, int* block_dim_y) const {
+    const int cc = BucketDenseCompactCols(std::max(1, max_num_compact_cols_per_partition_));
+    const int bx = cc > NUM_THREADS_PER_BLOCK ? (cc + 1) / 2 : cc;
+    int by = std::max(1, BatchedConstructThreads() / bx);
+    by = HybridQuantConstructBlockDimY(by, quant_bins);
+    *block_dim_x = bx;
+    *block_dim_y = by;
+  }
+  /*! \brief cuda_plan key device_graph_indirect: coarse bucket for dynamic shared memory (4 KB granularity).
+   *  Never shrinks below exact_bytes; caps rounded buckets at max_bytes to leave room for static shared memory. */
   static size_t BucketDeviceLevelSmemBytes(const size_t exact_bytes, const size_t max_bytes) {
+    if (exact_bytes >= max_bytes) {
+      return exact_bytes;
+    }
     constexpr size_t kStep = 4096;
     const size_t rounded = ((exact_bytes + kStep - 1) / kStep) * kStep;
     return std::min(max_bytes, std::max(exact_bytes, rounded));

@@ -2160,12 +2160,7 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
         compact_pair_joint_max_ > 0 && compact_pair_joint_max_ * sizeof(int32_t) <= 48 * 1024 &&
         (cc + 1) / 2 * block_dim_y <= PairJointMaxThreadsPerBlock())) {
     if (indirect && use_compact_view_) {
-      const int cc_b = BucketDenseCompactCols(cc);
-      const int bx = cc_b > NUM_THREADS_PER_BLOCK ? (cc_b + 1) / 2 : cc_b;
-      int by = std::max(1, BatchedConstructThreads() / bx);
-      by = HybridQuantConstructBlockDimY(by, bins);
-      shape->block_x = bx;
-      shape->block_y = by;
+      BucketDenseCompactBlockDim(bins, &shape->block_x, &shape->block_y);
     }
     return;  // the dense batched kernel
   }
@@ -2188,10 +2183,13 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
     pair_y = y;
   }
   const size_t max_smem = CurrentDeviceLaunchLimits().shared_bytes_per_block;
+  // Leave a 2 KB margin below the 48 KB default dynamic SMEM limit for static shared memory (e.g. s_block_row)
+  // and driver reserve; exact sizes already above 46 KB are returned unrounded (never shrunk).
+  const size_t smem_bucket_cap = std::min<size_t>(46 * 1024, max_smem);
   const size_t pair_smem_bytes =
     static_cast<size_t>(whole_rows ? compact_pair_joint_total_ : compact_pair_joint_max_) * sizeof(int32_t);
   const size_t launch_pair_smem_bytes = indirect ?
-    BucketDeviceLevelSmemBytes(pair_smem_bytes, std::min<size_t>(48 * 1024, max_smem)) : pair_smem_bytes;
+    BucketDeviceLevelSmemBytes(pair_smem_bytes, smem_bucket_cap) : pair_smem_bytes;
   // (the host keeps the default shape where the capped grid passes CUDA's y limit; a device level strides its
   // block rows over a fixed launch, so it has no such limit)
   const int capped_y = whole_rows && plan.pair_capped_rows ?
@@ -2203,7 +2201,7 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
   const bool code5_flat = plan.pair_code5_flat && code5_flat_smem_bytes <= max_smem;
   const size_t code5_word_smem_bytes = code5_flat ? code5_flat_smem_bytes : pair_smem_bytes;
   const size_t launch_code5_word_smem_bytes = indirect ?
-    BucketDeviceLevelSmemBytes(code5_word_smem_bytes, max_smem) : code5_word_smem_bytes;
+    BucketDeviceLevelSmemBytes(code5_word_smem_bytes, smem_bucket_cap) : code5_word_smem_bytes;
   const bool code5_tall = plan.pair_code5_slots && plan.pair_code5_tall;
   const bool code5_epilogue_flat = code5_flat && plan.pair_code5_epilogue;
   int code5_word_rows = 0;

@@ -255,3 +255,128 @@ def test_device_graph_indirect_eliminates_churn_diag_cuda():
     sel_on_err = run_diag(sel_code, "auto,device_graph_indirect:on", sel_params)
     assert "graphs off" in sel_off_err
     assert "graphs off" not in sel_on_err
+
+
+@_REQUIRES_CUDA
+def test_device_graph_indirect_categorical_cuda():
+    # Exercises DeviceLevelCatBitsetsIndirectKernel + captured graph replay on mixed categorical + numerical wide data.
+    rng = np.random.default_rng(31)
+    n, m = 5000, 300
+    X = np.floor(rng.random((n, m)) * rng.integers(3, 7, size=m)).astype(np.float32)
+    cat_cols = list(range(12))
+    for c in cat_cols:
+        X[:, c] = rng.integers(0, 4 + (c % 8), size=n).astype(np.float32)
+    X[:, 12:180] = np.where(rng.random((n, 168)) < 0.05, np.nan, X[:, 12:180])
+    cat_signal = (X[:, 0] == 1).astype(np.float32) - (X[:, 1] == 2).astype(np.float32)
+    y = (cat_signal + 0.2 * np.nan_to_num(X[:, 12:24]).sum(axis=1) + rng.standard_normal(n)).astype(np.float32)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "num_leaves": 31,
+        "max_depth": 5,
+        "max_bin": 15,
+        "feature_fraction": 0.25,
+        "min_data_in_leaf": 20,
+        "use_quantized_grad": True,
+        "quant_mode": "stochastic",
+        "verbose": -1,
+        "seed": 42,
+    }
+    ds_off = flc.Dataset(
+        X, label=y, params={**params, "cuda_plan": "auto,device_graph_indirect:off"}, categorical_feature=cat_cols
+    )
+    ds_on = flc.Dataset(
+        X, label=y, params={**params, "cuda_plan": "auto,device_graph_indirect:on"}, categorical_feature=cat_cols
+    )
+    b_off = flc.train({**params, "cuda_plan": "auto,device_graph_indirect:off"}, ds_off, num_boost_round=25)
+    b_on = flc.train({**params, "cuda_plan": "auto,device_graph_indirect:on"}, ds_on, num_boost_round=25)
+    md5_off = hashlib.md5(
+        "\n".join(line for line in b_off.model_to_string().splitlines() if "cuda_plan" not in line).encode()
+    ).hexdigest()
+    md5_on = hashlib.md5(
+        "\n".join(line for line in b_on.model_to_string().splitlines() if "cuda_plan" not in line).encode()
+    ).hexdigest()
+    assert md5_on == md5_off
+
+    # Verify categorical device-tree graph replays cleanly via FALCATA_DEBUG=diag.
+    code = (
+        "import sys, json, numpy as np, falcata as flc\n"
+        "rng = np.random.default_rng(31)\n"
+        "n, m = 5000, 300\n"
+        "X = np.floor(rng.random((n, m)) * rng.integers(3, 7, size=m)).astype(np.float32)\n"
+        "cat_cols = list(range(12))\n"
+        "for c in cat_cols:\n"
+        "    X[:, c] = rng.integers(0, 4 + (c % 8), size=n).astype(np.float32)\n"
+        "X[:, 12:180] = np.where(rng.random((n, 168)) < 0.05, np.nan, X[:, 12:180])\n"
+        "cat_signal = (X[:, 0] == 1).astype(np.float32) - (X[:, 1] == 2).astype(np.float32)\n"
+        "y = (cat_signal + 0.2 * np.nan_to_num(X[:, 12:24]).sum(axis=1) + rng.standard_normal(n)).astype(np.float32)\n"
+        "p = dict(json.loads(sys.argv[1]), cuda_plan='auto,device_graph_indirect:on')\n"
+        "ds = flc.Dataset(X, label=y, params=p, categorical_feature=cat_cols)\n"
+        "flc.train(p, ds, num_boost_round=25)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code, json.dumps(params)],
+        env=dict(os.environ, FALCATA_DEBUG="diag"),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    matches = re.findall(r"complete depth=\d+.*graph=1 hits=(\d+) misses=(\d+)", out.stderr)
+    assert matches
+    hits, misses = map(int, matches[-1])
+    assert hits >= 15, f"expected categorical graph hits, got hits={hits} misses={misses}"
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("feature_fraction", [0.30, 0.314])
+def test_device_graph_indirect_near_48kb_smem_cuda(feature_fraction):
+    # 300 columns of 15-16 distinct values sampled at ff=0.30..0.314 (90-94 cols = 45-47 byte slots) places
+    # pair-joint dynamic SMEM in (44 KB, 48 KB], guarding against rounding past the 48 KB static+dynamic limit.
+    rng = np.random.default_rng(37)
+    n, m = 4000, 300
+    spans = rng.integers(15, 17, size=m)
+    X = np.floor(rng.random((n, m)) * spans).astype(np.float32)
+    y = (X[:, :20] @ rng.standard_normal(20) + rng.standard_normal(n)).astype(np.float32)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "num_leaves": 31,
+        "max_depth": 5,
+        "max_bin": 16,
+        "feature_fraction": feature_fraction,
+        "min_data_in_leaf": 20,
+        "use_quantized_grad": True,
+        "quant_mode": "stochastic",
+        "verbose": -1,
+        "seed": 42,
+    }
+    _assert_same_model(params, X, y, rounds=20)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("find_split_waves", [0.05, 0.25, 1.0, 4.0])
+def test_device_graph_indirect_find_split_small_boundary_cuda(find_split_waves):
+    # Exercises warp-finder integer warp_split_max_blocks threshold across shallow/mid levels where
+    # may_split straddles split=1 vs split=4 on variable-task-count wide NaN data.
+    rng = np.random.default_rng(41)
+    n, m = 4000, 200
+    X = rng.standard_normal((n, m)).astype(np.float32)
+    X[:, :80] = np.where(rng.random((n, 80)) < 0.1, np.nan, X[:, :80])
+    y = (np.nan_to_num(X[:, :20]) @ rng.standard_normal(20) + rng.standard_normal(n)).astype(np.float32)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "num_leaves": 31,
+        "max_depth": 5,
+        "max_bin": 255,
+        "feature_fraction": 0.35,
+        "min_data_in_leaf": 20,
+        "use_quantized_grad": True,
+        "quant_mode": "stochastic",
+        "verbose": -1,
+        "seed": 42,
+    }
+    wave = f"find_split_waves:{find_split_waves}"
+    off = _model_md5({**params, "cuda_plan": f"auto,{wave},device_graph_indirect:off"}, X, y, 20)
+    on = _model_md5({**params, "cuda_plan": f"auto,{wave},device_graph_indirect:on"}, X, y, 20)
+    assert on == off
