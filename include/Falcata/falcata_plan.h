@@ -544,13 +544,6 @@ struct FalcataPlan {
   // partition walks, and shorter register live ranges across the hot row loop. Composed with pair_code5_flat.
   // Same cells, same integer sums: bit-identical.
   bool pair_code5_flat_table = true;  // key: pair_code5_flat_table
-  // pair_code5_words: 2-way in-block privatized shared joint tables when 2 * joint table + dummy cells <= 60 KB
-  // (inside the 64 KB carveout) and occupancy is preserved: y-warps 0..blockDim.y/2-1 accumulate into copy 0 and
-  // the upper half into copy 1, halving shared-memory atomic contention, then sum copy 0 + copy 1 before one
-  // global flush. Composed with pair_code5_flat. Same packed integer sums (no carry past bit 15): bit-identical.
-  // Off by default: measured +0.84% slower on numerai_v6 and +2.85% slower on numerai_nan (RTX 5090), where
-  // pair_pad already eliminates bank conflicts and the extra zero/combine pass outweighs atomic contention.
-  bool pair_code5_priv2 = false;  // key: pair_code5_priv2
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
   // spreading a few rows over every block row (each block zeroes and flushes
@@ -1137,7 +1130,6 @@ struct FalcataPlan {
     if (key == "pair_code5_tall") return &pair_code5_tall;
     if (key == "pair_code5_epilogue") return &pair_code5_epilogue;
     if (key == "pair_code5_flat_table") return &pair_code5_flat_table;
-    if (key == "pair_code5_priv2") return &pair_code5_priv2;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "dense_level_row_blocks") return &dense_level_row_blocks;
     if (key == "dense_block_map") return &dense_block_map;

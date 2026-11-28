@@ -119,7 +119,6 @@ constexpr int kFill4BitTiledMaxSlots = 256;
  *  largest block, the grid's y extent and the warp width. Memoised per device (CurrentDeviceLaunchLimits). */
 struct DeviceLaunchLimits {
   size_t shared_bytes_per_block = 0;
-  size_t shared_bytes_per_block_optin = 0;
   int max_threads_per_block = 0;
   int max_grid_dim_y = 0;
   int warp_size = 0;
@@ -721,7 +720,7 @@ class CUDAHistogramConstructor {
                           shape->smem_bytes, shape->slot, shape->slot_device_slots, shape->slot_min_rows,
                           shape->slot_max_rows, shape->per_pair_min_grid, shape->per_pair_min_rows,
                           shape->whole_row_partitions, static_cast<int>(shape->whole_row_joint),
-                          shape->code5_flat, shape->code5_epilogue_mode, shape->code5_priv2}) {
+                          shape->code5_flat, shape->code5_epilogue_mode}) {
         key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
       }
     }

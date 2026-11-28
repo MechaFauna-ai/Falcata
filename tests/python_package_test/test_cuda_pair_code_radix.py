@@ -80,12 +80,12 @@ def test_pair_code_radix_is_bit_identical_cuda(
 @pytest.mark.parametrize(
     ("values", "nan_frac", "quant"),
     [
-        ((5, 6), 0.0, "stochastic"),   # 5-bit code5
+        ((5, 6), 0.0, "stochastic"),  # 5-bit code5
         ((5, 6), 0.08, "fixedpoint"),  # mixed-radix code
     ],
 )
-def test_pair_code5_flat_table_and_priv2_bit_identical_cuda(values, nan_frac, quant):
-    """pair_code5_flat_table and pair_code5_priv2 must match the baseline epilogue bit-for-bit."""
+def test_pair_code5_flat_table_is_bit_identical_cuda(values, nan_frac, quant):
+    """pair_code5_flat_table must match the baseline epilogue bit-for-bit."""
     rows, num_features = 8000, 1200
     rng = np.random.default_rng(29)
     levels = rng.integers(values[0], values[1], size=num_features)
@@ -109,10 +109,6 @@ def test_pair_code5_flat_table_and_priv2_bit_identical_cuda(values, nan_frac, qu
         "seed": 42,
         "metric": "None",
     }
-    base = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:off,pair_code5_priv2:off"}, X, y, 10)
-    flat_on = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:on,pair_code5_priv2:off"}, X, y, 10)
-    priv2_on = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:off,pair_code5_priv2:on"}, X, y, 10)
-    both_on = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:on,pair_code5_priv2:on"}, X, y, 10)
-    assert flat_on == base
-    assert priv2_on == base
-    assert both_on == base
+    on = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:on"}, X, y, 10)
+    off = _model_md5({**params, "cuda_plan": "auto,pair_code5_flat_table:off"}, X, y, 10)
+    assert on == off
