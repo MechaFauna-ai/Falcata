@@ -172,36 +172,53 @@ void CUDABestSplitFinder::UpdateWarpFindEligibility() {
   warp_find_order_all_tasks_ = false;
 #if defined(__HIP_PLATFORM_AMD__)
   warp_find_eligible_ = false;
+  warp_find_has_block_tasks_ = false;
+  warp_find_num_block_tasks_ = 0;
 #else
-  // All or nothing per dataset: every task must be a numerical scan of at most 256 positions that the warp kernel
-  // implements: reverse scans with or without NaN handling, and forward scans with NaN handling, each whether the
-  // most-frequent bin is stored (mfb_offset 0) or not (mfb_offset 1; the forward scan then rebuilds bin 0 from the
-  // leaf total, as the block kernel does). Zero-as-missing scans skip the default bin and stay on the block kernel,
-  // and one ineligible task keeps every task of the dataset there. The warp kernel's math has no L1 or path-smoothing
-  // terms: those configs take the block kernel (and BeforeTrain builds no warp launch order for them).
-  warp_find_eligible_ = FalcataPlan::Get().warp_find && !split_find_tasks_.empty() && lambda_l1_ <= 0.0f &&
-    !use_smoothing_ &&
-    std::all_of(split_find_tasks_.begin(), split_find_tasks_.end(), [](const SplitFindTask& t) {
-      if (t.is_categorical || t.skip_default_bin || t.num_bin > 256 || t.mfb_offset > 1) return false;
-      return t.reverse || t.na_as_missing;
-    });
-  // longest scan (WarpFindBest's positions 0 .. num_bin - mfb_offset + shift - 1): the level launch packs eight
-  // (task, leaf) items per warp (4-lane groups) when every task fits 8 positions
-  warp_find_max_positions_ = 0;
+  // Per-task eligibility for the warp-per-task quantized level finder: a numerical scan of at most 256 positions
+  // (reverse scans with or without NaN handling, forward scans with NaN handling, and under warp_find_mixed_cat
+  // zero-as-missing skip_default_bin scans in both directions), with mfb_offset <= 1. The warp kernel's math has no
+  // L1 or path-smoothing terms: those configs take the block kernel. Under warp_find_mixed_cat, datasets mixing
+  // warp-eligible numerical tasks with categorical (or >256-bin) tasks run the numerical tasks on the warp kernel
+  // and only the remaining tasks in a compact block launch; with warp_find_mixed_cat off, one ineligible task sends
+  // the entire dataset to the block kernel (legacy all-or-nothing gate).
+  const bool mixed_cat = FalcataPlan::Get().warp_find_mixed_cat;
+  const bool config_ok = FalcataPlan::Get().warp_find && !split_find_tasks_.empty() && lambda_l1_ <= 0.0f &&
+    !use_smoothing_;
+  warp_find_task_eligible_.assign(split_find_tasks_.size(), 0);
   warp_find_task_narrow_.assign(split_find_tasks_.size(), 0);
+  warp_find_max_positions_ = 0;
   warp_find_num_narrow_ = 0;
+  int num_warp_tasks = 0;
+  int num_block_tasks = 0;
   int narrow_reverse = 0;
   for (size_t k = 0; k < split_find_tasks_.size(); ++k) {
     const SplitFindTask& t = split_find_tasks_[k];
-    const int shift = (!t.reverse && t.na_as_missing && t.mfb_offset == 1) ? 1 : 0;
-    const int positions = static_cast<int>(t.num_bin) - t.mfb_offset + shift;
-    warp_find_max_positions_ = std::max(warp_find_max_positions_, positions);
-    // the narrow tasks of a mixed dataset run as 4-lane groups (the kernel's tiers count positions the same way)
-    if (positions <= 8) {
-      warp_find_task_narrow_[k] = 1;
-      ++warp_find_num_narrow_;
-      narrow_reverse += t.reverse ? 1 : 0;
+    const bool task_ok = config_ok && !t.is_categorical && t.num_bin <= 256 && t.mfb_offset <= 1 &&
+      (t.skip_default_bin ? mixed_cat : (t.reverse || t.na_as_missing));
+    if (task_ok) {
+      warp_find_task_eligible_[k] = 1;
+      ++num_warp_tasks;
+      const int shift = (!t.reverse && t.na_as_missing && t.mfb_offset == 1) ? 1 : 0;
+      const int positions = static_cast<int>(t.num_bin) - t.mfb_offset + shift;
+      warp_find_max_positions_ = std::max(warp_find_max_positions_, positions);
+      // the narrow tasks of a mixed dataset run as 4-lane groups (the kernel's tiers count positions the same way)
+      if (positions <= 8) {
+        warp_find_task_narrow_[k] = 1;
+        ++warp_find_num_narrow_;
+        narrow_reverse += t.reverse ? 1 : 0;
+      }
+    } else {
+      ++num_block_tasks;
     }
+  }
+  warp_find_num_block_tasks_ = num_block_tasks;
+  if (mixed_cat) {
+    warp_find_eligible_ = config_ok && num_warp_tasks > 0;
+    warp_find_has_block_tasks_ = warp_find_eligible_ && num_block_tasks > 0;
+  } else {
+    warp_find_eligible_ = config_ok && num_block_tasks == 0;
+    warp_find_has_block_tasks_ = false;
   }
   warp_find_narrow_mixed_direction_ = narrow_reverse > 0 && narrow_reverse < warp_find_num_narrow_;
 #endif
@@ -599,56 +616,94 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
     UploadTreeStartMeta<int>(cuda_used_task_indices_.RawData(), host_used_task_indices_.data(),
                              host_used_task_indices_.size());
   }
-  // the level warp finder's launch order on a dataset that mixes narrow (<= 8 scan positions) and wide tasks: the
-  // used narrow tasks first (eight per warp as 4-lane groups), then the used wide ones (a warp each). Every item
-  // still writes at its own task index. On a dataset of one kind the used-task list is already in launch order.
+  // the level warp finder's launch order on a dataset that mixes narrow (<= 8 scan positions) and wide tasks (or
+  // warp-eligible numerical tasks and block-only categorical tasks): the used narrow tasks first (eight per warp as
+  // 4-lane groups), then the used wide ones (a warp each). Every item still writes at its own task index. On a
+  // pure-warp dataset of one kind the used-task list is already in launch order.
   // cuda_plan key find_group_direction: the narrow tasks in the order grouped by scan direction (a warp of eight
   // 4-lane groups then runs one WarpFindBest body), also on a dataset of narrow tasks only
   warp_find_num_narrow_used_ = 0;
+  warp_find_num_wide_used_ = 0;
   warp_find_order_pad_ = 0;
   warp_find_order_used_ = false;
+  num_block_only_used_ = 0;
+  if (!warp_find_eligible_ || num_used_tasks_ == 0) {
+    return;
+  }
   const bool group_direction = warp_find_narrow_mixed_direction_ && FalcataPlan::Get().find_group_direction;
-  if (warp_find_eligible_ && warp_find_num_narrow_ > 0 && num_used_tasks_ > 0 &&
-      (warp_find_num_narrow_ < num_tasks_ || group_direction)) {
-    warp_find_order_used_ = true;
-    if (num_used_tasks_ == num_tasks_ && warp_find_order_all_tasks_) {
-      // every task used: the order is a function of the task list alone (shape metadata, like the tasks
-      // themselves) and was uploaded by an earlier tree
-      warp_find_num_narrow_used_ = warp_find_all_num_narrow_;
-      warp_find_order_pad_ = warp_find_all_pad_;
-      return;
+  const bool need_order = warp_find_has_block_tasks_ ||
+    (warp_find_num_narrow_ > 0 && (warp_find_num_narrow_ < num_tasks_ || group_direction));
+  if (!need_order) {
+    if (warp_find_max_positions_ <= 8) {
+      warp_find_num_narrow_used_ = num_used_tasks_;
+    } else {
+      warp_find_num_wide_used_ = num_used_tasks_;
     }
-    warp_find_order_pad_ = 0;
-    host_warp_find_order_.clear();
-    // (narrow, reverse) classes in launch order: narrow reverse, narrow forward, then the wide ones (either way)
-    for (const int cls : {3, 2, 0}) {
-      const int narrow = cls >> 1;
-      for (int k = 0; k < num_used_tasks_; ++k) {
-        const int task_index = host_used_task_indices_[k];
-        if (warp_find_task_narrow_[task_index] != narrow) continue;
-        if (narrow && group_direction && static_cast<int>(split_find_tasks_[task_index].reverse) != (cls & 1)) {
-          continue;
-        }
-        if (narrow && !group_direction && cls == 2) continue;  // the narrow tasks went out in the first pass
-        host_warp_find_order_.push_back(task_index);
+    return;
+  }
+  warp_find_order_used_ = true;
+  if (num_used_tasks_ == num_tasks_ && warp_find_order_all_tasks_) {
+    // every task used: the order (and block-only list in mixed mode) is a function of the task list alone (shape
+    // metadata, like the tasks themselves) and was uploaded by an earlier tree
+    warp_find_num_narrow_used_ = warp_find_all_num_narrow_;
+    warp_find_order_pad_ = warp_find_all_pad_;
+    warp_find_num_wide_used_ = warp_find_all_num_wide_;
+    num_block_only_used_ = warp_find_all_num_block_;
+    return;
+  }
+  warp_find_order_pad_ = 0;
+  host_warp_find_order_.clear();
+  host_block_only_task_indices_.clear();
+  // (narrow, reverse) classes in launch order: narrow reverse, narrow forward, then the wide ones (either way)
+  for (const int cls : {3, 2, 0}) {
+    const int narrow = cls >> 1;
+    for (int k = 0; k < num_used_tasks_; ++k) {
+      const int task_index = host_used_task_indices_[k];
+      if (!warp_find_task_eligible_[task_index]) continue;
+      if (warp_find_task_narrow_[task_index] != narrow) continue;
+      if (narrow && group_direction && static_cast<int>(split_find_tasks_[task_index].reverse) != (cls & 1)) {
+        continue;
       }
-      // the reverse group fills whole warps (eight items each): at a level of few leaves the launch takes as long
-      // as its slowest warp, and one warp with both directions runs both bodies; the padding slots (-1) return
-      while (cls == 3 && group_direction && host_warp_find_order_.size() % 8 != 0) {
-        host_warp_find_order_.push_back(-1);
-        ++warp_find_order_pad_;
-      }
-      if (narrow) warp_find_num_narrow_used_ = static_cast<int>(host_warp_find_order_.size());
+      if (narrow && !group_direction && cls == 2) continue;  // the narrow tasks went out in the first pass
+      host_warp_find_order_.push_back(task_index);
     }
+    // the reverse group fills whole warps (eight items each): at a level of few leaves the launch takes as long
+    // as its slowest warp, and one warp with both directions runs both bodies; the padding slots (-1) return
+    while (cls == 3 && group_direction && host_warp_find_order_.size() % 8 != 0) {
+      host_warp_find_order_.push_back(-1);
+      ++warp_find_order_pad_;
+    }
+    if (narrow) warp_find_num_narrow_used_ = static_cast<int>(host_warp_find_order_.size());
+  }
+  warp_find_num_wide_used_ = static_cast<int>(host_warp_find_order_.size()) - warp_find_num_narrow_used_;
+  if (!host_warp_find_order_.empty()) {
     if (cuda_warp_find_order_.Size() < host_warp_find_order_.size()) {
       cuda_warp_find_order_.Resize(static_cast<size_t>(num_tasks_) + 8);
     }
     UploadTreeStartMeta<int>(cuda_warp_find_order_.RawData(), host_warp_find_order_.data(),
                              host_warp_find_order_.size());
-    warp_find_order_all_tasks_ = num_used_tasks_ == num_tasks_;
-    warp_find_all_num_narrow_ = warp_find_num_narrow_used_;
-    warp_find_all_pad_ = warp_find_order_pad_;
   }
+  if (warp_find_has_block_tasks_) {
+    for (int k = 0; k < num_used_tasks_; ++k) {
+      const int task_index = host_used_task_indices_[k];
+      if (!warp_find_task_eligible_[task_index]) {
+        host_block_only_task_indices_.push_back(task_index);
+      }
+    }
+    num_block_only_used_ = static_cast<int>(host_block_only_task_indices_.size());
+    if (num_block_only_used_ > 0) {
+      if (cuda_block_only_task_indices_.Size() < host_block_only_task_indices_.size()) {
+        cuda_block_only_task_indices_.Resize(static_cast<size_t>(warp_find_num_block_tasks_));
+      }
+      UploadTreeStartMeta<int>(cuda_block_only_task_indices_.RawData(), host_block_only_task_indices_.data(),
+                               host_block_only_task_indices_.size());
+    }
+  }
+  warp_find_order_all_tasks_ = num_used_tasks_ == num_tasks_;
+  warp_find_all_num_narrow_ = warp_find_num_narrow_used_;
+  warp_find_all_pad_ = warp_find_order_pad_;
+  warp_find_all_num_wide_ = warp_find_num_wide_used_;
+  warp_find_all_num_block_ = num_block_only_used_;
 }
 
 void CUDABestSplitFinder::FindBestSplitsForLeaf(

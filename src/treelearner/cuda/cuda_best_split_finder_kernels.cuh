@@ -147,6 +147,45 @@ __device__ __forceinline__ bool SequentialCategoricalGroupAccepted(
   return false;
 }
 
+// Single-pass bitmask version of SequentialCategoricalGroupAccepted for
+// num_thresholds <= 64: run once in lane 0 so every thread reads bit `i`
+// instead of replaying the O(K) loop K times in parallel. Bit j is 1 iff
+// SequentialCategoricalGroupAccepted(..., j, ...) returns true.
+template <typename PREFIX_PTR_T>
+__device__ __forceinline__ uint64_t ComputeCategoricalGroupAcceptedMask(
+  const PREFIX_PTR_T sum_left_hessian_prefix,
+  const data_size_t* left_count_prefix,
+  const int num_thresholds,
+  const data_size_t num_data,
+  const double sum_hessians,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const int min_data_per_group) {
+  uint64_t mask = 0ull;
+  data_size_t last_accepted_left_count = 0;
+  for (int j = 0; j < num_thresholds; ++j) {
+    const double sum_left_hessian = sum_left_hessian_prefix[j];
+    const data_size_t left_count = left_count_prefix[j];
+    if (left_count < min_data_in_leaf || sum_left_hessian < min_sum_hessian_in_leaf) {
+      continue;
+    }
+    const data_size_t right_count = num_data - left_count;
+    if (right_count < min_data_in_leaf || right_count < min_data_per_group) {
+      break;
+    }
+    const double sum_right_hessian = sum_hessians - sum_left_hessian;
+    if (sum_right_hessian < min_sum_hessian_in_leaf) {
+      break;
+    }
+    if (left_count - last_accepted_left_count < min_data_per_group) {
+      continue;
+    }
+    last_accepted_left_count = left_count;
+    mask |= (1ull << j);
+  }
+  return mask;
+}
+
 // ----- RANDOM categorical search (cat_random_search) -------------------------
 // Draws for the RANDOM search come from a SplitMix64 stream, not from
 // CUDARandom: CUDARandom is an LCG whose low bits carry short periods, and the
@@ -1557,7 +1596,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
   // output parameters
   CUDASplitInfo* cuda_best_split_info,
   // the leaf's monotone bounds (USE_MC only)
-  const CatMonotoneBounds bounds = CatMonotoneBounds{-DBL_MAX, DBL_MAX}) {
+  const CatMonotoneBounds bounds = CatMonotoneBounds{-DBL_MAX, DBL_MAX},
+  // paired bounded prefix scan + lane-0 group-acceptance bitmask (warp_find_mixed_cat)
+  const bool cat_prefix_fast = true) {
   __shared__ double shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_found_buffer[WARPSIZE];
   __shared__ uint32_t shared_thread_index_buffer[WARPSIZE];
@@ -1650,11 +1691,14 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
         sum_right_hessian, lambda_l1, l2, right_output);
     }
   } else {
-    __shared__ double shared_value_buffer[NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
+    // 2x blockDim.x so SequentialPrefixSumPair can interleave grad/hess chains
+    // while BitonicArgSort_1024 uses the first blockDim.x slots.
+    __shared__ double shared_value_buffer[2 * NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
     __shared__ int16_t shared_index_buffer[NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
     __shared__ uint16_t shared_mem_buffer_uint16[WARPSIZE];
     __shared__ data_size_t shared_mem_buffer_cnt[WARPSIZE];
     __shared__ data_size_t shared_count_buffer[NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
+    __shared__ uint64_t shared_accepted_mask;
     __shared__ int used_bin;
     l2 += cat_l2;
     uint16_t is_valid_bin = 0;
@@ -1753,11 +1797,19 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       hess += kEpsilon;
     }
     __syncthreads();
-    // CPU-order scans (see SequentialPrefixSum); shared_value_buffer is free
-    // scratch here -- its prefix contents are (re)stored right below. The
-    // count prefix stays a shuffle scan: integer sums are order-invariant.
-    double sum_left_gradient = SequentialPrefixSum<double>(grad, shared_value_buffer);
-    double sum_left_hessian = SequentialPrefixSum<double>(hess, shared_value_buffer);
+    // CPU-order scans (see SequentialPrefixSum / SequentialPrefixSumPair);
+    // shared_value_buffer is free scratch here -- its prefix contents are
+    // (re)stored right below. The count prefix stays a shuffle scan: integer
+    // sums are order-invariant.
+    double sum_left_gradient = grad;
+    double sum_left_hessian = hess;
+    if (cat_prefix_fast) {
+      SequentialPrefixSumPair<double>(&sum_left_gradient, &sum_left_hessian,
+        shared_value_buffer, static_cast<unsigned int>(num_cat_thresholds));
+    } else {
+      sum_left_gradient = SequentialPrefixSum<double>(grad, shared_value_buffer);
+      sum_left_hessian = SequentialPrefixSum<double>(hess, shared_value_buffer);
+    }
     data_size_t left_count_prefix =
       ShufflePrefixSum<data_size_t>(cat_cnt, shared_mem_buffer_cnt);
     __syncthreads();
@@ -1766,15 +1818,28 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       shared_count_buffer[threadIdx_x] = left_count_prefix;
     }
     __syncthreads();
+    const bool use_accepted_mask = cat_prefix_fast && num_cat_thresholds <= 64;
+    if (use_accepted_mask) {
+      if (threadIdx_x == 0) {
+        shared_accepted_mask = ComputeCategoricalGroupAcceptedMask(
+          shared_value_buffer, shared_count_buffer, num_cat_thresholds,
+          num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
+          min_data_per_group);
+      }
+      __syncthreads();
+    }
     if (threadIdx_x < num_cat_thresholds) {
       const data_size_t left_count = left_count_prefix;
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (SequentialCategoricalGroupAccepted(shared_value_buffer, shared_count_buffer,
+      const bool group_accepted = use_accepted_mask ?
+        (((shared_accepted_mask >> threadIdx_x) & 1ull) != 0ull) :
+        SequentialCategoricalGroupAccepted(shared_value_buffer, shared_count_buffer,
           threadIdx_x, num_cat_thresholds,
           num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
-          min_data_per_group) &&
+          min_data_per_group);
+      if (group_accepted &&
         (!USE_RAND || threadIdx_x == static_cast<int>(rand_threshold))) {
         double current_gain = CategoricalSplitGain<USE_L1, USE_SMOOTHING, USE_MC>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
@@ -1807,8 +1872,15 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       hess += kEpsilon;
     }
     __syncthreads();
-    sum_left_gradient = SequentialPrefixSum<double>(grad, shared_value_buffer);
-    sum_left_hessian = SequentialPrefixSum<double>(hess, shared_value_buffer);
+    sum_left_gradient = grad;
+    sum_left_hessian = hess;
+    if (cat_prefix_fast) {
+      SequentialPrefixSumPair<double>(&sum_left_gradient, &sum_left_hessian,
+        shared_value_buffer, static_cast<unsigned int>(num_cat_thresholds));
+    } else {
+      sum_left_gradient = SequentialPrefixSum<double>(grad, shared_value_buffer);
+      sum_left_hessian = SequentialPrefixSum<double>(hess, shared_value_buffer);
+    }
     left_count_prefix = ShufflePrefixSum<data_size_t>(cat_cnt, shared_mem_buffer_cnt);
     __syncthreads();
     if (threadIdx_x < num_cat_thresholds) {
@@ -1816,15 +1888,27 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       shared_count_buffer[threadIdx_x] = left_count_prefix;
     }
     __syncthreads();
+    if (use_accepted_mask) {
+      if (threadIdx_x == 0) {
+        shared_accepted_mask = ComputeCategoricalGroupAcceptedMask(
+          shared_value_buffer, shared_count_buffer, num_cat_thresholds,
+          num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
+          min_data_per_group);
+      }
+      __syncthreads();
+    }
     if (threadIdx_x < num_cat_thresholds) {
       const data_size_t left_count = left_count_prefix;
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (SequentialCategoricalGroupAccepted(shared_value_buffer, shared_count_buffer,
+      const bool group_accepted = use_accepted_mask ?
+        (((shared_accepted_mask >> threadIdx_x) & 1ull) != 0ull) :
+        SequentialCategoricalGroupAccepted(shared_value_buffer, shared_count_buffer,
           threadIdx_x, num_cat_thresholds,
           num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
-          min_data_per_group) &&
+          min_data_per_group);
+      if (group_accepted &&
         (!USE_RAND || threadIdx_x == static_cast<int>(rand_threshold))) {
         double current_gain = CategoricalSplitGain<USE_L1, USE_SMOOTHING, USE_MC>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
