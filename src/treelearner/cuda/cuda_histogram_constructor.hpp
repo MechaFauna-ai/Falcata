@@ -125,8 +125,13 @@ struct DeviceLaunchLimits {
 };
 DeviceLaunchLimits CurrentDeviceLaunchLimits();
 
+/*! \brief Non-fatally raise a kernel's cudaFuncAttributeMaxDynamicSharedMemorySize on the current device when
+ *  smem_bytes > 48 KB (thread-safe, memoised per (device, kernel) high-water mark). Clears any CUDA error and returns
+ *  false on failure. */
+bool TryEnsureKernelMaxDynamicSharedMemory(const void* kernel, size_t smem_bytes);
+
 /*! \brief Raise a kernel's cudaFuncAttributeMaxDynamicSharedMemorySize on the current device when smem_bytes > 48 KB
- *  (thread-safe, memoised per (device, kernel) high-water mark). No-op when smem_bytes <= 48 KB. */
+ *  (fatal on failure). */
 void EnsureKernelMaxDynamicSharedMemory(const void* kernel, size_t smem_bytes);
 
 /*! \brief cuda_plan key pair_code5_flat_table: precomputed per-marginal flush descriptor for whole-row pair-joint

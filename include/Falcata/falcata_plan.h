@@ -539,7 +539,7 @@ struct FalcataPlan {
   // the allocation). Same cells, same per-cell wrapping sum, same visitation order: bit-identical. Off by default:
   // with pair_code5_slots / pair_code5_tall's tall blocks the flat flush made a Numerai round 0.5% slower (RTX 5090).
   bool pair_code5_epilogue = false;  // key: pair_code5_epilogue
-  // pair_code5_words: precomputed flat marginal flush table (PairJointMarginalDesc, 8 bytes/marginal, uploaded via
+  // pair_code5_flat_table: precomputed flat marginal flush table (PairJointMarginalDesc, 8 bytes/marginal, uploaded via
   // TreeStartMetaBatch) so all threads of the block flush marginals with coalesced loads and global atomics, zero
   // partition walks, and shorter register live ranges across the hot row loop. Composed with pair_code5_flat.
   // Same cells, same integer sums: bit-identical.

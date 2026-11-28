@@ -2759,6 +2759,22 @@ CUDAConstructDiscretizedHistogramDenseBatchedDynKernel(
     min_data_in_leaf, min_sum_hessian_in_leaf, row_batch, host_min_rows_per_thread, block_prefix, dls);
 }
 
+template <typename BIN_TYPE>
+bool TryEnsureQuantDenseDynSharedMemoryForBin(const size_t smem_bytes) {
+  const void* const kernels[] = {
+      reinterpret_cast<const void*>(&CUDAConstructDiscretizedHistogramDenseBatchedDynKernel<BIN_TYPE, PackRaw8, false>),
+      reinterpret_cast<const void*>(&CUDAConstructDiscretizedHistogramDenseBatchedDynKernel<BIN_TYPE, PackRaw8, true>),
+      reinterpret_cast<const void*>(&CUDAConstructDiscretizedHistogramDenseDynKernel<BIN_TYPE, true, PackRaw8>),
+      reinterpret_cast<const void*>(&CUDAConstructDiscretizedHistogramDenseDynKernel<BIN_TYPE, false, PackRaw8>),
+  };
+  for (const void* k : kernels) {
+    if (!TryEnsureKernelMaxDynamicSharedMemory(k, smem_bytes)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 template <int N, bool PREFETCH, bool CODE5 = false>
 __device__ __forceinline__ void ConstructPairRowBatch(
     const data_size_t (&idx)[N], const int32_t* cuda_gradients_and_hessians, const uint8_t* data_ptr,
@@ -4299,6 +4315,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           cuda_row_data_->cuda_feature_partition_column_index_offsets(),
           nullptr,
           num_data_);
+        CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
       } else {
         auto* kernel = &CUDAConstructDiscretizedHistogramDenseDynKernel<BIN_TYPE, false, PackRaw8>;
         const size_t dyn_smem = QuantDenseDynSmem(reinterpret_cast<const void*>(kernel));
@@ -4311,6 +4328,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           cuda_row_data_->cuda_feature_partition_column_index_offsets(),
           nullptr,
           num_data_);
+        CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
       }
     } else if (cuda_row_data_->dense_wide_hist()) {
       CHECK_EQ(cuda_row_data_->quant_hist_slots(), static_cast<int>(SHARED_HIST_SIZE) * 2);
@@ -5487,11 +5505,17 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     if (SmallLeafConstructEnabled() && small_leaf_rows > 0 &&
         dense_dls == nullptr &&
         max_num_data_in_smaller_leaf <= small_leaf_rows && !(use_compact_view_ && code5_valid_)) {
+      // Small-leaf direct kernel uses no shared table, so cap block height at NUM_THREADS_PER_BLOCK (504)
+      // even when dense_wide_hist_96k doubles BatchedConstructThreads() for the dynamic shared-memory kernel.
+      const int small_block_y = std::max(
+          1, std::min(static_cast<int>(block_dim.y),
+                      NUM_THREADS_PER_BLOCK / std::max(1, static_cast<int>(block_dim.x))));
+      const dim3 small_block_dim(block_dim.x, small_block_y);
       const int8_t* feat_used =
         any_feature_unused_bytree_ ? column_used_bytree_device() : nullptr;
       if (use_compact_view_) {
 #define FALCATA_LAUNCH_SMALL_LEAF_QUANT(PACKT, DATA, COLOFF, PARTOFF, BYTEOFF, FUSED) \
-        CUDAConstructDiscretizedHistogramDenseSmallLeafBatchedKernel<BIN_TYPE, PACKT><<<grid_dim, block_dim, 0, cuda_stream_>>>( \
+        CUDAConstructDiscretizedHistogramDenseSmallLeafBatchedKernel<BIN_TYPE, PACKT><<<grid_dim, small_block_dim, 0, cuda_stream_>>>( \
           pair_descs, \
           reinterpret_cast<const int32_t*>(cuda_gradients_), \
           DATA, COLOFF, cuda_row_data_->cuda_partition_hist_offsets(), PARTOFF, BYTEOFF, \
@@ -5771,7 +5795,11 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
             static_cast<int>(pair_block_dim.x * pair_block_dim.y) <= PairJointCode5MaxThreads(code5_kernel);
         if (code5_word_rows > 0) {
           // (cuda_plan key pair_code_radix: the mixed-radix code view)
-          DiagConstructKernel(code5_bits_ == kCodeRadix ? "pair_code5_words (mixed radix)" : "pair_code5_words");
+          DiagConstructKernel(
+              code5_bits_ == kCodeRadix
+                  ? (code5_epilogue_mode == 2 ? "pair_code5_words (mixed radix) [flat_table]"
+                                              : "pair_code5_words (mixed radix)")
+                  : (code5_epilogue_mode == 2 ? "pair_code5_words [flat_table]" : "pair_code5_words"));
           PairJointCode5WordKernel(code5_flat, code5_epilogue_mode, code5_bits_)<<<launch_grid_dim, pair_block_dim, code5_word_smem_bytes, cuda_stream_>>>(
             FALCATA_PAIR_JOINT_LAUNCH_ARGS(compact_data_uint8_t_.RawDataReadOnly()));
           // a new launch shape: a rejected launch must not leave the histogram unbuilt silently
@@ -5925,6 +5953,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
             min_sum_hessian_in_leaf_,
             FalcataPlan::Get().row_batch,
             dense_min_rows_per_thread, dense_chunk.prefix, dense_dls);
+          CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
         }
       } else {
         for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
@@ -5943,6 +5972,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
             min_sum_hessian_in_leaf_,
             FalcataPlan::Get().row_batch,
             dense_min_rows_per_thread, dense_chunk.prefix, dense_dls);
+          CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
         }
       }
     } else if (cuda_row_data_->dense_wide_hist()) {

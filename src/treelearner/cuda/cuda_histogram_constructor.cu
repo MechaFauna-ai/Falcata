@@ -389,9 +389,9 @@ DeviceLaunchLimits CurrentDeviceLaunchLimits() {
   return limits;
 }
 
-void EnsureKernelMaxDynamicSharedMemory(const void* kernel, const size_t smem_bytes) {
+bool TryEnsureKernelMaxDynamicSharedMemory(const void* kernel, const size_t smem_bytes) {
   if (smem_bytes <= 48 * 1024) {
-    return;
+    return true;
   }
   struct Entry {
     int device;
@@ -401,21 +401,51 @@ void EnsureKernelMaxDynamicSharedMemory(const void* kernel, const size_t smem_by
   static std::mutex mutex;
   static std::vector<Entry> entries;
   int device = 0;
-  CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+  if (cudaGetDevice(&device) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
   std::lock_guard<std::mutex> lock(mutex);
   for (Entry& e : entries) {
     if (e.device == device && e.kernel == kernel) {
       if (smem_bytes > e.max_bytes) {
-        CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(
-            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem_bytes)));
+        if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 static_cast<int>(smem_bytes)) != cudaSuccess) {
+          cudaGetLastError();
+          return false;
+        }
         e.max_bytes = smem_bytes;
       }
-      return;
+      return true;
     }
   }
-  CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(
-      kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem_bytes)));
+  if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                           static_cast<int>(smem_bytes)) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
   entries.push_back({device, kernel, smem_bytes});
+  return true;
+}
+
+void EnsureKernelMaxDynamicSharedMemory(const void* kernel, const size_t smem_bytes) {
+  CHECK(TryEnsureKernelMaxDynamicSharedMemory(kernel, smem_bytes));
+}
+
+template <typename BIN_TYPE>
+bool TryEnsureQuantDenseDynSharedMemoryForBin(size_t smem_bytes);
+
+bool TryEnsureQuantDenseDynSharedMemory(const uint8_t bit_type, const size_t smem_bytes) {
+  if (bit_type == 8) {
+    return TryEnsureQuantDenseDynSharedMemoryForBin<uint8_t>(smem_bytes);
+  }
+  if (bit_type == 16) {
+    return TryEnsureQuantDenseDynSharedMemoryForBin<uint16_t>(smem_bytes);
+  }
+  if (bit_type == 32) {
+    return TryEnsureQuantDenseDynSharedMemoryForBin<uint32_t>(smem_bytes);
+  }
+  return false;
 }
 
 bool LaunchFillCompactData4BitTiledRootHistKernel(
@@ -2285,7 +2315,11 @@ void CUDAHistogramConstructor::LaunchDeviceLevelPairJoint(const CUDAHybridPairDe
     sh.kernel_kind == 2 ? CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, true, true> :
     sh.kernel_kind == 1 ? PairJointCappedDL().gather :
     CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, false, true>;
-  DiagConstructKernel(sh.kernel_kind == 4 ? "pair_code5_words (device levels)" : "pair_hist (device levels)");
+  DiagConstructKernel(
+      sh.kernel_kind == 4
+          ? (sh.code5_epilogue_mode == 2 ? "pair_code5_words (device levels) [flat_table]"
+                                         : "pair_code5_words (device levels)")
+          : "pair_hist (device levels)");
   const uint8_t* data = sh.kernel_kind >= 2 ? compact_data_uint8_t_.RawDataReadOnly() : NibbleViewData();
   const int grid_x = std::max(1, sh.grid_x);
   int grid_y = std::max(1, std::min(65535, (DeviceLevelConstructTargetBlocks() + grid_x - 1) / grid_x));

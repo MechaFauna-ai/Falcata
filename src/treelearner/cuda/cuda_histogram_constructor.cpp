@@ -656,6 +656,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   code5_valid_ = false;
   nibble_pending_ = false;
   full_view_used_ = false;
+  compact_pair_num_marginals_ = 0;
   if (view_mask_regime()) {
     // mask regime: no per-tree copy; every kernel reads the resident full view under this tree's column masks
     prefill_valid_ = false;

@@ -371,9 +371,16 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
     // 84->21 partitions won -4.1% steady), and 504 / max_columns >= 2 ensures >= 2 row lanes on 504-thread launches
     // and >= 4 on 1008-thread launches.
     if (FalcataPlan::Get().dense_wide_hist_96k && best_num_partitions > 4) {
-      const int device = gpu_device_id_ >= 0 ? gpu_device_id_ : 0;
+      int device = gpu_device_id_;
+      if (device < 0) {
+        if (cudaGetDevice(&device) != cudaSuccess) {
+          cudaGetLastError();
+          device = 0;
+        }
+      }
       int optin_bytes = 0;
       if (cudaDeviceGetAttribute(&optin_bytes, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
+        cudaGetLastError();
         optin_bytes = 0;
       }
       const int dyn_mults[] = {4, 8};
@@ -390,8 +397,16 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
         const int cand_max_columns = max_num_column_per_partition_;
         if (cand_partitions < best_num_partitions && cand_partitions >= 4 &&
             504 / std::max(1, cand_max_columns) >= 2) {
-          best_mult = mult;
-          best_num_partitions = cand_partitions;
+          uint32_t cand_max_bins = 1;
+          for (size_t p = 1; p < partition_hist_offsets_.size(); ++p) {
+            cand_max_bins = std::max(cand_max_bins, partition_hist_offsets_[p] - partition_hist_offsets_[p - 1]);
+          }
+          const size_t cand_smem_bytes =
+              ((static_cast<size_t>(cand_max_bins) * sizeof(int32_t)) + 15) & ~static_cast<size_t>(15);
+          if (TryEnsureQuantDenseDynSharedMemory(bit_type_, cand_smem_bytes)) {
+            best_mult = mult;
+            best_num_partitions = cand_partitions;
+          }
         }
       }
     }

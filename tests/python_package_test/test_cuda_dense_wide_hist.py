@@ -13,6 +13,8 @@ rejects columns of more than 256 bins, so a large-bin partition never exists und
 
 import hashlib
 import os
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -87,11 +89,42 @@ def test_dense_wide_hist_is_bit_identical_cuda(
     assert on == off
 
 
+def _probe_dense_wide_hist_96k_diag(plan):
+    rows, cols = 40009, 420
+    rng = np.random.default_rng(7)
+    X = rng.standard_normal((rows, cols)).astype(np.float32)
+    z = X[:, 0] + 0.5 * X[:, 1] * X[:, 2] + 0.3 * rng.normal(size=rows)
+    y = (z > 0).astype(np.float32)
+    params = {
+        "device_type": "cuda",
+        "objective": "binary",
+        "num_leaves": 63,
+        "max_depth": 6,
+        "min_data_in_leaf": 10,
+        "learning_rate": 0.1,
+        "max_bin": 255,
+        "feature_fraction": 0.5,
+        "quant_mode": "fixedpoint",
+        "verbosity": 1,
+        "seed": 11,
+        "cuda_plan": plan,
+    }
+    ds = flc.Dataset(X, label=y, params=params)
+    flc.train(params, ds, num_boost_round=3)
+
+
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("feature_fraction", [1.0, 0.5])
-def test_dense_wide_hist_96k_is_bit_identical_cuda(feature_fraction):
+@pytest.mark.parametrize(
+    ("feature_fraction", "bagging"),
+    [
+        (1.0, 1.0),
+        (0.5, 1.0),
+        (0.5, 0.7),
+    ],
+)
+def test_dense_wide_hist_96k_is_bit_identical_cuda(feature_fraction, bagging):
     """Wide 8-bit data (>= 4 partitions at 96 KB dynamic SMEM) must match 48 KB static bit-for-bit."""
-    rows, cols = 8009, 420
+    rows, cols = 40009, 420
     rng = np.random.default_rng(7)
     X = rng.standard_normal((rows, cols)).astype(np.float32)
     z = X[:, 0] + 0.5 * X[:, 1] * X[:, 2] + 0.3 * rng.normal(size=rows)
@@ -109,6 +142,26 @@ def test_dense_wide_hist_96k_is_bit_identical_cuda(feature_fraction):
         "verbose": -1,
         "seed": 11,
     }
+    if bagging < 1.0:
+        params["bagging_fraction"] = bagging
+        params["bagging_freq"] = 1
     on = _model_md5({**params, "cuda_plan": "auto,dense_wide_hist_96k:on"}, X, y, 8)
     off = _model_md5({**params, "cuda_plan": "auto,dense_wide_hist_96k:off"}, X, y, 8)
     assert on == off
+
+
+@_REQUIRES_CUDA
+def test_dense_wide_hist_96k_engages_diag_cuda():
+    """FALCATA_DEBUG=diag must confirm dense_wide_hist_96k engages on wide 8-bit data when on and not when off."""
+    child = "import runpy,sys; runpy.run_path(sys.argv[1])['_probe_dense_wide_hist_96k_diag'](sys.argv[2])"
+    for plan, expected in [("auto,dense_wide_hist_96k:on", True), ("auto,dense_wide_hist_96k:off", False)]:
+        res = subprocess.run(
+            [sys.executable, "-c", child, __file__, plan],
+            env=dict(os.environ, FALCATA_DEBUG="diag"),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        out = res.stdout + "\n" + res.stderr
+        assert res.returncode == 0, out
+        assert ("dense_wide_hist_96k" in out) is expected, out

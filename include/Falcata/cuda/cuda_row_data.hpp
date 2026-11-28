@@ -30,6 +30,11 @@
 
 namespace Falcata {
 
+/*! \brief Non-fatally verify and raise cudaFuncAttributeMaxDynamicSharedMemorySize on the quantized dense dynamic
+ *  construct kernels for \p bit_type (8/16/32) on the active device. Clears any CUDA error and returns false if the
+ *  driver rejects the requested size so CUDARowData can fall back to the 48 KB static table. */
+bool TryEnsureQuantDenseDynSharedMemory(uint8_t bit_type, size_t smem_bytes);
+
 class CUDARowData {
  public:
   CUDARowData(const Dataset* train_data,
