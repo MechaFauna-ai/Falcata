@@ -661,6 +661,16 @@ struct FalcataPlan {
   // global scratch the kernel staged them in (num_class doubles per thread, six passes). The same max,
   // the same exponentials summed in class order, one division per class: bit-identical.
   bool softmax_registers = true;  // key: softmax_registers
+  // multiclass softmax gradients (CUDAMulticlassSoftmax, num_class <= 32, with softmax_registers and float score_t):
+  // cancellation-free reduced-FP64 evaluation -- exp(s[k] - wmax) for k != kmax with a 512-entry 2^(j/512) table and
+  // fp32 quadratic-tail Horner, one fp32 reciprocal + one double Newton step for 1 / (1 + S_other), and
+  // 1 - p[kmax] = S_other * inv_wsum (eliminating catastrophic cancellation in 1 - p as p -> 1; for S_other < 2^-55,
+  // original wsum == 1.0 exactly; for S_other in [2^-55, ~1e-5] where kmax's margin fails, Dekker FastTwoSum certifies
+  // exact class-order wsum_ord == wsum_orig so only one FP64 division runs). Each output float is settled via integer
+  // rounding only when every double within the proven error bound (including the original double's N * 2^-53 / qmax
+  // cancellation bound on kmax) rounds to the same float; otherwise the row runs the original exact double expression.
+  // Bit-identical.
+  bool softmax_fp64_lean = true;  // key: softmax_fp64_lean
   // binary logloss gradients (with or without sample and label weights): the response and hessian evaluated with ~16 FP64 operations per row (the
   // exponential's tail in fp32, an fp32 reciprocal refined by one double Newton step) instead of ~50 (libdevice exp, a
   // correctly rounded division), to a proven relative error bound; a row's floats are stored from it only when every
@@ -1134,6 +1144,7 @@ struct FalcataPlan {
     if (key == "bagged_code_view") return &bagged_code_view;
     if (key == "bagging_fused_scan") return &bagging_fused_scan;
     if (key == "softmax_registers") return &softmax_registers;
+    if (key == "softmax_fp64_lean") return &softmax_fp64_lean;
     if (key == "gradient_fp64_lean") return &gradient_fp64_lean;
     if (key == "rf_device_objective") return &rf_device_objective;
     if (key == "rf_lazy_train_score") return &rf_lazy_train_score;

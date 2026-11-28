@@ -1208,6 +1208,23 @@ def build_cells():
             rounds=rounds,
             equal_to=base,
         )
+    # softmax_fp64_lean: cancellation-free reduced-FP64 softmax across class capacities 8 / 16 / 32, weighted, and
+    # non-quantized deterministic (where 1-ulp gradient/hessian differences are never masked by quantization)
+    for base, profile, base_params, rounds in [
+        ("graph/quant", "graph", {}, 25),
+        ("graph/nonquant-det", "graph", {"quant_mode": "none", "cuda_plan": "auto,device_tree:off"}, 50),
+        ("graph12/quant", "graph12", {}, 25),
+        ("graph24/quant", "graph24", {}, 25),
+        ("graph-w/quant", "graph-w", {}, 25),
+    ]:
+        plan = base_params.get("cuda_plan", "auto")
+        cell(
+            f"{profile}/flip-softmax_fp64_lean-{base.split('/', 1)[1]}",
+            profile,
+            {**base_params, "cuda_plan": f"{plan},softmax_fp64_lean:off"},
+            rounds=rounds,
+            equal_to=base,
+        )
     # sync_used_narrow: the full tree (readback_fused's mirror engages), dense, missing, and sampled (a no-op control:
     # feature-sampled trees already take the used-task kernel)
     for base, profile, base_params in [

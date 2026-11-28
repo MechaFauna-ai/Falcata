@@ -125,6 +125,7 @@ ALL_KEYS = {
     "pair_code_radix": True,
     "pair_code_wide_regs": True,
     "softmax_registers": True,
+    "softmax_fp64_lean": True,
     "gradient_fp64_lean": True,
     "bagged_code_view": True,
     "oob_node_table": True,
