@@ -669,6 +669,7 @@ __device__ __forceinline__ void PairwiseBlock(const DeviceForestView<TThr>& fore
   const int g_span = span * plan.span_groups;
   const int span_end = min(g_span + plan.span_groups, num_groups);
   // a task's unit is TG consecutive groups (an aligned subtree it adds itself); a wave holds WG units
+  static_assert(TG == 1 || TG == 8, "PairwiseBlock expects TG in {1, 8} for wave shift calculation");
   const int waves = (span_end - g_span + WG * TG - 1) >> (wg_shift + (TG == 8 ? 3 : 0));
   const int tasks = pairs * WG;
   const int lane = threadIdx.x & 31;

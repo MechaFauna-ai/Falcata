@@ -1,7 +1,9 @@
 """Device-side ConvertOutput kernels, spill-free span combine, and power-of-2 shift indexing."""
 
 import ctypes
+import ctypes.util
 import functools
+import os
 
 import numpy as np
 import pytest
@@ -14,7 +16,17 @@ _NO_CUDA_PREDICTOR = "the CUDA predictor needs a CUDA build and a GPU"
 
 @functools.lru_cache(maxsize=1)
 def _cudart():
-    for name in ("libcudart.so", "libcudart.so.13", "libcudart.so.12", "/usr/local/cuda-13.2/lib64/libcudart.so"):
+    candidates = []
+    found = ctypes.util.find_library("cudart")
+    if found:
+        candidates.append(found)
+    candidates.extend(["libcudart.so", "libcudart.so.13", "libcudart.so.12"])
+    for env_var in ("CUDA_HOME", "CUDA_PATH"):
+        base = os.environ.get(env_var)
+        if base:
+            candidates.append(os.path.join(base, "lib64", "libcudart.so"))
+    candidates.append("/usr/local/cuda/lib64/libcudart.so")
+    for name in candidates:
         try:
             lib = ctypes.CDLL(name)
             lib.cudaMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
@@ -371,3 +383,156 @@ def test_pairwise_combine_multispans_bit_identical():
     np.testing.assert_array_equal(many_dev[0], ref[:1])
     np.testing.assert_array_equal(many_dev[1], ref[:5])
     np.testing.assert_array_equal(many_dev[2], ref)
+
+
+@requires_cuda
+@pytest.mark.parametrize("num_class", [2, 4, 5, 8, 9, 16, 17, 32, 33])
+def test_device_softmax_boundary_class_counts(num_class):
+    """Softmax subwarp boundaries (W=4/8/16/32) and >32 streaming kernel match CPU <= 1e-14."""
+    rng = np.random.default_rng(5000 + num_class)
+    n_train = max(300, num_class * 15)
+    X = rng.normal(size=(n_train, 8)).astype(np.float32)
+    y = (np.arange(n_train) % num_class).astype(float)
+    booster = lgb.train(_base(objective="multiclass", num_class=num_class), lgb.Dataset(X, y), num_boost_round=6)
+    test = rng.normal(size=(97, 8)).astype(np.float32)
+
+    cpu = booster.predict(test, device="cpu")
+    gpu_host = booster.predict(test, device="cuda")
+    gpu_dev = _predict_on_device_capi(booster, test)
+    gpu_raw = booster.predict(test, device="cuda", raw_score=True)
+    ref = _ref_convert(gpu_raw, "softmax")
+
+    np.testing.assert_allclose(gpu_host, ref, rtol=1e-14, atol=1e-14)
+    np.testing.assert_allclose(gpu_host, cpu, rtol=1e-14, atol=1e-14)
+    np.testing.assert_allclose(np.sum(gpu_host, axis=1), 1.0, rtol=1e-14, atol=1e-14)
+    np.testing.assert_array_equal(gpu_dev, gpu_host)
+
+
+@requires_cuda
+def test_predict_many_mixed_objectives_host_and_device():
+    """Single predict_many call mixing binary, multiclass (small & large), regression, reg_sqrt, and poisson."""
+    rng = np.random.default_rng(2026)
+    X = rng.normal(size=(600, 10)).astype(np.float32)
+    sig = X[:, 0] - 0.6 * X[:, 1] + 0.4 * X[:, 2]
+
+    b_bin = lgb.train(_base(objective="binary"), lgb.Dataset(X, (sig > 0).astype(float)), 10)
+    b_mc7 = lgb.train(
+        _base(objective="multiclass", num_class=7),
+        lgb.Dataset(X, (np.arange(len(X)) % 7).astype(float)),
+        8,
+    )
+    b_mc35 = lgb.train(
+        _base(objective="multiclass", num_class=35),
+        lgb.Dataset(X, (np.arange(len(X)) % 35).astype(float)),
+        5,
+    )
+    b_reg = lgb.train(_base(objective="regression"), lgb.Dataset(X, sig), 10)
+    b_sqrt = lgb.train(_base(objective="regression", reg_sqrt=True), lgb.Dataset(X, sig), 10)
+    b_pois = lgb.train(_base(objective="poisson"), lgb.Dataset(X, np.abs(sig) + 0.5), 10)
+
+    boosters = [b_bin, b_mc7, b_mc35, b_reg, b_sqrt, b_pois]
+    test_a = rng.normal(size=(131, 10)).astype(np.float32)
+    test_b = rng.normal(size=(43, 10)).astype(np.float32)
+    inputs = [test_a, test_b, test_a, test_b, test_a, test_b]
+
+    expected = [b.predict(x, device="cuda") for b, x in zip(boosters, inputs, strict=True)]
+    many_host = lgb.predict_many(boosters, inputs)
+    many_dev = _predict_many_on_device_capi(boosters, inputs)
+
+    for b, x, exp, got_h, got_d in zip(boosters, inputs, expected, many_host, many_dev, strict=True):
+        np.testing.assert_array_equal(got_h, exp)
+        np.testing.assert_array_equal(got_d, exp)
+        cpu = b.predict(x, device="cpu")
+        scale = 1.0 + float(np.max(np.abs(cpu)))
+        np.testing.assert_allclose(got_h, cpu, rtol=1e-14, atol=1e-14 * scale)
+
+
+@requires_cuda
+def test_device_convert_extreme_logits():
+    """Extreme raw scores (±800) stay finite and match CPU for binary, multiclass, softplus, and reg_sqrt."""
+    rng = np.random.default_rng(800)
+    X = rng.normal(size=(200, 4)).astype(np.float32)
+    y_bin = (X[:, 0] > 0).astype(float)
+    y_mc = (np.arange(200) % 5).astype(float)
+    test = rng.normal(size=(64, 4)).astype(np.float32)
+
+    # Binary, cross_entropy_lambda, and reg_sqrt stumps with leaf outputs forced to ±800
+    for objective, extra in (
+        ("binary", {}),
+        ("cross_entropy_lambda", {}),
+        ("regression", {"reg_sqrt": True}),
+    ):
+        y = y_bin if objective != "regression" else X[:, 0]
+        b = lgb.train(_base(objective=objective, num_leaves=2, **extra), lgb.Dataset(X, y), num_boost_round=1)
+        b.set_leaf_output(0, 0, 800.0)
+        b.set_leaf_output(0, 1, -800.0)
+        cpu = b.predict(test, device="cpu")
+        gpu = b.predict(test, device="cuda")
+        gpu_dev = _predict_on_device_capi(b, test)
+        assert np.all(np.isfinite(gpu))
+        np.testing.assert_allclose(gpu, cpu, rtol=1e-14, atol=1e-14)
+        np.testing.assert_array_equal(gpu_dev, gpu)
+
+    # Multiclass (5-class) with extreme shifted logits (+800, +799, -800, ...) testing max-shift stability
+    b_mc = lgb.train(
+        _base(objective="multiclass", num_class=5, num_leaves=2),
+        lgb.Dataset(X, y_mc),
+        num_boost_round=1,
+    )
+    vals_a = [800.0, 799.0, 798.5, -800.0, -800.0]
+    vals_b = [-800.0, -799.0, -798.0, -797.5, -800.0]
+    for k in range(5):
+        b_mc.set_leaf_output(k, 0, vals_a[k])
+        b_mc.set_leaf_output(k, 1, vals_b[k])
+    cpu_mc = b_mc.predict(test, device="cpu")
+    gpu_mc = b_mc.predict(test, device="cuda")
+    gpu_mc_dev = _predict_on_device_capi(b_mc, test)
+    assert np.all(np.isfinite(gpu_mc))
+    np.testing.assert_allclose(gpu_mc, cpu_mc, rtol=1e-14, atol=1e-14)
+    np.testing.assert_allclose(np.sum(gpu_mc, axis=1), 1.0, rtol=1e-14, atol=1e-14)
+    np.testing.assert_array_equal(gpu_mc_dev, gpu_mc)
+
+
+@requires_cuda
+def test_device_convert_fortran_order():
+    """Fortran-contiguous inputs match C-contiguous CUDA predictions bit-for-bit across objectives."""
+    rng = np.random.default_rng(314)
+    X = rng.normal(size=(400, 8))
+    sig = X[:, 0] - 0.5 * X[:, 1]
+    models = [
+        lgb.train(_base(objective="binary"), lgb.Dataset(X, (sig > 0).astype(float)), 10),
+        lgb.train(
+            _base(objective="multiclass", num_class=6),
+            lgb.Dataset(X, (np.arange(len(X)) % 6).astype(float)),
+            8,
+        ),
+        lgb.train(_base(objective="regression", reg_sqrt=True), lgb.Dataset(X, sig), 10),
+        lgb.train(_base(objective="poisson"), lgb.Dataset(X, np.abs(sig) + 0.5), 10),
+    ]
+    for dtype in (np.float32, np.float64):
+        xc = np.ascontiguousarray(X[:113], dtype=dtype)
+        xf = np.asfortranarray(xc)
+        for b in models:
+            np.testing.assert_array_equal(b.predict(xf, device="cuda"), b.predict(xc, device="cuda"))
+
+
+@requires_cuda
+def test_device_convert_lambdarank():
+    """lambdarank uses identity (kNone) conversion with zero host round-trip."""
+    rng = np.random.default_rng(2718)
+    X = rng.normal(size=(400, 8)).astype(np.float32)
+    y = np.clip(np.digitize(X[:, 0] - X[:, 1], [-1.0, 0.0, 1.0]), 0, 3).astype(float)
+    booster = lgb.train(_base(objective="lambdarank"), lgb.Dataset(X, y, group=[100] * 4), num_boost_round=12)
+    test = rng.normal(size=(120, 8)).astype(np.float32)
+
+    cpu = booster.predict(test, device="cpu")
+    gpu_host = booster.predict(test, device="cuda")
+    gpu_det = booster.predict(test, device="cuda", deterministic=True)
+    gpu_dev = _predict_on_device_capi(booster, test)
+    many_dev = _predict_many_on_device_capi([booster, booster], [test, test[:19]])
+
+    np.testing.assert_array_equal(gpu_det, cpu)
+    np.testing.assert_allclose(gpu_host, cpu, rtol=1e-14, atol=1e-14 * (1.0 + float(np.max(np.abs(cpu)))))
+    np.testing.assert_array_equal(gpu_dev, gpu_host)
+    np.testing.assert_array_equal(many_dev[0], gpu_host)
+    np.testing.assert_array_equal(many_dev[1], booster.predict(test[:19], device="cuda"))

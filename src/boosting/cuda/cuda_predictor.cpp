@@ -1609,6 +1609,7 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
         if (conv.is_noop()) {
           continue;
         }
+        // deterministic=false is safe here because deterministic jobs route through Predict individually above.
         if (CanConvertOnDevice(conv, false)) {
           LaunchConvertOutputKernel(out_of[i], job.num_row, p.num_output, conv, stream);
         } else {
