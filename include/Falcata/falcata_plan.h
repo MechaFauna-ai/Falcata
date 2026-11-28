@@ -939,6 +939,13 @@ struct FalcataPlan {
   // Otherwise the standard table and partitions. The histogram's layout, bins and integer sums are the same:
   // bit-identical.
   bool dense_wide_hist = true;      // key: dense_wide_hist
+  // vectorized sub-warp narrow quantized dense construct: for single-partition 8-bit quantized dense datasets with at
+  // most 32 columns (and total bins <= 12288, not 4-bit packed) whose row matrix exceeds the GPU's L2 cache
+  // (cudaDevAttrL2CacheSize), pad rows to a power-of-two 4-byte multiple (4, 8, 16, or 32 bytes) in CUDARowData so
+  // random-row gathers avoid 32B DRAM sector splits, and run a warp-cooperative sub-warp kernel (1/2/4/8 threads per
+  // row, coalesced uint32 streaming loads, dynamically sized shared histogram). Integer sums of the exact same rows:
+  // bit-identical.
+  bool dense_vec_narrow = true;     // key: dense_vec_narrow
   // quantized two-sync level prefix: K = min(floor(log2(num_leaves)), max_depth - 1, 10), with no depth cap when
   // max_depth is unlimited. Only eligible depth-limited host flows use this prefix (where device_tree's depth bound
   // holds, the complete device tree replaces it). Where the leaf budget cannot bind, run device-driven: the host enqueues
@@ -1168,6 +1175,7 @@ struct FalcataPlan {
     if (key == "shape_memo") return &shape_memo;
     if (key == "wide_partitions") return &wide_partitions;
     if (key == "dense_wide_hist") return &dense_wide_hist;
+    if (key == "dense_vec_narrow") return &dense_vec_narrow;
     if (key == "device_levels") return &device_levels;
     if (key == "device_tree") return &device_tree;
     if (key == "device_tree_lean_end") return &device_tree_lean_end;
