@@ -41,6 +41,8 @@
 
 namespace Falcata {
 
+struct CUDADeviceLevelConfig;
+
 /*! \brief one applied split record (CUDASingleGPUTreeLearner::SelectiveApplied's simulation fields) */
 struct CUDASelectiveR3Record {
   int parent;
@@ -66,11 +68,14 @@ struct CUDASelectiveR3State {
   int num_freed;      // leaves pushed onto the free list, in push order
   int num_apply;      // records created for selected frontier candidates
   int error;          // 1: a right child past num_leaves - 1, 2: record capacity, 3: more live records than the
-                      // budget (rebuild), 4: a NaN gain (parallel kernel: its integer keys would not order it as the host)
+                      // budget (rebuild), 4: a NaN gain (parallel kernel: its integer keys would not order it as the
+                      // host), 5: R1 handoff sanity check failed (journal error flag or split count past budget)
   // parallel R3 only
-  int resumes;        // merges that ran best-first from a tie the merge's fixed order resolved differently
-  int resume_at;      // the level's first such pop (-1: the merge was exact)
-  int rounds;         // merges that rebuilt the order from the records (0: the order was kept from the last level)
+  int resumes;          // merges that ran best-first from a tie the merge's fixed order resolved differently
+  int resume_at;        // the level's first such pop (-1: the merge was exact)
+  int rounds;           // merges that rebuilt the order from the records (0: the order was kept from the last level)
+  int total_resumes;    // cumulative resumes across live R3 levels of a tree
+  int total_displaced;  // cumulative displaced (freed) splits across live R3 levels of a tree
 };
 
 /*! \brief the parallel R3's order, kept on the device across the levels of a tree */
@@ -78,6 +83,18 @@ struct CUDASelectiveR3Persist {
   int n;         // entries in the order
   int parity;    // the half of order_buf that holds it
   int valid;     // 0: rebuild it from the records
+  int has_tie;   // 1: an entry in the kept order may share a gain with an earlier entry after its parent
+};
+
+/*! \brief compacted tree-end outputs of the live device-driven R3 loop (one D2H copy for SelectiveFinalize) */
+struct CUDASelectiveR3FinalPack {
+  int* order_classic;             // [budget]
+  int* left_leaf;                 // [budget]
+  int* right_leaf;                // [budget]
+  CUDASplitInfo* info;            // [budget]
+  int* leaf_live;                 // [leaf_capacity]
+  data_size_t* leaf_num_data;     // [leaf_capacity]
+  data_size_t* leaf_data_start;   // [leaf_capacity]
 };
 
 struct CUDASelectiveR3Config {
@@ -114,6 +131,16 @@ struct CUDASelectiveR3Config {
   int num_leaves;
   int leaf_capacity;
   int record_capacity;
+  // live device-driven selective loop (cuda_plan key selective_r3_device; nullptr in shadow/test mode)
+  const CUDADeviceLevelConfig* dl_cfg = nullptr;
+  int* live_child_leaves = nullptr;       // mutable alias of child_leaves for emitting next level's children
+  data_size_t* leaf_data_start = nullptr;
+  data_size_t* leaf_data_end = nullptr;
+  data_size_t* leaf_num_data = nullptr;
+  data_size_t* rec_data_start = nullptr;  // [record_capacity]
+  data_size_t* rec_num_data = nullptr;    // [record_capacity]
+  CUDASplitInfo* rec_info = nullptr;      // [record_capacity]
+  int* leaf_live = nullptr;               // [leaf_capacity]
 };
 
 /*! \brief the tie-break order of FindBestFromAllSplitsKernel (256 threads, strided scan, 8-warp shuffle-down with
@@ -157,6 +184,23 @@ __host__ __device__ inline size_t R3ParallelAreaBytes(const int num_leaves) {
  *  false only in tests), else to par_global. Returns false when even the per-leaf index does not fit shared memory:
  *  the sequential kernel then ran, and the order is marked for a rebuild. */
 bool LaunchSelectiveR3Parallel(const CUDASelectiveR3Config& config, cudaStream_t stream, const bool shared_area = true);
+
+/*! \brief live device-driven selective R3: seed R3 state on device directly from the dynamic R1 journal */
+void LaunchSelectiveR3SeedFromR1(const CUDASelectiveR3Config& config, const CUDADeviceLevelConfig* dl_cfg,
+                                 const int* split_info_buffer, cudaStream_t stream);
+
+/*! \brief live device-driven selective R3: one binding level (parallel R3 + collapse window restore + apply/gap
+ *  descriptors + device level state update), capturable in a CUDA graph */
+bool LaunchSelectiveR3Live(const CUDASelectiveR3Config& config, cudaStream_t stream);
+
+/*! \brief live device-driven selective R3: write mapped pinned body-end flag [0..7] = {continue, levels_applied,
+ *  num_records, num_order, num_allocated, error, total_resumes, total_displaced} */
+void LaunchSelectiveR3BodyEnd(const CUDASelectiveR3Config& config, const CUDADeviceLevelConfig* dl_cfg, int* flag,
+                              cudaStream_t stream);
+
+/*! \brief live device-driven selective R3: pack the final live splits and leaf windows into one contiguous buffer */
+void LaunchSelectiveR3PackFinal(const CUDASelectiveR3Config& config, const CUDASelectiveR3FinalPack& pack,
+                                cudaStream_t stream);
 
 }  // namespace Falcata
 

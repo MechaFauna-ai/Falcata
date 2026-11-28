@@ -28,6 +28,8 @@
 
 namespace Falcata {
 
+struct CUDASelectiveR3Config;
+
 #define CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE (1024)
 
 class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
@@ -461,8 +463,21 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
                         bool record_split_infos = false);
   // selective trees: the levels up to the first binding level on the device (the root search, then
   // TrainDeviceLevels), and the selective records rebuilt from its journal. True when it ran: the host loop then
-  // continues with the readback of the last applied level's search (host_leaf_best_splits_, *pairs).
+  // continues with the readback of the last applied level's search (host_leaf_best_splits_, *pairs), unless
+  // selective_r3_completed_ is set (the device R3 loop finished the entire tree on the GPU).
   bool TrainSelectiveDevicePrefix(CUDATree* tree, std::vector<HybridPendingPair>* pairs);
+  // cuda_plan key selective_r3_device: live device-driven parallel R3 loop for binding selective levels
+  bool SelectiveR3DeviceUsable() const;
+  bool EnsureSelectiveR3LiveBuffers(int num_leaves, int min_record_capacity);
+  void ReleaseSelectiveR3LiveBuffers();
+  void GrowSelectiveR3LiveRecords(int new_record_capacity, int current_num_records, cudaStream_t stream);
+  CUDASelectiveR3Config BuildSelectiveR3LiveConfig(const CUDADeviceLevelConfig* dl_cfg_device) const;
+  void EnqueueSelectiveR3Body(const CUDADeviceLevelConfig& dl_cfg, const CUDASelectiveR3Config& r3_cfg,
+                              int body_levels);
+  bool LaunchSelectiveR3BodyGraph(const CUDADeviceLevelConfig& dl_cfg, const CUDASelectiveR3Config& r3_cfg,
+                                  int body_levels);
+  bool TrainSelectiveDeviceR3(const CUDADeviceLevelConfig& dl_cfg, int r1_levels_enqueued, int r1_levels_applied,
+                              int r1_total_splits);
   // the device levels' launches and stream edges (capturable: nothing on the legacy stream, nothing read back);
   // body: a selective tree's relaunched two-level body (num_levels == 2), which starts with the apply of the level
   // selected before it and ends with the next level's select and its flag
@@ -926,6 +941,22 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   /*! \brief selective trees: the unrolled levels end with level U's select on the device and the flag (the previous
    *  tree went past them), instead of the host's boundary test on the speculative readback */
   bool selective_device_boundary_ = false;
+  // ---- cuda_plan key selective_r3_device: live device-driven parallel R3 buffers ----
+  bool selective_r3_completed_ = false;
+  bool r3_live_oom_ = false;
+  char* r3_live_device_blob_ = nullptr;
+  char* r3_live_par_state_ = nullptr;
+  CUDAVector<CUDASplitInfo> r3_live_rec_info_;
+  CUDAVector<data_size_t> r3_live_rec_data_start_;
+  CUDAVector<data_size_t> r3_live_rec_num_data_;
+  CUDAVector<int> r3_live_leaf_live_;
+  char* r3_live_final_device_ = nullptr;
+  char* r3_live_final_pinned_ = nullptr;
+  size_t r3_live_final_bytes_ = 0;
+  int* r3_live_flag_pinned_ = nullptr;
+  int* r3_live_flag_device_ = nullptr;
+  int r3_live_num_leaves_ = 0;
+  int r3_live_record_capacity_ = 0;
   int* pinned_device_level_journal_ = nullptr;
   size_t device_level_journal_size_ = 0;
   CUDAVector<CUDAHybridGraphFeatureMeta> cuda_device_level_feature_meta_;

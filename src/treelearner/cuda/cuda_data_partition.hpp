@@ -375,6 +375,14 @@ class CUDADataPartition: public NCCLInfo {
 
   const data_size_t* cuda_leaf_data_start() const { return cuda_leaf_data_start_.RawData(); }
 
+  data_size_t* cuda_leaf_num_data_mut() { return cuda_leaf_num_data_.RawData(); }
+
+  data_size_t* cuda_leaf_data_start_mut() { return cuda_leaf_data_start_.RawData(); }
+
+  data_size_t* cuda_leaf_data_end_mut() { return cuda_leaf_data_end_.RawData(); }
+
+  const int* cuda_split_info_buffer() const { return cuda_split_info_buffer_.RawDataReadOnly(); }
+
   const int* cuda_data_index_to_leaf_index() const { return cuda_data_index_to_leaf_index_.RawData(); }
 
   bool use_bagging() const { return use_bagging_; }

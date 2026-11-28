@@ -368,6 +368,9 @@ class CUDAHistogramConstructor {
   /*! \brief ZeroHistSlots of two or more slots (cuda_plan key zero_slots_kernel): the slot list in one copy and one
    *  kernel on the legacy default stream instead of one memset per slot */
   void LaunchZeroHistSlotsKernel(const std::vector<int>& slots, size_t slot_size);
+  /*! \brief cuda_plan key selective_r3_device: zero *d_count slots named in d_slots[0..*d_count-1] on stream
+   *  (fixed grid for CUDA graph capture; exits immediately when *d_count == 0) */
+  void ZeroHistSlotsDevice(const int* d_slots, const int* d_count, int max_slots, cudaStream_t stream);
 
   void ConstructHistogramForLeaf(
     const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,

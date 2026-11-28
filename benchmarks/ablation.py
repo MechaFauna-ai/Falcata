@@ -75,6 +75,7 @@ ALL_KEYS = {
     "leaf_map_no_zero": True,
     "device_levels": True,
     "device_tree": True,
+    "selective_r3_device": True,
     "device_level_graph": True,
     "leaf_map_small_blocks": True,
     "root_hist_l2_prefetch": True,

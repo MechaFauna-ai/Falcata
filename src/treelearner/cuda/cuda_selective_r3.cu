@@ -8,6 +8,8 @@
 #ifdef USE_CUDA
 
 #include "cuda_selective_r3.hpp"
+#include "cuda_data_partition.hpp"
+#include "cuda_device_levels.hpp"
 
 #include <Falcata/cuda/cuda_utils.hu>
 
@@ -308,7 +310,7 @@ __global__ void __launch_bounds__(kR3Threads) SelectiveR3Kernel(const CUDASelect
 constexpr int kR3ParThreads = 512;
 constexpr int kR3NotAvailable = -2;      // a candidate no live record holds (never pushed by the host)
 constexpr int kR3Unpopped = INT_MAX / 2;  // a merged position past every budget
-constexpr int kR3CountRanks = 1024;       // candidates ranked by counting up to this many
+constexpr int kR3CountRanks = 128;        // candidates ranked by counting up to this many (above: bitonic sort)
 
 // a gain as an order-preserving integer (FP64 runs at 1/64 rate on consumer GPUs): larger gain, larger key; -0.0 and
 // +0.0 map to one key, so equal keys are exactly the host's == on the doubles (NaN never occurs on a valid split)
@@ -462,13 +464,53 @@ struct R3Arrays {
   }
 };
 
+// block-wide exclusive scan of per-thread val; total in *s_total
+template <int kThreads>
+__device__ __forceinline__ int R3BlockScanExclusive(const int val, int* warp_scratch, int* s_total) {
+  constexpr int kWarps = kThreads / 32;
+  const int lane = static_cast<int>(threadIdx.x) & 31;
+  const int warp = static_cast<int>(threadIdx.x) >> 5;
+  __syncthreads();
+  int incl = val;
+  for (int o = 1; o < 32; o <<= 1) {
+    const int y = __shfl_up_sync(0xffffffffu, incl, o);
+    if (lane >= o) {
+      incl += y;
+    }
+  }
+  if (lane == 31) {
+    warp_scratch[warp] = incl;
+  }
+  __syncthreads();
+  if (warp == 0) {
+    const int w = lane < kWarps ? warp_scratch[lane] : 0;
+    int winc = w;
+    for (int o = 1; o < 32; o <<= 1) {
+      const int y = __shfl_up_sync(0xffffffffu, winc, o);
+      if (lane >= o) {
+        winc += y;
+      }
+    }
+    if (lane < kWarps) {
+      warp_scratch[lane] = winc - w;
+    }
+    if (lane == kWarps - 1) {
+      *s_total = winc;
+    }
+  }
+  __syncthreads();
+  return warp_scratch[warp] + incl - val;
+}
+
 // The merge (Lemma 1) of m candidates into the order cur (n entries) under the fixed order (gain desc; at equal gain
 // the old entries by position, then the candidates by index): np[j] = the old entry j's merged position, c_pos = a
 // candidate's (slot + rank: slot = the first entry after its parent with a lower gain, rank = its index in (slot, gain
-// desc, index)), c_ci = its rank. Returns the number of available candidates.
+// desc, index)), c_ci = its rank. Also sets *merge_has_tie to 1 iff any available candidate ties in gain with an
+// earlier available old entry in [parent + 1, slot) or with another available candidate in the same slot.
+// Returns the number of available candidates.
 template <int kThreads>
 __device__ int R3Merge(const CUDASelectiveR3Config& cfg, const R3Arrays& a, const int* cur_id, const int n, const int m,
-                       uint64_t* area, int* np, int* scratch) {
+                       uint64_t* area, int* np, int* scratch, int* merge_has_tie) {
   const int tid = threadIdx.x;
   for (int i = tid; i < n; i += kThreads) {
     a.m_gain[i] = R3Key(cfg.records[cur_id[i]].gain);  // staged for the tree
@@ -479,11 +521,25 @@ __device__ int R3Merge(const CUDASelectiveR3Config& cfg, const R3Arrays& a, cons
   __syncthreads();
   const int P = R3BuildTree<kThreads>(area, a.m_gain, n);
   int available = 0;
+  int local_tie = 0;
   for (int k = tid; k < m; k += kThreads) {
     const int h = a.c_parent[k];
     available += h != kR3NotAvailable;
-    a.c_pos[k] = h == kR3NotAvailable ? INT_MAX :
-                 R3FirstBelow<false>(area, P, n, h < 0 ? 0 : (h >> 1) + 1, a.c_gain[k]);
+    if (h == kR3NotAvailable) {
+      a.c_pos[k] = INT_MAX;
+    } else {
+      const int start = h < 0 ? 0 : (h >> 1) + 1;
+      const uint64_t g = a.c_gain[k];
+      // one tree walk in the tie-free case: s_le is the first index >= start with gain <= g;
+      // if area[P + s_le] < g (or s_le == n), it is also the strict slot and no old entry in [start, slot) ties g
+      const int s_le = R3FirstBelow<true>(area, P, n, start, g);
+      if (s_le < n && area[P + s_le] == g) {
+        local_tie = 1;
+        a.c_pos[k] = R3FirstBelow<false>(area, P, n, s_le + 1, g);
+      } else {
+        a.c_pos[k] = s_le;
+      }
+    }
   }
   atomicAdd(scratch, available);
   __syncthreads();
@@ -507,7 +563,11 @@ __device__ int R3Merge(const CUDASelectiveR3Config& cfg, const R3Arrays& a, cons
       const R3SortItem me = item[k];
       int rank = 0;
       for (int o = part * m / parts; o < (part + 1) * m / parts; ++o) {
-        rank += R3Before(item[o], me);
+        const R3SortItem other = item[o];
+        rank += R3Before(other, me);
+        if (me.slot != INT_MAX && other.slot == me.slot && other.gain == me.gain && other.k != me.k) {
+          local_tie = 1;
+        }
       }
       atomicAdd(a.c_ci + k, rank);
     }
@@ -515,7 +575,7 @@ __device__ int R3Merge(const CUDASelectiveR3Config& cfg, const R3Arrays& a, cons
     for (int size = 2; size <= N; size <<= 1) {
       for (int stride = size >> 1; stride > 0; stride >>= 1) {
         for (int i = tid; i < N / 2; i += kThreads) {
-          const int lo = 2 * stride * (i / stride) + i % stride;
+          const int lo = ((i & ~(stride - 1)) << 1) | (i & (stride - 1));
           const R3SortItem x = item[lo];
           const R3SortItem y = item[lo + stride];
           if (R3Before(y, x) == ((lo & size) == 0)) {
@@ -527,10 +587,17 @@ __device__ int R3Merge(const CUDASelectiveR3Config& cfg, const R3Arrays& a, cons
       }
     }
     for (int i = tid; i < m; i += kThreads) {
-      a.c_ci[item[i].k] = i;
+      const R3SortItem cur_item = item[i];
+      a.c_ci[cur_item.k] = i;
+      if (i > 0 && cur_item.slot != INT_MAX) {
+        const R3SortItem prev_item = item[i - 1];
+        if (prev_item.slot == cur_item.slot && prev_item.gain == cur_item.gain) {
+          local_tie = 1;
+        }
+      }
     }
   }
-  __syncthreads();
+  *merge_has_tie = __syncthreads_or(local_tie);
   const int num_available = scratch[0];
   // old entry j moves to j + the candidates with slot <= j
   for (int j = tid; j <= n; j += kThreads) {
@@ -570,12 +637,18 @@ __device__ __forceinline__ void R3NewLinks(const int h, const int* cur_classic, 
 
 // The merged order M (total entries) is the host's run up to its first divergence d: the first step where an entry y
 // with the popped entry's gain is available (parent popped, y not yet) and has the smaller tie key; every classic
-// leaf involved up to d is exact. Ties M resolves the host's way are kept. From d on, best-first runs exactly (heap,
-// tie keys) up to `limit` pops; np and c_pos are remapped to the final positions, c_ci recounted. Returns d (limit:
-// none).
+// leaf involved up to d is exact. Ties M resolves the host's way are kept. When tie_free is true (neither the kept
+// order cur nor the merge introduced any equal-gain available pair), no divergence can exist: return limit in O(1)
+// without building the segment tree or touching m_*. From d on, best-first runs exactly (heap, tie keys) up to
+// `limit` pops; np and c_pos are remapped to the final positions, c_ci recounted. Returns d (limit: none).
 template <int kThreads>
 __device__ int R3Resolve(const CUDASelectiveR3Config& cfg, const R3Arrays& a, const int* cur, const int n, const int m,
-                         const int total, const int limit, uint64_t* area, int* np, int* scratch, int* s_flag) {
+                         const int total, const int limit, const bool tie_free, uint64_t* area, int* np, int* scratch,
+                         int* s_flag, int* out_has_tie) {
+  if (tie_free) {
+    *out_has_tie = 0;
+    return limit;
+  }
   const int tid = threadIdx.x;
   const int cap = cfg.leaf_capacity;
   for (int j = tid; j < n; j += kThreads) {
@@ -600,6 +673,7 @@ __device__ int R3Resolve(const CUDASelectiveR3Config& cfg, const R3Arrays& a, co
   __syncthreads();
   const int H = min(total, limit);
   const int P = R3BuildTree<kThreads>(area, a.m_gain, H);
+  int kept_tie = 0;
   for (int t = tid; t < total; t += kThreads) {
     const int lo = (a.m_parent[t] >> 1) + 1;  // -1 >> 1 = -1: the root, available from 0
     const int hi = min(t, H);
@@ -608,18 +682,24 @@ __device__ int R3Resolve(const CUDASelectiveR3Config& cfg, const R3Arrays& a, co
     }
     const uint64_t g = a.m_gain[t];
     const uint32_t key = SelectiveR3TieKey(a.m_classic[t]);
-    for (int s = R3FirstBelow<true>(area, P, H, lo, g); s < hi; s = R3FirstBelow<true>(area, P, H, s + 1, g)) {
+    const int first_s = R3FirstBelow<true>(area, P, H, lo, g);
+    if (t < H && first_s < hi) {
+      kept_tie = 1;
+    }
+    for (int s = first_s; s < hi; s = R3FirstBelow<true>(area, P, H, s + 1, g)) {
       if (key < SelectiveR3TieKey(a.m_classic[s])) {
         atomicMin(s_flag + 2, s);
         break;
       }
     }
   }
-  __syncthreads();
+  const int any_kept_tie = __syncthreads_or(kept_tie);
   const int d = s_flag[2];
   if (d >= H) {
+    *out_has_tie = any_kept_tie;
     return limit;
   }
+  *out_has_tie = 1;
   // ---- exact best-first from d: the heap holds the entries available at d (parent before d, own position >= d)
   R3KeyEntry* heap = reinterpret_cast<R3KeyEntry*>(area);
   for (int t = tid; t < total; t += kThreads) {
@@ -768,7 +848,7 @@ __device__ int R3DepthCandidates(const CUDASelectiveR3Config& cfg, const int d, 
     });
 }
 
-template <bool kSharedArea>
+template <bool kSharedArea, bool kLive = false>
 __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const CUDASelectiveR3Config cfg) {
   constexpr int kThreads = kR3ParThreads;
   extern __shared__ __align__(16) unsigned char r3_smem[];
@@ -777,6 +857,21 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
   __shared__ int s_flag[4];
   __shared__ int s_nan;
   const int tid = threadIdx.x;
+  if constexpr (kLive) {
+    CUDADeviceLevelState* dls = cfg.dl_cfg->state;
+    if (dls->done != 0) {
+      if (tid == 0) {
+        dls->live_splits = 0;
+        dls->live_num_splits = 0;
+        dls->live_cat_splits = 0;
+        dls->total_flat_blocks = 0;
+        dls->num_gaps = 0;
+        dls->gap_flat_blocks = 0;
+        cfg.state->num_freed = 0;
+      }
+      return;
+    }
+  }
   const int cap = cfg.leaf_capacity;
   const R3Arrays a(cfg);
   if (tid == 0) {
@@ -792,12 +887,14 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
   const int num_frontier = R3Frontier<kThreads>(cfg, warp_counts);
   int parity = ps->parity;
   int n = ps->n;
+  int has_tie = ps->has_tie;
   int rounds = 0;
   int resumes = 0;
   int error = 0;
   if (cfg.rebuild || !ps->valid) {
     // ---- the order from the records: the live records merged depth by depth from the root (Lemma 1 per depth)
     n = 0;
+    has_tie = 0;
     for (int r = tid; r < num_records; r += kThreads) {
       cfg.rec_round[r] = -1;
     }
@@ -813,8 +910,10 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
         error = 3;  // more live records than the budget: not a state the selection produces
         break;
       }
-      const int total = n + R3Merge<kThreads>(cfg, a, cur, n, m, area, np, scratch);
-      resumes += R3Resolve<kThreads>(cfg, a, cur, n, m, total, total, area, np, scratch, s_flag) < total;
+      int merge_has_tie = 0;
+      const int total = n + R3Merge<kThreads>(cfg, a, cur, n, m, area, np, scratch, &merge_has_tie);
+      resumes += R3Resolve<kThreads>(cfg, a, cur, n, m, total, total, !has_tie && !merge_has_tie, area, np, scratch,
+                                     s_flag, &has_tie) < total;
       R3WriteOrder<kThreads>(cfg, a, cur, nxt, n, m, total, false, np);
       __syncthreads();
       n = total;
@@ -853,8 +952,10 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
     }
   }
   __syncthreads();
-  const int total = n + R3Merge<kThreads>(cfg, a, cur, n, num_frontier, area, np, scratch);
-  const int resume_at = R3Resolve<kThreads>(cfg, a, cur, n, num_frontier, total, budget, area, np, scratch, s_flag);
+  int merge_has_tie = 0;
+  const int total = n + R3Merge<kThreads>(cfg, a, cur, n, num_frontier, area, np, scratch, &merge_has_tie);
+  const int resume_at = R3Resolve<kThreads>(cfg, a, cur, n, num_frontier, total, budget, !has_tie && !merge_has_tie,
+                                            area, np, scratch, s_flag, &has_tie);
   resumes += resume_at < budget;
   // ---- the order truncated at the budget (Lemma 2), its classic numbers, the level's outputs
   R3WriteOrder<kThreads>(cfg, a, cur, nxt, n, num_frontier, budget, true, np);
@@ -864,11 +965,12 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
     created += a.c_pos[k] < budget;
   }
   // ---- the collapse of the displaced entries (final position >= budget): the tops (parent selected) in ascending
-  // record id, each subtree in the host's stack order (right subtree first: preorder offsets from the subtree sizes)
+  // record id, each subtree in the host's stack order (right subtree first: preorder offsets from the subtree sizes).
+  // area has 2 * pow2(num_leaves) uint64_t's: size[n] + rkid[n] occupy area[0..n-1], leaving > pow2(num_leaves)
+  // uint64_t's at area + n for top_pairs = (record_id << 32) | pos (sorted in O((num_tops/T) log^2 num_tops)).
   int* size = reinterpret_cast<int*>(area);
   int* rkid = size + n;
-  int* tops = rkid + n;
-  int* top_size = tops + n;
+  uint64_t* top_pairs = area + n;
   for (int j = tid; j < n; j += kThreads) {
     size[j] = 0;
     rkid[j] = -1;
@@ -886,7 +988,8 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
   for (int j = tid; j < n; j += kThreads) {
     if (np[j] >= budget) {
       if (is_top(j)) {
-        tops[atomicAdd(s_flag, 1)] = j;
+        const int idx = atomicAdd(s_flag, 1);
+        top_pairs[idx] = (static_cast<uint64_t>(static_cast<uint32_t>(cur[j])) << 32) | static_cast<uint32_t>(j);
       } else if (cur[2 * cap + j] & 1) {
         rkid[cur[2 * cap + j] >> 1] = j;
       }
@@ -896,6 +999,7 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
   const int num_tops = s_flag[0];
   const int num_created = s_flag[1];
   const int num_free = st->num_free;
+  const int pre_num_allocated = st->num_allocated;
   int num_freed = 0;
   if (num_tops > 0) {  // (uniform)
     for (int j = tid; j < n; j += kThreads) {
@@ -911,26 +1015,55 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
       }
     }
     __syncthreads();
-    for (int i = tid; i < num_tops; i += kThreads) {
-      const int id = cur[tops[i]];
-      int rank = 0;
-      for (int o = 0; o < num_tops; ++o) {
-        rank += cur[tops[o]] < id;
+    if (num_tops == 1) {
+      if (tid == 0) {
+        const uint64_t p = top_pairs[0];
+        const int id = static_cast<int>(p >> 32);
+        const int y = static_cast<int>(p & 0xffffffffu);
+        cfg.collapsed[0] = id;
+        s_flag[2] = size[y];
+        size[y] = 0;
       }
-      top_size[rank] = size[tops[i]];
-      cfg.collapsed[rank] = id;
-    }
-    __syncthreads();
-    num_freed = R3ScanInclusive<kThreads>(top_size, num_tops, scratch);
-    for (int i = tid; i < num_tops; i += kThreads) {
-      const int y = tops[i];
-      int rank = 0;
-      for (int o = 0; o < num_tops; ++o) {
-        rank += cur[tops[o]] < cur[y];
+      __syncthreads();
+      num_freed = s_flag[2];
+    } else {
+      const int N_tops = R3Pow2(num_tops);
+      for (int i = num_tops + tid; i < N_tops; i += kThreads) {
+        top_pairs[i] = ~0ull;
       }
-      size[y] = top_size[rank] - size[y];  // a top's size is not read again: its first freed index instead
+      __syncthreads();
+      for (int bsize = 2; bsize <= N_tops; bsize <<= 1) {
+        for (int stride = bsize >> 1; stride > 0; stride >>= 1) {
+          for (int i = tid; i < N_tops / 2; i += kThreads) {
+            const int lo = ((i & ~(stride - 1)) << 1) | (i & (stride - 1));
+            const uint64_t x = top_pairs[lo];
+            const uint64_t y = top_pairs[lo + stride];
+            if ((y < x) == ((lo & bsize) == 0)) {
+              top_pairs[lo] = y;
+              top_pairs[lo + stride] = x;
+            }
+          }
+          __syncthreads();
+        }
+      }
+      for (int i = tid; i < num_tops; i += kThreads) {
+        const uint64_t p = top_pairs[i];
+        cfg.collapsed[i] = static_cast<int>(p >> 32);
+        a.m_final[i] = static_cast<int>(p & 0xffffffffu);
+      }
+      __syncthreads();
+      int* top_size = reinterpret_cast<int*>(top_pairs);
+      for (int i = tid; i < num_tops; i += kThreads) {
+        top_size[i] = size[a.m_final[i]];
+      }
+      __syncthreads();
+      num_freed = R3ScanInclusive<kThreads>(top_size, num_tops, scratch);
+      for (int i = tid; i < num_tops; i += kThreads) {
+        const int y = a.m_final[i];
+        size[y] = top_size[i] - size[y];  // a top's size is not read again: its first freed index instead
+      }
+      __syncthreads();
     }
-    __syncthreads();
     for (int j = tid; j < n; j += kThreads) {
       if (np[j] < budget) {
         continue;
@@ -950,6 +1083,9 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
       cfg.free_leaves[num_free + index] = rec.right_leaf;
       cfg.leaf_parent[rec.right_leaf] = -1;
       records[id].dead = 1;
+      if constexpr (kLive) {
+        cfg.leaf_live[rec.right_leaf] = 0;
+      }
       if (y == j) {
         if (rec.parent >= 0) {
           CUDASelectiveR3Record* p = records + rec.parent;
@@ -960,6 +1096,13 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
           }
         }
         cfg.leaf_parent[rec.left_leaf] = rec.parent;
+        if constexpr (kLive) {
+          const data_size_t ds = cfg.rec_data_start[id];
+          const data_size_t dn = cfg.rec_num_data[id];
+          cfg.leaf_data_start[rec.left_leaf] = ds;
+          cfg.leaf_num_data[rec.left_leaf] = dn;
+          cfg.leaf_data_end[rec.left_leaf] = ds + dn;
+        }
       }
     }
     __syncthreads();
@@ -973,7 +1116,7 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
       continue;
     }
     const int ci = a.c_ci[k];
-    const int right = ci < nf ? cfg.free_leaves[nf - 1 - ci] : st->num_allocated + (ci - nf);
+    const int right = ci < nf ? cfg.free_leaves[nf - 1 - ci] : pre_num_allocated + (ci - nf);
     if (right >= cfg.num_leaves) {
       error = 1;
       continue;
@@ -995,7 +1138,10 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
     cfg.apply_right[ci] = right;
   }
   error = __syncthreads_or(error == 1) ? 1 : error;
+  // Quantized WarpFindBest / FindBestSplits rejects NaN via strict gain comparisons against best_gain and
+  // min_gain_to_split, so leaf_best never marks a NaN split is_valid=true; error==4 remains a defensive guard.
   error = s_nan != 0 ? 4 : error;
+  const int new_num_allocated = pre_num_allocated + max(num_created - nf, 0);
   if (tid == 0) {
     st->num_frontier = num_frontier;
     st->num_order = num_order;
@@ -1004,14 +1150,333 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3ParallelKernel(const
     st->num_apply = num_created;
     st->num_records = num_records + (fits ? num_created : 0);
     st->num_free = max(nf - num_created, 0);
-    st->num_allocated += max(num_created - nf, 0);
+    st->num_allocated = new_num_allocated;
     st->error = error;
     st->resumes = resumes;
     st->resume_at = resume_at < budget ? resume_at : -1;
     st->rounds = rounds;
+    if constexpr (kLive) {
+      st->total_resumes += resumes;
+      st->total_displaced += num_freed;
+    }
     ps->n = num_order;
     ps->parity = parity ^ 1;
     ps->valid = error == 0;
+    ps->has_tie = has_tie;
+  }
+  if constexpr (kLive) {
+    if (error != 0 || num_created == 0) {
+      if (tid == 0) {
+        CUDADeviceLevelState* dls = cfg.dl_cfg->state;
+        st->num_children = 0;
+        if (error != 0) {
+          st->num_freed = 0;
+        }
+        dls->done = 1;
+        dls->live_splits = 0;
+        dls->live_num_splits = 0;
+        dls->live_cat_splits = 0;
+        dls->total_flat_blocks = 0;
+        dls->num_gaps = 0;
+        dls->gap_flat_blocks = 0;
+      }
+      return;
+    }
+    // ---- live device-driven apply + gap descriptors (mirrors DeviceLevelSelectBlock for selective R3) ----
+    int* is_split = a.m_final;
+    for (int l = tid; l < pre_num_allocated; l += kThreads) {
+      is_split[l] = 0;
+    }
+    __syncthreads();
+    const CUDADeviceLevelConfig dl = *cfg.dl_cfg;
+    const int split_chunk = (num_created + kThreads - 1) / kThreads;
+    const int k_begin = min(tid * split_chunk, num_created);
+    const int k_end = min(k_begin + split_chunk, num_created);
+    int my_slots = 0;
+    int my_flat = 0;
+    for (int ci = k_begin; ci < k_end; ++ci) {
+      const int id = num_records + ci;
+      const CUDASelectiveR3Record rec = records[id];
+      const int leaf = rec.left_leaf;
+      const int right = rec.right_leaf;
+      const CUDASplitInfo* info = cfg.leaf_best + leaf;
+      const data_size_t parent_start = cfg.leaf_data_start[leaf];
+      const data_size_t parent_num = cfg.leaf_num_data[leaf];
+      cfg.rec_data_start[id] = parent_start;
+      cfg.rec_num_data[id] = parent_num;
+      static_assert(sizeof(CUDASplitInfo) % sizeof(uint64_t) == 0, "CUDASplitInfo is copied as 8-byte words");
+      const uint64_t* src_words = reinterpret_cast<const uint64_t*>(info);
+      uint64_t* dst_words = reinterpret_cast<uint64_t*>(cfg.rec_info + id);
+      for (size_t w = 0; w < sizeof(CUDASplitInfo) / sizeof(uint64_t); ++w) {
+        dst_words[w] = src_words[w];
+      }
+      cfg.live_child_leaves[2 * ci] = leaf;
+      cfg.live_child_leaves[2 * ci + 1] = right;
+      is_split[leaf] = 1;
+      const int inner_feature = info->inner_feature_index;
+      const uint32_t threshold = info->threshold;
+      const CUDAHybridGraphFeatureMeta m = dl.feature_meta[inner_feature];
+      const CUDAHybridGraphFeatureSource src = dl.feature_source[inner_feature];
+      uint32_t th = threshold + m.min_bin;
+      uint32_t t_zero_bin = m.min_bin + m.default_bin;
+      if (m.most_freq_bin == 0) {
+        --th;
+        --t_zero_bin;
+      }
+      uint8_t split_default_to_left = 0;
+      uint8_t split_missing_default_to_left = 0;
+      int default_leaf_index = right;
+      int missing_default_leaf_index = right;
+      if (m.most_freq_bin <= threshold) {
+        split_default_to_left = 1;
+        default_leaf_index = leaf;
+      }
+      if ((m.missing_is_zero || m.missing_is_na) && info->default_left) {
+        split_missing_default_to_left = 1;
+        missing_default_leaf_index = leaf;
+      }
+      CUDAHybridApplyDescriptor d;
+      memset(&d, 0, sizeof(CUDAHybridApplyDescriptor));
+      d.column_data = src.column_data;
+      d.best_split_info = info;
+      d.smaller_leaf_splits = dl.pair_slots + 2 * ci;
+      d.larger_leaf_splits = dl.pair_slots + 2 * ci + 1;
+      d.leaf_data_start = parent_start;
+      d.num_data_in_leaf = parent_num;
+      d.num_blocks = (parent_num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
+                     SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+      d.left_leaf_index = leaf;
+      d.right_leaf_index = right;
+      d.th = th;
+      d.t_zero_bin = t_zero_bin;
+      d.max_bin = m.max_bin;
+      d.min_bin = m.min_bin;
+      d.default_leaf_index = default_leaf_index;
+      d.missing_default_leaf_index = missing_default_leaf_index;
+      d.split_default_to_left = split_default_to_left;
+      d.split_missing_default_to_left = split_missing_default_to_left;
+      d.packed_row_stride = src.packed_row_stride;
+      d.bit_type = src.bit_type;
+      d.packed_shift = src.packed_shift;
+      d.min_is_max = (m.min_bin < m.max_bin) ? 0 : 1;
+      d.missing_is_zero = m.missing_is_zero;
+      d.missing_is_na = m.missing_is_na;
+      d.mfb_is_zero = m.mfb_is_zero;
+      d.mfb_is_na = m.mfb_is_na;
+      d.max_bin_to_left = (m.max_bin <= th) ? 1 : 0;
+      d.use_min_bin = m.use_min_bin;
+      dl.apply_descs[ci] = d;
+      my_slots += d.num_blocks + 1;
+      my_flat += d.num_blocks;
+    }
+    int slot_pos = R3BlockScanExclusive<kThreads>(my_slots, scratch, s_flag + 3);
+    int flat_pos = R3BlockScanExclusive<kThreads>(my_flat, scratch, s_flag + 3);
+    const int total_flat_blocks = s_flag[3];
+    for (int ci = k_begin; ci < k_end; ++ci) {
+      CUDAHybridApplyDescriptor& d = dl.apply_descs[ci];
+      d.block_offset_start = slot_pos;
+      d.flat_block_start = flat_pos;
+      slot_pos += d.num_blocks + 1;
+      flat_pos += d.num_blocks;
+    }
+    // gaps: every live leaf (post-collapse, pre-new-right) not split at this level
+    const int leaf_chunk = (pre_num_allocated + kThreads - 1) / kThreads;
+    const int l_begin = min(tid * leaf_chunk, pre_num_allocated);
+    const int l_end = min(l_begin + leaf_chunk, pre_num_allocated);
+    int my_gaps = 0;
+    int my_gap_flat = 0;
+    for (int l = l_begin; l < l_end; ++l) {
+      const data_size_t num = cfg.leaf_num_data[l];
+      if (cfg.leaf_live[l] != 0 && is_split[l] == 0 && num > 0) {
+        ++my_gaps;
+        my_gap_flat += (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+      }
+    }
+    int gap_pos = R3BlockScanExclusive<kThreads>(my_gaps, scratch, s_flag + 3);
+    const int num_gaps = s_flag[3];
+    int gap_flat_pos = R3BlockScanExclusive<kThreads>(my_gap_flat, scratch, s_flag + 3);
+    const int gap_flat_blocks = s_flag[3];
+    for (int l = l_begin; l < l_end; ++l) {
+      const data_size_t num = cfg.leaf_num_data[l];
+      if (cfg.leaf_live[l] != 0 && is_split[l] == 0 && num > 0) {
+        CUDAHybridApplyDescriptor g;
+        memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
+        g.left_leaf_index = l;
+        g.leaf_data_start = cfg.leaf_data_start[l];
+        g.num_data_in_leaf = num;
+        g.num_blocks = (num + dl.gap_block_dim - 1) / dl.gap_block_dim;
+        g.flat_block_start = total_flat_blocks + gap_flat_pos;
+        dl.apply_descs[num_created + gap_pos] = g;
+        ++gap_pos;
+        gap_flat_pos += (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+      }
+    }
+    __syncthreads();
+    for (int ci = k_begin; ci < k_end; ++ci) {
+      cfg.leaf_live[records[num_records + ci].right_leaf] = 1;
+    }
+    if (tid == 0) {
+      CUDADeviceLevelState* dls = dl.state;
+      st->num_children = 2 * num_created;
+      dls->live_splits = num_created;
+      dls->live_num_splits = num_created;
+      dls->live_cat_splits = 0;
+      dls->total_flat_blocks = total_flat_blocks;
+      dls->num_gaps = num_gaps;
+      dls->gap_flat_blocks = gap_flat_blocks;
+      dls->split_info_base = 0;
+      dls->num_leaves = new_num_allocated;
+      dls->levels_applied = dls->levels_applied + 1;
+      dls->done = 0;
+    }
+  }
+}
+
+__global__ void __launch_bounds__(kR3ParThreads) SelectiveR3SeedFromR1Kernel(const CUDASelectiveR3Config cfg,
+                                                                             const CUDADeviceLevelConfig* dl_cfg,
+                                                                             const int* split_info_buffer) {
+  constexpr int kThreads = kR3ParThreads;
+  __shared__ int s_first_last;
+  const int tid = static_cast<int>(threadIdx.x);
+  const CUDADeviceLevelConfig dl = *dl_cfg;
+  CUDADeviceLevelState* dls = dl.state;
+  const int* journal = dl.journal;
+  const int levels_applied = journal[0];
+  const int num_splits = journal[1];
+  const int journal_err = journal[2];
+  // Preserve R1's gated-regime / bounds checks without an extra host readback: flag error=5 and stop the body loop.
+  if (journal_err != 0 || levels_applied < 0 || num_splits < 0 || num_splits > cfg.budget ||
+      num_splits > cfg.record_capacity) {
+    if (tid == 0) {
+      *cfg.state = CUDASelectiveR3State{};
+      cfg.state->error = 5;
+      dls->done = 1;
+      dls->live_splits = 0;
+      dls->live_num_splits = 0;
+      dls->live_cat_splits = 0;
+      dls->total_flat_blocks = 0;
+      dls->num_gaps = 0;
+      dls->gap_flat_blocks = 0;
+    }
+    return;
+  }
+  if (tid == 0) {
+    s_first_last = num_splits;
+  }
+  // every warp must see the initial value before any atomicMin below: without this barrier thread 0's store can
+  // land after another warp's reduction and overwrite the true minimum (the early return above is uniform)
+  __syncthreads();
+  for (int i = tid; i < cfg.leaf_capacity; i += kThreads) {
+    cfg.leaf_parent[i] = -1;
+    cfg.leaf_live[i] = i <= num_splits ? 1 : 0;
+  }
+  for (int s = tid; s < num_splits; s += kThreads) {
+    const int left = journal[kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * s];
+    const int right = s + 1;
+    const int lv = journal[kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * s + 2];
+    const int* batch = split_info_buffer + 18 * s;
+    cfg.rec_data_start[s] = batch[2];
+    cfg.rec_num_data[s] = batch[1] + batch[4];
+    cfg.records[s] = {-1, left, right, -1, -1, 0, cfg.rec_info[s].gain};
+    if (lv == levels_applied - 1) {
+      atomicMin(&s_first_last, s);
+    }
+  }
+  __syncthreads();
+  // within each R1 level all split left_leaves and right_leaves are distinct
+  for (int lv = 0; lv < levels_applied; ++lv) {
+    for (int s = tid; s < num_splits; s += kThreads) {
+      if (journal[kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * s + 2] == lv) {
+        const int left = cfg.records[s].left_leaf;
+        const int p = cfg.leaf_parent[left];
+        cfg.records[s].parent = p;
+        if (p >= 0) {
+          if (cfg.records[p].left_leaf == left) {
+            cfg.records[p].kid_left = s;
+          } else {
+            cfg.records[p].kid_right = s;
+          }
+        }
+      }
+    }
+    __syncthreads();
+    for (int s = tid; s < num_splits; s += kThreads) {
+      if (journal[kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * s + 2] == lv) {
+        cfg.leaf_parent[cfg.records[s].left_leaf] = s;
+        cfg.leaf_parent[cfg.records[s].right_leaf] = s;
+      }
+    }
+    __syncthreads();
+  }
+  const int first_last = s_first_last;
+  const int last_splits = num_splits - first_last;
+  if (num_splits == 0) {
+    if (tid == 0) {
+      cfg.live_child_leaves[0] = 0;
+    }
+  } else {
+    for (int k = tid; k < last_splits; k += kThreads) {
+      const CUDASelectiveR3Record& rec = cfg.records[first_last + k];
+      cfg.live_child_leaves[2 * k] = rec.left_leaf;
+      cfg.live_child_leaves[2 * k + 1] = rec.right_leaf;
+    }
+  }
+  if (tid == 0) {
+    *cfg.state = CUDASelectiveR3State{};
+    cfg.state->num_records = num_splits;
+    cfg.state->num_free = 0;
+    cfg.state->num_allocated = num_splits + 1;
+    cfg.state->num_children = num_splits == 0 ? 1 : 2 * last_splits;
+    cfg.persist->n = 0;
+    cfg.persist->parity = 0;
+    cfg.persist->valid = 0;
+    cfg.persist->has_tie = 0;
+    dls->done = 0;
+    dls->split_info_base = 0;
+    dls->live_splits = 0;
+    dls->live_num_splits = 0;
+    dls->live_cat_splits = 0;
+    dls->levels_applied = levels_applied;
+  }
+}
+
+__global__ void SelectiveR3BodyEndKernel(const CUDASelectiveR3Config cfg, const CUDADeviceLevelConfig* dl_cfg,
+                                         int* flag) {
+  if (threadIdx.x == 0) {
+    const CUDADeviceLevelState* dls = dl_cfg->state;
+    const CUDASelectiveR3State* st = cfg.state;
+    flag[1] = dls->levels_applied;
+    flag[2] = st->num_records;
+    flag[3] = st->num_order;
+    flag[4] = st->num_allocated;
+    flag[5] = st->error;
+    flag[6] = st->total_resumes;
+    flag[7] = st->total_displaced;
+    flag[0] = dls->done != 0 ? 0 : 1;
+  }
+}
+
+__global__ void __launch_bounds__(kR3Threads) SelectiveR3PackFinalKernel(const CUDASelectiveR3Config cfg,
+                                                                         const CUDASelectiveR3FinalPack pack) {
+  const int tid = static_cast<int>(threadIdx.x);
+  const int num_order = cfg.state->num_order;
+  const int num_allocated = cfg.state->num_allocated;
+  for (int t = tid; t < num_order; t += kR3Threads) {
+    const int id = cfg.order_id[t];
+    const CUDASelectiveR3Record rec = cfg.records[id];
+    pack.order_classic[t] = cfg.order_classic[t];
+    pack.left_leaf[t] = rec.left_leaf;
+    pack.right_leaf[t] = rec.right_leaf;
+    const uint64_t* src_words = reinterpret_cast<const uint64_t*>(cfg.rec_info + id);
+    uint64_t* dst_words = reinterpret_cast<uint64_t*>(pack.info + t);
+    for (size_t w = 0; w < sizeof(CUDASplitInfo) / sizeof(uint64_t); ++w) {
+      dst_words[w] = src_words[w];
+    }
+  }
+  for (int l = tid; l < num_allocated; l += kR3Threads) {
+    pack.leaf_live[l] = cfg.leaf_live[l];
+    pack.leaf_num_data[l] = cfg.leaf_num_data[l];
+    pack.leaf_data_start[l] = cfg.leaf_data_start[l];
   }
 }
 
@@ -1057,12 +1522,12 @@ bool LaunchSelectiveR3Parallel(const CUDASelectiveR3Config& config, cudaStream_t
   static std::unordered_map<int, int> limit_global;
   const size_t area = R3ParallelAreaBytes(config.num_leaves);
   const size_t rest = static_cast<size_t>(config.leaf_capacity) * sizeof(int);
-  if (shared_area && area + rest <= static_cast<size_t>(R3SharedLimit(SelectiveR3ParallelKernel<true>,
+  if (shared_area && area + rest <= static_cast<size_t>(R3SharedLimit(SelectiveR3ParallelKernel<true, false>,
                                                                        &limit_shared))) {
-    SelectiveR3ParallelKernel<true><<<1, kR3ParThreads, area + rest, stream>>>(config);
-  } else if (rest <= static_cast<size_t>(R3SharedLimit(SelectiveR3ParallelKernel<false>, &limit_global))) {
+    SelectiveR3ParallelKernel<true, false><<<1, kR3ParThreads, area + rest, stream>>>(config);
+  } else if (rest <= static_cast<size_t>(R3SharedLimit(SelectiveR3ParallelKernel<false, false>, &limit_global))) {
     CHECK(config.par_global != nullptr);
-    SelectiveR3ParallelKernel<false><<<1, kR3ParThreads, rest, stream>>>(config);
+    SelectiveR3ParallelKernel<false, false><<<1, kR3ParThreads, rest, stream>>>(config);
   } else {
     // the per-leaf index does not fit shared memory: the sequential kernel, and the order rebuilt next time
     LaunchSelectiveR3(config, stream, true);
@@ -1071,6 +1536,41 @@ bool LaunchSelectiveR3Parallel(const CUDASelectiveR3Config& config, cudaStream_t
   }
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
   return true;
+}
+
+void LaunchSelectiveR3SeedFromR1(const CUDASelectiveR3Config& config, const CUDADeviceLevelConfig* dl_cfg,
+                                 const int* split_info_buffer, cudaStream_t stream) {
+  SelectiveR3SeedFromR1Kernel<<<1, kR3ParThreads, 0, stream>>>(config, dl_cfg, split_info_buffer);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
+bool LaunchSelectiveR3Live(const CUDASelectiveR3Config& config, cudaStream_t stream) {
+  static std::unordered_map<int, int> limit_shared;
+  static std::unordered_map<int, int> limit_global;
+  const size_t area = R3ParallelAreaBytes(config.num_leaves);
+  const size_t rest = static_cast<size_t>(config.leaf_capacity) * sizeof(int);
+  if (area + rest <= static_cast<size_t>(R3SharedLimit(SelectiveR3ParallelKernel<true, true>, &limit_shared))) {
+    SelectiveR3ParallelKernel<true, true><<<1, kR3ParThreads, area + rest, stream>>>(config);
+  } else if (rest <= static_cast<size_t>(R3SharedLimit(SelectiveR3ParallelKernel<false, true>, &limit_global))) {
+    CHECK(config.par_global != nullptr);
+    SelectiveR3ParallelKernel<false, true><<<1, kR3ParThreads, rest, stream>>>(config);
+  } else {
+    return false;
+  }
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+  return true;
+}
+
+void LaunchSelectiveR3BodyEnd(const CUDASelectiveR3Config& config, const CUDADeviceLevelConfig* dl_cfg, int* flag,
+                              cudaStream_t stream) {
+  SelectiveR3BodyEndKernel<<<1, 32, 0, stream>>>(config, dl_cfg, flag);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
+void LaunchSelectiveR3PackFinal(const CUDASelectiveR3Config& config, const CUDASelectiveR3FinalPack& pack,
+                                cudaStream_t stream) {
+  SelectiveR3PackFinalKernel<<<1, kR3Threads, 0, stream>>>(config, pack);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
 }  // namespace Falcata
