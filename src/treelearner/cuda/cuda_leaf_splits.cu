@@ -93,6 +93,7 @@ __global__ void CUDAInitValuesKernel2(
     }
     cuda_struct->data_indices_in_leaf = cuda_data_indices_in_leaf;
     cuda_struct->hist_in_leaf = cuda_hist_in_leaf;
+    cuda_struct->leaf_gh_in_leaf = nullptr;
   }
 }
 
@@ -232,6 +233,7 @@ __global__ void CUDAInitValuesKernel4(
     }
     cuda_struct->data_indices_in_leaf = cuda_data_indices_in_leaf;
     cuda_struct->hist_in_leaf = cuda_hist_in_leaf;
+    cuda_struct->leaf_gh_in_leaf = nullptr;
   }
 }
 
@@ -245,6 +247,7 @@ __global__ void InitValuesEmptyKernel(CUDALeafSplitsStruct* cuda_struct) {
   cuda_struct->leaf_value = 0.0f;
   cuda_struct->data_indices_in_leaf = nullptr;
   cuda_struct->hist_in_leaf = nullptr;
+  cuda_struct->leaf_gh_in_leaf = nullptr;
 }
 
 __global__ void ReduceGradKernel(
@@ -334,6 +337,7 @@ __global__ void CUDAInitSetValuesKernel(
     }
     cuda_struct->data_indices_in_leaf = cuda_data_indices_in_leaf;
     cuda_struct->hist_in_leaf = cuda_hist_in_leaf;
+    cuda_struct->leaf_gh_in_leaf = nullptr;
   }
 }
 
@@ -376,6 +380,7 @@ __global__ void CUDAInitSetValuesKernel(
     }
     cuda_struct->data_indices_in_leaf = cuda_data_indices_in_leaf;
     cuda_struct->hist_in_leaf = cuda_hist_in_leaf;
+    cuda_struct->leaf_gh_in_leaf = nullptr;
   }
 }
 

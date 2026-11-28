@@ -96,6 +96,7 @@ struct CUDALeafSplitsStruct {
   double leaf_value;
   const data_size_t* data_indices_in_leaf;
   hist_t* hist_in_leaf;
+  const int32_t* leaf_gh_in_leaf;
 };
 
 /*! \brief Per-sibling-pair metadata for the hybrid level-batched growth phase.

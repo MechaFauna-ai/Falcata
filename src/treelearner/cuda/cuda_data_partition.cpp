@@ -77,6 +77,8 @@ void CUDADataPartition::Init() {
   level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
   pending_device_level_role_undo_ = false;
   level_partition_pending_ = false;  // cuda_plan key final_map_only
+  cuda_raw_quant_gh_ = nullptr;
+  leaf_gh_valid_ = false;
   // allocate CUDA memory
   cuda_data_indices_.Resize(static_cast<size_t>(num_data_));
   cuda_leaf_data_start_.Resize(static_cast<size_t>(num_leaves_));
@@ -124,11 +126,13 @@ void CUDADataPartition::BeforeTrain() {
     // A full root replaces this validated DL assignment. Restore the ordinary completed-level buffer role before
     // filling identity, so identical even-depth trees reuse their exact pointer-keyed graph. No old rows are read.
     cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+    cuda_leaf_gh_.Swap(&cuda_out_leaf_gh_);
   }
   pending_gap_block_dim_ = 0;
   pending_device_level_role_undo_ = false;
   level_partition_pending_ = false;  // the index fill below rewrites the main array
   level_shared_gaps_valid_ = false;  // a new tree: the index fill writes the main buffer only
+  leaf_gh_valid_ = false;
   if (!use_bagging_) {
     CanonicalizeIndexBuffers();  // cuda_plan key index_parity_canonical: the fill below rewrites the main array
     LaunchFillDataIndicesBeforeTrain();
@@ -682,13 +686,23 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     LaunchBuildCatBitsetArenaKernel(static_cast<int>(cat_desc_indices.size()),
                                     cat_desc_indices, cat_mfb_bins);
   }
+  const bool do_pack_gh = cuda_raw_quant_gh_ != nullptr && !map_only && !write_leaf_map &&
+    nccl_communicator_ == nullptr && use_quantized_grad_;
+  if (do_pack_gh && !leaf_gh_valid_ && num_gaps > 0) {
+    // A GH_MODE=1 level (leaf_gh_valid_ == false) populates gaps from raw_quant_gh into out_leaf_gh
+    // only (in_leaf_gh does not hold them), so clear level_shared_gaps_valid_ to force the next level
+    // to copy every gap before gap_copy_once may skip them.
+    level_shared_gaps_valid_ = false;
+  }
   LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks, num_gaps, max_gap_blocks,
                                  total_flat_blocks, gap_flat_blocks,
-                                 write_leaf_map, map_only);
+                                 write_leaf_map, map_only, nullptr, nullptr, false, false, 0,
+                                 /*skip_gh_scatter=*/write_leaf_map);
   if (map_only) {
     // cuda_plan key final_map_only: nothing was written to the out buffer; the main array keeps every unsplit
     // leaf's window and the split leaves' rows in their parents' ranges
     level_shared_gaps_valid_ = false;
+    leaf_gh_valid_ = false;
     pending_device_level_role_undo_ = false;  // a HOST receipt never owns the extra DL role undo
     level_partition_pending_ = true;
     pending_num_splits_ = num_splits;
@@ -700,6 +714,8 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     // the out buffer now holds every leaf's indices at the main layout positions:
     // promote it to the main index array (the old main becomes the next scratch)
     cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+    cuda_leaf_gh_.Swap(&cuda_out_leaf_gh_);
+    leaf_gh_valid_ = do_pack_gh;
   }
   cur_num_leaves_ += num_splits;
   global_timer.Stop("CUDADataPartition::SplitLevelBatched");
@@ -725,6 +741,7 @@ void CUDADataPartition::SplitInner(
   data_size_t* global_right_leaf_num_data) {
   EnsureLevelPartitioned();  // cuda_plan key final_map_only
   level_shared_gaps_valid_ = false;  // the per-split path writes both index buffers
+  leaf_gh_valid_ = false;
   LaunchSplitInnerKernel(
     num_data_in_leaf,
     best_split_info,
@@ -747,6 +764,7 @@ void CUDADataPartition::SplitInner(
 
 void CUDADataPartition::RestoreBagOrder() {
   if (use_bagging_) {
+    leaf_gh_valid_ = false;
     // cuda_plan key index_parity_canonical: the copy below rewrites the main array (a pending deferred partition
     // still owns its buffer roles: leave them)
     if (!level_partition_pending_) {
@@ -819,6 +837,7 @@ void CUDADataPartition::SetUsedDataIndices(const data_size_t* used_indices, cons
   pending_device_level_role_undo_ = false;
   level_partition_pending_ = false;  // cuda_plan key final_map_only: the main array is rewritten below
   level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
+  leaf_gh_valid_ = false;
   use_bagging_ = true;
   num_used_indices_ = num_used_indices;
   used_indices_ = used_indices;
@@ -833,6 +852,7 @@ void CUDADataPartition::ResetTrainingData(const Dataset* train_data, const int n
   pending_device_level_role_undo_ = false;
   level_partition_pending_ = false;  // cuda_plan key final_map_only: the index arrays are rebuilt
   level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
+  leaf_gh_valid_ = false;
   const data_size_t old_num_data = num_data_;
   num_data_ = train_data->num_data();
   num_features_ = train_data->num_features();
@@ -857,7 +877,13 @@ void CUDADataPartition::ResetTrainingData(const Dataset* train_data, const int n
                                                HybridBitWordUnitsWorstCase()));
     cuda_data_index_to_leaf_index_.Resize(static_cast<size_t>(num_data_));
     cuda_out_data_indices_in_leaf_.Resize(static_cast<size_t>(num_data_));
+    if (cuda_leaf_gh_.Size() > 0 || cuda_out_leaf_gh_.Size() > 0) {
+      // Optional ping-pong gh buffers reallocate lazily via TryResizeDiscard in SetQuantizedGradHess.
+      cuda_leaf_gh_.Clear();
+      cuda_out_leaf_gh_.Clear();
+    }
   }
+  leaf_gh_valid_ = false;
   used_indices_ = nullptr;
   use_bagging_ = false;
   num_used_indices_ = 0;
@@ -883,6 +909,7 @@ void CUDADataPartition::ResetByLeafPred(const std::vector<int>& leaf_pred, int n
   pending_device_level_role_undo_ = false;
   level_partition_pending_ = false;  // the old assignment is now materialized before replacement
   level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
+  leaf_gh_valid_ = false;
   if (leaf_pred.size() != static_cast<size_t>(num_data_)) {
     cuda_data_index_to_leaf_index_.Clear();
     cuda_data_index_to_leaf_index_.InitFromHostVector(leaf_pred);

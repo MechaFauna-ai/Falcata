@@ -185,7 +185,36 @@ class CUDADataPartition: public NCCLInfo {
   void LaunchDeviceLevelApply(const int max_splits, const CUDADeviceLevelState* dls,
                               const CUDADeviceLevelConfig* dl_cfg = nullptr, const bool write_leaf_map = false,
                               const bool dl_map_only = false, const bool whole_joint_grid_bound = false,
-                              const int joint_leaves = 0);
+                              const int joint_leaves = 0, const bool skip_gh_scatter = false);
+
+  /*! \brief cuda_plan key partition_pack_gh: set the tree's raw quantized (grad, hess) buffer (int32 per row), or
+   *  nullptr to disable partition-ordered gh packing for this tree. Lazily allocates the ping-pong gh buffers with
+   *  TryResizeDiscard (gracefully falling back to raw gh gathers on VRAM OOM), releases them when disabled,
+   *  canonicalizes their parity at tree start, and returns whether packing is active. */
+  bool SetQuantizedGradHess(const int32_t* raw_quant_gh) {
+    cuda_raw_quant_gh_ = raw_quant_gh;
+    leaf_gh_valid_ = false;
+    if (raw_quant_gh == nullptr) {
+      cuda_leaf_gh_.Clear();
+      cuda_out_leaf_gh_.Clear();
+      return false;
+    }
+    const size_t want = static_cast<size_t>(num_data_);
+    if (cuda_leaf_gh_.Size() < want || cuda_out_leaf_gh_.Size() < want) {
+      if (!cuda_leaf_gh_.TryResizeDiscard(want) || !cuda_out_leaf_gh_.TryResizeDiscard(want)) {
+        cuda_leaf_gh_.Clear();
+        cuda_out_leaf_gh_.Clear();
+        cuda_raw_quant_gh_ = nullptr;
+        return false;
+      }
+    }
+    if (FalcataPlan::Get().index_parity_canonical &&
+        reinterpret_cast<uintptr_t>(cuda_leaf_gh_.RawData()) >
+          reinterpret_cast<uintptr_t>(cuda_out_leaf_gh_.RawData())) {
+      cuda_leaf_gh_.Swap(&cuda_out_leaf_gh_);
+    }
+    return true;
+  }
 
   /*! \brief cuda_plan key device_levels: after the device levels' readback: levels_applied of levels_enqueued
    *  enqueued levels applied total_splits splits (the host swapped the index buffers once per enqueued level) */
@@ -193,6 +222,10 @@ class CUDADataPartition: public NCCLInfo {
     cur_num_leaves_ += total_splits;
     if (((levels_enqueued - levels_applied) & 1) != 0) {
       cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+      cuda_leaf_gh_.Swap(&cuda_out_leaf_gh_);
+    }
+    if (levels_applied == 0) {
+      leaf_gh_valid_ = false;
     }
     level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: the device levels copied every gap
   }
@@ -215,6 +248,8 @@ class CUDADataPartition: public NCCLInfo {
     pending_gap_block_dim_ = gap_block_dim;  // creation-time cfg unit, never a later process-global plan
     pending_device_level_role_undo_ = true;  // ONLY this validated DL receipt has the extra role undo
     cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+    cuda_leaf_gh_.Swap(&cuda_out_leaf_gh_);
+    leaf_gh_valid_ = false;
     level_partition_pending_ = true;
     level_shared_gaps_valid_ = false;
   }
@@ -225,20 +260,34 @@ class CUDADataPartition: public NCCLInfo {
     key->push_back(static_cast<const void*>(cuda_data_indices_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_out_data_indices_in_leaf_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_apply_descs_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_raw_quant_gh_));
+    key->push_back(static_cast<const void*>(cuda_leaf_gh_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_out_leaf_gh_.RawDataReadOnly()));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(leaf_gh_valid_ ? 1 : 0)));
   }
-  /*! \brief cuda_plan key device_level_graph: the host half of a replayed graph's levels (one swap per level) */
-  void SwapIndexBuffers(const int times) {
+  /*! \brief cuda_plan key device_level_graph: the host half of a replayed graph's levels (one swap per level).
+   *  \p end_gh_valid is false when the final captured level skipped gh scatter (whole-tree device graphs). */
+  void SwapIndexBuffers(const int times, const bool end_gh_valid = true) {
     for (int i = 0; i < times; ++i) {
       cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+      cuda_leaf_gh_.Swap(&cuda_out_leaf_gh_);
+    }
+    if (times > 0) {
+      leaf_gh_valid_ = end_gh_valid && cuda_raw_quant_gh_ != nullptr;
     }
   }
   /*! \brief cuda_plan key index_parity_canonical: the lower-address index buffer as the main array, before the main
    *  array is rewritten (the identity fill or a new bag), so every tree starts with the same graph key pointers */
   void CanonicalizeIndexBuffers() {
-    if (FalcataPlan::Get().index_parity_canonical &&
-        reinterpret_cast<uintptr_t>(cuda_data_indices_.RawData()) >
+    if (FalcataPlan::Get().index_parity_canonical) {
+      if (reinterpret_cast<uintptr_t>(cuda_data_indices_.RawData()) >
           reinterpret_cast<uintptr_t>(cuda_out_data_indices_in_leaf_.RawData())) {
-      cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+        cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+      }
+      if (reinterpret_cast<uintptr_t>(cuda_leaf_gh_.RawData()) >
+          reinterpret_cast<uintptr_t>(cuda_out_leaf_gh_.RawData())) {
+        cuda_leaf_gh_.Swap(&cuda_out_leaf_gh_);
+      }
     }
   }
   /*! \brief threads of the gap copy's blocks, the unit of a gap descriptor's num_blocks */
@@ -409,11 +458,13 @@ class CUDADataPartition: public NCCLInfo {
   data_size_t* device_level_main_indices() {
     EnsureLevelPartitioned();  // cuda_plan key final_map_only
     level_shared_gaps_valid_ = false;  // a writer outside the batched level apply
+    leaf_gh_valid_ = false;
     return cuda_data_indices_.RawData();
   }
   data_size_t* device_level_out_indices() {
     EnsureLevelPartitioned();  // cuda_plan key final_map_only
     level_shared_gaps_valid_ = false;
+    leaf_gh_valid_ = false;
     return cuda_out_data_indices_in_leaf_.RawData();
   }
 
@@ -491,7 +542,7 @@ class CUDADataPartition: public NCCLInfo {
                                       const CUDADeviceLevelState* dls = nullptr,
                                       const CUDADeviceLevelConfig* dl_cfg = nullptr,
                                       const bool dl_map_only = false, const bool whole_joint_grid_bound = false,
-                                      const int joint_leaves = 0);
+                                      const int joint_leaves = 0, const bool skip_gh_scatter = false);
   /*! \brief the batched level's split-inner (index partition into the out buffer) and gap copy launches */
   void LaunchLevelSplitInnerKernel(const int num_splits, const int total_flat_blocks, const bool write_leaf_map,
                                    const bool map_only);
@@ -789,6 +840,12 @@ class CUDADataPartition: public NCCLInfo {
   CUDAVector<data_size_t> cuda_block_data_to_right_offset_;
   /*! \brief buffer for splitting data indices, will be copied back to cuda_data_indices_ after split */
   CUDAVector<data_size_t> cuda_out_data_indices_in_leaf_;
+  /*! \brief cuda_plan key partition_pack_gh: parallel ping-pong partition-ordered quantized (grad, hess) buffers
+   *  (lazily allocated only when quantized partition_pack_gh is active), swapped in lockstep with cuda_data_indices_ */
+  CUDAVector<int32_t> cuda_leaf_gh_;
+  CUDAVector<int32_t> cuda_out_leaf_gh_;
+  const int32_t* cuda_raw_quant_gh_ = nullptr;
+  bool leaf_gh_valid_ = false;
   /*! \brief cuda_plan key gap_copy_once: the last batched level's gap ranges (start, num), sorted, which both index
    *  buffers hold identically; valid only while nothing else has written either buffer since that level */
   std::vector<std::pair<data_size_t, data_size_t>> level_shared_gaps_;

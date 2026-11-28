@@ -2260,6 +2260,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseDirectInner(
     static_cast<size_t>(partition_column_start) * num_data);
   const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
   const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
+  const int32_t* leaf_gh_this_block = smaller_leaf_splits->leaf_gh_in_leaf != nullptr ?
+    smaller_leaf_splits->leaf_gh_in_leaf + block_start : nullptr;
   data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
   const data_size_t num_iteration_total = (block_num_data + blockDim.y - 1) / blockDim.y;
   const data_size_t remainder = block_num_data % blockDim.y;
@@ -2284,7 +2286,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseDirectInner(
   atomic_add_long_t* hist64 = reinterpret_cast<atomic_add_long_t*>(smaller_leaf_splits->hist_in_leaf);
   for (data_size_t i = 0; i < num_iteration_this; ++i) {
     const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
-    const int32_t grad_and_hess = cuda_gradients_and_hessians[data_index];
+    const int32_t grad_and_hess = leaf_gh_this_block != nullptr ?
+      __ldg(leaf_gh_this_block + inner_data_index) : cuda_gradients_and_hessians[data_index];
     const BIN_TYPE* row_base = data_ptr + static_cast<size_t>(data_index) * row_stride;
     const int64_t gh64 = (static_cast<int64_t>(static_cast<int16_t>(grad_and_hess >> 16)) << 32) |
         (static_cast<int64_t>(grad_and_hess & 0x0000ffff));
@@ -2310,13 +2313,19 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseDirectInner(
 
 template <int N, bool PREFETCH, class PACK, typename BIN_TYPE>
 __device__ __forceinline__ void ConstructRowBatch(
-    const data_size_t (&idx)[N], const int32_t* cuda_gradients_and_hessians, const BIN_TYPE* data_ptr,
-    const int row_stride, const typename PACK::Cursor& pack_cursor, int32_t* shared_hist_ptr,
+    const data_size_t (&idx)[N], const int32_t* cuda_gradients_and_hessians,
+    const int32_t* leaf_gh_cur, const data_size_t gh_step,
+    const BIN_TYPE* data_ptr, const int row_stride, const typename PACK::Cursor& pack_cursor, int32_t* shared_hist_ptr,
     const data_size_t* next_src = nullptr, const data_size_t next_step = 0, data_size_t* next_idx = nullptr) {
   int32_t g[N];
   uint32_t bins[N];
+  if (leaf_gh_cur != nullptr) {
 #pragma unroll
-  for (int j = 0; j < N; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
+    for (int j = 0; j < N; ++j) g[j] = __ldg(leaf_gh_cur + j * gh_step);
+  } else {
+#pragma unroll
+    for (int j = 0; j < N; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
+  }
   if (PREFETCH) {
 #pragma unroll
     for (int j = 0; j < N; ++j) next_idx[j] = __ldg(next_src + j * next_step);
@@ -2379,6 +2388,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   __syncthreads();
   const unsigned int threadIdx_y = threadIdx.y;
   const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
+  const int32_t* leaf_gh_this_block = smaller_leaf_splits->leaf_gh_in_leaf != nullptr ?
+    smaller_leaf_splits->leaf_gh_in_leaf + block_start : nullptr;
   data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
   const data_size_t num_iteration_total = (block_num_data + blockDim.y - 1) / blockDim.y;
   const data_size_t remainder = block_num_data % blockDim.y;
@@ -2413,9 +2424,10 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
           // without a next batch, re-read the current (valid) positions; the values go unused
           const bool has_next = i + 16 <= num_iteration_this;
           const data_size_t* next_src = data_indices_ref_this_block + inner_data_index + (has_next ? 8 * by : 0);
+          const int32_t* leaf_gh_cur = leaf_gh_this_block != nullptr ? leaf_gh_this_block + inner_data_index : nullptr;
           data_size_t next_idx[8];
-          ConstructRowBatch<8, true, PACK>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, pack_cursor,
-                                           shared_hist_ptr, next_src, has_next ? by : 0, next_idx);
+          ConstructRowBatch<8, true, PACK>(idx, cuda_gradients_and_hessians, leaf_gh_cur, by, data_ptr, row_stride,
+                                           pack_cursor, shared_hist_ptr, next_src, has_next ? by : 0, next_idx);
 #pragma unroll
           for (int j = 0; j < 8; ++j) idx[j] = next_idx[j];
           inner_data_index += 8 * by;
@@ -2425,15 +2437,17 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
         data_size_t idx[4];
 #pragma unroll
         for (int j = 0; j < 4; ++j) idx[j] = __ldg(data_indices_ref_this_block + inner_data_index + j * by);
-        ConstructRowBatch<4, false, PACK>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, pack_cursor,
-                                   shared_hist_ptr);
+        const int32_t* leaf_gh_cur = leaf_gh_this_block != nullptr ? leaf_gh_this_block + inner_data_index : nullptr;
+        ConstructRowBatch<4, false, PACK>(idx, cuda_gradients_and_hessians, leaf_gh_cur, by, data_ptr, row_stride,
+                                          pack_cursor, shared_hist_ptr);
         inner_data_index += 4 * by;
         i += 4;
       }
       for (; i < num_iteration_this; ++i) {
         const data_size_t idx[1] = {data_indices_ref_this_block[inner_data_index]};
-        ConstructRowBatch<1, false, PACK>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, pack_cursor,
-                                   shared_hist_ptr);
+        const int32_t* leaf_gh_cur = leaf_gh_this_block != nullptr ? leaf_gh_this_block + inner_data_index : nullptr;
+        ConstructRowBatch<1, false, PACK>(idx, cuda_gradients_and_hessians, leaf_gh_cur, by, data_ptr, row_stride,
+                                          pack_cursor, shared_hist_ptr);
         inner_data_index += by;
       }
     }
@@ -2448,7 +2462,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
       (column_hist_offsets[use2 ? column_index2 : column_index]);
     for (data_size_t i = 0; i < num_iteration_this; ++i) {
       const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
-      const int32_t grad_and_hess = cuda_gradients_and_hessians[data_index];
+      const int32_t grad_and_hess = leaf_gh_this_block != nullptr ?
+        __ldg(leaf_gh_this_block + inner_data_index) : cuda_gradients_and_hessians[data_index];
       const BIN_TYPE* row_base = data_ptr + static_cast<size_t>(data_index) * row_stride;
       if (use1) {
         const uint32_t bin = PACK::ExtractAt(row_base, pack_cursor);
@@ -2690,13 +2705,20 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
 
 template <int N, bool PREFETCH, bool CODE5 = false>
 __device__ __forceinline__ void ConstructPairRowBatch(
-    const data_size_t (&idx)[N], const int32_t* cuda_gradients_and_hessians, const uint8_t* data_ptr,
-    const int row_stride, const int byte_idx, const uint32_t hi_span, const uint32_t hi_mask, int32_t* joint,
+    const data_size_t (&idx)[N], const int32_t* cuda_gradients_and_hessians,
+    const int32_t* leaf_gh_cur, const data_size_t gh_step,
+    const uint8_t* data_ptr, const int row_stride, const int byte_idx, const uint32_t hi_span, const uint32_t hi_mask,
+    int32_t* joint,
     const data_size_t* next_src = nullptr, const data_size_t next_step = 0, data_size_t* next_idx = nullptr) {
   int32_t g[N];
   uint32_t cells[N];
+  if (leaf_gh_cur != nullptr) {
 #pragma unroll
-  for (int j = 0; j < N; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
+    for (int j = 0; j < N; ++j) g[j] = __ldg(leaf_gh_cur + j * gh_step);
+  } else {
+#pragma unroll
+    for (int j = 0; j < N; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
+  }
   if (PREFETCH) {
 #pragma unroll
     for (int j = 0; j < N; ++j) next_idx[j] = __ldg(next_src + j * next_step);
@@ -2775,6 +2797,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
   }
   __syncthreads();
   const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
+  const int32_t* leaf_gh_this_block = (!DIRECT && smaller_leaf_splits->leaf_gh_in_leaf != nullptr) ?
+    smaller_leaf_splits->leaf_gh_in_leaf + block_start : nullptr;
   const data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
   const data_size_t num_iteration_total = (block_num_data + blockDim.y - 1) / blockDim.y;
   const data_size_t remainder = block_num_data % blockDim.y;
@@ -2808,8 +2832,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
         data_size_t idx[kB];
 #pragma unroll
         for (int j = 0; j < kB; ++j) idx[j] = block_start + inner_data_index + j * by;
-        ConstructPairRowBatch<kB, false, CODE5>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, row_byte, row_hi,
-                                         hi_mask, joint);
+        ConstructPairRowBatch<kB, false, CODE5>(idx, cuda_gradients_and_hessians, nullptr, by, data_ptr, row_stride,
+                                                row_byte, row_hi, hi_mask, joint);
         inner_data_index += kB * by;
       }
     } else if (i + kB <= num_iteration_this) {
@@ -2820,9 +2844,10 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
         // without a next batch, re-read the current (valid) positions; the values go unused
         const bool has_next = i + 2 * kB <= num_iteration_this;
         const data_size_t* next_src = data_indices_ref_this_block + inner_data_index + (has_next ? kB * by : 0);
+        const int32_t* leaf_gh_cur = leaf_gh_this_block != nullptr ? leaf_gh_this_block + inner_data_index : nullptr;
         data_size_t next_idx[kB];
-        ConstructPairRowBatch<kB, true, CODE5>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, row_byte, row_hi,
-                                        hi_mask, joint, next_src, has_next ? by : 0, next_idx);
+        ConstructPairRowBatch<kB, true, CODE5>(idx, cuda_gradients_and_hessians, leaf_gh_cur, by, data_ptr, row_stride,
+                                               row_byte, row_hi, hi_mask, joint, next_src, has_next ? by : 0, next_idx);
 #pragma unroll
         for (int j = 0; j < kB; ++j) idx[j] = next_idx[j];
         inner_data_index += kB * by;
@@ -2835,8 +2860,9 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
         idx[j] = DIRECT ? block_start + inner_data_index + j * by :
                           __ldg(data_indices_ref_this_block + inner_data_index + j * by);
       }
-      ConstructPairRowBatch<16, false, CODE5>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, row_byte, row_hi,
-                                       hi_mask, joint);
+      const int32_t* leaf_gh_cur = leaf_gh_this_block != nullptr ? leaf_gh_this_block + inner_data_index : nullptr;
+      ConstructPairRowBatch<16, false, CODE5>(idx, cuda_gradients_and_hessians, leaf_gh_cur, by, data_ptr, row_stride,
+                                              row_byte, row_hi, hi_mask, joint);
       inner_data_index += 16 * by;
       i += 16;
     }
@@ -2847,8 +2873,9 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
         idx[j] = DIRECT ? block_start + inner_data_index + j * by :
                           __ldg(data_indices_ref_this_block + inner_data_index + j * by);
       }
-      ConstructPairRowBatch<8, false, CODE5>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, row_byte, row_hi,
-                                      hi_mask, joint);
+      const int32_t* leaf_gh_cur = leaf_gh_this_block != nullptr ? leaf_gh_this_block + inner_data_index : nullptr;
+      ConstructPairRowBatch<8, false, CODE5>(idx, cuda_gradients_and_hessians, leaf_gh_cur, by, data_ptr, row_stride,
+                                             row_byte, row_hi, hi_mask, joint);
       inner_data_index += 8 * by;
       i += 8;
     }
@@ -2859,16 +2886,18 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
         idx[j] = DIRECT ? block_start + inner_data_index + j * by :
                           __ldg(data_indices_ref_this_block + inner_data_index + j * by);
       }
-      ConstructPairRowBatch<4, false, CODE5>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, row_byte, row_hi,
-                                      hi_mask, joint);
+      const int32_t* leaf_gh_cur = leaf_gh_this_block != nullptr ? leaf_gh_this_block + inner_data_index : nullptr;
+      ConstructPairRowBatch<4, false, CODE5>(idx, cuda_gradients_and_hessians, leaf_gh_cur, by, data_ptr, row_stride,
+                                             row_byte, row_hi, hi_mask, joint);
       inner_data_index += 4 * by;
       i += 4;
     }
     for (; i < num_iteration_this; ++i) {
       const data_size_t idx[1] = {DIRECT ? block_start + inner_data_index :
                                            data_indices_ref_this_block[inner_data_index]};
-      ConstructPairRowBatch<1, false, CODE5>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, row_byte, row_hi,
-                                      hi_mask, joint);
+      const int32_t* leaf_gh_cur = leaf_gh_this_block != nullptr ? leaf_gh_this_block + inner_data_index : nullptr;
+      ConstructPairRowBatch<1, false, CODE5>(idx, cuda_gradients_and_hessians, leaf_gh_cur, by, data_ptr, row_stride,
+                                             row_byte, row_hi, hi_mask, joint);
       inner_data_index += by;
     }
   }
@@ -3043,6 +3072,9 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
   }
   __syncthreads();
   const data_size_t* data_indices_ref_this_block = smaller_leaf_splits->data_indices_in_leaf + block_start;
+  const int32_t* const leaf_gh_ptr = smaller_leaf_splits->leaf_gh_in_leaf;
+  const bool use_packed_gh = leaf_gh_ptr != nullptr;
+  const int32_t* const gh_base = use_packed_gh ? (leaf_gh_ptr + block_start) : cuda_gradients_and_hessians;
   const data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
   const data_size_t num_iteration_total = (block_num_data + blockDim.y - 1) / blockDim.y;
   const data_size_t remainder = block_num_data % blockDim.y;
@@ -3060,7 +3092,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
         int32_t g[kB];
         uint32_t w[kB];
 #pragma unroll
-        for (int j = 0; j < kB; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
+        for (int j = 0; j < kB; ++j) g[j] = __ldg(gh_base + (use_packed_gh ? (inner_data_index + j * by) : idx[j]));
 #pragma unroll
         for (int j = 0; j < kB; ++j) w[j] = __ldcs(code_ptr + static_cast<size_t>(idx[j]) * row_words);
         // the next batch's positions (without one, the current valid positions again; the values go unused)
@@ -3085,7 +3117,9 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
       int32_t g[kB];
       uint32_t w[kB];
 #pragma unroll
-      for (int j = 0; j < kB; ++j) g[j] = j < rest ? __ldg(cuda_gradients_and_hessians + idx[j]) : 0;
+      for (int j = 0; j < kB; ++j) {
+        g[j] = j < rest ? __ldg(gh_base + (use_packed_gh ? (inner_data_index + j * by) : idx[j])) : 0;
+      }
 #pragma unroll
       for (int j = 0; j < kB; ++j) w[j] = __ldcs(code_ptr + static_cast<size_t>(idx[j]) * row_words);
 #pragma unroll
@@ -3094,7 +3128,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
     }
     for (; i < num_iteration_this; ++i) {
       const data_size_t row = __ldg(data_indices_ref_this_block + inner_data_index);
-      const int32_t g = __ldg(cuda_gradients_and_hessians + row);
+      const int32_t g = __ldg(gh_base + (use_packed_gh ? inner_data_index : row));
       const uint32_t w = __ldcs(code_ptr + static_cast<size_t>(row) * row_words);
       Code5WordAdd<FLAT, CODE_BITS>(shared_joint, joint_base, valid_mask, w, g, radix);
       inner_data_index += by;

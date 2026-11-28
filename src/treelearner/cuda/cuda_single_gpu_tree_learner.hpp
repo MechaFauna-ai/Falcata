@@ -1226,6 +1226,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   mutable CUDAVector<int> cuda_linear_leaf_num_coeff_;
   mutable CUDAVector<double> cuda_linear_leaf_output_;
   mutable bool last_tree_is_linear_ = false;
+  bool partition_pack_gh_diag_logged_ = false;
 };
 
 }  // namespace Falcata

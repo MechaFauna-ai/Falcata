@@ -189,9 +189,21 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
   count_codes_ = nullptr;  // cuda_plan key forest_count_hist: the learner sets this tree's codes (SetCountCodes)
   // every tree starts on plane 0, whose hessians are the ones every consumer reads
   grad_only_plane_ = false;
+  if (FalcataPlan::Get().l2_policy && !skip_grad_l2_pin_ && !l2_limit_attempted_ &&
+      l2_carveout_bytes_ == 0 && l2_persist_budget_ > 0 && gradients != nullptr) {
+    const size_t needed = static_cast<size_t>(num_data_) *
+      (use_quantized_grad_ ? sizeof(int32_t) : 2 * sizeof(score_t));
+    const size_t want = std::min(needed, l2_persist_budget_);
+    if (want > 0) {
+      l2_limit_attempted_ = true;
+      if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want) == cudaSuccess) {
+        l2_carveout_bytes_ = want;
+      }
+    }
+  }
   const size_t l2_window_bytes = std::min(l2_max_window_bytes_,
     static_cast<size_t>(num_data_) * (use_quantized_grad_ ? sizeof(int32_t) : 2 * sizeof(score_t)));
-  if (l2_carveout_bytes_ > 0 && gradients != nullptr &&
+  if (l2_carveout_bytes_ > 0 && !skip_grad_l2_pin_ && gradients != nullptr &&
       (gradients != l2_window_base_ || l2_window_bytes != l2_window_bytes_)) {
     // Pin the per-row gradient buffer (quant: packed int32 grad/hess pairs read
     // once per level per row through data_indices gather) as L2-persisting on
@@ -1536,27 +1548,24 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
     Log::Debug("CUDAHistogramConstructor: fp32 histogram mode %s", hist_fp32_ ? "engaged" : "unsupported for this dataset, using fp64");
   }
 
-  if (FalcataPlan::Get().l2_policy) {
-    // Reserve a persisting-L2 carve-out once; the per-tree window is set in
-    // BeforeTrain when the gradient buffer for the tree is known. Failure is
-    // non-fatal (arch without persisting L2): the key becomes a no-op.
+  {
     cudaDeviceProp prop{};
     if (cudaGetDeviceProperties(&prop, gpu_device_id_ < 0 ? 0 : gpu_device_id_) == cudaSuccess &&
         prop.persistingL2CacheMaxSize > 0) {
-      // Size the carve-out to the device, not to any one GPU model: at most
-      // 2/3 of total L2 (the streaming bin-matrix reads need the rest -- the
-      // 2/3 ratio is the 64MB/96MB split validated on the 5090), at most the
-      // arch's persisting max, and no larger than the buffer we actually pin
-      // (a fixed carve would strand L2 on small datasets).
-      const size_t needed = static_cast<size_t>(num_data_) *
-        (use_quantized_grad_ ? sizeof(int32_t) : 2 * sizeof(score_t));
-      const size_t want = std::min({needed,
-        static_cast<size_t>(prop.persistingL2CacheMaxSize),
-        static_cast<size_t>(prop.l2CacheSize) * 2 / 3});
-      if (want > 0 &&
-          cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want) == cudaSuccess) {
-        l2_carveout_bytes_ = want;
-        l2_max_window_bytes_ = static_cast<size_t>(prop.accessPolicyMaxWindowSize);
+      l2_persist_budget_ = std::min(static_cast<size_t>(prop.persistingL2CacheMaxSize),
+                                    static_cast<size_t>(prop.l2CacheSize) * 2 / 3);
+      l2_max_window_bytes_ = static_cast<size_t>(prop.accessPolicyMaxWindowSize);
+      if (FalcataPlan::Get().l2_policy && !use_quantized_grad_ && !skip_grad_l2_pin_) {
+        // Reserve a persisting-L2 carve-out once; quantized training defers this to the first BeforeTrain
+        // once partition_pack_gh has decided whether cuda_gradients_ will be randomly gathered.
+        const size_t needed = static_cast<size_t>(num_data_) * 2 * sizeof(score_t);
+        const size_t want = std::min(needed, l2_persist_budget_);
+        if (want > 0) {
+          l2_limit_attempted_ = true;
+          if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want) == cudaSuccess) {
+            l2_carveout_bytes_ = want;
+          }
+        }
       }
     }
   }

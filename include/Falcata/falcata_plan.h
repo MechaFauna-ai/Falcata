@@ -1006,6 +1006,17 @@ struct FalcataPlan {
   // the main array; bagged trees before the bag is copied into it (a new bag, or RestoreBagOrder's copy at every score
   // update, which also covers a bag kept for several trees). No row is read from the swapped-out buffer: bit-identical.
   bool index_parity_canonical = true;  // key: index_parity_canonical
+  // partition-ordered quantized grad/hess ping-pong buffer (int32 per row x 2): maintained in lockstep with
+  // cuda_data_indices_ by the batched level apply (SplitLevelBatched / LaunchDeviceLevelApply), so level >= 1
+  // quantized histogram constructs read each row's packed (grad, hess) sequentially/coalesced alongside data_indices
+  // instead of a dependent random gather from cuda_gradients_and_hessians[idx]. Level 0 (and classic per-split /
+  // non-eligible flows) read cuda_gradients_and_hessians[idx] as before. Default true means hardware-gated auto
+  // (engages on dense/pair-joint batched constructs where raw quant gh exceeds the device persisting L2 budget, or
+  // on wide >=4-partition 8-bit dense constructs); explicit :on sets partition_pack_gh_forced=true to force packing
+  // at any hybrid quantized shape, and :off disables it everywhere. Same packed int32 values, same integer sums:
+  // bit-identical.
+  bool partition_pack_gh = true;    // key: partition_pack_gh
+  bool partition_pack_gh_forced = false;
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
@@ -1175,6 +1186,7 @@ struct FalcataPlan {
     if (key == "device_level_graph") return &device_level_graph;
     if (key == "device_level_graph_update") return &device_level_graph_update;
     if (key == "index_parity_canonical") return &index_parity_canonical;
+    if (key == "partition_pack_gh") return &partition_pack_gh;
     return nullptr;
   }
 
@@ -1395,6 +1407,9 @@ struct FalcataPlan {
         Log::Fatal("cuda_plan: unknown key \"%s\"", kv[0].c_str());
       }
       *slot = value;
+      if (kv[0] == std::string("partition_pack_gh")) {
+        plan.partition_pack_gh_forced = value;
+      }
       overridden = true;
     }
     if (overridden_out != nullptr) {

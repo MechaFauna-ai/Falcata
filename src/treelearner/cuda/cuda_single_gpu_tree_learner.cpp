@@ -526,6 +526,30 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
       cuda_gradient_discretizer_->DiscretizeGradientsForPlane(
         t, num_data_, gradients_ + static_cast<size_t>(t) * num_data_, hessians_);
     }
+    const FalcataPlan& pack_plan = FalcataPlan::Get();
+    const size_t gh_bytes = static_cast<size_t>(num_data_) * sizeof(int32_t);
+    const size_t l2_budget = cuda_histogram_constructor_->l2_persist_budget();
+    // Auto-gate: engage only when the construct kernel family actually reads leaf_gh_in_leaf (dense shared-memory
+    // batched or 4-bit pair-joint; exclude sparse, global-memory, and non-pair 4-bit from auto so L2 pinning is
+    // never skipped for kernels that still gather randomly) AND packing pays. Explicit :on forces all hybrid shapes.
+    const bool construct_reads_packed_gh = cuda_histogram_constructor_->SupportsBatchedLevel() &&
+      (!cuda_histogram_constructor_->is_4bit_rowdata() || cuda_histogram_constructor_->PairJointServesView());
+    const bool pack_gh_pays = pack_plan.partition_pack_gh_forced ||
+      (construct_reads_packed_gh &&
+       ((l2_budget == 0 || gh_bytes > l2_budget) ||
+        (!cuda_histogram_constructor_->is_4bit_rowdata() &&
+         cuda_histogram_constructor_->num_feature_partitions() >= 4)));
+    const bool pack_gh_want = pack_plan.partition_pack_gh && pack_gh_pays && use_hybrid_growth_ &&
+      vec_num_targets_ <= 1 && nccl_communicator_ == nullptr && fp_merge_state_ == nullptr && !config_->linear_tree;
+    const bool pack_gh_active = cuda_data_partition_->SetQuantizedGradHess(
+      pack_gh_want ? reinterpret_cast<const int32_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians())
+                   : nullptr);
+    if (FalcataDebug().diag && pack_gh_active && !partition_pack_gh_diag_logged_) {
+      partition_pack_gh_diag_logged_ = true;
+      fprintf(stderr, "[hybrid-diag] partition_pack_gh: active (rows=%d, gh_bytes=%zu, l2_budget=%zu, forced=%d)\n",
+              num_data_, gh_bytes, l2_budget, pack_plan.partition_pack_gh_forced ? 1 : 0);
+    }
+    cuda_histogram_constructor_->SetSkipGradL2Pin(pack_gh_active);
     cuda_histogram_constructor_->BeforeTrain(
       reinterpret_cast<const score_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()), nullptr);
     // cuda_plan key async_tree_start: the root sums are first needed by the level prefix
@@ -553,6 +577,8 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
         cuda_gradient_discretizer_->SetNumBitsInHistogramBin<true>(0, -1, global_num_data_, 0);
       }
   } else {
+    cuda_data_partition_->SetQuantizedGradHess(nullptr);
+    cuda_histogram_constructor_->SetSkipGradL2Pin(false);
     cuda_histogram_constructor_->BeforeTrain(gradients_, hessians_);
     // The single-sync hybrid prefix derives every root gate on-device, so the
     // synchronous root-sum readback (which would block on the histogram-buffer
@@ -3730,7 +3756,8 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     // (the apply's last block writes the children's descriptors and block map: DeviceLevelPairsBlock)
     cuda_data_partition_->LaunchDeviceLevelApply(max_splits, dls, cfg_device,
       inline_all_map && cfg.whole_tree && level + 1 == num_levels,
-      final_map_only && level + 1 == num_levels, cfg.whole_tree != 0);
+      final_map_only && level + 1 == num_levels, cfg.whole_tree != 0, /*joint_leaves=*/0,
+      /*skip_gh_scatter=*/cfg.whole_tree && level + 1 == num_levels);
     if (record_tree) {
       tree->LaunchSplitLevelKernelsDevice(max_splits, &dls->live_num_splits, cat_levels ? &cat_level : nullptr);
       CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree_stream));
@@ -3973,7 +4000,7 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       }
       CUDASUCCESS_OR_FATAL(cudaGraphLaunch(device_level_graphs_.back()->exec, find_stream));
       // the host halves of the captured enqueue: the index buffers swap once per level
-      cuda_data_partition_->SwapIndexBuffers(num_levels);
+      cuda_data_partition_->SwapIndexBuffers(num_levels, /*end_gh_valid=*/!cfg.whole_tree);
       ++device_level_graph_hits_;
       if (FalcataDebug().diag && device_level_graph_hits_ + device_level_graph_misses_ == 64) {
         fprintf(stderr, "[hybrid-diag] device_level_graph: %d hits, %d misses in the first 64 trees (%d cached)\n",
