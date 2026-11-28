@@ -268,6 +268,7 @@ __host__ __device__ inline data_size_t DenseLevelRowsPerThreadFloor(const data_s
 
 struct CUDADeviceLevelState;
 struct CUDADeviceLevelConstructShape;
+struct CUDADeviceTreeGraphParams;
 /*!
  * \brief cuda_plan key forest_count_hist: the per-row integer codes of one constant gradient array of a random forest
  *        (docs/design/forest-count-histograms.md). Every hessian equals hessian, and row i's gradient is exactly
@@ -635,12 +636,49 @@ class CUDAHistogramConstructor {
     device_level_state_ = dls;
     device_level_whole_tree_ = dls != nullptr && whole_tree;
   }
+  /*! \brief cuda_plan key device_graph_indirect: per-tree runtime params in device memory (nullptr: direct args) */
+  void SetDeviceTreeGraphParams(const CUDADeviceTreeGraphParams* params) {
+    device_tree_graph_params_ = params;
+  }
+  /*! \brief cuda_plan key device_graph_indirect: true when histogram construct or fused fix/subtract can vary per tree */
+  bool UseDeviceGraphIndirect() const {
+    return FalcataPlan::Get().device_graph_indirect &&
+           (use_compact_view_ ||
+            (any_feature_unused_bytree_ && used_feature_info_ok_ && FalcataPlan::Get().fix_subtract_fused));
+  }
+  /*! \brief cuda_plan key device_graph_indirect: populate histogram-side per-tree runtime params before upload */
+  void FillDeviceTreeGraphParams(CUDADeviceTreeGraphParams* params,
+                                 const CUDADeviceLevelConstructShape& shape) const;
+  /*! \brief cuda_plan key device_graph_indirect: coarse bucket for dense compact column count per partition */
+  static int BucketDenseCompactCols(const int cc) {
+    if (cc <= 32) return std::max(1, cc);
+    if (cc <= 64) return ((cc + 3) / 4) * 4;
+    if (cc <= 128) return ((cc + 7) / 8) * 8;
+    const int rounded = ((cc + 15) / 16) * 16;
+    return cc <= NUM_THREADS_PER_BLOCK ? std::min(rounded, NUM_THREADS_PER_BLOCK) : rounded;
+  }
+  /*! \brief cuda_plan key device_graph_indirect: coarse bucket for dynamic shared memory (4 KB granularity) */
+  static size_t BucketDeviceLevelSmemBytes(const size_t exact_bytes, const size_t max_bytes) {
+    constexpr size_t kStep = 4096;
+    const size_t rounded = ((exact_bytes + kStep - 1) / kStep) * kStep;
+    return std::min(max_bytes, std::max(exact_bytes, rounded));
+  }
+  /*! \brief block threads of FixSubtractUsedFeaturesBatchedKernel (bucketed under device_graph_indirect) */
+  int FixSubtractUsedFeaturesThreads(const bool indirect) const {
+    if (!(any_feature_unused_bytree_ && used_feature_info_ok_ && FalcataPlan::Get().fix_subtract_fused)) {
+      return 0;
+    }
+    const int threads = std::max(32, (num_used_feature_info_ + 31) / 32 * 32);
+    if (!indirect) return threads;
+    return threads <= 64 ? 64 : (threads <= 128 ? 128 : (threads <= 256 ? 256 : 512));
+  }
   /*! \brief cuda_plan key device_levels: whether this tree's multi-pair level constructs take the dense batched
    *  kernel (the one with the device block map), not the pair-joint family */
   bool DeviceLevelConstructSupported();
   /*! \brief cuda_plan key device_level_graph: the pointers and per-tree shape a captured level search bakes in */
   void DeviceLevelGraphKey(std::vector<const void*>* key,
                            const CUDADeviceLevelConstructShape* shape = nullptr) const {
+    const bool indirect = UseDeviceGraphIndirect() && shape != nullptr;
     // Whole-row code-word device constructs launch exclusively through LaunchDeviceLevelPairJoint. Their actual
     // block/grid/shared-memory/row-grouping shape replaces the preliminary per-partition maxima: neither maximum
     // is passed to that kernel, fix/subtract, or the finder. All true kernel args and buffer identities stay keyed.
@@ -668,6 +706,32 @@ class CUDAHistogramConstructor {
     // EnsureDeviceLevelCapacity)
     key->push_back(use_quantized_grad_ ?
       static_cast<const void*>(hist_buffer_for_num_bit_change_.RawDataReadOnly()) : nullptr);
+    if (indirect) {
+      // cuda_plan key device_graph_indirect: per-tree counts (num_compact_columns_, whole_row_joint,
+      // num_used_feature_info_, etc.) are read from CUDADeviceTreeGraphParams; only kernel selection,
+      // buffer pointers, and bucketed launch geometry (grid/block/SMEM) remain in the graph key.
+      key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(code5_valid_ ? 1 : 0)));
+      key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(use_compact_view_ ? 1 : 0)));
+      const int active_code5_bits = (shape->pair_mode == 1 && shape->kernel_kind == 4) ? code5_bits_ : 0;
+      for (const int v : {active_code5_bits, compact_row_interleave_ ? 1 : 0,
+                          FixSubtractUsedFeaturesThreads(/*indirect=*/true),
+                          used_feature_info_ok_ ? 1 : 0, any_feature_unused_bytree_ ? 1 : 0,
+                          nibble_pending_ ? 1 : 0}) {
+        key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
+      }
+      key->push_back(static_cast<const void*>(cuda_used_feature_info_.RawDataReadOnly()));
+      if (FalcataDebug().diag) {
+        fprintf(stderr, "[hybrid-diag] device_tree: layout partcols=%d partjoint=%d construct=%d\n",
+                max_num_compact_cols_per_partition_, compact_pair_joint_max_, shape->kernel_kind);
+      }
+      for (const int v : {shape->pair_mode, shape->kernel_kind, shape->block_y, shape->grid_x, shape->block_x,
+                          shape->smem_bytes, shape->slot, shape->slot_device_slots,
+                          shape->whole_row_partitions > 0 ? 1 : 0,
+                          shape->code5_flat, shape->code5_epilogue_flat}) {
+        key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
+      }
+      return;
+    }
     // the compact view's construct block shape follows the per-tree sampled column count
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(
       whole_code_words || !use_compact_view_ ? 0 : std::max(1, max_num_compact_cols_per_partition_))));
@@ -1238,6 +1302,8 @@ class CUDAHistogramConstructor {
   /*! \brief cuda_plan key device_levels: see SetDeviceLevelState */
   const CUDADeviceLevelState* device_level_state_ = nullptr;
   bool device_level_whole_tree_ = false;
+  /*! \brief cuda_plan key device_graph_indirect: see SetDeviceTreeGraphParams */
+  const CUDADeviceTreeGraphParams* device_tree_graph_params_ = nullptr;
 
 
   // CUDA memory, held by this object

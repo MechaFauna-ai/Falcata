@@ -477,6 +477,65 @@ class CUDABestSplitFinder {
   /*! \brief cuda_plan key device_levels: the device level state the level find and sync launches read while the
    *  learner enqueues a device-driven level's search (nullptr otherwise) */
   void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
+  /*! \brief cuda_plan key device_graph_indirect: per-tree runtime params in device memory (nullptr: direct args) */
+  void SetDeviceTreeGraphParams(const CUDADeviceTreeGraphParams* params) { device_tree_graph_params_ = params; }
+  /*! \brief cuda_plan key device_graph_indirect: true when split-finder task counts or ridge can vary per tree */
+  bool UseDeviceGraphIndirect() const {
+    if (!FalcataPlan::Get().device_graph_indirect) {
+      return false;
+    }
+    const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+    return hessian_ridge_quanta_ > 0.0 ||
+           (compact_tasks && (warp_find_order_used_ || num_tasks_ != num_features_));
+  }
+  /*! \brief cuda_plan key device_graph_indirect: populate finder-side per-tree runtime params before upload */
+  void FillDeviceTreeGraphParams(CUDADeviceTreeGraphParams* params);
+  /*! \brief narrow/wide task counts for the warp level finder */
+  void ComputeWarpFindCounts(int* num_narrow, int* num_wide) const {
+    const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+    const int num_launch_tasks = compact_tasks ? num_used_tasks_ : num_tasks_;
+    const int n = warp_find_order_used_ ? warp_find_num_narrow_used_ :
+                  warp_find_max_positions_ <= 8 ? num_launch_tasks : warp_find_num_narrow_used_;
+    const int w = num_launch_tasks - (n - (warp_find_order_used_ ? warp_find_order_pad_ : 0));
+    *num_narrow = n;
+    *num_wide = w;
+  }
+  /*! \brief cuda_plan key device_graph_indirect: coarse bucket for warp-finder per-side units */
+  static void BucketWarpUnits(const int units, const int max_units, int* bucket, int* min_in_bucket) {
+    if (units <= 0) {
+      *bucket = 0;
+      *min_in_bucket = 0;
+      return;
+    }
+    int lo = 1;
+    int step = 16;
+    if (units <= 64) {
+      step = 16;
+      lo = ((units - 1) / step) * step + 1;
+    } else if (units <= 256) {
+      step = 32;
+      lo = 64 + ((units - 65) / step) * step + 1;
+    } else if (units <= 1024) {
+      step = 64;
+      lo = 256 + ((units - 257) / step) * step + 1;
+    } else {
+      step = 128;
+      lo = 1024 + ((units - 1025) / step) * step + 1;
+    }
+    int hi = lo + step - 1;
+    if (max_units > 0 && hi > max_units) {
+      hi = max_units;
+    }
+    *bucket = hi;
+    *min_in_bucket = lo;
+  }
+  /*! \brief cuda_plan key device_graph_indirect: coarse bucket for block-finder grid_x */
+  static int BucketBlockTasks(const int used_tasks, const int max_tasks) {
+    if (used_tasks <= 0) return 0;
+    const int step = used_tasks <= 128 ? 32 : (used_tasks <= 512 ? 64 : (used_tasks <= 2048 ? 128 : 256));
+    const int rounded = ((used_tasks + step - 1) / step) * step;
+    return std::min(max_tasks, rounded);
+  }
   /*! \brief cuda_plan key device_levels: the next level's select runs in the last block of the level sync launched
    *  while this is set (the used-task sync only; LastSyncRanSelect tells whether it did) */
   void SetDeviceLevelSelect(const CUDADeviceLevelConfig* cfg) { device_level_select_cfg_ = cfg; }
@@ -491,6 +550,47 @@ class CUDABestSplitFinder {
     key->push_back(static_cast<const void*>(cuda_best_split_info_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_cat_threshold_feature_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_cat_threshold_real_feature_.RawDataReadOnly()));
+    if (UseDeviceGraphIndirect()) {
+      // cuda_plan key device_graph_indirect: exact num_used_tasks_, warp_find_num_narrow_used_,
+      // warp_find_order_pad_ and hessian_ridge_quanta_ are read from CUDADeviceTreeGraphParams;
+      // only the mode flags, buffer pointers, and coarse grid buckets remain in the graph key.
+      const int task_mode = num_used_tasks_ == 0 ? 0 : (compact_tasks ? 1 : 2);
+      key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(task_mode)));
+      key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_order_used_ ? 1 : 0)));
+      key->push_back(static_cast<const void*>(warp_find_order_used_ ?
+        cuda_warp_find_order_.RawDataReadOnly() : nullptr));
+      key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_split_block_cap_)));
+      key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_narrow_mixed_direction_ ? 1 : 0)));
+      const bool use_warp = use_quantized_grad_ && warp_find_eligible_ && !FalcataFP32GainEnabled();
+      int wide_flag = 0;
+      int bucket_narrow_units = 0;
+      int bucket_wide = 0;
+      int bucket_block_tasks = 0;
+      if (num_used_tasks_ > 0) {
+        if (use_warp) {
+          int num_narrow = 0;
+          int num_wide = 0;
+          ComputeWarpFindCounts(&num_narrow, &num_wide);
+          wide_flag = num_wide > 0 ? 1 : 0;
+          int min_nu = 0;
+          int min_w = 0;
+          BucketWarpUnits((num_narrow + 7) / 8, (num_tasks_ + 15) / 8, &bucket_narrow_units, &min_nu);
+          BucketWarpUnits(num_wide, num_tasks_, &bucket_wide, &min_w);
+        } else if (compact_tasks && LevelNodeTaskLists() == nullptr) {
+          bucket_block_tasks = BucketBlockTasks(num_used_tasks_, num_tasks_);
+        }
+      }
+      key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(wide_flag)));
+      key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(bucket_narrow_units)));
+      key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(bucket_wide)));
+      key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(bucket_block_tasks)));
+      key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(level_node_max_tasks_)));
+      // cuda_plan key device_bynode_masks: the device-drawn table, lists and grid the level finders capture
+      key->push_back(static_cast<const void*>(device_node_table_));
+      key->push_back(static_cast<const void*>(device_node_tasks_));
+      key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(device_node_max_tasks_)));
+      return;
+    }
     // GOSS changes the ridge after its unbagged warmup; kernel arguments are captured by value.
     uint64_t ridge_bits = 0;
     std::memcpy(&ridge_bits, &hessian_ridge_quanta_, sizeof(ridge_bits));
@@ -726,6 +826,8 @@ class CUDABestSplitFinder {
   bool leaf_mirror_requested_ = false;
   /*! \brief cuda_plan key device_levels: see SetDeviceLevelState */
   const CUDADeviceLevelState* device_level_state_ = nullptr;
+  /*! \brief cuda_plan key device_graph_indirect: see SetDeviceTreeGraphParams */
+  const CUDADeviceTreeGraphParams* device_tree_graph_params_ = nullptr;
   /*! \brief cuda_plan key device_levels: see SetDeviceLevelSelect */
   const CUDADeviceLevelConfig* device_level_select_cfg_ = nullptr;
   bool last_sync_ran_select_ = false;

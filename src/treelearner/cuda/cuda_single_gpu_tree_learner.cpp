@@ -3671,13 +3671,22 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     cudaStream_t hist;
     ~RestoreDeviceLevelStreams() {
       histogram->SetDeviceLevelState(nullptr);
+      histogram->SetDeviceTreeGraphParams(nullptr);
       finder->SetDeviceLevelState(nullptr);
+      finder->SetDeviceTreeGraphParams(nullptr);
       finder->SetDeviceLevelSelect(nullptr);
       partition->ExchangeApplyStream(apply);
       histogram->ExchangeHistStream(hist);
     }
   } restore{cuda_data_partition_.get(), cuda_histogram_constructor_.get(), cuda_best_split_finder_.get(),
             apply_stream_saved, hist_stream_saved};
+  const CUDADeviceLevelConfig* cfg_device = cuda_device_level_config_.RawDataReadOnly();
+  const bool hist_indirect = cuda_histogram_constructor_->UseDeviceGraphIndirect();
+  const bool finder_indirect = cuda_best_split_finder_->UseDeviceGraphIndirect();
+  const CUDADeviceLevelConfig* indirect_cfg = (hist_indirect || finder_indirect) ? cfg_device : nullptr;
+  const CUDADeviceTreeGraphParams* graph_params = &cfg_device->tree_params;
+  cuda_histogram_constructor_->SetDeviceTreeGraphParams(hist_indirect ? graph_params : nullptr);
+  cuda_best_split_finder_->SetDeviceTreeGraphParams(finder_indirect ? graph_params : nullptr);
   if (cfg.r1_binding != 0) {
     EnqueueSelectiveDeviceLevels(cfg, body ? -1 : 0, num_levels);
     return;
@@ -3686,7 +3695,7 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   cudaStream_t tree_stream = tree->tree_stream();
   CUDADeviceLevelState* dls = cfg.state;
   // ordered after the root level's search (its sync kernel ran on the find stream)
-  LaunchDeviceLevelReset(cfg, 1, find_stream);
+  LaunchDeviceLevelReset(cfg, 1, find_stream, indirect_cfg);
   cuda_histogram_constructor_->SetDeviceLevelState(dls, cfg.whole_tree != 0);
   cuda_best_split_finder_->SetDeviceLevelState(dls);
   // (non-quantized training: the level finder on hist_t histograms)
@@ -3694,7 +3703,6 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   const score_t* hess_scale = config_->use_quantized_grad ? cuda_gradient_discretizer_->hess_scale_ptr() : nullptr;
   // The prefix can select in the previous sync's last block; whole trees select in a standalone launch.
   bool select_ran = false;
-  const CUDADeviceLevelConfig* cfg_device = cuda_device_level_config_.RawDataReadOnly();
   // the selective prefix records no tree on the device (nothing reads it;
   // the selective flow rebuilds the tree from its own records), so the tree stream never joins the levels
   const bool record_tree = cfg.skip_tree_record == 0;
@@ -3718,10 +3726,10 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     const int max_splits = 1 << level;
     // the level's host decisions (after its search on this stream), then the apply and the tree record behind them
     if (!select_ran) {
-      LaunchDeviceLevelSelect(cfg, level, max_splits, find_stream);
+      LaunchDeviceLevelSelect(cfg, level, max_splits, find_stream, 0, indirect_cfg);
     }
     if (cat_levels) {
-      LaunchDeviceLevelCatBitsets(cfg, max_splits, find_stream);
+      LaunchDeviceLevelCatBitsets(cfg, max_splits, find_stream, indirect_cfg);
     }
     if (record_tree) {
       CUDASUCCESS_OR_FATAL(cudaEventRecord(device_level_select_event_, find_stream));
@@ -3810,9 +3818,13 @@ void CUDASingleGPUTreeLearner::EnqueueSelectiveDeviceLevels(const CUDADeviceLeve
   const bool body = first_level < 0;
   CHECK(config_->use_quantized_grad);
   CHECK_EQ(cfg.whole_tree, 0);
+  const CUDADeviceLevelConfig* cfg_device = cuda_device_level_config_.RawDataReadOnly();
+  const CUDADeviceLevelConfig* indirect_cfg =
+    (cuda_histogram_constructor_->UseDeviceGraphIndirect() || cuda_best_split_finder_->UseDeviceGraphIndirect()) ?
+      cfg_device : nullptr;
   if (!body) {
     // ordered after the root level's search (its sync kernel ran on the find stream)
-    LaunchDeviceLevelReset(cfg, 1, find_stream);
+    LaunchDeviceLevelReset(cfg, 1, find_stream, indirect_cfg);
   }
   // (a body's levels, num_leaves / 2 worst-case pairs, take the live-pair fix/subtract launches where they pay; the
   // unrolled levels keep the former prefix's launches)
@@ -3820,11 +3832,10 @@ void CUDASingleGPUTreeLearner::EnqueueSelectiveDeviceLevels(const CUDADeviceLeve
   cuda_best_split_finder_->SetDeviceLevelState(dls);
   const score_t* grad_scale = cuda_gradient_discretizer_->grad_scale_ptr();
   const score_t* hess_scale = cuda_gradient_discretizer_->hess_scale_ptr();
-  const CUDADeviceLevelConfig* cfg_device = cuda_device_level_config_.RawDataReadOnly();
   const CUDAHybridPairDescriptor* descs = cuda_hybrid_pair_descs_.RawDataReadOnly();
   const int num_leaves = config_->num_leaves;
   if (!body) {
-    LaunchDeviceLevelSelect(cfg, 0, 1, find_stream, 1);
+    LaunchDeviceLevelSelect(cfg, 0, 1, find_stream, 1, indirect_cfg);
   }
   for (int i = 0; i < count; ++i) {
     const int level = body ? -1 : first_level + i;
@@ -3870,11 +3881,11 @@ void CUDASingleGPUTreeLearner::EnqueueSelectiveDeviceLevels(const CUDADeviceLeve
       cuda_best_split_finder_->SetDeviceLevelSelect(nullptr);
     }
     if (last_select && !select_ran) {
-      LaunchDeviceLevelSelect(cfg, body ? -1 : level + 1, next_splits, find_stream, next_leaves);
+      LaunchDeviceLevelSelect(cfg, body ? -1 : level + 1, next_splits, find_stream, next_leaves, indirect_cfg);
     }
   }
   if (body || selective_device_boundary_) {
-    LaunchDeviceLevelSegmentEnd(cfg, device_level_flag_device_, find_stream);
+    LaunchDeviceLevelSegmentEnd(cfg, device_level_flag_device_, find_stream, indirect_cfg);
   }
 }
 
@@ -3882,16 +3893,21 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
                                                       const int num_levels, const bool inline_all_map,
                                                       const bool final_map_only, const bool body) {
   // the pointers and per-tree launch shapes the captured launches bake in
+  const bool hist_indirect = cuda_histogram_constructor_->UseDeviceGraphIndirect();
+  const bool finder_indirect = cuda_best_split_finder_->UseDeviceGraphIndirect();
+  const bool indirect = hist_indirect || finder_indirect;
   std::vector<const void*> key;
   key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(num_levels)));
   key.push_back(static_cast<const void*>(tree->hybrid_graph_batch_splits()));
-  key.push_back(static_cast<const void*>(cfg.root_struct));
-  key.push_back(static_cast<const void*>(cfg.tree_leaf_value));
+  key.push_back(indirect ? static_cast<const void*>(cuda_device_level_config_.RawDataReadOnly()) :
+                           static_cast<const void*>(cfg.root_struct));
+  key.push_back(indirect ? reinterpret_cast<const void*>(static_cast<uintptr_t>(1)) :
+                           static_cast<const void*>(cfg.tree_leaf_value));
   key.push_back(static_cast<const void*>(cuda_hybrid_pair_descs_.RawDataReadOnly()));
   key.push_back(static_cast<const void*>(hybrid_pair_slots_.RawDataReadOnly()));
   // Sampled compact views may select a different decoder while retaining the same allocation and padded shape.
   key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cuda_histogram_constructor_->compact_codec())));
-  cuda_histogram_constructor_->DeviceLevelGraphKey(&key, cfg.whole_tree ? &cfg.shape : nullptr);
+  cuda_histogram_constructor_->DeviceLevelGraphKey(&key, (cfg.whole_tree || hist_indirect) ? &cfg.shape : nullptr);
   cuda_best_split_finder_->DeviceLevelGraphKey(&key);
   cuda_data_partition_->DeviceLevelGraphKey(&key);
   if (cfg.r1_binding != 0) {
@@ -4289,6 +4305,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // (the non-quantized dense kernel has no rows-per-thread floor: each block row takes its pair's grid share)
   cfg.level_row_blocks = config_->use_quantized_grad && (cfg.shape.pair_mode == 0 ?
     FalcataPlan::Get().dense_level_row_blocks : FalcataPlan::Get().level_row_blocks) ? 1 : 0;
+  // cuda_plan key device_graph_indirect: populate per-tree runtime scalars uploaded with cfg
+  cuda_histogram_constructor_->FillDeviceTreeGraphParams(&cfg.tree_params, cfg.shape);
+  cuda_best_split_finder_->FillDeviceTreeGraphParams(&cfg.tree_params);
   // the apply's pairs block reads the config from device memory (stream-ordered before the levels; the host copy
   // stays alive in the learner)
   CopyFromHostToCUDADeviceAsync<CUDADeviceLevelConfig>(cuda_device_level_config_.RawData(), &cfg, 1, find_stream,

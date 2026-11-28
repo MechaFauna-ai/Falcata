@@ -411,7 +411,7 @@ __global__ void BatchConstructCatBitsetsKernel(
 // apply descriptor gets its default directions from the inner bitset, exactly as HybridBuildCatBitsetArenaKernel
 // patches SplitLevelBatched's descriptors: the most frequent bin's membership (bin 0 never), read over the
 // descriptor's bin-range cap (the arena region's length there; the slab's words past it are not read)
-__global__ void DeviceLevelCatBitsetsKernel(const CUDADeviceLevelConfig cfg) {
+__device__ __forceinline__ void DeviceLevelCatBitsetsBody(const CUDADeviceLevelConfig& cfg) {
   const int c = static_cast<int>(blockIdx.x);
   if (c >= cfg.state->live_cat_splits) {
     return;
@@ -435,8 +435,21 @@ __global__ void DeviceLevelCatBitsetsKernel(const CUDADeviceLevelConfig cfg) {
   }
 }
 
-void LaunchDeviceLevelCatBitsets(const CUDADeviceLevelConfig& config, const int max_splits, cudaStream_t stream) {
-  DeviceLevelCatBitsetsKernel<<<max_splits, 128, 0, stream>>>(config);
+__global__ void DeviceLevelCatBitsetsKernel(const CUDADeviceLevelConfig cfg) {
+  DeviceLevelCatBitsetsBody(cfg);
+}
+
+__global__ void DeviceLevelCatBitsetsIndirectKernel(const CUDADeviceLevelConfig* cfg_ptr) {
+  DeviceLevelCatBitsetsBody(*cfg_ptr);
+}
+
+void LaunchDeviceLevelCatBitsets(const CUDADeviceLevelConfig& config, const int max_splits, cudaStream_t stream,
+                                 const CUDADeviceLevelConfig* cfg_device) {
+  if (cfg_device != nullptr) {
+    DeviceLevelCatBitsetsIndirectKernel<<<max_splits, 128, 0, stream>>>(cfg_device);
+  } else {
+    DeviceLevelCatBitsetsKernel<<<max_splits, 128, 0, stream>>>(config);
+  }
 }
 
 void CUDASingleGPUTreeLearner::LaunchBatchConstructCatBitsetsKernel(const int num_cat_splits) {
