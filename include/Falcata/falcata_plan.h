@@ -563,6 +563,13 @@ struct FalcataPlan {
   // holds launches one mapped grid per prefix-full of pairs. Same blocks with
   // the same rows: bit-identical.
   bool dense_block_map = true;      // key: dense_block_map
+  // batched per-level sparse histogram construction (quantized training on sparse
+  // CSR row data whose partitions fit shared memory): unlocks batched level
+  // histograms (with dense_level_row_blocks / dense_block_map) and complete
+  // device_tree CUDA graph execution for sparse datasets instead of falling back
+  // to the per-leaf sparse kernel. Integer atomics are order-invariant:
+  // bit-identical.
+  bool sparse_batched_level = true;  // key: sparse_batched_level
   // pair_hist on a leaf that holds every row (the root without bagging): its
   // index list is a permutation of all rows, so each position is read as that
   // row number without the index gather. Same rows per block, same rows in
@@ -1121,6 +1128,7 @@ struct FalcataPlan {
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "dense_level_row_blocks") return &dense_level_row_blocks;
     if (key == "dense_block_map") return &dense_block_map;
+    if (key == "sparse_batched_level") return &sparse_batched_level;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
     if (key == "sync_used_tasks") return &sync_used_tasks;
