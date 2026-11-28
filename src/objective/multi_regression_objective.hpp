@@ -134,6 +134,10 @@ class MultiRegressionL2 : public ObjectiveFunction {
     }
   }
 
+  OutputTransform DescribeOutputTransform() const override {
+    return OutputTransform{OutputTransformKind::kNone, 1.0};
+  }
+
   const char* GetName() const override { return "multi_regression"; }
 
   std::string ToString() const override {

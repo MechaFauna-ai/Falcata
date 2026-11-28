@@ -387,6 +387,7 @@ class GBDT : public GBDTBase {
   TreeRangeView RangeShape(const PredictRange& range) const override;
   void ConvertRawToPrediction(double* output, const PredictRange& range) const override;
   bool HasOutputConversion() const override { return average_output_ || objective_function_ != nullptr; }
+  OutputConversion DescribeOutputConversion(const PredictRange& range) const override;
   /*! \brief the range set by the last InitPredict (the legacy, model-wide prediction state) */
   inline PredictRange InitializedPredictRange() const {
     PredictRange range;

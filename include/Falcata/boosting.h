@@ -388,6 +388,36 @@ class FALCATA_EXPORT Boosting {
   virtual bool HasOutputConversion() const { return true; }
 
   /*!
+  * \brief Description of ConvertRawToPrediction for device-side execution in CUDAPredictor.
+  *        When average_divisor > 1, raw scores are first divided by average_divisor, then the
+  *        objective transform `kind` is applied.
+  */
+  struct OutputConversion {
+    enum Kind {
+      kNone = 0,       // identity (no objective transform)
+      kSigmoid = 1,    // 1.0 / (1.0 + exp(-param * x))
+      kSoftmax = 2,    // row-wise softmax over num_output classes
+      kExp = 3,        // exp(x)
+      kRegSqrt = 4,    // Sign(x) * x * x
+      kSoftplus = 5,   // max(x, 0.0) + log1p(exp(-fabs(x)))
+      kHostOnly = 6,   // unsupported on device: fall back to host ConvertRawToPrediction
+    };
+    Kind kind = kHostOnly;
+    double param = 1.0;
+    int average_divisor = 0;
+    bool is_noop() const { return kind == kNone && average_divisor <= 1; }
+    bool uses_transcendental() const {
+      return kind == kSigmoid || kind == kSoftmax || kind == kExp || kind == kSoftplus;
+    }
+  };
+
+  virtual OutputConversion DescribeOutputConversion(const PredictRange& /*range*/) const {
+    OutputConversion conv;
+    conv.kind = HasOutputConversion() ? OutputConversion::kHostOnly : OutputConversion::kNone;
+    return conv;
+  }
+
+  /*!
   * \brief Name of submodel
   */
   virtual const char* SubModelName() const = 0;

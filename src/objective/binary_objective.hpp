@@ -198,6 +198,10 @@ class BinaryLogloss: public ObjectiveFunction {
     output[0] = 1.0f / (1.0f + std::exp(-sigmoid_ * input[0]));
   }
 
+  OutputTransform DescribeOutputTransform() const override {
+    return OutputTransform{OutputTransformKind::kSigmoid, sigmoid_};
+  }
+
   std::string ToString() const override {
     std::stringstream str_buf;
     str_buf << GetName() << " ";

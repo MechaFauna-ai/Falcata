@@ -139,6 +139,10 @@ class CrossEntropy: public ObjectiveFunction {
     output[0] = 1.0f / (1.0f + std::exp(-input[0]));
   }
 
+  OutputTransform DescribeOutputTransform() const override {
+    return OutputTransform{OutputTransformKind::kSigmoid, 1.0};
+  }
+
   std::string ToString() const override {
     std::stringstream str_buf;
     str_buf << GetName();
@@ -282,6 +286,10 @@ class CrossEntropyLambda: public ObjectiveFunction {
 
   void ConvertOutput(const double* input, double* output) const override {
     output[0] = std::max(input[0], 0.0) + std::log1p(std::exp(-std::fabs(input[0])));
+  }
+
+  OutputTransform DescribeOutputTransform() const override {
+    return OutputTransform{OutputTransformKind::kSoftplus, 1.0};
   }
 
   std::string ToString() const override {

@@ -709,6 +709,23 @@ int FloorLog2(int64_t n) {
   return l;
 }
 
+FastDiv32 MakeFastDiv32(int d) {
+  FastDiv32 fd;
+  if (d <= 1) {
+    return fd;
+  }
+  int s = 1;
+  while ((static_cast<uint64_t>(1) << s) < static_cast<uint64_t>(d)) {
+    ++s;
+  }
+  // 2^(s-1) < d <= 2^s; mul = ceil(2^(31 + s) / d) < 2^32.
+  // Exact for all 0 <= n <= 2^31 - 1: floor(n / d) == __umulhi(n, mul) >> (s - 1).
+  const uint64_t num = (static_cast<uint64_t>(1) << (31 + s)) + static_cast<uint64_t>(d - 1);
+  fd.mul = static_cast<uint32_t>(num / static_cast<uint64_t>(d));
+  fd.shift = static_cast<uint8_t>(s - 1);
+  return fd;
+}
+
 /*!
  * \brief The default mode's shape for one launch. The grid aims at `target` blocks (four per multiprocessor): row
  *        tiles first; when the rows alone do not fill it, each row tile's groups are cut into aligned spans. A wave
@@ -744,7 +761,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     plan.out_chunk = std::min(K, debug.predict_out_chunk > 0 ? debug.predict_out_chunk : base_out_chunk);
     const int gl = forced_group_lanes > 0 && debug.predict_group_lanes <= 0 ? forced_group_lanes : group_lanes;
     plan.group_lanes = gl;
-    plan.tile_rows = std::max(1, static_cast<int>(std::min<int64_t>(tile_rows, std::max<int64_t>(num_row, 1))));
+    plan.tile_rows = std::max(1, std::min(tile_rows, CeilPow2(std::max<int64_t>(num_row, 1))));
     while (plan.tile_rows > 1 && plan.tile_rows * plan.out_chunk * gl > 256) {
       plan.tile_rows /= 2;
     }
@@ -802,6 +819,14 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     plan.ilp = debug.predict_ilp > 0 ? debug.predict_ilp : 8;
     plan.stage_rows = stage;
     plan.stage_cols = num_feature;
+    plan.tile_rows_shift = static_cast<uint8_t>(FloorLog2(plan.tile_rows));
+    plan.wg_shift = static_cast<uint8_t>(FloorLog2(plan.wave_groups));
+    plan.seg_shift = static_cast<uint8_t>(FloorLog2(plan.seg));
+    plan.gl_shift = static_cast<uint8_t>(FloorLog2(plan.group_lanes));
+    plan.out_chunk_div = MakeFastDiv32(plan.out_chunk);
+    const int last_kb = K > 0 ? (K - ((K - 1) / plan.out_chunk) * plan.out_chunk) : 1;
+    plan.last_kb_div = MakeFastDiv32(last_kb);
+    plan.stage_cols_div = MakeFastDiv32(std::max(num_col, num_feature));
     return plan;
   };
   // 8 rows per block; up to 32 when the rows alone fill the grid and the staged rows take at most 16 KiB (more rows
@@ -821,7 +846,7 @@ PairwisePlan ChoosePairwisePlan(int device, int64_t num_row, int num_col, int nu
     tile_rows *= 2;
   }
   if (debug.predict_tile_rows > 0) {
-    tile_rows = std::min(debug.predict_tile_rows, 256);
+    tile_rows = 1 << FloorLog2(std::min(debug.predict_tile_rows, 256));
   }
   PairwisePlan plan = build(tile_rows, true);
   while (plan.tile_rows > 1 && PairwiseSharedBytes(plan, num_col, elem) > stage_budget) {
@@ -1001,6 +1026,19 @@ void ConvertOnHost(const Boosting* boosting, const Boosting::PredictRange& range
   }
 }
 
+bool CanConvertOnDevice(const Boosting::OutputConversion& conv, bool deterministic) {
+  if (conv.kind == Boosting::OutputConversion::kHostOnly) {
+    return false;
+  }
+  // deterministic=True requires bit-identity with host libm ConvertRawToPrediction: exact IEEE-754
+  // algebraic ops (average division, reg_sqrt) match bit-for-bit on device, while transcendentals
+  // (exp/log1p) can differ by 1 ULP from host libm and stay on the host in deterministic mode.
+  if (deterministic && conv.uses_transcendental()) {
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRange& range,
@@ -1036,7 +1074,14 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   if (expected != num_output) {
     Log::Fatal("CUDA predictor: %d values per row, the model's prediction has %d", num_output, expected);
   }
-  const bool convert = req.predict_type == C_API_PREDICT_NORMAL && boosting->HasOutputConversion();
+  Boosting::OutputConversion conv;
+  conv.kind = Boosting::OutputConversion::kNone;
+  if (req.predict_type == C_API_PREDICT_NORMAL) {
+    conv = boosting->DescribeOutputConversion(range);
+  }
+  const bool need_convert = req.predict_type == C_API_PREDICT_NORMAL && !conv.is_noop();
+  const bool device_convert = need_convert && CanConvertOnDevice(conv, req.deterministic);
+  const bool host_convert = need_convert && !device_convert;
 
   // the default mode's raw scores walk the compact layout where the model fits it; everything else the node layout
   const bool want_compact = !req.deterministic && !view.vector_leaf && FalcataDebug().predict_compact != 0 &&
@@ -1092,8 +1137,10 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
                              req.col_stride};
       RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, req.out, stream, ctx);
     }
-    if (convert) {
-      // the transform is the host's ConvertRawToPrediction, so the normal prediction equals the CPU predictor's
+    if (device_convert) {
+      LaunchConvertOutputKernel(reinterpret_cast<double*>(req.out), req.num_row, num_output, conv, stream);
+    } else if (host_convert) {
+      // deterministic transcendentals or custom objectives: run the host's ConvertRawToPrediction
       const size_t n = static_cast<size_t>(req.num_row) * num_output;
       std::vector<double> host(n);
       CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(host.data(), req.out, n * sizeof(double), cudaMemcpyDeviceToHost, stream));
@@ -1191,6 +1238,9 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
       RunRows(*forest, view, tree_begin, range.num_iteration, req.predict_type, rows, out_buf[l], stream,
               lane_ctx[l]);
     }
+    if (device_convert) {
+      LaunchConvertOutputKernel(reinterpret_cast<double*>(out_buf[l]), nr, num_output, conv, stream);
+    }
     // the previous chunk's result is read back only now, so its kernel overlapped this chunk's copy
     if (c > 0) {
       copy_out(c - 1);
@@ -1200,7 +1250,7 @@ void CUDAPredictor::Predict(const Boosting* boosting, const Boosting::PredictRan
   for (cudaStream_t st : streams) {
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(st));
   }
-  if (convert) {
+  if (host_convert) {
     ConvertOnHost(boosting, range, reinterpret_cast<double*>(req.out), req.num_row, num_output);
   }
 }
@@ -1221,6 +1271,7 @@ struct PreparedJob {
   int64_t in_offset = -1;     // host inputs: element offset of its rows in the device input buffer
   int64_t out_offset = 0;     // host inputs: double offset of its output in the device output buffer
   int64_t part_offset = 0;    // double offset of its span sums in the partials buffer
+  bool host_convert = false;  // fallback to host ConvertRawToPrediction (custom/unsupported objective)
 };
 
 /*! \brief page-locked host memory that only grows (the async copies of PredictMany's tables and outputs) */
@@ -1550,6 +1601,22 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
       LaunchJobs<float>(prepared, jobs, scratch.rows_float.data(), out_of.data(), partials, stream, &tables,
                         &scratch.host_tables, &scratch.order);
     }
+    if (common.predict_type == C_API_PREDICT_NORMAL) {
+      for (size_t i = 0; i < prepared.size(); ++i) {
+        PreparedJob& p = prepared[i];
+        const CUDAPredictJob& job = jobs[p.index];
+        const Boosting::OutputConversion conv = job.boosting->DescribeOutputConversion(job.range);
+        if (conv.is_noop()) {
+          continue;
+        }
+        // deterministic=false is safe here because deterministic jobs route through Predict individually above.
+        if (CanConvertOnDevice(conv, false)) {
+          LaunchConvertOutputKernel(out_of[i], job.num_row, p.num_output, conv, stream);
+        } else {
+          p.host_convert = true;
+        }
+      }
+    }
   }
   // host outputs: one copy of the whole output buffer (page-locked), then each job's part on the host
   const double* host_out = nullptr;
@@ -1568,17 +1635,21 @@ void CUDAPredictor::PredictMany(const std::vector<CUDAPredictJob>& jobs, const C
   }
   if (common.predict_type == C_API_PREDICT_NORMAL) {
     for (const PreparedJob& p : prepared) {
-      const CUDAPredictJob& job = jobs[p.index];
-      if (!job.boosting->HasOutputConversion()) {
+      if (!p.host_convert) {
         continue;
       }
+      const CUDAPredictJob& job = jobs[p.index];
       const size_t n = static_cast<size_t>(job.num_row) * p.num_output;
       if (common.on_device) {
         std::vector<double>& host = scratch.convert;
         host.resize(n);
-        CUDASUCCESS_OR_FATAL(cudaMemcpy(host.data(), job.out, n * sizeof(double), cudaMemcpyDeviceToHost));
+        CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(host.data(), job.out, n * sizeof(double), cudaMemcpyDeviceToHost,
+                                             stream));
+        CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
         ConvertOnHost(job.boosting, job.range, host.data(), job.num_row, p.num_output);
-        CUDASUCCESS_OR_FATAL(cudaMemcpy(job.out, host.data(), n * sizeof(double), cudaMemcpyHostToDevice));
+        CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(job.out, host.data(), n * sizeof(double), cudaMemcpyHostToDevice,
+                                             stream));
+        CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
       } else {
         ConvertOnHost(job.boosting, job.range, reinterpret_cast<double*>(job.out), job.num_row, p.num_output);
       }

@@ -1454,9 +1454,10 @@ inline bool FalcataVerifyEnabled() {
  *  - ``r3rebuild``  test hook for the parallel shadow: rebuilds its kept order
  *    from the records on every level
  *  - ``predict_kernel=row|tile`` the CUDA predictor's deterministic mode uses this kernel for raw scores instead of
- *    the one its plan picks, and ``predict_ilp=N`` (walks in flight per thread), ``predict_tile_rows=N`` (rows per
- *    block) and ``predict_tile_trees=N`` (trees per tile) set its shape: for benchmarks; both kernels are exact, so
- *    none changes any result
+ *    the one its plan picks, and ``predict_ilp=N`` (walks in flight per thread; non-default debug ILP instantiations
+ *    are guarded behind ``FALCATA_PREDICT_DEBUG_KERNELS`` and fall back cleanly to the default ILP otherwise),
+ *    ``predict_tile_rows=N`` (rows per block) and ``predict_tile_trees=N`` (trees per tile) set its shape: for
+ *    benchmarks; both kernels are exact, so none changes any result
  *  - ``predict_wave_groups=N``, ``predict_spans=N``, ``predict_target_blocks=N``, ``predict_stage=0|1`` and
  *    ``predict_compact=0|1``, ``predict_threads=N``, ``predict_group_lanes=1|2|4|8``, ``predict_task_groups=1|2|4|8``
  *    and ``predict_out_chunk=N`` set the shape of the default (pairwise) mode's kernel: groups
