@@ -2041,7 +2041,8 @@ __global__ void PrescaleNonquantFixedGHKernel(
   const int* __restrict__ fixed_scale,
   const data_size_t n,
   longlong2* __restrict__ fixed_gh) {
-  static_assert(sizeof(long long) == sizeof(int64_t) && sizeof(nq_fixed_t) == 8 && alignof(longlong2) == 16,
+  using ll_t = decltype(longlong2::x);
+  static_assert(sizeof(ll_t) == sizeof(int64_t) && sizeof(nq_fixed_t) == 8 && alignof(longlong2) == 16,
                 "longlong2 must pack two 64-bit fixed-point addends with 16-byte alignment");
   const int scale_g = fixed_scale[0];
   const int scale_h = fixed_scale[1];
@@ -2049,7 +2050,7 @@ __global__ void PrescaleNonquantFixedGHKernel(
        i += static_cast<data_size_t>(gridDim.x) * blockDim.x) {
     const int64_t g = NonquantFixedAddend(static_cast<float>(gradients[i]), scale_g);
     const int64_t h = NonquantFixedAddend(static_cast<float>(hessians[i]), scale_h);
-    fixed_gh[i] = make_longlong2(static_cast<long long>(g), static_cast<long long>(h));
+    fixed_gh[i] = make_longlong2(static_cast<ll_t>(g), static_cast<ll_t>(h));
   }
 }
 

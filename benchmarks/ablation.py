@@ -42,6 +42,7 @@ ALL_KEYS = {
     "hybrid": True,
     "one_sync": True,
     "nonquant_deterministic": False,
+    "nonquant_fixed_prescale": True,
     "compact_quant": True,
     "fast_rowdata": True,
     "dense_rowdata": True,
