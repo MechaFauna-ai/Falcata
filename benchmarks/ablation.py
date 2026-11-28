@@ -110,6 +110,7 @@ ALL_KEYS = {
     "dense_level_row_blocks": True,
     "dense_block_map": True,
     "dense_wide_hist": True,
+    "partition_pack_gh": True,
     "final_map_only": True,
     "final_readback_first": True,
     "shape_memo": True,

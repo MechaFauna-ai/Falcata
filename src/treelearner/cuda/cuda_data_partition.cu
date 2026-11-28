@@ -1857,7 +1857,8 @@ __device__ __forceinline__ void HybridSplitInnerChunk(
   // holding 8 extra values across __syncthreads() pushes register usage to ~95 and drops occupancy, so load gh
   // on-the-fly in the scatter loop instead.
   constexpr bool kPreloadGH = (GH_MODE != 0) && (ROWS <= 4);
-  int32_t gh_val[kPreloadGH ? ROWS : 1];
+  constexpr int kGHBufSize = kPreloadGH ? ROWS : 1;
+  int32_t gh_val[kGHBufSize];
   (void)gh_val;
 #pragma unroll
   for (int k = 0; k < ROWS; ++k) {
