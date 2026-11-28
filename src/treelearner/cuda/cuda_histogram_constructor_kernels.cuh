@@ -1001,6 +1001,45 @@ __device__ __forceinline__ nq_fixed_t HistAddend<nq_fixed_t>(const score_t v, co
   return static_cast<nq_fixed_t>(NonquantFixedAddend(v, exponent));
 }
 
+// Branchless carry-propagated 64-bit shared addition using native 32-bit ATOMS.ADD.
+// On NVIDIA GPUs (including sm_120), 64-bit shared atomicAdd/red.shared.add.u64 lowers to
+// an ATOMS.CAST.SPIN.64 CAS spin-loop, whereas 32-bit ATOMS.ADD is native lock-free hardware.
+// Using PTX add.cc.u32 + addc.u32 computes hi + carry(old + lo) in 2 instructions with zero
+// branches, and callers batching multiple rows can issue all lo atomics before hi atomics to
+// overlap the shared-atomic return latency (still bit-identical mod 2^64).
+__device__ __forceinline__ uint32_t HistSharedAddFixedCarryHi(const uint32_t old, const uint32_t lo,
+                                                              const uint32_t v_hi) {
+#if !defined(__HIP_PLATFORM_AMD__) && defined(__CUDA_ARCH__)
+  uint32_t hi;
+  asm("{\n\t"
+      ".reg .u32 _sum_lo;\n\t"
+      "add.cc.u32 _sum_lo, %1, %2;\n\t"
+      "addc.u32 %0, %3, 0;\n\t"
+      "}"
+      : "=r"(hi)
+      : "r"(old), "r"(lo), "r"(v_hi));
+  return hi;
+#else
+  return v_hi + (static_cast<uint32_t>(old + lo) < old ? 1u : 0u);
+#endif
+}
+
+template <bool FAST_BRANCHLESS>
+__device__ __forceinline__ void HistSharedAddFixed(nq_fixed_t* dst, const nq_fixed_t v) {
+  uint32_t* const words = reinterpret_cast<uint32_t*>(dst);
+  const uint32_t lo = static_cast<uint32_t>(v);
+  const uint32_t old = atomicAdd_block(words, lo);
+  if constexpr (FAST_BRANCHLESS) {
+    const uint32_t hi = HistSharedAddFixedCarryHi(old, lo, static_cast<uint32_t>(v >> 32));
+    atomicAdd_block(words + 1, hi);
+  } else {
+    const uint32_t hi = static_cast<uint32_t>(v >> 32) + (static_cast<uint32_t>(old + lo) < old ? 1u : 0u);
+    if (hi != 0u) {
+      atomicAdd_block(words + 1, hi);
+    }
+  }
+}
+
 template <typename HIST_TYPE>
 __device__ __forceinline__ void HistSharedAdd(HIST_TYPE* dst, const HIST_TYPE v) {
   atomicAdd_block(dst, v);
@@ -1008,13 +1047,7 @@ __device__ __forceinline__ void HistSharedAdd(HIST_TYPE* dst, const HIST_TYPE v)
 
 template <>
 __device__ __forceinline__ void HistSharedAdd<nq_fixed_t>(nq_fixed_t* dst, const nq_fixed_t v) {
-  uint32_t* const words = reinterpret_cast<uint32_t*>(dst);
-  const uint32_t lo = static_cast<uint32_t>(v);
-  const uint32_t old = atomicAdd_block(words, lo);
-  const uint32_t hi = static_cast<uint32_t>(v >> 32) + (static_cast<uint32_t>(old + lo) < old ? 1u : 0u);
-  if (hi != 0u) {
-    atomicAdd_block(words + 1, hi);
-  }
+  HistSharedAddFixed<false>(dst, v);
 }
 
 template <typename HIST_TYPE>
@@ -1027,7 +1060,81 @@ __device__ __forceinline__ void HistFlushAdd<nq_fixed_t>(hist_t* dst, const nq_f
   atomicAdd(reinterpret_cast<nq_fixed_t*>(dst), v);
 }
 
-template <typename BIN_TYPE, typename HIST_TYPE, bool USE_REG_BINS = false, bool IS_4BIT = false, bool USE_GH2 = false>
+// Helper: commit M pre-loaded (bin, gh) pairs using split lo/hi native 32-bit ATOMS.ADD.
+// Issuing all 2*M lo atomics before reading any returned old value overlaps shared-atomic latency;
+// exact carry per lo-atomic + commutative mod-2^32 hi-additions keep the 64-bit sum bit-identical.
+template <int M>
+__device__ __forceinline__ void HistSharedAddFixedBatch(
+    nq_fixed_t* shared_hist_ptr,
+    const uint32_t* bins,
+    const longlong2 (&gh)[M]) {
+  uint32_t* w_ptr[M];
+  uint32_t old_g[M];
+  uint32_t old_h[M];
+#pragma unroll
+  for (int j = 0; j < M; ++j) {
+    w_ptr[j] = reinterpret_cast<uint32_t*>(shared_hist_ptr + (bins[j] << 1));
+    old_g[j] = atomicAdd_block(w_ptr[j], static_cast<uint32_t>(static_cast<nq_fixed_t>(gh[j].x)));
+    old_h[j] = atomicAdd_block(w_ptr[j] + 2, static_cast<uint32_t>(static_cast<nq_fixed_t>(gh[j].y)));
+  }
+#pragma unroll
+  for (int j = 0; j < M; ++j) {
+    const nq_fixed_t gx = static_cast<nq_fixed_t>(gh[j].x);
+    const nq_fixed_t hy = static_cast<nq_fixed_t>(gh[j].y);
+    const uint32_t hi_g = HistSharedAddFixedCarryHi(old_g[j], static_cast<uint32_t>(gx), static_cast<uint32_t>(gx >> 32));
+    const uint32_t hi_h = HistSharedAddFixedCarryHi(old_h[j], static_cast<uint32_t>(hy), static_cast<uint32_t>(hy >> 32));
+    atomicAdd_block(w_ptr[j] + 1, hi_g);
+    atomicAdd_block(w_ptr[j] + 3, hi_h);
+  }
+}
+
+// cuda_plan key nonquant_fixed_prescale: batch N rows in flight for the fixed-point dense construct.
+// All N streaming bin loads issue first; for N=8, longlong2 loads + in-place next_idx prefetches +
+// split lo/hi ATOMS.ADD run in two 4-row halves so peak live registers stay <= 64 (zero stack spills).
+template <int N, bool PREFETCH, bool IS_4BIT, typename BIN_TYPE>
+__device__ __forceinline__ void ConstructNonquantFixedRowBatch(
+    data_size_t (&idx)[N],
+    const longlong2* cuda_fixed_gh,
+    const BIN_TYPE* data_ptr,
+    const int row_stride,
+    nq_fixed_t* shared_hist_ptr,
+    const data_size_t* next_src = nullptr,
+    const data_size_t next_step = 0) {
+  uint32_t bins[N];
+#pragma unroll
+  for (int j = 0; j < N; ++j) {
+    bins[j] = ReadDenseBin<IS_4BIT>(data_ptr + static_cast<size_t>(idx[j]) * row_stride, threadIdx.x);
+  }
+  if constexpr (N == 8) {
+    longlong2 gh0[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) gh0[j] = __ldg(cuda_fixed_gh + idx[j]);
+    if constexpr (PREFETCH) {
+#pragma unroll
+      for (int j = 0; j < 4; ++j) idx[j] = __ldg(next_src + j * next_step);
+    }
+    HistSharedAddFixedBatch<4>(shared_hist_ptr, bins, gh0);
+    longlong2 gh1[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) gh1[j] = __ldg(cuda_fixed_gh + idx[j + 4]);
+    if constexpr (PREFETCH) {
+#pragma unroll
+      for (int j = 4; j < 8; ++j) idx[j] = __ldg(next_src + j * next_step);
+    }
+    HistSharedAddFixedBatch<4>(shared_hist_ptr, bins + 4, gh1);
+  } else {
+    longlong2 gh[N];
+#pragma unroll
+    for (int j = 0; j < N; ++j) gh[j] = __ldg(cuda_fixed_gh + idx[j]);
+    if constexpr (PREFETCH) {
+#pragma unroll
+      for (int j = 0; j < N; ++j) idx[j] = __ldg(next_src + j * next_step);
+    }
+    HistSharedAddFixedBatch<N>(shared_hist_ptr, bins, gh);
+  }
+}
+
+template <typename BIN_TYPE, typename HIST_TYPE, bool USE_REG_BINS = false, bool IS_4BIT = false, bool USE_GH2 = false, bool USE_FIXED_PRESCALE = false>
 __device__ __forceinline__ void ConstructHistogramDenseInner(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
   HIST_TYPE* shared_hist,
@@ -1045,7 +1152,9 @@ __device__ __forceinline__ void ConstructHistogramDenseInner(
   const bool hist_fp32,
   const uint8_t* bin_used = nullptr,
   const int* fixed_scale = nullptr,
-  const int block_y = -1) {
+  const int block_y = -1,
+  const longlong2* cuda_fixed_gh = nullptr) {
+  constexpr bool kFixedPrescale = USE_FIXED_PRESCALE && std::is_same<HIST_TYPE, nq_fixed_t>::value;
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
   // block_y: a device level's mapped block row (cuda_plan key device_tree); the launch's own row otherwise
@@ -1073,7 +1182,7 @@ __device__ __forceinline__ void ConstructHistogramDenseInner(
   // global entries are dead storage this tree, so both loops may skip them.
   for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
     if (bin_used == nullptr || bin_used[partition_hist_start + (i >> 1)]) {
-      shared_hist[i] = 0.0f;
+      shared_hist[i] = static_cast<HIST_TYPE>(0);
     }
   }
   __syncthreads();
@@ -1086,13 +1195,84 @@ __device__ __forceinline__ void ConstructHistogramDenseInner(
       (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index]);
   // the fixed-point accumulator's power-of-two scalings (gradient, hessian) of this tree
   int scale_g = 0, scale_h = 0;
-  if (std::is_same<HIST_TYPE, nq_fixed_t>::value) {
+  if constexpr (std::is_same<HIST_TYPE, nq_fixed_t>::value && !kFixedPrescale) {
     scale_g = fixed_scale[0];
     scale_h = fixed_scale[1];
   }
   if (feat_used) {
     HIST_TYPE* shared_hist_ptr = shared_hist + (column_hist_offsets[column_index] << 1);
-    if (USE_REG_BINS) {
+    if constexpr (kFixedPrescale) {
+      const data_size_t by = static_cast<data_size_t>(blockDim.y);
+      const data_size_t num_iteration_total = (block_num_data + by - 1) / by;
+      const data_size_t remainder = block_num_data % by;
+      const data_size_t num_iteration_this =
+          remainder == 0 ? num_iteration_total
+                         : num_iteration_total - static_cast<data_size_t>(static_cast<data_size_t>(threadIdx.y) >= remainder);
+      data_size_t inner_data_index = static_cast<data_size_t>(threadIdx.y);
+      if constexpr (USE_REG_BINS) {
+        nq_fixed_t reg_grad[kRegHistMaxBins];
+        nq_fixed_t reg_hess[kRegHistMaxBins];
+#pragma unroll
+        for (int b = 0; b < kRegHistMaxBins; ++b) {
+          reg_grad[b] = 0;
+          reg_hess[b] = 0;
+        }
+        // Keep live registers within the 64-reg limit of 1008-thread blocks (reg_grad/reg_hess already take 32 regs):
+        // prefetch next row index in flight while loading bin + pre-scaled longlong2 of the current row.
+        if (num_iteration_this > 0) {
+          data_size_t idx = __ldg(data_indices_ref_this_block + inner_data_index);
+          for (data_size_t i = 0; i < num_iteration_this; ++i) {
+            const uint32_t bin = ReadDenseBin<IS_4BIT>(data_ptr + static_cast<size_t>(idx) * row_stride, threadIdx.x);
+            const longlong2 gh = __ldg(cuda_fixed_gh + idx);
+            inner_data_index += by;
+            if (i + 1 < num_iteration_this) {
+              idx = __ldg(data_indices_ref_this_block + inner_data_index);
+            }
+#pragma unroll
+            for (int b = 0; b < kRegHistMaxBins; ++b) {
+              if (bin == static_cast<uint32_t>(b)) {
+                reg_grad[b] += static_cast<nq_fixed_t>(gh.x);
+                reg_hess[b] += static_cast<nq_fixed_t>(gh.y);
+              }
+            }
+          }
+        }
+#pragma unroll
+        for (int b = 0; b < kRegHistMaxBins; ++b) {
+          if (reg_grad[b] != 0 || reg_hess[b] != 0) {
+            HistSharedAddFixed<true>(shared_hist_ptr + (b << 1), reg_grad[b]);
+            HistSharedAddFixed<true>(shared_hist_ptr + (b << 1) + 1, reg_hess[b]);
+          }
+        }
+      } else {
+        data_size_t i = 0;
+        if (i + 8 <= num_iteration_this) {
+          data_size_t idx[8];
+#pragma unroll
+          for (int j = 0; j < 8; ++j) idx[j] = __ldg(data_indices_ref_this_block + inner_data_index + j * by);
+          for (; i + 8 <= num_iteration_this; i += 8) {
+            const bool has_next = i + 16 <= num_iteration_this;
+            const data_size_t* next_src = data_indices_ref_this_block + inner_data_index + (has_next ? 8 * by : 0);
+            ConstructNonquantFixedRowBatch<8, true, IS_4BIT>(
+                idx, cuda_fixed_gh, data_ptr, row_stride, shared_hist_ptr, next_src, has_next ? by : 0);
+            inner_data_index += 8 * by;
+          }
+        }
+        if (i + 4 <= num_iteration_this) {
+          data_size_t idx[4];
+#pragma unroll
+          for (int j = 0; j < 4; ++j) idx[j] = __ldg(data_indices_ref_this_block + inner_data_index + j * by);
+          ConstructNonquantFixedRowBatch<4, false, IS_4BIT>(idx, cuda_fixed_gh, data_ptr, row_stride, shared_hist_ptr);
+          inner_data_index += 4 * by;
+          i += 4;
+        }
+        for (; i < num_iteration_this; ++i) {
+          data_size_t idx[1] = {__ldg(data_indices_ref_this_block + inner_data_index)};
+          ConstructNonquantFixedRowBatch<1, false, IS_4BIT>(idx, cuda_fixed_gh, data_ptr, row_stride, shared_hist_ptr);
+          inner_data_index += by;
+        }
+      }
+    } else if (USE_REG_BINS) {
       // Few-bin datasets (every feature <= kRegHistMaxBins bins): accumulate the
       // thread's rows into registers and flush once, instead of two same-address
       // shared atomics per row. With ~7 bins and blockDim.y threads per column
@@ -1167,7 +1347,11 @@ __device__ __forceinline__ void ConstructHistogramDenseInner(
     hist_t* feature_histogram_ptr = smaller_leaf_splits->hist_in_leaf + (partition_hist_start << 1);
     for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
       if (bin_used == nullptr || bin_used[partition_hist_start + (i >> 1)]) {
-        HistFlushAdd<HIST_TYPE>(feature_histogram_ptr + i, shared_hist[i]);
+        const HIST_TYPE val = shared_hist[i];
+        if constexpr (kFixedPrescale) {
+          if (val == 0) continue;  // adding zero is a no-op
+        }
+        HistFlushAdd<HIST_TYPE>(feature_histogram_ptr + i, val);
       }
     }
   }
@@ -1266,7 +1450,7 @@ __device__ __forceinline__ void ConstructHistogramDenseDirectInner(
   }
 }
 
-template <typename BIN_TYPE, typename HIST_TYPE, size_t SHARED_HIST_SIZE, bool USE_REG_BINS, bool IS_4BIT, bool USE_GH2>
+template <typename BIN_TYPE, typename HIST_TYPE, size_t SHARED_HIST_SIZE, bool USE_REG_BINS, bool IS_4BIT, bool USE_GH2, bool USE_FIXED_PRESCALE = false>
 __device__ __forceinline__ void ConstructHistogramDenseBatchedBody(
   const CUDAHybridPairDescriptor* pair_descs,
   const score_t* cuda_gradients,
@@ -1290,7 +1474,8 @@ __device__ __forceinline__ void ConstructHistogramDenseBatchedBody(
   const uint8_t* bin_used,
   const bool hist_fp32,
   const int* fixed_scale,
-  const CUDADeviceLevelState* dls) {
+  const CUDADeviceLevelState* dls,
+  const longlong2* cuda_fixed_gh = nullptr) {
   // the fixed-point table (8 bytes per item over the float table's partitions: up to 96 KB) is dynamic shared
   // memory sized to the widest partition (NqFixedSmem); the float / double tables stay static
   constexpr bool kFixed = std::is_same<HIST_TYPE, nq_fixed_t>::value;
@@ -1327,11 +1512,11 @@ __device__ __forceinline__ void ConstructHistogramDenseBatchedBody(
       }
       const int pair = DeviceLevelBlockPair(dls, vb);
       const int block_y = vb - dls->construct_block_start[pair];
-      ConstructHistogramDenseInner<BIN_TYPE, HIST_TYPE, USE_REG_BINS, IS_4BIT, USE_GH2>(
+      ConstructHistogramDenseInner<BIN_TYPE, HIST_TYPE, USE_REG_BINS, IS_4BIT, USE_GH2, USE_FIXED_PRESCALE>(
         pair_descs[pair].smaller_struct, shared_hist, cuda_gradients, cuda_hessians, cuda_gh, data,
         column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
         packed_partition_byte_offsets,
-        is_feature_used_bytree, num_data, dim_y, hist_fp32, bin_used, fixed_scale, block_y);
+        is_feature_used_bytree, num_data, dim_y, hist_fp32, bin_used, fixed_scale, block_y, cuda_fixed_gh);
       __syncthreads();  // the next mapped block row reuses the shared table
     }
     return;
@@ -1390,21 +1575,21 @@ __device__ __forceinline__ void ConstructHistogramDenseBatchedBody(
       min_grid_dim_y, min_rows_per_thread, saturation_floor_total) * static_cast<int>(blockDim.y);
   }
   if (USE_REG_BINS) {
-    ConstructHistogramDenseInner<BIN_TYPE, HIST_TYPE, true, IS_4BIT, USE_GH2>(
+    ConstructHistogramDenseInner<BIN_TYPE, HIST_TYPE, true, IS_4BIT, USE_GH2, USE_FIXED_PRESCALE>(
       smaller_struct, shared_hist, cuda_gradients, cuda_hessians, cuda_gh, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
-      is_feature_used_bytree, num_data, dim_y, hist_fp32, bin_used, fixed_scale);
+      is_feature_used_bytree, num_data, dim_y, hist_fp32, bin_used, fixed_scale, -1, cuda_fixed_gh);
   } else {
-    ConstructHistogramDenseInner<BIN_TYPE, HIST_TYPE, false, IS_4BIT, USE_GH2>(
+    ConstructHistogramDenseInner<BIN_TYPE, HIST_TYPE, false, IS_4BIT, USE_GH2, USE_FIXED_PRESCALE>(
       smaller_struct, shared_hist, cuda_gradients, cuda_hessians, cuda_gh, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
-      is_feature_used_bytree, num_data, dim_y, hist_fp32, bin_used, fixed_scale);
+      is_feature_used_bytree, num_data, dim_y, hist_fp32, bin_used, fixed_scale, -1, cuda_fixed_gh);
   }
 }
 
-template <typename BIN_TYPE, typename HIST_TYPE, size_t SHARED_HIST_SIZE, bool USE_REG_BINS = false, bool IS_4BIT = false, bool USE_GH2 = false, typename std::enable_if<!std::is_same<HIST_TYPE, nq_fixed_t>::value, int>::type = 0>
+template <typename BIN_TYPE, typename HIST_TYPE, size_t SHARED_HIST_SIZE, bool USE_REG_BINS = false, bool IS_4BIT = false, bool USE_GH2 = false, bool USE_FIXED_PRESCALE = false, typename std::enable_if<!std::is_same<HIST_TYPE, nq_fixed_t>::value, int>::type = 0>
 __global__ void CUDAConstructHistogramDenseBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const score_t* cuda_gradients,
@@ -1428,12 +1613,13 @@ __global__ void CUDAConstructHistogramDenseBatchedKernel(
   const uint8_t* bin_used,
   const bool hist_fp32,
   const int* fixed_scale,
-  const CUDADeviceLevelState* dls) {
-  ConstructHistogramDenseBatchedBody<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, USE_REG_BINS, IS_4BIT, USE_GH2>(
-    pair_descs, cuda_gradients, cuda_hessians, cuda_gh, data, column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, is_feature_used_bytree, num_data, min_data_in_leaf, min_sum_hessian_in_leaf, level_dim_y, level_smaller_num_data, min_grid_dim_y, min_rows_per_thread, saturation_floor_total, small_leaf_threshold, bin_used, hist_fp32, fixed_scale, dls);
+  const CUDADeviceLevelState* dls,
+  const longlong2* cuda_fixed_gh = nullptr) {
+  ConstructHistogramDenseBatchedBody<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, USE_REG_BINS, IS_4BIT, USE_GH2, false>(
+    pair_descs, cuda_gradients, cuda_hessians, cuda_gh, data, column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, is_feature_used_bytree, num_data, min_data_in_leaf, min_sum_hessian_in_leaf, level_dim_y, level_smaller_num_data, min_grid_dim_y, min_rows_per_thread, saturation_floor_total, small_leaf_threshold, bin_used, hist_fp32, fixed_scale, dls, cuda_fixed_gh);
 }
 
-template <typename BIN_TYPE, typename HIST_TYPE, size_t SHARED_HIST_SIZE, bool USE_REG_BINS = false, bool IS_4BIT = false, bool USE_GH2 = false, typename std::enable_if<std::is_same<HIST_TYPE, nq_fixed_t>::value, int>::type = 0>
+template <typename BIN_TYPE, typename HIST_TYPE, size_t SHARED_HIST_SIZE, bool USE_REG_BINS = false, bool IS_4BIT = false, bool USE_GH2 = false, bool USE_FIXED_PRESCALE = false, typename std::enable_if<std::is_same<HIST_TYPE, nq_fixed_t>::value, int>::type = 0>
 __global__ void __launch_bounds__(2 * NUM_THREADS_PER_BLOCK) CUDAConstructHistogramDenseBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const score_t* cuda_gradients,
@@ -1457,9 +1643,10 @@ __global__ void __launch_bounds__(2 * NUM_THREADS_PER_BLOCK) CUDAConstructHistog
   const uint8_t* bin_used,
   const bool hist_fp32,
   const int* fixed_scale,
-  const CUDADeviceLevelState* dls) {
-  ConstructHistogramDenseBatchedBody<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, USE_REG_BINS, IS_4BIT, USE_GH2>(
-    pair_descs, cuda_gradients, cuda_hessians, cuda_gh, data, column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, is_feature_used_bytree, num_data, min_data_in_leaf, min_sum_hessian_in_leaf, level_dim_y, level_smaller_num_data, min_grid_dim_y, min_rows_per_thread, saturation_floor_total, small_leaf_threshold, bin_used, hist_fp32, fixed_scale, dls);
+  const CUDADeviceLevelState* dls,
+  const longlong2* cuda_fixed_gh = nullptr) {
+  ConstructHistogramDenseBatchedBody<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, USE_REG_BINS, IS_4BIT, USE_GH2, USE_FIXED_PRESCALE>(
+    pair_descs, cuda_gradients, cuda_hessians, cuda_gh, data, column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, is_feature_used_bytree, num_data, min_data_in_leaf, min_sum_hessian_in_leaf, level_dim_y, level_smaller_num_data, min_grid_dim_y, min_rows_per_thread, saturation_floor_total, small_leaf_threshold, bin_used, hist_fp32, fixed_scale, dls, cuda_fixed_gh);
 }
 
 template <typename BIN_TYPE, typename DATA_PTR_TYPE, typename HIST_TYPE, size_t SHARED_HIST_SIZE>
@@ -5759,159 +5946,100 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // gates; device levels never take it).
     LaunchConstructHistogramDenseBatchedDeterministic<BIN_TYPE>(
       pair_descs, num_pairs, max_num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
-  } else if (use_compact_view_) {
-    // compact data holds only the tree's sampled columns, so no per-column
-    // feature mask is needed (mirrors the per-pair compact launch). Few-bin
-    // datasets take the register-accumulation body (see USE_REG_BINS).
-    if (construct_reg_bins_) {
-      if (compact_is_4bit_) {
-        CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, true, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, true, USE_GH2>)), cuda_stream_>>>(
-          pair_descs,
-          cuda_gradients_, cuda_hessians_,
-          USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
-          reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
-          compact_column_hist_offsets_.RawData(),
-          cuda_row_data_->cuda_partition_hist_offsets(),
-          compact_feature_partition_column_index_offsets_.RawData(),
-          compact_packed_partition_byte_offsets_.RawData(),
-          nullptr,
-          num_data_,
-          static_cast<data_size_t>(min_data_in_leaf_),
-          min_sum_hessian_in_leaf_,
-          level_dim_y,
-          level_sizes_for_kernel,
-          min_grid_dim_y_,
-          BatchConstructMinRowsPerThread(),
-          BatchConstructSaturationFloor(),
-          SmallLeafConstructEnabled() ? SmallLeafRowThreshold() : 0,
-          any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-          hist_fp32_,
-          nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls);
-      } else {
-        CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, false, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, false, USE_GH2>)), cuda_stream_>>>(
-          pair_descs,
-          cuda_gradients_, cuda_hessians_,
-          USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
-          reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
-          compact_column_hist_offsets_.RawData(),
-          cuda_row_data_->cuda_partition_hist_offsets(),
-          compact_feature_partition_column_index_offsets_.RawData(),
-          nullptr,
-          nullptr,
-          num_data_,
-          static_cast<data_size_t>(min_data_in_leaf_),
-          min_sum_hessian_in_leaf_,
-          level_dim_y,
-          level_sizes_for_kernel,
-          min_grid_dim_y_,
-          BatchConstructMinRowsPerThread(),
-          BatchConstructSaturationFloor(),
-          SmallLeafConstructEnabled() ? SmallLeafRowThreshold() : 0,
-          any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-          hist_fp32_,
-          nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls);
-      }
-    } else {
-      if (compact_is_4bit_) {
-        CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, true, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, true, USE_GH2>)), cuda_stream_>>>(
-          pair_descs,
-          cuda_gradients_, cuda_hessians_,
-          USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
-          reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
-          compact_column_hist_offsets_.RawData(),
-          cuda_row_data_->cuda_partition_hist_offsets(),
-          compact_feature_partition_column_index_offsets_.RawData(),
-          compact_packed_partition_byte_offsets_.RawData(),
-          nullptr,
-          num_data_,
-          static_cast<data_size_t>(min_data_in_leaf_),
-          min_sum_hessian_in_leaf_,
-          level_dim_y,
-          level_sizes_for_kernel,
-          min_grid_dim_y_,
-          BatchConstructMinRowsPerThread(),
-          BatchConstructSaturationFloor(),
-          SmallLeafConstructEnabled() ? SmallLeafRowThreshold() : 0,
-          any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-          hist_fp32_,
-          nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls);
-      } else {
-        CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2>)), cuda_stream_>>>(
-          pair_descs,
-          cuda_gradients_, cuda_hessians_,
-          USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
-          reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
-          compact_column_hist_offsets_.RawData(),
-          cuda_row_data_->cuda_partition_hist_offsets(),
-          compact_feature_partition_column_index_offsets_.RawData(),
-          nullptr,
-          nullptr,
-          num_data_,
-          static_cast<data_size_t>(min_data_in_leaf_),
-          min_sum_hessian_in_leaf_,
-          level_dim_y,
-          level_sizes_for_kernel,
-          min_grid_dim_y_,
-          BatchConstructMinRowsPerThread(),
-          BatchConstructSaturationFloor(),
-          SmallLeafConstructEnabled() ? SmallLeafRowThreshold() : 0,
-          any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-          hist_fp32_,
-          nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls);
-      }
-    }
-  } else if (cuda_row_data_->is_4bit_packed()) {
-    CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, true, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, true, USE_GH2>)), cuda_stream_>>>(
-      pair_descs,
-      cuda_gradients_, cuda_hessians_,
-      USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
-      RowMajorBin<BIN_TYPE>(),
-      cuda_row_data_->cuda_column_hist_offsets(),
-      cuda_row_data_->cuda_partition_hist_offsets(),
-      cuda_row_data_->cuda_feature_partition_column_index_offsets(),
-      cuda_row_data_->cuda_packed_partition_byte_offsets(),
-      column_used_bytree_device(),
-      num_data_,
-      static_cast<data_size_t>(min_data_in_leaf_),
-      min_sum_hessian_in_leaf_,
-      level_dim_y,
-      level_sizes_for_kernel,
-      min_grid_dim_y_,
-      BatchConstructMinRowsPerThread(),
-      BatchConstructSaturationFloor(),
-      SmallLeafConstructEnabled() ? SmallLeafRowThreshold() : 0,
-      any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-      hist_fp32_,
-      nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls);
   } else {
-    CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2><<<grid_dim, block_dim,
-          NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2>)), cuda_stream_>>>(
-      pair_descs,
-      cuda_gradients_, cuda_hessians_,
-      USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
-      RowMajorBin<BIN_TYPE>(),
-      cuda_row_data_->cuda_column_hist_offsets(),
-      cuda_row_data_->cuda_partition_hist_offsets(),
-      cuda_row_data_->cuda_feature_partition_column_index_offsets(),
-      nullptr,
-      column_used_bytree_device(),
-      num_data_,
-      static_cast<data_size_t>(min_data_in_leaf_),
-      min_sum_hessian_in_leaf_,
-      level_dim_y,
-      level_sizes_for_kernel,
-      min_grid_dim_y_,
-      BatchConstructMinRowsPerThread(),
-      BatchConstructSaturationFloor(),
-      SmallLeafConstructEnabled() ? SmallLeafRowThreshold() : 0,
-      any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-      hist_fp32_,
-      nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls);
+    auto launch_nq_dense = [&](auto reg_tag, auto is4_tag, const BIN_TYPE* data_arg,
+                               const uint32_t* col_off, const int* part_col_off,
+                               const int* packed_off, const int8_t* feat_used_arg) {
+      constexpr bool kReg = decltype(reg_tag)::value;
+      constexpr bool kIs4 = decltype(is4_tag)::value;
+      if constexpr (std::is_same<HIST_TYPE, nq_fixed_t>::value && !USE_GH2) {
+        if (nq_fixed_prescale_valid_) {
+          auto kernel = &CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, kReg, kIs4, false, true>;
+          kernel<<<grid_dim, block_dim, NqFixedSmem(reinterpret_cast<const void*>(kernel)), cuda_stream_>>>(
+            pair_descs,
+            cuda_gradients_, cuda_hessians_,
+            nullptr,
+            data_arg,
+            col_off,
+            cuda_row_data_->cuda_partition_hist_offsets(),
+            part_col_off,
+            packed_off,
+            feat_used_arg,
+            num_data_,
+            static_cast<data_size_t>(min_data_in_leaf_),
+            min_sum_hessian_in_leaf_,
+            level_dim_y,
+            level_sizes_for_kernel,
+            min_grid_dim_y_,
+            BatchConstructMinRowsPerThread(),
+            BatchConstructSaturationFloor(),
+            SmallLeafConstructEnabled() ? SmallLeafRowThreshold() : 0,
+            any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
+            hist_fp32_,
+            nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls,
+            cuda_nonquant_fixed_gh_.RawDataReadOnly());
+          return;
+        }
+      }
+      auto kernel = &CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, kReg, kIs4, USE_GH2, false>;
+      kernel<<<grid_dim, block_dim, NqFixedSmem(reinterpret_cast<const void*>(kernel)), cuda_stream_>>>(
+        pair_descs,
+        cuda_gradients_, cuda_hessians_,
+        USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
+        data_arg,
+        col_off,
+        cuda_row_data_->cuda_partition_hist_offsets(),
+        part_col_off,
+        packed_off,
+        feat_used_arg,
+        num_data_,
+        static_cast<data_size_t>(min_data_in_leaf_),
+        min_sum_hessian_in_leaf_,
+        level_dim_y,
+        level_sizes_for_kernel,
+        min_grid_dim_y_,
+        BatchConstructMinRowsPerThread(),
+        BatchConstructSaturationFloor(),
+        SmallLeafConstructEnabled() ? SmallLeafRowThreshold() : 0,
+        any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
+        hist_fp32_,
+        nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr, nq_dls,
+        nullptr);
+    };
+    if (use_compact_view_) {
+      // compact data holds only the tree's sampled columns, so no per-column
+      // feature mask is needed (mirrors the per-pair compact launch). Few-bin
+      // datasets take the register-accumulation body (see USE_REG_BINS).
+      const BIN_TYPE* compact_data = reinterpret_cast<const BIN_TYPE*>(NibbleViewData());
+      const uint32_t* compact_col_off = compact_column_hist_offsets_.RawData();
+      const int* compact_part_off = compact_feature_partition_column_index_offsets_.RawData();
+      const int* compact_packed_off = compact_is_4bit_ ? compact_packed_partition_byte_offsets_.RawData() : nullptr;
+      if (construct_reg_bins_) {
+        if (compact_is_4bit_) {
+          launch_nq_dense(std::true_type{}, std::true_type{}, compact_data, compact_col_off, compact_part_off, compact_packed_off, nullptr);
+        } else {
+          launch_nq_dense(std::true_type{}, std::false_type{}, compact_data, compact_col_off, compact_part_off, nullptr, nullptr);
+        }
+      } else {
+        if (compact_is_4bit_) {
+          launch_nq_dense(std::false_type{}, std::true_type{}, compact_data, compact_col_off, compact_part_off, compact_packed_off, nullptr);
+        } else {
+          launch_nq_dense(std::false_type{}, std::false_type{}, compact_data, compact_col_off, compact_part_off, nullptr, nullptr);
+        }
+      }
+    } else if (cuda_row_data_->is_4bit_packed()) {
+      launch_nq_dense(std::false_type{}, std::true_type{}, RowMajorBin<BIN_TYPE>(),
+                      cuda_row_data_->cuda_column_hist_offsets(),
+                      cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+                      cuda_row_data_->cuda_packed_partition_byte_offsets(),
+                      column_used_bytree_device());
+    } else {
+      launch_nq_dense(std::false_type{}, std::false_type{}, RowMajorBin<BIN_TYPE>(),
+                      cuda_row_data_->cuda_column_hist_offsets(),
+                      cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+                      nullptr,
+                      column_used_bytree_device());
+    }
   }
 }
 

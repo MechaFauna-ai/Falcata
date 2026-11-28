@@ -101,6 +101,12 @@ struct FalcataPlan {
   // happens to repeat is not promised to (only nonquant_deterministic is). Off = the float-atomic kernels for every
   // training without the key. Scalar trees on a device that holds the fixed-point table only.
   bool nonquant_hist_cost = true;  // key: nonquant_hist_cost
+  // non-quantized fixed-point histogram construct (nonquant_deterministic / nonquant_hist_cost): pre-scale each row's
+  // (grad, hess) to 64-bit fixed-point integers once per tree instead of repeating scalbnf + __float2ll_rn per column
+  // per row, use native 64-bit shared atomicAdd_block on sm_70+ (wrapping two's complement addition, bit-identical to
+  // the 32-bit carry emulation), and batch rows in flight with index prefetching + zero-bin flush skip. Same integer
+  // addends and wrapping sums: bit-identical. Off restores the baseline per-row scalbnf + emulated atomic path.
+  bool nonquant_fixed_prescale = true;  // key: nonquant_fixed_prescale
   // per-tree compact column view for quantized construct at any
   // 0 < feature_fraction < 1 (win scales with the excluded fraction:
   // ~3.4x at ff=0.1, ~1.1x at ff=0.6)
@@ -1051,6 +1057,7 @@ struct FalcataPlan {
     if (key == "hybrid") return &hybrid;
     if (key == "nonquant_deterministic") return &nonquant_deterministic;
     if (key == "nonquant_hist_cost") return &nonquant_hist_cost;
+    if (key == "nonquant_fixed_prescale") return &nonquant_fixed_prescale;
     if (key == "compact_quant") return &compact_quant;
     if (key == "row_batch") return &row_batch;
     if (key == "fused_root_hist") return &fused_root_hist;

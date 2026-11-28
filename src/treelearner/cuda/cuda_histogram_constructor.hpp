@@ -661,6 +661,8 @@ class CUDAHistogramConstructor {
     key->push_back(static_cast<const void*>(cuda_gradients_));
     key->push_back(static_cast<const void*>(cuda_hessians_));
     key->push_back(static_cast<const void*>(cuda_gradients_hessians_.RawDataReadOnly()));
+    key->push_back(nq_fixed_prescale_valid_ ?
+      static_cast<const void*>(cuda_nonquant_fixed_gh_.RawDataReadOnly()) : nullptr);
     key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_is_column_used_bytree_.RawDataReadOnly()));
     key->push_back(any_feature_unused_bytree_ ? this : nullptr);
@@ -712,7 +714,8 @@ class CUDAHistogramConstructor {
   /*! \brief cuda_plan key device_level_graph, non-quantized training: the construct instantiation a captured level
    *  bakes in (fixed point, interleaved gradient pairs, fp32 histograms) */
   int NonquantDeviceLevelKey() const {
-    return (NonquantFixedActive() ? 1 : 0) | (gh_interleave_valid_ ? 2 : 0) | (hist_fp32_ ? 4 : 0);
+    return (NonquantFixedActive() ? 1 : 0) | (gh_interleave_valid_ ? 2 : 0) | (hist_fp32_ ? 4 : 0) |
+           (nq_fixed_prescale_valid_ ? 8 : 0);
   }
   /*! \brief cuda_plan key device_levels: block rows (times the grid's x) a device level's construct launches */
   static int DeviceLevelConstructTargetBlocks();
@@ -1255,7 +1258,7 @@ class CUDAHistogramConstructor {
   /*! \brief CUDA histograms */
   CUDAVector<hist_t> cuda_hist_;
   /*! \brief the gradient buffer and size of the L2 access-policy window the construct streams hold (BeforeTrain) */
-  const score_t* l2_window_base_ = nullptr;
+  const void* l2_window_base_ = nullptr;
   size_t l2_window_bytes_ = 0;
   /*! \brief LaunchZeroHistSlotsKernel: the slot list on the device */
   CUDAVector<int> cuda_zero_slots_;
@@ -1570,6 +1573,10 @@ class CUDAHistogramConstructor {
   CUDAVector<int> nq_scale_;
   CUDAVector<double> nq_inv_scale_;
   CUDAVector<uint32_t> nq_absmax_bits_;
+  // cuda_plan key nonquant_fixed_prescale: per-tree pre-scaled (grad, hess) fixed-point int64 pairs (lazily resized
+  // to num_data_ only when fixed-point nonquant is active)
+  CUDAVector<longlong2> cuda_nonquant_fixed_gh_;
+  bool nq_fixed_prescale_valid_ = false;
   // set while the batched construct launches its fixed-point instantiation: the kernel applies the exponents,
   // and the launch sites pass the fixed table's dynamic shared memory
   bool nq_fixed_launch_ = false;
