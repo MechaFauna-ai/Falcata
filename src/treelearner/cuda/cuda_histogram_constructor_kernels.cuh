@@ -4480,8 +4480,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
       launch_leaf_quant(std::integral_constant<size_t, SHARED_HIST_SIZE>{});
     }
   } else {
-    // the non-quantized kernels' tables are not widened (dense_wide_hist divides only under quantized training)
+    // the non-quantized kernels' tables are not widened or row-padded (both divide/pad only under quantized training)
     CHECK(!cuda_row_data_->dense_wide_hist());
+    CHECK_EQ(cuda_row_data_->dense_row_stride(), 0);
     if (!USE_GLOBAL_MEM_BUFFER) {
       if (cuda_row_data_->is_sparse()) {
         // Deterministic float construct: slot rows sized by the widest
@@ -5518,8 +5519,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       use_quantized_grad_ ? num_grad_quant_bins_ : 0);
   }
   // cuda_plan key dense_vec_narrow: single-partition 8-bit quantized dense narrow data (<= 32 cols, <= 12288 bins,
-  // no per-tree mask) uses a 1D 256-thread block with aligned uint4 loads, unless this host level takes the small-leaf
-  // direct kernel.
+  // no per-tree mask) uses a TX x {32,64} sub-warp block with aligned uint32 loads, unless this host level takes the
+  // small-leaf direct kernel.
   const data_size_t small_leaf_rows =
     static_cast<data_size_t>(FalcataPlan::Get().quant_small_leaf_rows);
   const bool quant_small_leaf = use_quantized_grad_ && SmallLeafConstructEnabled() && small_leaf_rows > 0 &&
@@ -5558,6 +5559,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     CHECK_EQ(shape.grid_x, grid_dim_x);
   }
   if (dense_dls != nullptr) {
+    CHECK_EQ(use_dense_narrow, DenseVecNarrowEligible());
     // Persistent narrow workers claim virtual blocks from one counter; 1x DeviceLevelConstructTargetBlocks() (4 * SMs)
     // fills every SM's resident slots without excess blocks contending on construct_next_block[0].
     const int target_blocks = use_dense_narrow ? DeviceLevelConstructTargetBlocks() :

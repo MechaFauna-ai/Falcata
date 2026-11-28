@@ -1519,6 +1519,7 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
     cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
     // colmajor_direct: no row-major matrix when the Dataset's columns can serve (the tree learner then builds a view)
     cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
+    cuda_row_data_->SetFeatureFraction(feature_fraction_);
     cuda_row_data_->Init(train_data, share_state);
   }
 
@@ -2296,6 +2297,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   colmajor_direct_ = false;
   cuda_row_data_.reset(new CUDARowData(train_data, share_states, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
+  cuda_row_data_->SetFeatureFraction(feature_fraction_);
   cuda_row_data_->Init(train_data, share_states);
 
   InitDeterministicTileScratch(num_data_);

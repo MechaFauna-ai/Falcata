@@ -705,7 +705,8 @@ class CUDAHistogramConstructor {
   void DeviceLevelConstructShape(CUDADeviceLevelConstructShape* shape);
   /*! \brief cuda_plan key device_levels: a device level's pair-joint construct launch (see DeviceLevelConstructShape) */
   void LaunchDeviceLevelPairJoint(const CUDAHybridPairDescriptor* pair_descs);
-  /*! \brief cuda_plan key dense_vec_narrow: whether quantized dense constructs take the 1D vectorized narrow kernel */
+  /*! \brief cuda_plan key dense_vec_narrow: whether quantized dense constructs take the sub-warp TX x {32,64} kernel
+   *  with aligned uint32 loads */
   bool DenseVecNarrowEligible() const {
     if (!FalcataPlan::Get().dense_vec_narrow || !use_quantized_grad_ ||
         use_compact_view_ || any_feature_unused_bytree_ || cuda_row_data_ == nullptr) {
@@ -722,6 +723,7 @@ class CUDAHistogramConstructor {
     return static_cast<size_t>(num_items) * sizeof(int32_t) <=
            CurrentDeviceLaunchLimits().shared_bytes_per_block;
   }
+  // Sub-warp TX x {32,64} block with aligned uint32 loads (TX = dense_row_stride / 4 threads per row).
   int DenseVecNarrowBlockX() const {
     return cuda_row_data_->dense_row_stride() / 4;
   }

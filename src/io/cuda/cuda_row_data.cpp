@@ -43,6 +43,10 @@ bool RowData4BitVerifyEnabled() {
 // cuda_plan key dense_vec_narrow: row padding + streaming sub-warp gathers pay when the unpadded narrow 8-bit row
 // matrix exceeds the GPU's L2 cache (random-row gathers spill to DRAM, where 32B sector splits cost up to 1.88x);
 // L2-resident matrices (e.g. fraud 8.3 MB, covtype EFB 7.5 MB) keep the unpadded 2D kernel.
+int DenseVecNarrowPaddedStride(const int num_cols) {
+  return num_cols <= 4 ? 4 : (num_cols <= 8 ? 8 : (num_cols <= 16 ? 16 : 32));
+}
+
 bool DenseVecNarrowSpillsL2(const int gpu_device_id, const data_size_t num_data, const int num_cols) {
   const char* force = std::getenv("FALCATA_TEST_FORCE_DENSE_VEC_NARROW");
   if (force != nullptr && force[0] == '1') {
@@ -54,6 +58,25 @@ bool DenseVecNarrowSpillsL2(const int gpu_device_id, const data_size_t num_data,
     return false;
   }
   return static_cast<uint64_t>(num_data) * static_cast<uint64_t>(num_cols) > static_cast<uint64_t>(l2_bytes);
+}
+
+// Keep generous training headroom before padding row stride (matching EnsureCompactColumnBuffer / ChooseViewRegime).
+bool DenseVecNarrowFitsVRAM(const data_size_t num_data, const int num_cols) {
+  if (num_data <= 0 || num_cols <= 0) {
+    return false;
+  }
+  const size_t padded_bytes =
+    static_cast<size_t>(num_data) * static_cast<size_t>(DenseVecNarrowPaddedStride(num_cols));
+  size_t free_bytes = 0, total_bytes = 0;
+  if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess) {
+    return false;
+  }
+  const int64_t cap_mib = FalcataDebug().vramfree_mib;
+  if (cap_mib >= 0) {
+    free_bytes = std::min(free_bytes, static_cast<size_t>(cap_mib) << 20);
+  }
+  const size_t headroom = std::max<size_t>(512ULL << 20, total_bytes / 8);
+  return free_bytes > headroom && padded_bytes < free_bytes - headroom;
 }
 
 // Shape-specialized construct prototype: for low-bin, many-feature
@@ -196,13 +219,15 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
   // 4..32B sector load without DRAM sector splits.
   dense_row_stride_ = 0;
   if (FalcataPlan::Get().dense_vec_narrow && FalcataPlan::Get().quant_training &&
+      feature_fraction_ >= 1.0 &&
       !is_sparse_ && bit_type_ == 8 && !is_4bit_packed_ && large_bin_partitions_.empty() &&
       num_feature_partitions_ == 1) {
     const int num_cols = feature_partition_column_index_offsets_.back();
     const uint32_t num_bins = partition_hist_offsets_.back();
     if (num_cols >= 1 && num_cols <= 32 && num_bins <= 12288 &&
-        DenseVecNarrowSpillsL2(gpu_device_id_, num_data_, num_cols)) {
-      dense_row_stride_ = num_cols <= 4 ? 4 : (num_cols <= 8 ? 8 : (num_cols <= 16 ? 16 : 32));
+        DenseVecNarrowSpillsL2(gpu_device_id_, num_data_, num_cols) &&
+        DenseVecNarrowFitsVRAM(num_data_, num_cols)) {
+      dense_row_stride_ = DenseVecNarrowPaddedStride(num_cols);
     }
   }
   // The row-major device copy is the single largest allocation training makes,
@@ -212,8 +237,10 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
   // twice what it should looks exactly like one that does not.
   if (!is_sparse_) {
     const size_t bytes_per_value_x2 = is_4bit_packed_ ? 1 : (bit_type_ / 4);
-    const double gib = static_cast<double>(num_data_) * num_feature_ *
-                       bytes_per_value_x2 / 2.0 / static_cast<double>(1ULL << 30);
+    const double gib = dense_row_stride_ > 0
+      ? static_cast<double>(num_data_) * dense_row_stride_ / static_cast<double>(1ULL << 30)
+      : static_cast<double>(num_data_) * num_feature_ *
+        bytes_per_value_x2 / 2.0 / static_cast<double>(1ULL << 30);
     if (is_4bit_packed_) {
       Log::Info("CUDARowData: 4-bit packed row data, %.2f GiB on the device.", gib);
     } else {
@@ -385,11 +412,12 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
     };
     const int wide_max_columns = max_num_column_per_partition_;
     // cuda_plan key dense_vec_narrow: a single-partition narrow 8-bit dataset (<= 32 columns, <= 12288 bins) runs the
-    // 1D 256-thread vectorized kernel rather than the 504-thread 2D block, so merging into 1 partition always wins even
-    // when wide_max_columns does not evenly divide 504 (e.g. 25..32 columns except 28).
-    const bool narrow_single_part = FalcataPlan::Get().dense_vec_narrow && bit_type_ == 8 &&
-      large_bin_partitions_.empty() && wide_num_partitions == 1 && wide_max_columns <= 32 &&
-      DenseVecNarrowSpillsL2(gpu_device_id_, num_data_, wide_max_columns);
+    // sub-warp TX x {32,64} vectorized kernel (aligned uint32 loads) rather than the 504-thread 2D block, so merging
+    // into 1 partition always wins even when wide_max_columns does not evenly divide 504 (e.g. 25..32 columns except 28).
+    const bool narrow_single_part = FalcataPlan::Get().dense_vec_narrow && feature_fraction_ >= 1.0 &&
+      bit_type_ == 8 && large_bin_partitions_.empty() && wide_num_partitions == 1 && wide_max_columns <= 32 &&
+      DenseVecNarrowSpillsL2(gpu_device_id_, num_data_, wide_max_columns) &&
+      DenseVecNarrowFitsVRAM(num_data_, wide_max_columns);
     if (wide_num_partitions < num_partitions &&
         (narrow_single_part ||
          (504 / std::max(1, wide_max_columns) >= 2 &&
