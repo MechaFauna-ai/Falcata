@@ -769,3 +769,319 @@ def test_vector_leaf_cuda_quantized_rejects_categorical():
             lgb.Dataset(X, label=np.column_stack((y0, y1)), categorical_feature=cat_indices),
             num_boost_round=1,
         )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("num_targets", [2, 4, 5, 8, 16])
+@pytest.mark.parametrize("mode", ["fp64", "quant_16bit", "quant_32bit"])
+def test_vector_leaf_cuda_targets_sweep_hybrid_matches_classic(num_targets, mode):
+    """Exercise all vector split-finder kernels across T in {2, 4, 5, 8, 16}
+    (non-power-of-2 and max capacity 16) in both fp64 and quantized (16-bit &
+    32-bit accumulator) paths, verifying convergence and exact hybrid/classic
+    agreement."""
+    rng = np.random.default_rng(20261128 + num_targets)
+    n_rows = 4000
+    n_feat = 16
+    X = rng.normal(size=(n_rows, n_feat))
+    base = 2.0 * X[:, 0] - 1.5 * X[:, 3] + np.where(X[:, 5] > 0.2, 1.0, -1.0)
+    labels = np.column_stack(
+        [
+            (base + 0.5 * X[:, (t + 1) % n_feat] + 0.05 * rng.normal(size=n_rows)) * (1.0 + 0.25 * t)
+            for t in range(num_targets)
+        ]
+    )
+
+    extra = dict(_HYBRID_PARAMS, lambda_l2=1.0)
+    if mode == "quant_16bit":
+        extra.update(_QUANT_PARAMS)
+    elif mode == "quant_32bit":
+        extra.update(_QUANT_PARAMS_32BIT)
+
+    hybrid = _train_vector(X, labels, num_boost_round=12, extra_params=dict(extra, cuda_plan="auto"))
+    classic = _train_vector(X, labels, num_boost_round=12, extra_params=dict(extra, cuda_plan="auto,hybrid:off"))
+
+    pred_h = hybrid.predict(X)
+    pred_c = classic.predict(X)
+    assert pred_h.shape == (n_rows, num_targets)
+    assert np.all(np.isfinite(pred_h))
+
+    nmse = np.mean((pred_h - labels) ** 2, axis=0) / np.var(labels, axis=0)
+    assert np.all(nmse < 0.35), nmse
+
+    _assert_same_leaf_partition(hybrid.predict(X, pred_leaf=True), classic.predict(X, pred_leaf=True))
+    tol = 1e-12 if mode != "fp64" else 1e-9
+    np.testing.assert_allclose(pred_h, pred_c, rtol=tol, atol=tol)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("num_targets", [5, 16])
+@pytest.mark.parametrize("mode", ["fp64", "quant_16bit", "quant_32bit"])
+def test_vector_leaf_cuda_nan_and_zero_missing_match_classic(num_targets, mode):
+    """Exercise na_missing_head (NaN with mfb_offset==1) and skip_default_bin
+    (zero_as_missing) across both fp64 and quantized vector split finders."""
+    rng = np.random.default_rng(20261129 + num_targets)
+    n_rows = 4000
+    n_feat = 12
+    X = rng.normal(size=(n_rows, n_feat))
+    # Make columns 0..5 heavy-zero (mfb=0 -> mfb_offset=1) with NaNs (na_missing_head)
+    zero_mask = rng.random((n_rows, 6)) < 0.6
+    X[:, :6][zero_mask] = 0.0
+    nan_mask = rng.random((n_rows, n_feat)) < 0.1
+    X[nan_mask] = np.nan
+
+    clean0 = np.nan_to_num(X[:, 0], nan=-2.0)
+    clean6 = np.nan_to_num(X[:, 6], nan=1.5)
+    base = 1.8 * clean0 - 1.2 * clean6 + np.where(np.isnan(X[:, 1]), 1.2, -0.4)
+    labels = np.column_stack(
+        [
+            (base + 0.3 * np.nan_to_num(X[:, (t + 2) % n_feat]) + 0.05 * rng.normal(size=n_rows)) * (1.0 + 0.2 * t)
+            for t in range(num_targets)
+        ]
+    )
+
+    for zero_as_missing in (False, True):
+        extra = dict(_HYBRID_PARAMS, zero_as_missing=zero_as_missing, lambda_l2=0.5)
+        if mode == "quant_16bit":
+            extra.update(_QUANT_PARAMS)
+        elif mode == "quant_32bit":
+            extra.update(_QUANT_PARAMS_32BIT)
+
+        hybrid = _train_vector(X, labels, num_boost_round=10, extra_params=dict(extra, cuda_plan="auto"))
+        classic = _train_vector(X, labels, num_boost_round=10, extra_params=dict(extra, cuda_plan="auto,hybrid:off"))
+
+        _assert_same_leaf_partition(hybrid.predict(X, pred_leaf=True), classic.predict(X, pred_leaf=True))
+        tol = 1e-12 if mode != "fp64" else 1e-9
+        np.testing.assert_allclose(hybrid.predict(X), classic.predict(X), rtol=tol, atol=tol)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("num_targets", [5, 16])
+@pytest.mark.parametrize("lambda_l2", [0.0, 1.0, 10.0])
+@pytest.mark.parametrize("mode", ["fp64", "quant_16bit"])
+def test_vector_leaf_cuda_ties_and_lambda_l2_match_scalar(num_targets, lambda_l2, mode):
+    """Verify exact tie-breaking on duplicated/constant features and L2
+    regularization across duplicated-target vector vs scalar training."""
+    rng = np.random.default_rng(20261130 + num_targets)
+    n_rows = 3000
+    f0 = rng.normal(size=n_rows)
+    f1 = rng.normal(size=n_rows)
+    # Exact duplicate columns (plateau ties) + constant column (zero-gain bins)
+    X = np.column_stack((f0, f0, f1, f1, np.zeros(n_rows), rng.normal(size=(n_rows, 4))))
+    y0 = 2.0 * f0 - 1.5 * f1 + np.where(f0 > 0.0, 0.8, -0.8) + 0.05 * rng.normal(size=n_rows)
+    labels = np.column_stack([y0] * num_targets)
+
+    extra = dict(_HYBRID_PARAMS, lambda_l2=lambda_l2, cuda_plan="auto,hybrid:off")
+    if mode == "quant_16bit":
+        extra.update(_QUANT_PARAMS)
+
+    vector = _train_vector(X, labels, num_boost_round=12, extra_params=extra)
+    scalar = _train_scalar(X, y0, num_boost_round=12, extra_params=extra)
+
+    np.testing.assert_array_equal(vector.predict(X, pred_leaf=True), scalar.predict(X, pred_leaf=True))
+    vec_pred = vector.predict(X, device="cpu")
+    scal_pred = scalar.predict(X, device="cpu")
+    for t in range(num_targets):
+        np.testing.assert_allclose(vec_pred[:, t], scal_pred, rtol=1e-9, atol=1e-9)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("num_targets", [5, 16])
+def test_vector_leaf_cuda_categorical_many_targets_matches_classic_and_scalar(num_targets):
+    """Exercise categorical one-hot and many-vs-many vector split search at
+    T=5 and T=16 (parallel prefix + parallel winner replay)."""
+    X, y0, _, cat_indices = _make_cat_data(seed=20261131 + num_targets)
+    labels = np.column_stack([y0] * num_targets)
+
+    vec_params = dict(
+        _base_params(),
+        objective="multi_regression",
+        metric="multi_rmse",
+        num_class=num_targets,
+        tree_mode="vector_leaf",
+        **_HYBRID_PARAMS,
+        lambda_l2=1.0,
+    )
+    hybrid = lgb.train(
+        dict(vec_params, cuda_plan="auto,nonquant_deterministic:on"),
+        lgb.Dataset(X, label=labels, categorical_feature=cat_indices),
+        num_boost_round=12,
+    )
+    classic = lgb.train(
+        dict(vec_params, cuda_plan="auto,hybrid:off,nonquant_deterministic:on"),
+        lgb.Dataset(X, label=labels, categorical_feature=cat_indices),
+        num_boost_round=12,
+    )
+    scal_params = dict(
+        _base_params(),
+        objective="regression",
+        boost_from_average=False,
+        **_HYBRID_PARAMS,
+        lambda_l2=1.0,
+        cuda_plan="auto,hybrid:off,nonquant_deterministic:on",
+    )
+    scalar = lgb.train(
+        scal_params,
+        lgb.Dataset(X, label=y0, categorical_feature=cat_indices),
+        num_boost_round=12,
+    )
+
+    _assert_same_leaf_partition(hybrid.predict(X, pred_leaf=True), classic.predict(X, pred_leaf=True))
+    np.testing.assert_allclose(hybrid.predict(X), classic.predict(X), rtol=1e-9, atol=1e-9)
+    np.testing.assert_array_equal(classic.predict(X, pred_leaf=True), scalar.predict(X, pred_leaf=True))
+    model_text = classic.model_to_string()
+    num_cat_counts = [int(line.split("=", 1)[1]) for line in model_text.splitlines() if line.startswith("num_cat=")]
+    assert sum(num_cat_counts) > 0
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("mode", ["fp64", "quant_16bit"])
+def test_vector_leaf_cuda_feature_fraction_compact_tasks(mode):
+    """Exercise used_task_indices compact-task launch path in batched level
+    vector split finders."""
+    X, labels = _multi_target_labels(8, seed=20261201)
+    extra = dict(_HYBRID_PARAMS, feature_fraction=0.5, feature_fraction_seed=19)
+    if mode == "quant_16bit":
+        extra.update(_QUANT_PARAMS)
+
+    hybrid = _train_vector(X, labels, num_boost_round=12, extra_params=dict(extra, cuda_plan="auto"))
+    classic = _train_vector(X, labels, num_boost_round=12, extra_params=dict(extra, cuda_plan="auto,hybrid:off"))
+
+    _assert_same_leaf_partition(hybrid.predict(X, pred_leaf=True), classic.predict(X, pred_leaf=True))
+    tol = 1e-12 if mode != "fp64" else 1e-9
+    np.testing.assert_allclose(hybrid.predict(X), classic.predict(X), rtol=tol, atol=tol)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("quant_params", [_QUANT_PARAMS, _QUANT_PARAMS_32BIT])
+def test_vector_leaf_cuda_quantized_257_bin_na_missing_head(quant_params):
+    """Regression test for a 257-bin feature (mfb_offset==1 + 255 stored normal
+    bins + 1 NaN bin, so num_bin==257 while num_bin_hist==256 stays on the
+    256-thread shared-memory quantized kernel). Verifies that the half-warp
+    replay for targets t>=1 bounds sum_all to the exact 256 scanned lanes and
+    matches plane 0's direct scan (scan_gh0) and scalar quantized training."""
+    rng = np.random.default_rng(20261202)
+    # 0.0 is the most-frequent bin (bin 0, mfb_offset=1), 1..255 are 255
+    # distinct positive bins, and NaN is bin 256 -> total 257 bins!
+    # Give the final bin (255) large non-zero target mass so including it in
+    # replay sum_all would visibly corrupt target t>=1 leaf outputs.
+    x_zero = np.zeros(1200, dtype=np.float64)
+    x_pos = np.repeat(np.arange(1, 256, dtype=np.float64), 6)
+    x_nan = np.full(300, np.nan, dtype=np.float64)
+    x_feat = np.concatenate([x_zero, x_pos, x_nan])
+    perm = rng.permutation(len(x_feat))
+    x_feat = x_feat[perm]
+    X = x_feat.reshape(-1, 1)
+
+    # Strong gradient in bin 0 vs high bins, plus very large mass on bin 255
+    # (the stored bin index 255 outside the 256-thread na_missing_head scan).
+    # Round y0 to float32 first and use positive power-of-2 scales so every
+    # target's float32 labels, grad_scale[t], and fixedpoint subtractive dither
+    # produce identical integer quantized gradients across all 4 targets.
+    y0 = np.where(np.isnan(x_feat), -1.5, np.where(x_feat == 0.0, 2.0, np.where(x_feat == 255.0, 25.0, -0.5)))
+    y0 = (y0 + 0.02 * rng.normal(size=len(x_feat))).astype(np.float32).astype(np.float64)
+    scales = np.array([1.0, 2.0, 4.0, 8.0], dtype=np.float64)
+    labels = np.column_stack([s * y0 for s in scales])
+
+    common = {
+        "max_bin": 257,
+        "min_data_in_bin": 1,
+        "bin_construct_sample_cnt": 100000,
+        "num_leaves": 7,
+        "max_depth": 3,
+        "min_data_in_leaf": 20,
+        "learning_rate": 1.0,
+        "lambda_l2": 0.0,
+        **quant_params,
+    }
+    vec_hybrid = _train_vector(X, labels, num_boost_round=1, extra_params=dict(common, cuda_plan="auto"))
+    vec_classic = _train_vector(X, labels, num_boost_round=1, extra_params=dict(common, cuda_plan="auto,hybrid:off"))
+    # robust_scale only engages for num_class<=1; disable it on scalar so the
+    # 25.0 mass in bin 255 uses the same global-max fixedpoint scale as vector.
+    scalar = _train_scalar(
+        X, y0, num_boost_round=1, extra_params=dict(common, cuda_plan="auto,hybrid:off,robust_scale:off")
+    )
+
+    # Confirm the feature actually produced 257 bins (so num_bin == 257 and
+    # num_bin_hist == 256 with na_missing_head active).
+    ds = lgb.Dataset(X, label=y0, params={"max_bin": 257, "min_data_in_bin": 1, "bin_construct_sample_cnt": 100000})
+    ds.construct()
+    assert ds.feature_num_bin(0) == 257
+
+    # Both classic and hybrid must match scalar on target 0 AND scale exactly
+    # across targets t=1..3 (direct scan_gh0 vs half-warp replay).
+    scal_pred = scalar.predict(X, device="cpu")
+    for vec in (vec_hybrid, vec_classic):
+        vec_pred = vec.predict(X, device="cpu")
+        np.testing.assert_allclose(vec_pred[:, 0], scal_pred, rtol=1e-9, atol=1e-9)
+        for t, s in enumerate(scales):
+            np.testing.assert_allclose(vec_pred[:, t], s * vec_pred[:, 0], rtol=1e-9, atol=1e-9)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("mode", ["fp64", "quant_16bit", "quant_32bit"])
+def test_vector_leaf_cuda_distinct_targets_exact_leaf_outputs(mode):
+    """Independent ground-truth check for distinct (non-identical) targets
+    across T=8: for a single tree with learning_rate=1.0 and lambda_l2=0.0,
+    each leaf's output vector must match the empirical mean of each target's
+    labels over the rows landing in that leaf (exact for fp64; close for
+    quantized), and reversing the target column order must reproduce the
+    corresponding per-target predictions without cross-target mix-up."""
+    rng = np.random.default_rng(20261203)
+    n_rows = 4000
+    n_feat = 12
+    num_targets = 8
+    X = rng.normal(size=(n_rows, n_feat))
+    # Distinct targets driven by different features, signs, and scales
+    cols = []
+    for t in range(num_targets):
+        sign = 1.0 if (t % 2 == 0) else -1.0
+        scale = 0.5 + 1.5 * t
+        sig = sign * (
+            1.8 * X[:, t % n_feat] - 1.1 * X[:, (t + 3) % n_feat] + np.where(X[:, (t + 5) % n_feat] > 0.0, 1.0, -1.0)
+        ) + 0.05 * rng.normal(size=n_rows)
+        cols.append(scale * sig)
+    labels = np.column_stack(cols)
+
+    extra = {
+        "num_leaves": 15,
+        "max_depth": 4,
+        "min_data_in_leaf": 20,
+        "learning_rate": 1.0,
+        "lambda_l2": 0.0,
+        "cuda_plan": "auto",
+    }
+    if mode == "quant_16bit":
+        extra.update(_QUANT_PARAMS)
+    elif mode == "quant_32bit":
+        extra.update(_QUANT_PARAMS_32BIT)
+
+    booster = _train_vector(X, labels, num_boost_round=1, extra_params=extra)
+    leaf_ids = booster.predict(X, pred_leaf=True).reshape(-1)
+    preds = booster.predict(X, device="cpu")
+    assert preds.shape == (n_rows, num_targets)
+
+    # Independent CPU ground truth: compare each leaf's predicted vector
+    # against the exact mean of labels[mask, t] (stored as float32 in Dataset)
+    # for every leaf and every target.
+    labels_f32 = labels.astype(np.float32).astype(np.float64)
+    for leaf in np.unique(leaf_ids):
+        mask = leaf_ids == leaf
+        expected_mean = np.mean(labels_f32[mask], axis=0)
+        leaf_pred = preds[mask][0]
+        if mode == "fp64":
+            np.testing.assert_allclose(leaf_pred, expected_mean, rtol=1e-10, atol=1e-10)
+        else:
+            # Quantized leaf outputs match empirical means within quantization resolution
+            assert np.all(np.abs(leaf_pred - expected_mean) < 0.08 * np.std(labels, axis=0) + 1e-6), (
+                leaf_pred,
+                expected_mean,
+            )
+
+    # Verify target-order permutation consistency: swapping target 0 and target 5
+    # swaps their predicted columns without mixing up any target slot.
+    perm_idx = [5, 1, 2, 3, 4, 0, 6, 7]
+    swapped = _train_vector(X, labels[:, perm_idx], num_boost_round=1, extra_params=extra)
+    swapped_preds = swapped.predict(X, device="cpu")
+    _assert_same_leaf_partition(booster.predict(X, pred_leaf=True), swapped.predict(X, pred_leaf=True))
+    tol = 1e-12 if mode != "fp64" else 1e-10
+    np.testing.assert_allclose(swapped_preds, preds[:, perm_idx], rtol=tol, atol=tol)
