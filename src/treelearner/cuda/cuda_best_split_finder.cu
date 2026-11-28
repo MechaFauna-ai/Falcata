@@ -30,11 +30,11 @@ namespace Falcata {
 
 // compiled in cuda_best_split_finder_level_l1_smoothing.cu (see LaunchFindBestSplitsDiscretizedForLevelKernel)
 extern template void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner<true, false>(
-  dim3, bool, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
+  dim3, const int*, const int*, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
 extern template void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner<false, true>(
-  dim3, bool, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
+  dim3, const int*, const int*, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
 extern template void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner<true, true>(
-  dim3, bool, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
+  dim3, const int*, const int*, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
 
 // Instantiated in cuda_best_split_finder_leaf_*.cu.
 extern template void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner2<false, false, false>(LaunchFindBestSplitsForLeafKernel_PARAMS);
@@ -1332,7 +1332,8 @@ __global__ void FindBestSplitsForLevelKernel(
   const int min_data_per_group,
   CUDASplitInfo* cuda_best_split_info,
   const bool use_desc_counts,
-  const CUDADeviceLevelState* dls) {
+  const CUDADeviceLevelState* dls,
+  const bool cat_prefix_fast) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs exits before any read
   // (stale descriptors)
@@ -1410,7 +1411,7 @@ __global__ void FindBestSplitsForLevelKernel(
         // on) the per-task CUDARandom the RANDOM search draws from.
         /*cat_random_search=*/0,
         parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
-        /*sum_gradients_hessians_total=*/0, out);
+        /*sum_gradients_hessians_total=*/0, out, CatMonotoneBounds{-DBL_MAX, DBL_MAX}, cat_prefix_fast);
     } else if (!task->reverse) {
       FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T, /*USE_MC=*/false>(
         hist_ptr, fp32_hist, task, cuda_random,
@@ -2169,6 +2170,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
   if (grid_dim.x == 0) {
     return;  // no leaf of the level has a task: the sync writes every leaf not-found
   }
+  const bool cat_prefix_fast = FalcataPlan::Get().warp_find_mixed_cat;
   #define FindBestSplitsForLevelKernel_ARGS \
       cuda_is_feature_used_bytree_.RawData(), \
       LevelNodeMaskTable(), \
@@ -2193,7 +2195,8 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
       cuda_best_split_info_.RawData(), \
       use_desc_counts, \
       \
-      device_level_state_
+      device_level_state_, \
+      cat_prefix_fast
   // non-quantized L1 / path smoothing keep the per-pair search (BatchedLevelRefusal): only the plain variant exists
   CHECK(lambda_l1_ <= 0.0f && !use_smoothing_);
   if (FalcataFP32GainEnabled()) {
@@ -2273,13 +2276,18 @@ __device__ __forceinline__ void WarpFindBest(
   // mfb_offset == 1 case): position t holds bin t, read from hist[t - 1] for t >= 1, and bin 0 is synthesised
   // from the leaf total below.
   const uint32_t shift = (!REVERSE && task->na_as_missing && task->mfb_offset == 1) ? 1u : 0u;
+  // Zero-as-missing (skip_default_bin): position of the default bin to exclude from both the prefix sum and
+  // candidate evaluation, matching FindBestSplitsDiscretizedForLeafKernelInner bit-for-bit.
+  const uint32_t skip_t = !task->skip_default_bin ? kNoThreshold :
+    REVERSE ? (task->default_bin < task->num_bin ? task->num_bin - 1u - task->default_bin : kNoThreshold) :
+              (task->default_bin >= task->mfb_offset ? task->default_bin - task->mfb_offset : kNoThreshold);
 
   UT v[PPL];
 #pragma unroll
   for (int i = 0; i < PPL; ++i) {
     const uint32_t t = position(i);
     UT x = 0;
-    if (REVERSE ? (t >= na && t < fnb) : (t >= shift && t - shift < fnb)) {
+    if (t != skip_t && (REVERSE ? (t >= na && t < fnb) : (t >= shift && t - shift < fnb))) {
       x = static_cast<UT>(hist[REVERSE ? (fnb - 1 - t) : (t - shift)]);
     }
     v[i] = x;
@@ -2293,7 +2301,7 @@ __device__ __forceinline__ void WarpFindBest(
     UT all = 0;
     for (uint32_t t = lane; t < fnb + shift; t += 32u) {
       UT x = 0;
-      if (REVERSE ? (t >= na && t < fnb) : (t >= shift && t - shift < fnb)) {
+      if (t != skip_t && (REVERSE ? (t >= na && t < fnb) : (t >= shift && t - shift < fnb))) {
         x = static_cast<UT>(hist[REVERSE ? (fnb - 1 - t) : (t - shift)]);
       }
       if (t < pos0) carry += x;
@@ -2397,7 +2405,8 @@ __device__ __forceinline__ void WarpFindBest(
 #pragma unroll
   for (int i = 0; i < PPL; ++i) {
     const uint32_t t = position(i);
-    const bool candidate = REVERSE ? (t >= na && t <= task->num_bin - 2) : (t + 2 <= fnb + shift);
+    const bool candidate = (t != skip_t) &&
+      (REVERSE ? (t >= na && t <= task->num_bin - 2) : (t + 2 <= fnb + shift));
     if (candidate) vmask |= (1u << i);
     up[i] = INFINITY;
   }
@@ -2940,20 +2949,21 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
     return;  // no usable feature this tree; the sync masks every lane not-found
   }
   const bool use_warp = warp_find_eligible_ && !FalcataFP32GainEnabled();
-  const int num_launch_tasks = compact_tasks ? num_used_tasks_ : num_tasks_;
   // the warp launch's order (BeforeTrain): the narrow tasks first, eight per warp, then the wide ones, one per warp
   // (find_group_direction: the order's narrow part may carry padding slots, which are not tasks)
-  const int num_narrow = warp_find_order_used_ ? warp_find_num_narrow_used_ :
-                         warp_find_max_positions_ <= 8 ? num_launch_tasks : warp_find_num_narrow_used_;
-  const int num_wide = num_launch_tasks - (num_narrow - (warp_find_order_used_ ? warp_find_order_pad_ : 0));
+  const int num_narrow = use_warp ? warp_find_num_narrow_used_ : 0;
+  const int num_wide = use_warp ? warp_find_num_wide_used_ : 0;
+  const bool run_warp = use_warp && (num_narrow > 0 || num_wide > 0);
+  const bool run_block_mixed = use_warp && num_block_only_used_ > 0;
   if (FalcataDebug().diag && num_pairs == 1) {
     // single-pair levels: each tree logs at least its root, and the warp kernel's tiers this tree
-    Log::Info("split finder: %s kernel for this tree's quantized levels%s", use_warp ? "warp" : "block",
-              !use_warp ? "" : num_wide == 0 ? " (tier: few-position)" :
-              num_narrow == 0 ? " (tier: wide)" : " (tier: few-position + wide)");
+    const char* kind = !run_warp ? "block" : run_block_mixed ? "warp+block" : "warp";
+    const char* tier = !run_warp ? "" : num_wide == 0 ? " (tier: few-position)" :
+      num_narrow == 0 ? " (tier: wide)" : " (tier: few-position + wide)";
+    Log::Info("split finder: %s kernel for this tree's quantized levels%s", kind, tier);
   }
 #if !defined(__HIP_PLATFORM_AMD__)
-  if (use_warp) {
+  if (run_warp) {
     const int* task_order = warp_find_order_used_ ? cuda_warp_find_order_.RawDataReadOnly() :
                             compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr;
     const uint64_t narrow_units = static_cast<uint64_t>((num_narrow + 7) / 8);
@@ -2998,6 +3008,17 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
         FindBestSplitsDiscretizedForLevelWarpKernel_ARGS);
     }
     #undef FindBestSplitsDiscretizedForLevelWarpKernel_ARGS
+    if (!run_block_mixed) {
+      return;
+    }
+  }
+  if (run_block_mixed) {
+    // Mixed warp+block dispatch: launch the block kernel ONLY over the compact list of ineligible (e.g. categorical)
+    // tasks used this tree. Both kernels write disjoint slots in cuda_best_split_info_ on cuda_streams_[0]; passing
+    // node_tasks = nullptr keeps per-node masking via LevelNodeMaskTable() without re-running warp-handled tasks.
+    const dim3 block_grid(num_block_only_used_, num_pairs, 2);
+    LaunchFindBestSplitsDiscretizedForLevelKernelInner<false, false>(
+      block_grid, cuda_block_only_task_indices_.RawDataReadOnly(), nullptr, pair_descs, grad_scale, hess_scale);
     return;
   }
 #endif
@@ -3009,9 +3030,11 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   // the L1 / path-smoothing variants are compiled in their own translation unit (cuda_best_split_finder_level_l1_
   // smoothing.cu), so a run without them never loads their code: CUDA loads a module whole, about 3.5 ms per MB of
   // code on an RTX 5090, and #182's six extra variants made this module 1.6x larger
+  const int* task_indices = compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr;
+  const int* node_tasks = LevelNodeTaskLists();
   DispatchLevelL1Smoothing(!(lambda_l1_ <= 0.0f), use_smoothing_, [&](auto l1, auto smoothing) {
     LaunchFindBestSplitsDiscretizedForLevelKernelInner<decltype(l1)::value, decltype(smoothing)::value>(
-      grid_dim, compact_tasks, pair_descs, grad_scale, hess_scale);
+      grid_dim, task_indices, node_tasks, pair_descs, grad_scale, hess_scale);
   });
 }
 

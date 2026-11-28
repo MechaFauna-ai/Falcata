@@ -372,6 +372,12 @@ struct FalcataPlan {
   // whole warps (slots of -1 the kernel skips), so every warp holds one direction (a level of few leaves lasts as
   // long as its slowest warp). Every item still writes at its own task index: bit-identical.
   bool find_group_direction = true;  // key: find_group_direction
+  // mixed categorical+numerical warp+block dispatch, zero_as_missing (skip_default_bin) support in WarpFindBest, and
+  // fast categorical prefix scans (SequentialPrefixSumPair bounded to num_cat_thresholds + 64-bit accepted_mask).
+  // Breaks all-or-nothing warp_find disqualification: numerical tasks still run on the warp kernel while only the
+  // categorical/block-only tasks run in a compact block launch, writing disjoint slots in cuda_best_split_info_.
+  // Bit-identical to warp_find_mixed_cat:off.
+  bool warp_find_mixed_cat = true;   // key: warp_find_mixed_cat
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each
@@ -1097,6 +1103,7 @@ struct FalcataPlan {
     if (key == "find_prune_sure") return &find_prune_sure;
     if (key == "find_split_small") return &find_split_small;
     if (key == "find_group_direction") return &find_group_direction;
+    if (key == "warp_find_mixed_cat") return &warp_find_mixed_cat;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;

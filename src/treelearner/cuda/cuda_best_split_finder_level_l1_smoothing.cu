@@ -11,11 +11,11 @@
 namespace Falcata {
 
 template void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner<true, false>(
-  dim3, bool, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
+  dim3, const int*, const int*, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
 template void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner<false, true>(
-  dim3, bool, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
+  dim3, const int*, const int*, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
 template void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner<true, true>(
-  dim3, bool, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
+  dim3, const int*, const int*, const CUDAHybridPairDescriptor*, const score_t*, const score_t*);
 
 }  // namespace Falcata
 

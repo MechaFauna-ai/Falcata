@@ -498,10 +498,15 @@ class CUDABestSplitFinder {
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(num_used_tasks_)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_order_used_ ? 1 : 0)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_num_narrow_used_)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_num_wide_used_)));
     key->push_back(static_cast<const void*>(cuda_warp_find_order_.RawDataReadOnly()));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_split_block_cap_)));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_order_pad_)));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_narrow_mixed_direction_ ? 1 : 0)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(
+      (warp_find_eligible_ ? 1u : 0u) | (warp_find_has_block_tasks_ ? 2u : 0u))));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(num_block_only_used_)));
+    key->push_back(static_cast<const void*>(cuda_block_only_task_indices_.RawDataReadOnly()));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(level_node_max_tasks_)));
     // cuda_plan key device_bynode_masks: the device-drawn table, lists and grid the level finders capture
     key->push_back(static_cast<const void*>(device_node_table_));
@@ -649,7 +654,8 @@ class CUDABestSplitFinder {
   // the level finder's launch for one L1 / path-smoothing combination (cuda_best_split_finder_level.cuh; the default
   // combination is compiled in cuda_best_split_finder.cu, the others in cuda_best_split_finder_level_l1_smoothing.cu)
   template <bool USE_L1, bool USE_SMOOTHING>
-  void LaunchFindBestSplitsDiscretizedForLevelKernelInner(dim3 grid_dim, bool compact_tasks,
+  void LaunchFindBestSplitsDiscretizedForLevelKernelInner(dim3 grid_dim, const int* task_indices,
+                                                          const int* node_tasks,
                                                           const CUDAHybridPairDescriptor* pair_descs,
                                                           const score_t* grad_scale, const score_t* hess_scale);
 
@@ -780,32 +786,43 @@ class CUDABestSplitFinder {
   // (FindBestSplitsDiscretizedForLeafKernel) and vector
   // (FindBestSplitsDiscretizedVectorInner) alike; 0 = none
   double hessian_ridge_quanta_ = 0.0;
-  // every task fits the warp-per-task quantized level finder (see UpdateWarpFindEligibility)
+  // at least one task fits the warp-per-task quantized level finder (see UpdateWarpFindEligibility); under
+  // warp_find_mixed_cat, ineligible tasks (categoricals, >256 bins) run in a separate compact block launch
   bool warp_find_eligible_ = false;
-  // longest warp-finder scan over all tasks, in positions (UpdateWarpFindEligibility)
+  bool warp_find_has_block_tasks_ = false;
+  int warp_find_num_block_tasks_ = 0;
+  std::vector<uint8_t> warp_find_task_eligible_;
+  // longest warp-finder scan over eligible tasks, in positions (UpdateWarpFindEligibility)
   int warp_find_max_positions_ = 256;
   // per task, whether its scan has at most 8 positions (a 4-lane group's worth), and their count; on a dataset
-  // mixing narrow and wide tasks, the tree's launch order (used narrow tasks first, then the wide ones) and the
-  // number of narrow tasks in it, rebuilt from the tree's used tasks at BeforeTrain
+  // mixing narrow and wide tasks (or warp and block tasks), the tree's launch order (used narrow tasks first, then
+  // the wide ones) and the number of narrow/wide tasks in it, rebuilt from the tree's used tasks at BeforeTrain
   std::vector<uint8_t> warp_find_task_narrow_;
   int warp_find_num_narrow_ = 0;
   std::vector<int> host_warp_find_order_;
   CUDAVector<int> cuda_warp_find_order_;
   bool warp_find_order_used_ = false;
   int warp_find_num_narrow_used_ = 0;
+  int warp_find_num_wide_used_ = 0;
+  // compact list of block-only tasks used this tree when mixed warp+block dispatch is active
+  std::vector<int> host_block_only_task_indices_;
+  CUDAVector<int> cuda_block_only_task_indices_;
+  int num_block_only_used_ = 0;
   // cuda_plan key find_split_small: the device's resident block capacity for the wide warp kernel (SM count times
   // the occupancy API's blocks per SM), computed at the first wide launch; a launch whose blocks times four fit
   // runs each wide task on the four warps of one block
   int warp_find_split_block_cap_ = -1;
-  // the all-tasks launch order is on the device (a sampled tree's order overwrites it)
+  // the all-tasks launch order (and block-only list in mixed mode) is on the device (a sampled tree overwrites it)
   bool warp_find_order_all_tasks_ = false;
   // cuda_plan key find_group_direction: the narrow tasks have both scan directions (a column with missing values)
   bool warp_find_narrow_mixed_direction_ = false;
   // the padding slots (-1) of the tree's order (the reverse group filled to whole warps), and the all-tasks order's
-  // narrow count (with its padding) and padding, kept with the order on the device
+  // narrow count (with its padding), padding, wide count and block-only count, kept with the order on the device
   int warp_find_order_pad_ = 0;
   int warp_find_all_num_narrow_ = 0;
   int warp_find_all_pad_ = 0;
+  int warp_find_all_num_wide_ = 0;
+  int warp_find_all_num_block_ = 0;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature

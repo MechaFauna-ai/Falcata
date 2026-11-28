@@ -40,7 +40,8 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   const score_t* hess_scale,
   const double hessian_ridge_quanta,
   CUDASplitInfo* cuda_best_split_info,
-  const CUDADeviceLevelState* dls) {
+  const CUDADeviceLevelState* dls,
+  const bool cat_prefix_fast) {
   // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs exits before any read
   // (stale descriptors)
   if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
@@ -112,7 +113,7 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
           // cat_random_search, whose draws would race across the level's pairs
           /*cat_random_search=*/0,
           parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
-          sum_gradients_hessians, out);
+          sum_gradients_hessians, out, CatMonotoneBounds{-DBL_MAX, DBL_MAX}, cat_prefix_fast);
       } else {
         const CatHistReaderQuant32 hist_reader{
           reinterpret_cast<const int64_t*>(hist_base) + task->hist_offset,
@@ -124,7 +125,7 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
           cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
           /*cat_random_search=*/0,
           parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
-          sum_gradients_hessians, out);
+          sum_gradients_hessians, out, CatMonotoneBounds{-DBL_MAX, DBL_MAX}, cat_prefix_fast);
       }
     } else if (!task->reverse) {
       if (use_16bit_bin) {
@@ -175,15 +176,17 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
 
 template <bool USE_L1, bool USE_SMOOTHING>
 void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner(
-  const dim3 grid_dim, const bool compact_tasks, const CUDAHybridPairDescriptor* pair_descs,
+  const dim3 grid_dim, const int* task_indices, const int* node_tasks,
+  const CUDAHybridPairDescriptor* pair_descs,
   const score_t* grad_scale, const score_t* hess_scale) {
+  const bool cat_prefix_fast = FalcataPlan::Get().warp_find_mixed_cat;
   #define FindBestSplitsDiscretizedForLevelKernel_ARGS \
       cuda_is_feature_used_bytree_.RawData(), \
       LevelNodeMaskTable(), \
-      LevelNodeTaskLists(), \
+      node_tasks, \
       num_tasks_, \
       cuda_split_find_tasks_.RawData(), \
-      compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, \
+      task_indices, \
       cuda_randoms_.RawData(), \
       pair_descs, \
       min_data_in_leaf_, \
@@ -202,7 +205,8 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernelInner(
       hessian_ridge_quanta_, \
       cuda_best_split_info_.RawData(), \
       \
-      device_level_state_
+      device_level_state_, \
+      cat_prefix_fast
   if (FalcataFP32GainEnabled()) {
     FindBestSplitsDiscretizedForLevelKernel<false, USE_L1, USE_SMOOTHING, float>
       <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
