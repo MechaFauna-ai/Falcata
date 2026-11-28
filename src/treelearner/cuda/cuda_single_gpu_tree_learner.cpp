@@ -463,10 +463,18 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   WholeMapOnlyFaultCheckpoint(this, WholeMapOnlyFaultPoint::BeforeRootReuse);
 #endif
   prefill_launched_this_tree_ = false;
-  if (FalcataPlan::Get().compact_prefill_dt || FalcataPlan::Get().compact_prefill) {
-    // Record an event on stream 0 after the previous tree's UpdateScore / OOB / GetGradients so
-    // the next tree's prefill into *_alt_ buffers waits on the GPU without a host sync.
-    cuda_histogram_constructor_->RecordPrevTreeDone();
+  if (col_sampler_.need_reset_bytree()) {
+    const FalcataPlan& plan = FalcataPlan::Get();
+    const bool fused_root_shape = plan.fused_root_hist && config_->use_quantized_grad &&
+      use_hybrid_growth_ && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr;
+    if (plan.compact_prefill ||
+        (plan.compact_prefill_dt &&
+         cuda_histogram_constructor_->ShouldPrefillCompactData(
+           !cuda_data_partition_->use_bagging(), fused_root_shape))) {
+      // Record an event on stream 0 after the previous tree's UpdateScore / OOB / GetGradients so
+      // the next tree's prefill into *_alt_ buffers waits on the GPU without a host sync.
+      cuda_histogram_constructor_->RecordPrevTreeDone();
+    }
   }
   const data_size_t root_num_data = cuda_data_partition_->root_num_data();
   if (!boosting_on_cuda_) {
@@ -739,40 +747,37 @@ void CUDASingleGPUTreeLearner::MaybePrefillNextCompactView() {
       cuda_histogram_constructor_->view_mask_regime()) {
     return;
   }
-  // Non-mutating RNG peek (cached for O(1) consumption in next tree's ResetByTree; zero RNG corruption on early stop).
-  if (!col_sampler_.PeekNextByTree(&prefill_next_mask_)) {
-    return;
-  }
   const bool fused_root_shape = plan.fused_root_hist && config_->use_quantized_grad &&
     use_hybrid_growth_ && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr;
   const bool root_is_every_row = !cuda_data_partition_->use_bagging();
   const bool bagged_code_view = plan.bagged_code_view && cuda_data_partition_->use_bagging();
-  const bool want_fused_root = fused_root_shape && root_is_every_row;
   const bool allow_code5 = !BuildsOneByteSplitView();
   const bool do_gpu_data_prefill =
+    cuda_histogram_constructor_->compact_view_active() &&
     cuda_histogram_constructor_->ShouldPrefillCompactData(root_is_every_row, fused_root_shape);
+  if (!do_gpu_data_prefill) {
+    // Keep zero cross-stream event overhead on unbagged single-pass fused_root_hist trees and
+    // non-compact trees (e.g. unbagged numerai_v6, year_deep_fixed, epsilon ff=0.5).
+    return;
+  }
+  // Non-mutating RNG peek (cached for O(1) consumption in next tree's ResetByTree; zero RNG corruption on early stop).
+  if (!col_sampler_.PeekNextByTree(&prefill_next_mask_)) {
+    return;
+  }
 
   // Overlap next tree's host metadata computation + async pinned H2D staging on low-priority prefetch_stream_
-  // for ALL feature-sampled trees (unbagged 4-bit fused-root, 8-bit non-compact e.g. epsilon ff=0.5, AND
-  // bagged/8-bit/nonquant GPU prefill trees).
+  // alongside the GPU compact data prefill.
   prefill_meta_ready_ = false;
   if (plan.compact_prefill_dt && AsyncTreeStart()) {
     prefill_meta_batch_.BeginPrepare();
-    bool ok = cuda_best_split_finder_->PrecomputeBeforeTrain(
-                prefill_next_mask_, &prefill_meta_batch_, &prefill_finder_state_) &&
-              cuda_histogram_constructor_->PrecomputeSetFeatureUsedBytree(
-                prefill_next_mask_, &prefill_meta_batch_, &prefill_hist_feature_state_);
-    bool has_fused_compact = false;
-    if (ok && !do_gpu_data_prefill) {
-      ok = cuda_histogram_constructor_->PrecomputeFusedRootCompactView(
-             prefill_next_mask_, want_fused_root, allow_code5,
-             &prefill_meta_batch_, &prefill_hist_compact_state_);
-      has_fused_compact = ok;
-    }
+    const bool ok = cuda_best_split_finder_->PrecomputeBeforeTrain(
+                      prefill_next_mask_, &prefill_meta_batch_, &prefill_finder_state_) &&
+                    cuda_histogram_constructor_->PrecomputeSetFeatureUsedBytree(
+                      prefill_next_mask_, &prefill_meta_batch_, &prefill_hist_feature_state_);
     if (ok && prefill_meta_batch_.SubmitAsync(cuda_histogram_constructor_->prefetch_stream())) {
       prefill_meta_ready_ = true;
-      prefill_meta_has_fused_compact_ = has_fused_compact;
-      prefill_meta_want_fused_root_ = want_fused_root;
+      prefill_meta_has_fused_compact_ = false;
+      prefill_meta_want_fused_root_ = false;
       prefill_meta_allow_code5_ = allow_code5;
       prefill_meta_bitmap_ = prefill_next_mask_;
     } else {
@@ -780,13 +785,10 @@ void CUDASingleGPUTreeLearner::MaybePrefillNextCompactView() {
     }
   }
 
-  // Launch GPU compact data prefill into compact_data_uint8_t_alt_ only when it avoids splitting a used fused root hist.
-  if (do_gpu_data_prefill && cuda_histogram_constructor_->compact_view_active()) {
-    const bool prefill_code5 = allow_code5 && config_->use_quantized_grad &&
-      use_hybrid_growth_ && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr &&
-      (root_is_every_row || bagged_code_view);
-    cuda_histogram_constructor_->PrefillNextCompactView(prefill_next_mask_, prefill_code5);
-  }
+  const bool prefill_code5 = allow_code5 && config_->use_quantized_grad &&
+    use_hybrid_growth_ && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr &&
+    (root_is_every_row || bagged_code_view);
+  cuda_histogram_constructor_->PrefillNextCompactView(prefill_next_mask_, prefill_code5);
   prefill_launched_this_tree_ = true;
 }
 
@@ -6407,7 +6409,8 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   if (device_tree_completed_ && !selective_handled && !config_->linear_tree &&
-      nccl_communicator_ == nullptr && FalcataPlan::Get().compact_prefill_dt) {
+      nccl_communicator_ == nullptr && prefill_launched_this_tree_ &&
+      FalcataPlan::Get().compact_prefill_dt) {
     // TrainDeviceLevels already synchronized find_stream (ordered after every device-tree stream
     // and legacy stream 0). Synchronize stream 0 rather than the whole device so the low-priority
     // non-blocking prefetch_stream_ continues overlapping ToHost, score update, and next-tree gradients.

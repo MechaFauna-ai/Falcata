@@ -992,6 +992,13 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
       Log::Info("compact fill: prefill hit (%s, %d cols, code5=%d bits=%d)",
                 compact_is_4bit_ ? "4-bit" : "8-bit", num_compact_columns_,
                 code5_valid_ ? 1 : 0, code5_bits_);
+      if (fused_root_requested_ && compact_is_4bit_) {
+        Log::Info("compact fill: pair_code5 %s (%d byte slots, %d words per row, prefill)",
+                  code5_valid_ ? "on" : "off", compact_row_bytes_, code5_row_words_);
+        if (!code5_valid_ && fused_root_code_view_only_) {
+          Log::Info("compact fill: bagged tree without the code view: prefill tiled fill");
+        }
+      }
     }
     return true;
   }
