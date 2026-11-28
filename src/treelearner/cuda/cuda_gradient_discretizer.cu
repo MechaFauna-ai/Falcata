@@ -496,8 +496,7 @@ __global__ void BuildInbagMaskKernel(
 // quantized hessian instead of re-rounding it under an independent dither.
 // CONST_HESS (cuda_plan key const_hess_reads): every row's hessian equals row 0's,
 // which each row takes instead of loading its own.
-template <bool STOCHASTIC_ROUNDING, bool CLAMP, bool COPY_HESS = false, bool CONST_HESS = false,
-          bool FUSE_ROOT_SUMS = false>
+template <bool STOCHASTIC_ROUNDING, bool CLAMP, bool COPY_HESS = false, bool CONST_HESS = false, bool FUSE_ROOT_SUMS = false>
 __global__ void DiscretizeGradientsKernel(
   const data_size_t num_data,
   const score_t* input_gradients,
