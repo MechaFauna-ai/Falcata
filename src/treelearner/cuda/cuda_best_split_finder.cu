@@ -3439,21 +3439,21 @@ void CUDABestSplitFinder::InvalidateLeafCandidates(const std::vector<int>& leave
   if (cuda_invalidate_leaves_.Size() < leaves.size()) {
     cuda_invalidate_leaves_.Resize(leaves.size());
   }
-  // cuda_plan key invalidate_async: no host wait (see the key); the upload and the kernel stay on the default stream
-  const bool async = FalcataPlan::Get().invalidate_async && AsyncTreeStart();
+  // cuda_plan key invalidate_async: no host wait (see the key); the upload and the kernel stay on exec_stream_ (or default stream)
+  const bool async = exec_stream_ != nullptr || (FalcataPlan::Get().invalidate_async && AsyncTreeStart());
   if (async) {
     // the caller's list is local to it, and a pageable source is promised to be staged on return only by the
     // synchronous cudaMemcpy: the copy reads a member instead, next rewritten at the next tree's final level, after
-    // Train()'s tree-end device sync
+    // Train()'s tree-end sync
     invalidate_leaves_host_.assign(leaves.begin(), leaves.end());
     CopyFromHostToCUDADeviceAsync<int>(cuda_invalidate_leaves_.RawData(), invalidate_leaves_host_.data(),
-                                       invalidate_leaves_host_.size(), 0, __FILE__, __LINE__);
+                                       invalidate_leaves_host_.size(), exec_stream_, __FILE__, __LINE__);
   } else {
     CopyFromHostToCUDADevice<int>(cuda_invalidate_leaves_.RawData(), leaves.data(),
                                   leaves.size(), __FILE__, __LINE__);
   }
   const int num = static_cast<int>(leaves.size());
-  InvalidateLeafCandidatesKernel<<<(num + 255) / 256, 256>>>(
+  InvalidateLeafCandidatesKernel<<<(num + 255) / 256, 256, 0, exec_stream_>>>(
     cuda_invalidate_leaves_.RawDataReadOnly(), num, cuda_leaf_best_split_info_.RawData());
   if (async) {
     CUDASUCCESS_OR_FATAL(cudaGetLastError());
@@ -3577,17 +3577,21 @@ void CUDABestSplitFinder::PrefetchLeafBestSplitsAsync(const int num_leaves, cuda
 }
 
 void CUDABestSplitFinder::SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const {
-  // synchronous D2H on the legacy default stream: implicitly waits for all
-  // preceding work on the (blocking) streams, so no explicit device sync needed.
+  // synchronous D2H on exec_stream_ (or the legacy default stream).
   // Staged through a PINNED buffer: this copy runs once per level on the
   // hybrid critical path, and a pageable sync D2H pays an extra driver staging
   // round trip; the host-to-host memcpy of a few KB afterwards is negligible.
   EnsurePinnedLeafBestSplitCapacity(num_leaves);
   if (FalcataPlan::Get().readback_kernel && pinned_leaf_best_split_info_device_ != nullptr) {
-    // cuda_plan key readback_kernel: a copy kernel on the same default stream, then that stream's sync (see the key)
+    // cuda_plan key readback_kernel: a copy kernel on exec_stream_ (or default stream), then that stream's sync
     CopyFromCUDADeviceToMappedHost(pinned_leaf_best_split_info_device_, pinned_leaf_best_split_info_,
                                    cuda_leaf_best_split_info_.RawDataReadOnly(),
-                                   static_cast<size_t>(num_leaves) * sizeof(CUDASplitInfo), __FILE__, __LINE__);
+                                   static_cast<size_t>(num_leaves) * sizeof(CUDASplitInfo), __FILE__, __LINE__,
+                                   exec_stream_);
+  } else if (exec_stream_ != nullptr) {
+    CopyFromCUDADeviceToHostAsync<CUDASplitInfo>(pinned_leaf_best_split_info_,
+      cuda_leaf_best_split_info_.RawDataReadOnly(), static_cast<size_t>(num_leaves), exec_stream_, __FILE__, __LINE__);
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream_));
   } else {
     CopyFromCUDADeviceToHost<CUDASplitInfo>(pinned_leaf_best_split_info_, cuda_leaf_best_split_info_.RawDataReadOnly(),
       static_cast<size_t>(num_leaves), __FILE__, __LINE__);
@@ -3605,10 +3609,13 @@ void CUDABestSplitFinder::SyncLevelLeafBestSplitsToHost(const int num_leaves, co
     SyncAllLeafBestSplitsToHost(num_leaves, out);
     return;
   }
-  // cuda_plan key readback_fused: the staging already holds every leaf's entry; one device synchronize covers the
-  // sync kernel's mapped stores and every stream the default-stream copy would have waited for
+  // cuda_plan key readback_fused: the staging already holds every leaf's entry; synchronize exec_stream_ (or device)
   CHECK_GE(pinned_leaf_best_split_info_size_, static_cast<size_t>(num_leaves));
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  if (exec_stream_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream_));
+  } else {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
   ReadPrefetchedLeafBestSplits(num_leaves, out);
 }
 

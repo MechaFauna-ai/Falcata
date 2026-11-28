@@ -41,11 +41,12 @@ inline bool AsyncTreeStart() {
 // objective's per-iteration device sync). A source that dies with its function goes through TreeStartUploads.
 template <typename T>
 inline void UploadTreeStartMeta(T* device_dst, const T* host_src, const size_t count) {
+  cudaStream_t stream = CurrentTreeStartStream();
   if (CurrentTreeStartMetaBatch() != nullptr) {
     // cuda_plan key tree_meta_batch: one copy and one scatter for the whole tree start (see cuda_meta_batch.hpp)
     CurrentTreeStartMetaBatch()->Add(device_dst, host_src, count * sizeof(T));
-  } else if (AsyncTreeStart()) {
-    CopyFromHostToCUDADeviceAsync<T>(device_dst, host_src, count, 0, __FILE__, __LINE__);
+  } else if (stream != nullptr || AsyncTreeStart()) {
+    CopyFromHostToCUDADeviceAsync<T>(device_dst, host_src, count, stream, __FILE__, __LINE__);
   } else {
     CopyFromHostToCUDADevice<T>(device_dst, host_src, count, __FILE__, __LINE__);
   }
@@ -64,14 +65,15 @@ class TreeStartUploads {
       CurrentTreeStartMetaBatch()->Add(device_dst, host_src, bytes);
       return;
     }
-    if (!AsyncTreeStart()) {
+    cudaStream_t stream = CurrentTreeStartStream();
+    if (stream == nullptr && !AsyncTreeStart()) {
       CopyFromHostToCUDADevice<uint8_t>(static_cast<uint8_t*>(device_dst), static_cast<const uint8_t*>(host_src),
                                         bytes, __FILE__, __LINE__);
       return;
     }
     const uint8_t* src = static_cast<const uint8_t*>(host_src);
     kept_.emplace_back(src, src + bytes);  // a moved std::vector keeps its buffer: earlier copies stay valid
-    CopyFromHostToCUDADeviceAsync<uint8_t>(static_cast<uint8_t*>(device_dst), kept_.back().data(), bytes, 0,
+    CopyFromHostToCUDADeviceAsync<uint8_t>(static_cast<uint8_t*>(device_dst), kept_.back().data(), bytes, stream,
                                            __FILE__, __LINE__);
   }
   template <typename T>
@@ -130,6 +132,9 @@ class CUDALeafSplits: public NCCLInfo {
   ~CUDALeafSplits();
 
   void Init(const bool use_quantized_grad);
+
+  void SetStream(cudaStream_t stream) { stream_ = stream; }
+  void PrefetchRootSumsAsync(double* pinned_dst_grad_hess, cudaStream_t stream) const;
 
   void InitValues(
     const double lambda_l1, const double lambda_l2, const double max_delta_step,
@@ -329,6 +334,7 @@ class CUDALeafSplits: public NCCLInfo {
   // CUDA memory, held by other object
   const score_t* cuda_gradients_;
   const score_t* cuda_hessians_;
+  cudaStream_t stream_ = nullptr;
 };
 
 }  // namespace Falcata

@@ -111,6 +111,18 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
   if (r3_stream_ != nullptr) {
     cudaStreamDestroy(r3_stream_);
   }
+  if (multiclass_done_event_ != nullptr) {
+    cudaEventDestroy(multiclass_done_event_);
+  }
+  if (multiclass_tree_stream_ != nullptr) {
+    cudaStreamDestroy(multiclass_tree_stream_);
+  }
+  if (multiclass_exec_stream_ != nullptr) {
+    cudaStreamDestroy(multiclass_exec_stream_);
+  }
+  if (pinned_multiclass_root_sums_ != nullptr) {
+    cudaFreeHost(pinned_multiclass_root_sums_);
+  }
 }
 
 void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_hessian) {
@@ -533,7 +545,12 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     // the synchronous readback -- which waits for the histogram zeroing and the root sum kernels -- moves behind
     // the column sample, the metadata uploads and the fill launch instead of holding them back
     root_sums_deferred_ = AsyncTreeStart() && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr &&
-                          fp_merge_state_ == nullptr && HybridGrowthUsable() && !UseSelectiveGrowth();
+                          fp_merge_state_ == nullptr && HybridGrowthUsable() &&
+                          (!UseSelectiveGrowth()
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+                           || (multiclass_stream_active_ && SelectiveDeviceTree())
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+                          );
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
       config_->lambda_l2,
@@ -675,6 +692,7 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   // feature sampling (GetByNode draws from the same RNG per node; an early
   // by-tree draw would reorder the stream and change models).
   if (FalcataPlan::Get().compact_prefill && !select_features_by_node_ && !forest_slot_ &&
+      !multiclass_stream_active_ &&
       nccl_communicator_ == nullptr && fp_merge_state_ == nullptr &&
       cuda_histogram_constructor_->compact_view_active()) {
     col_sampler_.ResetByTree();
@@ -952,8 +970,9 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     cuda_histogram_constructor_->EnsureNibbleView();
   }
 
+  cudaStream_t gather_stream = multiclass_exec_stream();
   LaunchRowToColCompactKernel(
-      0,
+      gather_stream,
       gather_src,
       compact_column_buffer_.RawData(),
       cuda_slot_p_byte_.RawData(),
@@ -962,12 +981,15 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
       num_compact_cols,
       num_data,
       gather_src_is_4bit);
-  CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
+  if (gather_stream == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
+  }
 
   // Update CUDAColumnData's data_by_column_ pointers to slots in compact buffer.
   col_data->SetCompactColumnView(orig_column_to_compact_slot_,
                                  compact_column_buffer_.RawData(),
-                                 static_cast<size_t>(num_data));
+                                 static_cast<size_t>(num_data),
+                                 gather_stream);
   compact_col_signature_ = sig;
   col_view_generation_seen_ = col_data->column_view_generation();
 }
@@ -1279,7 +1301,7 @@ void CUDASingleGPUTreeLearner::EnsureRootSumsReadBack(CUDATree* tree) {
     leaf_sum_gradients_[0], leaf_sum_hessians_[0],
     config_->lambda_l1, config_->lambda_l2, config_->path_smooth, config_->max_delta_step,
     static_cast<data_size_t>(num_data_), 0.0));
-  tree->SyncLeafOutputFromHostToCUDA();
+  tree->SyncLeafOutputFromHostToCUDA(multiclass_exec_stream());
 }
 
 void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearch(const CUDATree* tree,
@@ -5743,7 +5765,7 @@ void CUDASingleGPUTreeLearner::SelectiveFinalize(CUDATree* tree) {
     }
     seq.push_back(s);
   }
-  tree->RebuildFromHostSplits(seq);
+  tree->RebuildFromHostSplits(seq, multiclass_exec_stream());
   const int final_num_leaves = tree->num_leaves();
   if (final_num_leaves < config_->num_leaves) {
     Log::Warning("No further splits with positive gain, training stopped with %d leaves.",
@@ -6961,6 +6983,1121 @@ void CUDASingleGPUTreeLearner::SetTreeCounters(const TreeCounters& counters) {
   if (cuda_gradient_discretizer_) {
     cuda_gradient_discretizer_->SetIteration(counters.discretizer);
   }
+}
+
+void CUDASingleGPUTreeLearner::EnableMulticlassStream() {
+  if (multiclass_stream_active_) {
+    return;
+  }
+  SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
+  if (multiclass_exec_stream_ == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaStreamCreateWithFlags(&multiclass_exec_stream_, cudaStreamNonBlocking));
+  }
+  if (multiclass_tree_stream_ == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaStreamCreateWithFlags(&multiclass_tree_stream_, cudaStreamNonBlocking));
+  }
+  if (multiclass_done_event_ == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&multiclass_done_event_, cudaEventDisableTiming));
+  }
+  next_tree_col_sample_ready_ = false;
+  cuda_histogram_constructor_->InvalidateCompactPrefill();
+  cuda_smaller_leaf_splits_->SetStream(multiclass_exec_stream_);
+  cuda_larger_leaf_splits_->SetStream(multiclass_exec_stream_);
+  cuda_histogram_constructor_->SetExecStream(multiclass_exec_stream_);
+  cuda_data_partition_->SetExecStream(multiclass_exec_stream_);
+  cuda_best_split_finder_->SetExecStream(multiclass_exec_stream_);
+  if (cuda_gradient_discretizer_ != nullptr) {
+    cuda_gradient_discretizer_->SetStream(multiclass_exec_stream_);
+  }
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  ReleaseDeviceLevelGraphs();
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  multiclass_stream_active_ = true;
+}
+
+void CUDASingleGPUTreeLearner::DisableMulticlassStream() {
+  if (!multiclass_stream_active_) {
+    return;
+  }
+  if (multiclass_exec_stream_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(multiclass_exec_stream_));
+  }
+  multiclass_stream_active_ = false;
+  cuda_smaller_leaf_splits_->SetStream(nullptr);
+  cuda_larger_leaf_splits_->SetStream(nullptr);
+  cuda_histogram_constructor_->SetExecStream(nullptr);
+  cuda_data_partition_->SetExecStream(nullptr);
+  cuda_best_split_finder_->SetExecStream(nullptr);
+  if (cuda_gradient_discretizer_ != nullptr) {
+    cuda_gradient_discretizer_->SetStream(nullptr);
+  }
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  ReleaseDeviceLevelGraphs();
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+}
+
+bool CUDASingleGPUTreeLearner::MulticlassConcurrentSupported() const {
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  if (!HybridGrowthUsable() || vec_num_targets_ > 1 || nccl_communicator_ != nullptr ||
+      fp_merge_state_ != nullptr) {
+    return false;
+  }
+  if (cuda_histogram_constructor_ == nullptr || cuda_best_split_finder_ == nullptr ||
+      !cuda_histogram_constructor_->SupportsBatchedLevel() ||
+      !cuda_best_split_finder_->SupportsBatchedLevel() ||
+      !cuda_histogram_constructor_->DeviceLevelConstructSupported()) {
+    return false;
+  }
+  if (!(DeviceTreeRequested() || SelectiveDeviceTree())) {
+    return false;
+  }
+  if (!config_->use_quantized_grad && !NonquantDeviceTreeShape()) {
+    return false;
+  }
+  return true;
+#else
+  return false;
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+}
+
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+void CUDASingleGPUTreeLearner::EnqueueSelectiveDeviceReadback(
+    const CUDADeviceLevelConfig& cfg, const int splits, cudaStream_t stream) {
+  CopyFromCUDADeviceToHostAsync<int>(pinned_device_level_journal_, cuda_device_level_journal_.RawData(),
+    static_cast<size_t>(kDeviceLevelJournalHeader) + kDeviceLevelJournalRecord * static_cast<size_t>(splits),
+    stream, __FILE__, __LINE__);
+  cuda_data_partition_->PrefetchSplitBatchAsync(splits, stream);
+  cuda_best_split_finder_->PrefetchLeafBestSplitsAsync(splits + 1, stream);
+  if (splits > 0) {
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(pinned_selective_prefix_split_infos_, cfg.split_info_journal,
+                                         static_cast<size_t>(splits) * sizeof(CUDASplitInfo),
+                                         cudaMemcpyDeviceToHost, stream));
+  }
+}
+
+void CUDASingleGPUTreeLearner::FinishSelectivePrefixAndStartHostLoop(AsyncTrainState* state) {
+  cudaStream_t exec_stream = multiclass_exec_stream_;
+  TreeStartStreamScope stream_scope(exec_stream);
+  selective_device_boundary_ = state->sel_continues;
+  const int* journal = pinned_device_level_journal_;
+  if (journal[2] != 0) {
+    Log::Fatal("device_levels: a device level left the gated regime (flags 0x%x)", journal[2]);
+  }
+  const int levels_applied = journal[0];
+  const int total_splits = journal[1];
+  CHECK_GE(levels_applied, 0);
+  CHECK_LE(levels_applied, state->sel_levels_enqueued);
+  CHECK_GE(total_splits, 0);
+  CHECK_LE(total_splits, state->sel_max_total_splits);
+  if (selective_bodies_ > 0 || state->sel_device_boundary) {
+    CHECK_EQ(pinned_device_level_flag_[1], levels_applied);
+    CHECK_EQ(pinned_device_level_flag_[2], total_splits);
+  }
+  std::vector<int>& level_counts = device_level_journal_counts_;
+  level_counts.resize(static_cast<size_t>(state->sel_levels_enqueued));
+  CHECK(DeviceLevelJournalCounts(journal, total_splits, state->sel_levels_enqueued, level_counts.data()));
+  for (int level = levels_applied; level < state->sel_levels_enqueued; ++level) {
+    CHECK_EQ(level_counts[level], 0);
+  }
+  cuda_data_partition_->FinishDeviceLevels(state->sel_levels_enqueued, levels_applied, total_splits);
+  cuda_data_partition_->ReadPrefetchedSplitBatch(total_splits, &device_level_batch_info_);
+
+  int num_splits = 0;
+  int cursor = 0;
+  state->sel_pairs.clear();
+  for (int level = 0; level < levels_applied; ++level) {
+    const int level_splits = level_counts[level];
+    CHECK_GE(level_splits, 1);
+    CHECK_LE(cursor + level_splits, total_splits);
+    device_level_applied_.clear();
+    for (int k = 0; k < level_splits; ++k) {
+      const int* record = journal + kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * (cursor + k);
+      const int left_leaf = record[0];
+      const int right_leaf = cursor + k + 1;
+      BynodeKeySplit(left_leaf, right_leaf);
+      device_level_applied_.push_back({left_leaf, right_leaf, hybrid_pair_slots_.RawData() + 2 * k,
+                                       hybrid_pair_slots_.RawData() + 2 * k + 1});
+    }
+    state->sel_pairs.clear();
+    FinishLevelBookkeeping(device_level_applied_, device_level_batch_info_.data() + 18 * static_cast<size_t>(cursor),
+                           &state->sel_pairs, &num_splits);
+    cursor += level_splits;
+  }
+  CHECK_EQ(cursor, total_splits);
+  if (!state->sel_leaf_entries_read || state->sel_continues) {
+    cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(total_splits + 1, &host_leaf_best_splits_);
+  }
+
+  // Rebuild selective records from the device journal (mirror of TrainSelectiveDevicePrefix)
+  const CUDASplitInfo* raw_infos = static_cast<const CUDASplitInfo*>(pinned_selective_prefix_split_infos_);
+  cursor = 0;
+  int leaves = 1;
+  for (int level = 0; level < levels_applied; ++level) {
+    const int level_splits = level_counts[level];
+    for (int k = 0; k < level_splits; ++k) {
+      const int s = cursor + k;
+      const int left = journal[kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * s];
+      const int right = leaves + k;
+      const int* batch = device_level_batch_info_.data() + 18 * static_cast<size_t>(s);
+      CHECK_EQ(batch[0], left);
+      CHECK_EQ(batch[3], right);
+      CHECK_LT(left, leaves);
+      CHECK_LT(right, config_->num_leaves);
+      CHECK(sel_leaf_live_[left]);
+      CHECK_EQ(batch[2], state->sel_window_start[left]);
+      CHECK_EQ(batch[1] + batch[4], state->sel_window_num[left]);
+      CHECK_EQ(batch[5], batch[2] + batch[1]);
+      const int new_id = static_cast<int>(sel_applied_.size());
+      const int parent = sel_leaf_parent_[left];
+      const CUDASplitInfo& raw = raw_infos[s];
+      CHECK(raw.is_valid);
+      CHECK_EQ(raw.inner_feature_index, journal[kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * s + 1]);
+      CHECK_EQ(raw.num_cat_threshold, 0);
+      sel_applied_.emplace_back();
+      SelectiveApplied& node = sel_applied_.back();
+      node.parent = parent;
+      node.left_leaf = left;
+      node.right_leaf = right;
+      node.kid_left = -1;
+      node.kid_right = -1;
+      node.dead = false;
+      node.selected = true;
+      node.data_start = state->sel_window_start[left];
+      node.num_data = state->sel_window_num[left];
+      node.info = raw;
+      node.gain = node.info.gain;
+      if (parent >= 0) {
+        SelectiveApplied& p = sel_applied_[parent];
+        if (p.left_leaf == left) {
+          p.kid_left = new_id;
+        } else {
+          CHECK_EQ(p.right_leaf, left);
+          p.kid_right = new_id;
+        }
+      }
+      sel_leaf_parent_[left] = new_id;
+      sel_leaf_parent_[right] = new_id;
+      sel_leaf_live_[right] = 1;
+      sel_leaf_depth_[right] = sel_leaf_depth_[left] + 1;
+      ++sel_leaf_depth_[left];
+      state->sel_window_start[left] = batch[2];
+      state->sel_window_num[left] = batch[1];
+      state->sel_window_start[right] = batch[5];
+      state->sel_window_num[right] = batch[4];
+    }
+    cursor += level_splits;
+    leaves += level_splits;
+  }
+  CHECK_EQ(cursor, num_splits);
+  sel_num_allocated_ = leaves;
+  sel_num_splits_ = num_splits;
+  sel_stat_applied_ += num_splits;
+  sel_stat_levels_ += levels_applied;
+  if (levels_applied == 0) {
+    state->sel_pairs.assign(1, state->sel_root_pair);
+  }
+  growth_route_ = GrowthRoute::kSelectiveDevice;
+
+  // First host selective iteration (from the readback already in host_leaf_best_splits_)
+  std::vector<int> child_leaves;
+  child_leaves.reserve(2 * state->sel_pairs.size());
+  for (const HybridPendingPair& pair : state->sel_pairs) {
+    child_leaves.push_back(pair.smaller);
+    if (pair.larger >= 0) {
+      child_leaves.push_back(pair.larger);
+    }
+  }
+  SelectiveDiscoverFrontier(child_leaves);
+  if (RunSelectiveLevel() == 0) {
+    state->phase = AsyncTrainState::Phase::kSelectiveReadyFinalize;
+    return;
+  }
+  ApplyLevelBatchedSelective(&state->sel_applied);
+  cuda_data_partition_->PrefetchSplitBatchAsync(static_cast<int>(state->sel_applied.size()), exec_stream);
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(multiclass_done_event_, exec_stream));
+  state->phase = AsyncTrainState::Phase::kSelectiveHostApply;
+}
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+
+void CUDASingleGPUTreeLearner::StartTrainAsync(const score_t* gradients, const score_t* hessians,
+                                               const bool is_first_tree, double* retained_leaf_buf,
+                                               const size_t retained_leaf_size, AsyncTrainState* state) {
+  CHECK(multiclass_stream_active_);
+  *state = AsyncTrainState{};
+  state->is_first_tree = is_first_tree;
+  cudaStream_t exec_stream = multiclass_exec_stream_;
+  TreeStartStreamScope stream_scope(exec_stream);
+
+  // Fast check before BeforeTrain: if neither whole-device-tree nor selective-device-tree can apply,
+  // delegate cleanly to synchronous Train() on this slot.
+  const bool candidate_async =
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+    train_data_->num_features() > 0 && HybridGrowthUsable() &&
+    (DeviceTreeRequested() || SelectiveDeviceTree()) &&
+    (config_->use_quantized_grad || NonquantDeviceTreeShape());
+#else
+    false;
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  if (!candidate_async) {
+    if (retained_leaf_buf != nullptr) {
+      DeallocateCUDAMemory<double>(&retained_leaf_buf, __FILE__, __LINE__);
+    }
+    Tree* t = Train(gradients, hessians, is_first_tree);
+    state->tree.reset(static_cast<CUDATree*>(t));
+    state->phase = AsyncTrainState::Phase::kDoneSync;
+    return;
+  }
+
+  if (construct_saturation_floor_ > 0 &&
+      FalcataPlan::Get().batch_construct_saturation_floor != construct_saturation_floor_) {
+    FalcataPlan::Mutable().batch_construct_saturation_floor = construct_saturation_floor_;
+  }
+  gradients_ = gradients;
+  hessians_ = hessians;
+  state->leaf_map_zero_dead = LeafMapZeroDead();
+  cuda_data_partition_->SetLeafMapZeroDead(state->leaf_map_zero_dead);
+  if (tree_in_progress_) {
+    AbortedTreeReset();
+  }
+  tree_in_progress_ = true;
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  if (device_bynode_active_) {
+    EndDeviceBynode();
+  }
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  BeforeTrain();
+  if (bynode_keyed_) {
+    if (bynode_node_key_.size() < static_cast<size_t>(config_->num_leaves) + 2) {
+      bynode_node_key_.resize(static_cast<size_t>(config_->num_leaves) + 2, 0);
+    }
+    bynode_node_key_[0] = ColSampler::MixKey(bynode_tree_count_ ^ 0x3C6EF372FE94F82BULL);
+    ++bynode_tree_count_;
+  }
+  hybrid_map_final_written_ = false;
+  hybrid_map_early_written_ = false;
+  hybrid_map_early_num_leaves_ = 0;
+  hybrid_map_early_pending_ = false;
+  prefetched_tree_num_leaves_ = 0;
+  prefetched_tree_counts_ = false;
+  prefix_completes_tree_ = false;
+  prefix_final_leaves_before_ = -1;
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  device_tree_completed_ = false;
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  growth_route_ = GrowthRoute::kClassic;
+  device_levels_refusal_ = DeviceTreeReason::kNone;
+
+  const bool track_branch_features = !(config_->interaction_constraints_vector.empty()) || config_->linear_tree;
+  const size_t tree_pool_bytes = CUDATree::PooledDeviceBufferSize(config_->num_leaves);
+  if (cuda_tree_pool_buffer_.Size() < tree_pool_bytes) {
+    cuda_tree_pool_buffer_.Resize(tree_pool_bytes);
+  }
+  state->tree.reset(new CUDATree(config_->num_leaves, track_branch_features,
+    config_->linear_tree, gpu_device_id_, has_categorical_feature_,
+    cuda_tree_pool_buffer_.RawData(), std::max(1, vec_num_targets_), &cuda_tree_cat_arena_,
+    multiclass_tree_stream_, exec_stream));
+  if (retained_leaf_buf != nullptr && retained_leaf_size > 0) {
+    state->tree->AdoptPreparedRetainedLeafValues(retained_leaf_buf, retained_leaf_size);
+  } else if (retained_leaf_buf != nullptr) {
+    DeallocateCUDAMemory<double>(&retained_leaf_buf, __FILE__, __LINE__);
+  }
+  if (!root_sums_deferred_) {
+    state->tree->SetLeafOutput(0, CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(
+      leaf_sum_gradients_[smaller_leaf_index_], leaf_sum_hessians_[smaller_leaf_index_],
+      config_->lambda_l1, config_->lambda_l2, config_->path_smooth, config_->max_delta_step,
+      static_cast<data_size_t>(num_data_), 0.0));
+    state->tree->SyncLeafOutputFromHostToCUDA(exec_stream);
+  }
+
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  CUDATree* tree = state->tree.get();
+  const size_t max_slots = static_cast<size_t>(config_->num_leaves) + 2;
+  if (hybrid_pair_slots_.Size() < max_slots) {
+    hybrid_pair_slots_.Resize(max_slots);
+  }
+  const bool use_batched_level_kernels =
+    cuda_histogram_constructor_->SupportsBatchedLevel() &&
+    cuda_best_split_finder_->SupportsBatchedLevel();
+
+  // ---- Path A: Whole Device Tree (covtype_deep_fixed, covtype_deep_stoch, covtype_shallow_nonquant_det, etc.) ----
+  if (!UseSelectiveGrowth()) {
+    PlanDeviceTreeChunks(tree);
+    bool whole_device_tree = false;
+    int device_levels = 0;
+    if (!(UseOneSyncPrefix() && !NonquantDeviceTreeUsable())) {
+      device_levels = DeviceLevelsToRun(use_batched_level_kernels, /*batched_level_apply=*/true);
+      if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels(device_levels, /*record_tree=*/true)) {
+        device_levels_disabled_ = true;
+      }
+      whole_device_tree = DeviceTreeRequested() && device_levels > 0 && device_levels_ready_;
+    }
+    if (whole_device_tree) {
+      if (!cuda_histogram_constructor_->DeviceLevelGraphCapturable()) {
+        cuda_histogram_constructor_->EnsureNibbleView();
+      }
+      if (select_features_by_node_) {
+        BeginDeviceBynode();
+      }
+      EnqueueRootLevelSearchOneSync(/*reuse_fused_root=*/true);
+
+      cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
+      cuda_data_partition_->BuildDeviceLevelFeatureSource(&host_device_level_feature_source_);
+      CopyFromHostToCUDADeviceAsync<CUDAHybridGraphFeatureSource>(
+        cuda_device_level_feature_source_.RawData(), host_device_level_feature_source_.data(),
+        host_device_level_feature_source_.size(), find_stream, __FILE__, __LINE__);
+      CUDADeviceLevelState* dls = cuda_device_level_state_.RawData();
+      CUDADeviceLevelConfig& cfg = host_device_level_config_;
+      std::memset(&cfg, 0, sizeof(cfg));
+      cfg.state = dls;
+      cfg.leaf_best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
+      cfg.root_struct = cuda_smaller_leaf_splits_->GetCUDAStruct();
+      cfg.tree_leaf_value = config_->use_quantized_grad ? tree->cuda_leaf_value_ref() : nullptr;
+      cfg.leaf_num_data = cuda_data_partition_->cuda_leaf_num_data();
+      cfg.leaf_data_start = cuda_data_partition_->cuda_leaf_data_start();
+      cfg.tree_batch_splits = tree->hybrid_graph_batch_splits();
+      cfg.apply_descs = cuda_data_partition_->device_level_apply_descs();
+      cfg.pair_descs = cuda_hybrid_pair_descs_.RawData();
+      cfg.pair_slots = hybrid_pair_slots_.RawData();
+      cfg.feature_meta = cuda_device_level_feature_meta_.RawDataReadOnly();
+      cfg.feature_source = cuda_device_level_feature_source_.RawDataReadOnly();
+      CHECK(cuda_device_level_real_thresholds_.Size() > 0);
+      cfg.real_thresholds = cuda_device_level_real_thresholds_.RawDataReadOnly();
+      cfg.journal = cuda_device_level_journal_.RawData();
+      cfg.max_depth = GrowthMaxDepth();
+      cfg.num_leaves_budget = config_->num_leaves;
+      cfg.whole_tree = 1;
+      cfg.construct_block_start = cuda_device_level_block_start_.RawData();
+      if ((1 << (device_levels - 1)) > kDeviceTreeSharedSplits) {
+        CHECK_GE(cuda_device_level_select_leaves_.Size(), static_cast<size_t>(1) << (device_levels - 1));
+        cfg.select_leaves = cuda_device_level_select_leaves_.RawData();
+        cfg.select_gains = cuda_device_level_select_gains_.RawData();
+        cfg.select_split_bits = cuda_device_level_select_bits_.RawData();
+        cfg.select_gaps = cuda_device_level_select_gaps_.RawData();
+        cfg.select_capacity = 1 << (device_levels - 1);
+      }
+      cfg.num_chunks = DeviceTreeChunks(device_level_max_pairs_);
+      if (cfg.num_chunks > 1) {
+        CHECK_GE(cuda_device_level_chunk_states_.Size(), static_cast<size_t>(cfg.num_chunks));
+        cfg.chunk_states = cuda_device_level_chunk_states_.RawData();
+        cfg.chunk_pairs = device_tree_chunk_pairs_;
+      }
+      const bool cat_tree = has_categorical_feature_;
+      if (cat_tree) {
+        CHECK_EQ(device_tree_cat_gate_, 1);
+        size_t record_splits = 0, level_splits = 0;
+        DeviceTreeCatWorstCase(&record_splits, &level_splits);
+        tree->ReserveCategoricalRecord(record_splits * batch_cat_bitset_stride_,
+                                       record_splits * batch_cat_bitset_inner_stride_);
+        cfg.cat.infos = cuda_batch_cat_infos_.RawData();
+        cfg.cat.inner_features = cuda_batch_cat_feats_.RawData();
+        cfg.cat.split_index = cuda_device_tree_cat_split_index_.RawData();
+        cfg.cat.bitset_slab = cuda_batch_cat_bitset_.RawData();
+        cfg.cat.bitset_inner_slab = cuda_batch_cat_bitset_inner_.RawData();
+        cfg.cat.lens = cuda_batch_cat_lens_.RawData();
+        cfg.cat.bitset_stride = static_cast<int>(batch_cat_bitset_stride_);
+        cfg.cat.bitset_inner_stride = static_cast<int>(batch_cat_bitset_inner_stride_);
+        cfg.cat.bin_to_value = cuda_categorical_bin_to_value_;
+        cfg.cat.bin_offsets = cuda_categorical_bin_offsets_;
+      }
+      const int max_total_splits = std::min((1 << device_levels) - 1, config_->num_leaves - 1);
+      const bool lean_end = FalcataPlan::Get().device_tree_lean_end && device_levels >= 2;
+      bool skip_host_cache = config_->boosting == "gbdt" &&
+        (lean_end || (config_->objective == "regression" && share_state_->is_constant_hessian)) &&
+        boosting_on_cuda_ && (lean_end || train_data_->metadata().weights() == nullptr) &&
+        config_->use_quantized_grad && vec_num_targets_ <= 1 &&
+        nccl_communicator_ == nullptr && fp_merge_state_ == nullptr && !forest_slot_ &&
+        config_->data_sample_strategy == "bagging" && !config_->bagging_by_query &&
+        (lean_end ||
+         (config_->bagging_freq == 0 && config_->bagging_fraction == 1.0 && config_->pos_bagging_fraction == 1.0 &&
+          config_->neg_bagging_fraction == 1.0 && !cuda_data_partition_->use_bagging())) &&
+        !config_->quant_train_renew_leaf && !config_->linear_tree &&
+        (!select_features_by_node_ || device_bynode_active_) &&
+        config_->interaction_constraints_vector.empty() && config_->monotone_constraints.empty() &&
+        !use_monotone_constraints_ && config_->monotone_penalty == 0.0 && config_->feature_contri.empty() &&
+        config_->cegb_penalty_split == 0.0 && config_->cegb_penalty_feature_lazy.empty() &&
+        config_->cegb_penalty_feature_coupled.empty() && config_->forcedsplits_filename.empty() &&
+        (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
+        !FalcataDebug().debug && !FalcataDebug().dump;
+#ifdef DEBUG
+      skip_host_cache = false;
+#endif  // DEBUG
+      const bool all_rows_root = cuda_data_partition_->root_num_data() == num_data_;
+      const bool inline_all_map = skip_host_cache && (all_rows_root || lean_end) &&
+        cuda_data_partition_->cuda_data_index_to_leaf_index() != nullptr;
+      cfg.gap_block_dim = CUDADataPartition::DeviceLevelGapBlockDim();
+      cfg.min_data_in_leaf = static_cast<data_size_t>(config_->min_data_in_leaf);
+      cfg.min_sum_hessian_in_leaf = config_->min_sum_hessian_in_leaf;
+      cfg.skip_unsplittable = (FalcataPlan::Get().skip_unsplittable && config_->forcedsplits_filename.empty() &&
+        (forced_split_json_ == nullptr || forced_split_json_->is_null())) ? 1 : 0;
+      cfg.num_grad_quant_bins = cuda_histogram_constructor_->DeviceLevelNumGradQuantBins();
+      cfg.construct_min_grid_dim_y = cuda_histogram_constructor_->DeviceLevelConstructMinGridDimY();
+      cfg.construct_min_rows_per_thread = CUDAHistogramConstructor::BatchConstructMinRowsPerThread();
+      cfg.construct_saturation_floor = CUDAHistogramConstructor::BatchConstructSaturationFloor();
+      cuda_histogram_constructor_->DeviceLevelConstructShape(&cfg.shape);
+      cfg.level_row_blocks = config_->use_quantized_grad && (cfg.shape.pair_mode == 0 ?
+        FalcataPlan::Get().dense_level_row_blocks : FalcataPlan::Get().level_row_blocks) ? 1 : 0;
+      CopyFromHostToCUDADeviceAsync<CUDADeviceLevelConfig>(cuda_device_level_config_.RawData(), &cfg, 1, find_stream,
+                                                           __FILE__, __LINE__);
+      size_t end_slab_bytes = 0;
+      size_t end_counts_offset = 0;
+      bool prefetch_tree_end = false;
+      const FalcataPlan& end_plan = FalcataPlan::Get();
+      if (end_plan.final_readback_first && end_plan.readback_kernel && AsyncTreeStart() &&
+          nccl_communicator_ == nullptr && vec_num_targets_ <= 1 && !config_->linear_tree &&
+          !(config_->use_quantized_grad && config_->quant_train_renew_leaf)) {
+        end_slab_bytes = CUDATree::PooledDeviceBufferSize(config_->num_leaves);
+        end_counts_offset = (end_slab_bytes + 255) / 256 * 256;
+        const size_t max_count_bytes = static_cast<size_t>(config_->num_leaves) * sizeof(data_size_t);
+        if (cuda_tree_pool_buffer_.Size() >= end_slab_bytes &&
+            tree->cuda_threshold() == reinterpret_cast<const double*>(cuda_tree_pool_buffer_.RawDataReadOnly())) {
+          prefetch_tree_end = EnsureReadbackStaging(end_counts_offset + max_count_bytes);
+        }
+      }
+      const bool final_map_only = inline_all_map && all_rows_root && prefetch_tree_end && end_plan.final_map_only &&
+        end_plan.skip_empty_tail;
+      bool launched = false;
+      if (FalcataPlan::Get().device_level_graph && !ForestSlotShared() && !device_level_graph_disabled_) {
+        launched = LaunchDeviceLevelGraph(tree, cfg, device_levels, inline_all_map, final_map_only);
+      }
+      if (!launched) {
+        EnqueueDeviceLevels(tree, cfg, device_levels, inline_all_map, final_map_only);
+      }
+      if (device_bynode_active_) {
+        EndDeviceBynode();
+      }
+      bool active_prefix_readback = false;
+      if (prefetch_tree_end) {
+        if (inline_all_map) {
+          active_prefix_readback = tree->LaunchActiveSlabReadback(readback_staging_device_, readback_staging_bytes_,
+            cuda_data_partition_->cuda_leaf_num_data(), cuda_device_level_journal_.RawDataReadOnly(),
+            max_total_splits, find_stream);
+        }
+        if (!active_prefix_readback) {
+          CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(readback_staging_, tree->cuda_threshold(), end_slab_bytes,
+                                               cudaMemcpyDeviceToHost, find_stream));
+          CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(static_cast<uint8_t*>(readback_staging_) + end_counts_offset,
+            cuda_data_partition_->cuda_leaf_num_data(), static_cast<size_t>(config_->num_leaves) * sizeof(data_size_t),
+            cudaMemcpyDeviceToHost, find_stream));
+        }
+      }
+      CopyFromCUDADeviceToHostAsync<int>(pinned_device_level_journal_, cuda_device_level_journal_.RawData(),
+        static_cast<size_t>(kDeviceLevelJournalHeader) + kDeviceLevelJournalRecord * static_cast<size_t>(max_total_splits),
+        find_stream, __FILE__, __LINE__);
+      if (!skip_host_cache) {
+        cuda_data_partition_->PrefetchSplitBatchAsync(max_total_splits, find_stream);
+      }
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(multiclass_done_event_, find_stream));
+
+      state->phase = AsyncTrainState::Phase::kWholeDeviceTree;
+      state->num_levels = device_levels;
+      state->skip_host_cache = skip_host_cache;
+      state->inline_all_map = inline_all_map;
+      state->final_map_only = final_map_only;
+      state->prefetch_tree_end = prefetch_tree_end;
+      state->active_prefix_readback = active_prefix_readback;
+      state->cat_tree = cat_tree;
+      state->end_counts_offset = end_counts_offset;
+      state->max_total_splits = max_total_splits;
+      state->graph_launched = launched;
+      return;
+    }
+
+    // Fallback when whole_device_tree setup declined after BeforeTrain: run synchronously on exec_stream
+    EnsureRootSumsReadBack(tree);
+    const int num_splits_done = TrainLevelWisePrefix(tree);
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+    cuda_histogram_constructor_->ReleaseTreeStartUploads();
+    tree_start_uploads_.Release();
+    tree_meta_batch_.Release();
+    if (num_splits_done > 0) {
+      if (hybrid_map_final_written_) {
+        if (!hybrid_map_early_written_ || tree->num_leaves() != hybrid_map_early_num_leaves_) {
+          cuda_data_partition_->MaterializeHybridLeafMapSubset(hybrid_map_residual_leaves_);
+        }
+      } else {
+        cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
+      }
+    } else if (state->leaf_map_zero_dead) {
+      cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
+    }
+    const size_t slab_bytes = CUDATree::PooledDeviceBufferSize(config_->num_leaves);
+    if (EnsureReadbackStaging(slab_bytes)) {
+      tree->ToHost(readback_staging_, readback_staging_device_, readback_staging_bytes_, {}, false, exec_stream);
+    } else {
+      tree->ToHost(nullptr, nullptr, 0, {}, false, exec_stream);
+    }
+    if (tree->num_leaves() > 0) {
+      std::vector<data_size_t> leaf_num_data(static_cast<size_t>(tree->num_leaves()));
+      CopyFromCUDADeviceToHostAsync<data_size_t>(leaf_num_data.data(), cuda_data_partition_->cuda_leaf_num_data(),
+                                                 leaf_num_data.size(), exec_stream, __FILE__, __LINE__);
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+      tree->SyncNodeCountsFromPartition(leaf_num_data);
+    }
+    int num_dirty = tree->num_leaves();
+    if (prefix_completes_tree_ && prefix_final_leaves_before_ > 0 && FalcataPlan::Get().dirty_final_slots) {
+      num_dirty = std::min(num_dirty, prefix_final_leaves_before_);
+    }
+    cuda_histogram_constructor_->SetNumDirtyLeaves(num_dirty);
+    cuda_histogram_constructor_->ReleaseUnusedFullView();
+    if (config_->min_gain_to_split != 0.0) {
+      tree->AddSplitGainOffset(config_->min_gain_to_split);
+    }
+    tree_in_progress_ = false;
+    state->phase = AsyncTrainState::Phase::kDoneSync;
+    return;
+  }
+
+  // ---- Path B: Selective Device Tree + Lockstep Host Tail (selective_unbounded_stoch, etc.) ----
+  if (use_batched_level_kernels && SelectiveDeviceTree() && !UseOneSyncPrefix()) {
+    PlanDeviceTreeChunks(tree);
+    const int levels = DeviceLevelsToRun(/*batched_level_kernels=*/true, /*batched_level_apply=*/true);
+    bool selective_ok = levels > 0;
+    if (selective_ok && !device_levels_ready_ && !SetupDeviceLevels(SelectiveCapacityLevels(), /*record_tree=*/false)) {
+      device_levels_disabled_ = true;
+      selective_ok = false;
+    }
+    if (selective_ok) {
+      const int max_splits = config_->num_leaves - 1;
+      if (cuda_selective_prefix_split_infos_.Size() < static_cast<size_t>(max_splits)) {
+        cuda_selective_prefix_split_infos_.Resize(static_cast<size_t>(max_splits));
+      }
+      if (pinned_selective_prefix_split_infos_count_ < static_cast<size_t>(max_splits)) {
+        if (pinned_selective_prefix_split_infos_ != nullptr) {
+          CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_selective_prefix_split_infos_));
+          pinned_selective_prefix_split_infos_ = nullptr;
+        }
+        CUDASUCCESS_OR_FATAL(cudaHostAlloc(&pinned_selective_prefix_split_infos_,
+                                           static_cast<size_t>(max_splits) * sizeof(CUDASplitInfo),
+                                           cudaHostAllocDefault));
+        pinned_selective_prefix_split_infos_count_ = static_cast<size_t>(max_splits);
+      }
+      if (!SetupSelectiveFlag()) {
+        device_levels_disabled_ = true;
+        selective_ok = false;
+      }
+    }
+    if (selective_ok) {
+      selective_active_ = true;
+      SelectiveReset();
+      state->sel_unrolled_levels = levels;
+      state->sel_max_total_splits = config_->num_leaves - 1;
+      if (root_sums_deferred_) {
+        if (pinned_multiclass_root_sums_ == nullptr) {
+          CUDASUCCESS_OR_FATAL(cudaHostAlloc(reinterpret_cast<void**>(&pinned_multiclass_root_sums_),
+                                             2 * sizeof(double), cudaHostAllocDefault));
+        }
+        cuda_smaller_leaf_splits_->PrefetchRootSumsAsync(pinned_multiclass_root_sums_, exec_stream);
+        CUDASUCCESS_OR_FATAL(cudaEventRecord(multiclass_done_event_, exec_stream));
+        state->phase = AsyncTrainState::Phase::kSelectiveWaitRoot;
+        return;
+      }
+      // Root sums already read back: launch prefix wave immediately
+      state->phase = AsyncTrainState::Phase::kSelectiveWaitRoot;
+      StepTrainAsync(state);
+      return;
+    }
+  }
+
+  // Fallback selective synchronous path
+  EnsureRootSumsReadBack(tree);
+  TrainSelective(tree);
+  CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+  if (tree->num_leaves() > 0) {
+    std::vector<data_size_t> exact_counts(leaf_num_data_.begin(), leaf_num_data_.begin() + tree->num_leaves());
+    tree->SyncNodeCountsFromPartition(exact_counts);
+  }
+  cuda_histogram_constructor_->ReleaseTreeStartUploads();
+  tree_start_uploads_.Release();
+  tree_meta_batch_.Release();
+  cuda_histogram_constructor_->SetNumDirtyLeaves(sel_last_peak_);
+  cuda_histogram_constructor_->ReleaseUnusedFullView();
+  if (config_->min_gain_to_split != 0.0) {
+    tree->AddSplitGainOffset(config_->min_gain_to_split);
+  }
+  tree_in_progress_ = false;
+  state->phase = AsyncTrainState::Phase::kDoneSync;
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+}
+
+bool CUDASingleGPUTreeLearner::StepTrainAsync(AsyncTrainState* state) {
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  cudaStream_t exec_stream = multiclass_exec_stream_;
+  TreeStartStreamScope stream_scope(exec_stream);
+  CUDATree* tree = state->tree.get();
+  switch (state->phase) {
+    case AsyncTrainState::Phase::kSelectiveWaitRoot: {
+      if (root_sums_deferred_) {
+        CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+        root_sums_deferred_ = false;
+        leaf_sum_gradients_[0] = pinned_multiclass_root_sums_[0];
+        leaf_sum_hessians_[0] = pinned_multiclass_root_sums_[1];
+        tree->SetLeafOutput(0, CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(
+          leaf_sum_gradients_[0], leaf_sum_hessians_[0],
+          config_->lambda_l1, config_->lambda_l2, config_->path_smooth, config_->max_delta_step,
+          static_cast<data_size_t>(num_data_), 0.0));
+        tree->SyncLeafOutputFromHostToCUDA(exec_stream);
+      }
+      state->sel_pairs.clear();
+      state->sel_pairs.push_back({smaller_leaf_index_, larger_leaf_index_, /*parent=*/-1,
+                                  cuda_smaller_leaf_splits_->GetCUDAStruct(),
+                                  cuda_larger_leaf_splits_->GetCUDAStruct()});
+      state->sel_root_pair = state->sel_pairs[0];
+      state->sel_window_start.assign(static_cast<size_t>(config_->num_leaves) + 1, 0);
+      state->sel_window_num.assign(static_cast<size_t>(config_->num_leaves) + 1, 0);
+      state->sel_window_start[0] = leaf_data_start_[0];
+      state->sel_window_num[0] = leaf_num_data_[0];
+
+      EnqueueLevelBestSplitSearch(tree, state->sel_pairs, nullptr);
+
+      cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
+      cuda_data_partition_->BuildDeviceLevelFeatureSource(&host_device_level_feature_source_);
+      CopyFromHostToCUDADeviceAsync<CUDAHybridGraphFeatureSource>(
+        cuda_device_level_feature_source_.RawData(), host_device_level_feature_source_.data(),
+        host_device_level_feature_source_.size(), find_stream, __FILE__, __LINE__);
+      CUDADeviceLevelState* dls = cuda_device_level_state_.RawData();
+      CUDADeviceLevelConfig& cfg = host_device_level_config_;
+      std::memset(&cfg, 0, sizeof(cfg));
+      cfg.state = dls;
+      cfg.leaf_best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
+      cfg.root_struct = cuda_smaller_leaf_splits_->GetCUDAStruct();
+      cfg.tree_leaf_value = tree->cuda_leaf_value_ref();
+      cfg.leaf_num_data = cuda_data_partition_->cuda_leaf_num_data();
+      cfg.leaf_data_start = cuda_data_partition_->cuda_leaf_data_start();
+      cfg.tree_batch_splits = tree->hybrid_graph_batch_splits();
+      cfg.apply_descs = cuda_data_partition_->device_level_apply_descs();
+      cfg.pair_descs = cuda_hybrid_pair_descs_.RawData();
+      cfg.pair_slots = hybrid_pair_slots_.RawData();
+      cfg.feature_meta = cuda_device_level_feature_meta_.RawDataReadOnly();
+      cfg.feature_source = cuda_device_level_feature_source_.RawDataReadOnly();
+      cfg.real_thresholds = nullptr;
+      cfg.journal = cuda_device_level_journal_.RawData();
+      cfg.max_depth = GrowthMaxDepth();
+      cfg.num_leaves_budget = config_->num_leaves;
+      cfg.whole_tree = 0;
+      cfg.construct_block_start = cuda_device_level_block_start_.RawData();
+      const int capacity_levels = SelectiveCapacityLevels();
+      if ((1 << (capacity_levels - 1)) > kDeviceTreeSharedSplits) {
+        cfg.select_leaves = cuda_device_level_select_leaves_.RawData();
+        cfg.select_gains = cuda_device_level_select_gains_.RawData();
+        cfg.select_split_bits = cuda_device_level_select_bits_.RawData();
+        cfg.select_gaps = cuda_device_level_select_gaps_.RawData();
+        cfg.select_capacity = 1 << (capacity_levels - 1);
+      }
+      cfg.num_chunks = DeviceTreeChunks(device_level_max_pairs_);
+      if (cfg.num_chunks > 1) {
+        cfg.chunk_states = cuda_device_level_chunk_states_.RawData();
+        cfg.chunk_pairs = device_tree_chunk_pairs_;
+      }
+      cfg.split_info_journal = cuda_selective_prefix_split_infos_.RawData();
+      cfg.r1_binding = 1;
+      cfg.skip_tree_record = 1;
+      cfg.gap_block_dim = CUDADataPartition::DeviceLevelGapBlockDim();
+      cfg.min_data_in_leaf = static_cast<data_size_t>(config_->min_data_in_leaf);
+      cfg.min_sum_hessian_in_leaf = config_->min_sum_hessian_in_leaf;
+      cfg.skip_unsplittable = (FalcataPlan::Get().skip_unsplittable && config_->forcedsplits_filename.empty() &&
+        (forced_split_json_ == nullptr || forced_split_json_->is_null())) ? 1 : 0;
+      cfg.num_grad_quant_bins = cuda_histogram_constructor_->DeviceLevelNumGradQuantBins();
+      cfg.construct_min_grid_dim_y = cuda_histogram_constructor_->DeviceLevelConstructMinGridDimY();
+      cfg.construct_min_rows_per_thread = CUDAHistogramConstructor::BatchConstructMinRowsPerThread();
+      cfg.construct_saturation_floor = CUDAHistogramConstructor::BatchConstructSaturationFloor();
+      cuda_histogram_constructor_->DeviceLevelConstructShape(&cfg.shape);
+      cfg.level_row_blocks = (cfg.shape.pair_mode == 0 ?
+        FalcataPlan::Get().dense_level_row_blocks : FalcataPlan::Get().level_row_blocks) ? 1 : 0;
+      CopyFromHostToCUDADeviceAsync<CUDADeviceLevelConfig>(cuda_device_level_config_.RawData(), &cfg, 1, find_stream,
+                                                           __FILE__, __LINE__);
+      const int levels = state->sel_unrolled_levels;
+      bool launched = false;
+      if (FalcataPlan::Get().device_level_graph && !ForestSlotShared() && !device_level_graph_disabled_) {
+        launched = LaunchDeviceLevelGraph(tree, cfg, levels, false, false);
+      }
+      if (!launched) {
+        EnqueueDeviceLevels(tree, cfg, levels, false, false);
+      }
+      state->sel_levels_enqueued = levels;
+      selective_bodies_ = 0;
+      selective_binding_ = false;
+      state->sel_continues = false;
+      state->sel_leaf_entries_read = false;
+      state->sel_device_boundary = selective_device_boundary_;
+      if (!state->sel_device_boundary) {
+        EnqueueSelectiveDeviceReadback(cfg, std::min((1 << levels) - 1, state->sel_max_total_splits), find_stream);
+      }
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(multiclass_done_event_, find_stream));
+      state->phase = AsyncTrainState::Phase::kSelectivePrefix;
+      return true;
+    }
+    case AsyncTrainState::Phase::kSelectivePrefix: {
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+      const CUDADeviceLevelConfig& cfg = host_device_level_config_;
+      const int levels = state->sel_unrolled_levels;
+      if (state->sel_device_boundary) {
+        state->sel_continues = pinned_device_level_flag_[0] != 0;
+        if (!state->sel_continues) {
+          selective_binding_ = pinned_device_level_flag_[3] != 0;
+          EnqueueSelectiveDeviceReadback(cfg, pinned_device_level_flag_[2], exec_stream);
+          CUDASUCCESS_OR_FATAL(cudaEventRecord(multiclass_done_event_, exec_stream));
+          state->phase = AsyncTrainState::Phase::kSelectiveFinalRead;
+          return true;
+        }
+      } else {
+        if (pinned_device_level_journal_[2] == 0) {
+          const int splits = pinned_device_level_journal_[1];
+          int valid = 0;
+          if (pinned_device_level_journal_[0] == levels) {
+            cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(splits + 1, &host_leaf_best_splits_);
+            state->sel_leaf_entries_read = true;
+            for (int leaf = 0; leaf <= splits; ++leaf) {
+              valid += host_leaf_best_splits_[leaf].is_valid ? 1 : 0;
+            }
+          }
+          selective_binding_ = valid > 0 && splits + 1 + valid > config_->num_leaves;
+          state->sel_continues = valid > 0 && !selective_binding_;
+          if (state->sel_continues) {
+            LaunchDeviceLevelSelect(cfg, levels, SelectiveLevelMaxSplits(levels), exec_stream,
+                                    SelectiveLevelMaxLeaves(levels));
+          }
+        }
+        if (!state->sel_continues) {
+          FinishSelectivePrefixAndStartHostLoop(state);
+          return state->phase != AsyncTrainState::Phase::kSelectiveReadyFinalize;
+        }
+      }
+      // Enqueue first 2-level body
+      const bool graph = FalcataPlan::Get().device_level_graph && !ForestSlotShared();
+      CHECK_LE(state->sel_levels_enqueued, config_->num_leaves);
+      if (!(graph && !device_level_graph_disabled_ &&
+            LaunchDeviceLevelGraph(tree, cfg, 2, false, false, /*body=*/true))) {
+        EnqueueDeviceLevels(tree, cfg, 2, false, false, /*body=*/true);
+      }
+      state->sel_levels_enqueued += 2;
+      ++selective_bodies_;
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(multiclass_done_event_, exec_stream));
+      state->phase = AsyncTrainState::Phase::kSelectiveBody;
+      return true;
+    }
+    case AsyncTrainState::Phase::kSelectiveBody: {
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+      const CUDADeviceLevelConfig& cfg = host_device_level_config_;
+      const volatile int* flag = pinned_device_level_flag_;
+      if (flag[0] != 0) {
+        const bool graph = FalcataPlan::Get().device_level_graph && !ForestSlotShared();
+        CHECK_LE(state->sel_levels_enqueued, config_->num_leaves);
+        if (!(graph && !device_level_graph_disabled_ &&
+              LaunchDeviceLevelGraph(tree, cfg, 2, false, false, /*body=*/true))) {
+          EnqueueDeviceLevels(tree, cfg, 2, false, false, /*body=*/true);
+        }
+        state->sel_levels_enqueued += 2;
+        ++selective_bodies_;
+        CUDASUCCESS_OR_FATAL(cudaEventRecord(multiclass_done_event_, exec_stream));
+        return true;
+      }
+      CHECK_LE(flag[2], state->sel_max_total_splits);
+      selective_binding_ = flag[3] != 0;
+      EnqueueSelectiveDeviceReadback(cfg, flag[2], exec_stream);
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(multiclass_done_event_, exec_stream));
+      state->phase = AsyncTrainState::Phase::kSelectiveFinalRead;
+      return true;
+    }
+    case AsyncTrainState::Phase::kSelectiveFinalRead: {
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+      if (selective_bodies_ > 0) {
+        CHECK_EQ(pinned_device_level_journal_[1], pinned_device_level_flag_[2]);
+      }
+      FinishSelectivePrefixAndStartHostLoop(state);
+      return state->phase != AsyncTrainState::Phase::kSelectiveReadyFinalize;
+    }
+    case AsyncTrainState::Phase::kSelectiveHostApply: {
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+      std::vector<int> batch_info;
+      cuda_data_partition_->ReadPrefetchedSplitBatch(static_cast<int>(state->sel_applied.size()), &batch_info);
+      state->sel_pairs.clear();
+      FinishLevelBookkeeping(state->sel_applied, batch_info, &state->sel_pairs, &sel_num_splits_);
+      EnqueueLevelBestSplitSearch(tree, state->sel_pairs, nullptr);
+      cuda_best_split_finder_->PrefetchLeafBestSplitsAsync(sel_num_allocated_, exec_stream);
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(multiclass_done_event_, exec_stream));
+      state->phase = AsyncTrainState::Phase::kSelectiveHostSearch;
+      return true;
+    }
+    case AsyncTrainState::Phase::kSelectiveHostSearch: {
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+      cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(sel_num_allocated_, &host_leaf_best_splits_);
+      std::vector<int> child_leaves;
+      child_leaves.reserve(2 * state->sel_pairs.size());
+      for (const HybridPendingPair& pair : state->sel_pairs) {
+        child_leaves.push_back(pair.smaller);
+        if (pair.larger >= 0) {
+          child_leaves.push_back(pair.larger);
+        }
+      }
+      SelectiveDiscoverFrontier(child_leaves);
+      if (RunSelectiveLevel() == 0) {
+        state->phase = AsyncTrainState::Phase::kSelectiveReadyFinalize;
+        return false;
+      }
+      ApplyLevelBatchedSelective(&state->sel_applied);
+      cuda_data_partition_->PrefetchSplitBatchAsync(static_cast<int>(state->sel_applied.size()), exec_stream);
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(multiclass_done_event_, exec_stream));
+      state->phase = AsyncTrainState::Phase::kSelectiveHostApply;
+      return true;
+    }
+    default:
+      return false;
+  }
+#else
+  (void)state;
+  return false;
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+}
+
+Tree* CUDASingleGPUTreeLearner::FinalizeTrainAsync(AsyncTrainState* state) {
+  cudaStream_t exec_stream = multiclass_exec_stream_;
+  TreeStartStreamScope stream_scope(exec_stream);
+  if (state->phase == AsyncTrainState::Phase::kDoneSync) {
+    state->phase = AsyncTrainState::Phase::kNone;
+    return state->tree.release();
+  }
+
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  CUDATree* tree = state->tree.get();
+
+  if (state->phase == AsyncTrainState::Phase::kSelectiveReadyFinalize) {
+    SelectiveFinalize(tree);
+    selective_active_ = false;
+    if (tree->num_leaves() > 0) {
+      std::vector<data_size_t> exact_counts(leaf_num_data_.begin(), leaf_num_data_.begin() + tree->num_leaves());
+      tree->SyncNodeCountsFromPartition(exact_counts);
+    }
+    cuda_histogram_constructor_->ReleaseTreeStartUploads();
+    tree_start_uploads_.Release();
+    tree_meta_batch_.Release();
+    cuda_histogram_constructor_->SetNumDirtyLeaves(sel_last_peak_);
+    cuda_histogram_constructor_->ReleaseUnusedFullView();
+    if (config_->min_gain_to_split != 0.0) {
+      tree->AddSplitGainOffset(config_->min_gain_to_split);
+    }
+    tree_in_progress_ = false;
+    state->phase = AsyncTrainState::Phase::kNone;
+    return state->tree.release();
+  }
+
+  CHECK(state->phase == AsyncTrainState::Phase::kWholeDeviceTree);
+  CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+  cuda_histogram_constructor_->ReleaseTreeStartUploads();
+  tree_start_uploads_.Release();
+  tree_meta_batch_.Release();
+
+  const int num_levels = state->num_levels;
+  const bool skip_host_cache = state->skip_host_cache;
+  const bool inline_all_map = state->inline_all_map;
+  const bool final_map_only = state->final_map_only;
+  const bool prefetch_tree_end = state->prefetch_tree_end;
+  const bool cat_tree = state->cat_tree;
+  const size_t end_counts_offset = state->end_counts_offset;
+  const int max_total_splits = state->max_total_splits;
+  const CUDADeviceLevelConfig& cfg = host_device_level_config_;
+
+  const int* journal = pinned_device_level_journal_;
+  if (journal[2] != 0) {
+    Log::Fatal("device_levels: a device level left the gated regime (flags 0x%x)", journal[2]);
+  }
+  const int levels_applied = journal[0];
+  const int total_splits = journal[1];
+  CHECK_GE(levels_applied, 0);
+  CHECK_LE(levels_applied, num_levels);
+  CHECK_GE(total_splits, 0);
+  CHECK_LE(total_splits, max_total_splits);
+
+  std::vector<int>& level_counts = device_level_journal_counts_;
+  level_counts.resize(static_cast<size_t>(num_levels));
+  CHECK(DeviceLevelJournalCounts(journal, total_splits, num_levels, level_counts.data()));
+  for (int level = levels_applied; level < num_levels; ++level) {
+    CHECK_EQ(level_counts[level], 0);
+  }
+  cuda_data_partition_->FinishDeviceLevels(num_levels, levels_applied, total_splits);
+  if (!skip_host_cache) {
+    cuda_data_partition_->ReadPrefetchedSplitBatch(total_splits, &device_level_batch_info_);
+  }
+
+  int num_splits = 0;
+  int cursor = 0;
+  int cat_splits = 0;
+  int cat_levels_recorded = 0;
+  std::vector<HybridPendingPair> unused_pairs;
+  for (int level = 0; level < levels_applied; ++level) {
+    const int level_splits = level_counts[level];
+    CHECK_GE(level_splits, 1);
+    CHECK_LE(cursor + level_splits, total_splits);
+    int level_cat_splits = 0;
+    if (level + 1 == num_levels) {
+      prefix_final_leaves_before_ = tree->num_leaves();
+    }
+    if (!skip_host_cache) {
+      device_level_applied_.clear();
+    }
+    for (int k = 0; k < level_splits; ++k) {
+      const int* record = journal + kDeviceLevelJournalHeader + kDeviceLevelJournalRecord * (cursor + k);
+      const int left_leaf = record[0];
+      const int inner_feature = record[1];
+      const int right_leaf = cursor + k + 1;
+      if (cat_tree && train_data_->FeatureBinMapper(inner_feature)->bin_type() == BinType::CategoricalBin) {
+        ++level_cat_splits;
+      }
+      CHECK_EQ(tree->num_leaves(), right_leaf);
+      tree->ReplaySplitHostMirrors(left_leaf, train_data_->RealFeatureIndex(inner_feature));
+      BynodeKeySplit(left_leaf, right_leaf);
+      if (!skip_host_cache) {
+        device_level_applied_.push_back({left_leaf, right_leaf, hybrid_pair_slots_.RawData() + 2 * k,
+                                         hybrid_pair_slots_.RawData() + 2 * k + 1});
+      }
+    }
+    if (!skip_host_cache) {
+      unused_pairs.clear();
+      device_level_batch_slice_.assign(device_level_batch_info_.begin() + 18 * static_cast<size_t>(cursor),
+                                       device_level_batch_info_.begin() + 18 * static_cast<size_t>(cursor + level_splits));
+      FinishLevelBookkeeping(device_level_applied_, device_level_batch_slice_, &unused_pairs, &num_splits);
+    }
+    cat_splits += level_cat_splits;
+    cat_levels_recorded += level_cat_splits > 0 ? 1 : 0;
+    cursor += level_splits;
+  }
+  CHECK_EQ(cursor, total_splits);
+  CHECK_EQ(tree->num_leaves(), total_splits + 1);
+  if (cat_tree) {
+    tree->ReplayDeviceCategoricalRecord(cat_levels_recorded, cat_splits, batch_cat_bitset_stride_,
+                                        batch_cat_bitset_inner_stride_);
+  }
+
+  const bool all_map_complete = inline_all_map && levels_applied == num_levels && level_counts[num_levels - 1] > 0;
+  const bool deferred_final = final_map_only && all_map_complete;
+  if (deferred_final) {
+    const int actual_leaves = total_splits + 1;
+    CHECK_LE(actual_leaves, config_->num_leaves);
+    const int deferred_splits = level_counts[num_levels - 1];
+    const int leaves_before = actual_leaves - deferred_splits;
+    CHECK_EQ(leaves_before, prefix_final_leaves_before_);
+    const auto* counts = reinterpret_cast<const data_size_t*>(
+      static_cast<const uint8_t*>(readback_staging_) + end_counts_offset);
+    std::vector<uint8_t> selected(static_cast<size_t>(leaves_before), 0);
+    int64_t root_rows = 0;
+    for (int leaf = 0; leaf < actual_leaves; ++leaf) {
+      CHECK_GE(counts[leaf], 0);
+      root_rows += counts[leaf];
+    }
+    CHECK_EQ(root_rows, static_cast<int64_t>(num_data_));
+    int64_t deferred_flat_blocks = 0;
+    for (int k = 0; k < deferred_splits; ++k) {
+      const int left = journal[kDeviceLevelJournalHeader +
+                               kDeviceLevelJournalRecord * (total_splits - deferred_splits + k)];
+      CHECK_GE(left, 0);
+      CHECK_LT(left, leaves_before);
+      CHECK_EQ(selected[left], 0);
+      selected[left] = 1;
+      const int64_t parent_rows = static_cast<int64_t>(counts[left]) + counts[leaves_before + k];
+      CHECK_GT(parent_rows, 0);
+      deferred_flat_blocks += (parent_rows + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
+        SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+    }
+    int deferred_gaps = 0;
+    int deferred_max_gap_blocks = 0;
+    const int gap_block = cfg.gap_block_dim;
+    for (int leaf = 0; leaf < leaves_before; ++leaf) {
+      if (selected[leaf] == 0 && counts[leaf] > 0) {
+        ++deferred_gaps;
+        const int blocks = static_cast<int>((static_cast<int64_t>(counts[leaf]) + gap_block - 1) / gap_block);
+        deferred_max_gap_blocks = std::max(deferred_max_gap_blocks, blocks);
+      }
+    }
+    CHECK_LE(deferred_flat_blocks, std::numeric_limits<int>::max());
+    cuda_data_partition_->DeferDeviceLevelPartition(deferred_splits, deferred_gaps, deferred_max_gap_blocks,
+                                                    static_cast<int>(deferred_flat_blocks), cfg.gap_block_dim);
+  }
+  if (all_map_complete) {
+    hybrid_map_final_written_ = true;
+    hybrid_map_early_written_ = true;
+    hybrid_map_early_num_leaves_ = tree->num_leaves();
+    hybrid_map_early_pending_ = false;
+    hybrid_map_residual_leaves_.clear();
+  }
+  if (skip_host_cache) {
+    num_splits = total_splits;
+    whole_host_leaf_cache_stale_ = total_splits > 0;
+  }
+  if (num_splits == 0) {
+    EnsureRootSumsReadBack(tree);
+  }
+  device_tree_completed_ = true;
+  prefix_completes_tree_ = true;
+  growth_route_ = GrowthRoute::kDeviceTree;
+  if (prefetch_tree_end && total_splits > 0) {
+    CHECK_EQ(tree->num_leaves(), total_splits + 1);
+    prefetched_tree_num_leaves_ = tree->num_leaves();
+    prefetched_tree_counts_ = true;
+  }
+  if (total_splits < config_->num_leaves - 1) {
+    Log::Warning("No further splits with positive gain, training stopped with %d leaves.", total_splits + 1);
+  }
+
+  // Host tree extraction + exact leaf counts on exec_stream (zero stream-0 traffic)
+  const size_t slab_bytes = CUDATree::PooledDeviceBufferSize(config_->num_leaves);
+  const size_t counts_offset = (slab_bytes + 255) / 256 * 256;
+  const size_t count_bytes = static_cast<size_t>(tree->num_leaves()) * sizeof(data_size_t);
+  const bool slab_prefetched = prefetched_tree_num_leaves_ > 0 && prefetched_tree_num_leaves_ == tree->num_leaves();
+  std::vector<data_size_t> leaf_num_data(static_cast<size_t>(tree->num_leaves()));
+  if (slab_prefetched) {
+    tree->ToHost(readback_staging_, readback_staging_device_, readback_staging_bytes_, {},
+                 /*slab_in_staging=*/true, exec_stream);
+    if (tree->num_leaves() > 0) {
+      std::memcpy(leaf_num_data.data(), static_cast<const uint8_t*>(readback_staging_) + counts_offset, count_bytes);
+      tree->SyncNodeCountsFromPartition(leaf_num_data);
+    }
+  } else if (tree->num_leaves() > 0 && EnsureReadbackStaging(counts_offset + count_bytes)) {
+    LaunchCopyToMappedHost(static_cast<uint8_t*>(readback_staging_device_) + counts_offset,
+                           cuda_data_partition_->cuda_leaf_num_data(), count_bytes, __FILE__, __LINE__, exec_stream);
+    tree->ToHost(readback_staging_, readback_staging_device_, readback_staging_bytes_, {},
+                 /*slab_in_staging=*/false, exec_stream);
+    std::memcpy(leaf_num_data.data(), static_cast<const uint8_t*>(readback_staging_) + counts_offset, count_bytes);
+    tree->SyncNodeCountsFromPartition(leaf_num_data);
+  } else {
+    tree->ToHost(nullptr, nullptr, 0, {}, /*slab_in_staging=*/false, exec_stream);
+    if (tree->num_leaves() > 0) {
+      CopyFromCUDADeviceToHostAsync<data_size_t>(leaf_num_data.data(), cuda_data_partition_->cuda_leaf_num_data(),
+                                                 leaf_num_data.size(), exec_stream, __FILE__, __LINE__);
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(exec_stream));
+      tree->SyncNodeCountsFromPartition(leaf_num_data);
+    }
+  }
+
+  // Materialize leaf map on exec_stream when not already written inline by final level
+  if (total_splits > 0) {
+    if (!hybrid_map_final_written_ || !hybrid_map_early_written_ ||
+        tree->num_leaves() != hybrid_map_early_num_leaves_) {
+      cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
+    }
+  } else if (state->leaf_map_zero_dead) {
+    cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
+  }
+  hybrid_map_final_written_ = false;
+  hybrid_map_early_written_ = false;
+  hybrid_map_early_pending_ = false;
+  prefetched_tree_num_leaves_ = 0;
+  prefetched_tree_counts_ = false;
+
+  int num_dirty = tree->num_leaves();
+  if (prefix_final_leaves_before_ > 0 && FalcataPlan::Get().dirty_final_slots) {
+    num_dirty = std::min(num_dirty, prefix_final_leaves_before_);
+  }
+  cuda_histogram_constructor_->SetNumDirtyLeaves(num_dirty);
+  cuda_histogram_constructor_->ReleaseUnusedFullView();
+  if (config_->min_gain_to_split != 0.0) {
+    tree->AddSplitGainOffset(config_->min_gain_to_split);
+  }
+  tree_in_progress_ = false;
+  state->phase = AsyncTrainState::Phase::kNone;
+  return state->tree.release();
+#else
+  state->phase = AsyncTrainState::Phase::kNone;
+  return state->tree.release();
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 }
 
 void CUDASingleGPUTreeLearner::SetBaggingData(const Dataset* /*subset*/,

@@ -341,6 +341,33 @@ class CUDAHistogramConstructor {
 
   void Init(const Dataset* train_data, TrainingShareStates* share_state);
 
+  /*! \brief cuda_plan key multiclass_concurrent: route all histogram launches, memsets, and copies through a
+   *  caller-owned non-blocking stream (nullptr restores the owned streams created in Init). */
+  void SetExecStream(cudaStream_t stream) {
+    if (stream != nullptr) {
+      if (!exec_stream_active_) {
+        for (int p = 0; p < kNumHistPipelines; ++p) {
+          owned_pipeline_streams_[p] = pipeline_streams_[p];
+        }
+        exec_stream_active_ = true;
+      }
+      cuda_stream_ = stream;
+      for (int p = 0; p < kNumHistPipelines; ++p) {
+        pipeline_streams_[p] = stream;
+      }
+      l2_window_base_ = nullptr;  // re-apply L2 persistence window on the new stream
+    } else if (exec_stream_active_) {
+      for (int p = 0; p < kNumHistPipelines; ++p) {
+        pipeline_streams_[p] = owned_pipeline_streams_[p];
+        owned_pipeline_streams_[p] = nullptr;
+      }
+      cuda_stream_ = pipeline_streams_[0];
+      exec_stream_active_ = false;
+      l2_window_base_ = nullptr;
+    }
+    exec_stream_ = stream;
+  }
+
   /*! \brief per-tree bin-used mask (host copy) and whether sampling is active.
    *  The NCCL path uses these to all-reduce ONLY the bins this tree's
    *  feature_fraction sample can read: the rest are dead storage, and at
@@ -1216,6 +1243,9 @@ class CUDAHistogramConstructor {
   /*! \brief the streams and events Init creates (pipeline_streams_[0] is the stream it created as cuda_stream_);
    *  null until then, and released by the destructor */
   cudaStream_t pipeline_streams_[kNumHistPipelines] = {};
+  cudaStream_t owned_pipeline_streams_[kNumHistPipelines] = {};
+  cudaStream_t exec_stream_ = nullptr;
+  bool exec_stream_active_ = false;
   cudaEvent_t construct_done_events_[kNumHistPipelines] = {};
   cudaEvent_t subtract_done_events_[kNumHistPipelines] = {};
   int active_pipeline_ = 0;

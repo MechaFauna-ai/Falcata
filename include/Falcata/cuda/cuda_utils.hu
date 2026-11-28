@@ -165,11 +165,12 @@ void CopyFromCUDADeviceToHostAsync(T* dst_ptr, const T* src_ptr, size_t size, cu
  *  memory. A zero-byte copy is passed to cudaMemcpy unchanged.
  */
 void CopyFromCUDADeviceToMappedHost(void* dst_device, void* dst_host, const void* src, size_t size_in_bytes,
-                                    const char* file, const int line);
+                                    const char* file, const int line, cudaStream_t stream = nullptr);
 
 /*! \brief the copy kernel of CopyFromCUDADeviceToMappedHost without the synchronize (several copies, one sync);
  *  size_in_bytes > 0 */
-void LaunchCopyToMappedHost(void* dst_device, const void* src, size_t size_in_bytes, const char* file, const int line);
+void LaunchCopyToMappedHost(void* dst_device, const void* src, size_t size_in_bytes, const char* file, const int line,
+                            cudaStream_t stream = nullptr);
 
 /*! \brief device alias of a cudaHostAllocMapped pinned allocation, or nullptr where the device cannot map it */
 void* MappedHostDevicePointer(void* host_ptr);
@@ -191,6 +192,16 @@ void CopyFromCUDADeviceToCUDADeviceAsync(T* dst_ptr, const T* src_ptr, size_t si
   const void* void_src_ptr = reinterpret_cast<const void*>(src_ptr);
   size_t size_in_bytes = size * sizeof(T);
   CUDASUCCESS_OR_FATAL_OUTER(cudaMemcpyAsync(void_dst_ptr, void_src_ptr, size_in_bytes, cudaMemcpyDeviceToDevice));
+}
+
+template <typename T>
+void CopyFromCUDADeviceToCUDADeviceAsync(T* dst_ptr, const T* src_ptr, size_t size, cudaStream_t stream,
+                                         const char* file, const int line) {
+  void* void_dst_ptr = reinterpret_cast<void*>(dst_ptr);
+  const void* void_src_ptr = reinterpret_cast<const void*>(src_ptr);
+  size_t size_in_bytes = size * sizeof(T);
+  CUDASUCCESS_OR_FATAL_OUTER(
+      cudaMemcpyAsync(void_dst_ptr, void_src_ptr, size_in_bytes, cudaMemcpyDeviceToDevice, stream));
 }
 
 void SynchronizeCUDADevice(const char* file, const int line);

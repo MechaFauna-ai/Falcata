@@ -74,7 +74,7 @@ void CUDADataPartition::LaunchFillDataIndicesBeforeTrain() {
   const int num_blocks = (num_data_in_root + FILL_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / FILL_INDICES_BLOCK_SIZE_DATA_PARTITION;
   // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the previous tree's score update)
   LaunchLevelChainKernel(PdlLevelChainEnabled(), FillDataIndicesBeforeTrainKernel, dim3(num_blocks),
-    dim3(FILL_INDICES_BLOCK_SIZE_DATA_PARTITION), 0, nullptr, num_data_in_root, cuda_data_indices_.RawData(),
+    dim3(FILL_INDICES_BLOCK_SIZE_DATA_PARTITION), 0, exec_stream_, num_data_in_root, cuda_data_indices_.RawData(),
     leaf_map_zero_dead_ ? nullptr : cuda_data_index_to_leaf_index_.RawData());
 }
 
@@ -101,7 +101,7 @@ __global__ void BeforeTrainLeafInitKernel(data_size_t* leaf_num_data, data_size_
 void CUDADataPartition::LaunchBeforeTrainLeafInit() {
   const int num_blocks = std::max(1, std::min(64, (num_leaves_ + 255) / 256));
   // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the index fill)
-  LaunchLevelChainKernel(PdlLevelChainEnabled(), BeforeTrainLeafInitKernel, dim3(num_blocks), dim3(256), 0, nullptr,
+  LaunchLevelChainKernel(PdlLevelChainEnabled(), BeforeTrainLeafInitKernel, dim3(num_blocks), dim3(256), 0, exec_stream_,
     cuda_leaf_num_data_.RawData(), cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), num_leaves_,
     use_bagging_ ? nullptr : cuda_num_data_.RawDataReadOnly(), num_used_indices_, cuda_hist_pool_.RawData(),
     cuda_hist_);
@@ -113,7 +113,7 @@ void CUDADataPartition::LaunchFillDataIndexToLeafIndex() {
   // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the bagged subset's scatter or
   // the gradients)
   LaunchLevelChainKernel(PdlLevelChainEnabled(), FillDataIndexToLeafIndexKernel, dim3(num_blocks),
-    dim3(FILL_INDICES_BLOCK_SIZE_DATA_PARTITION), 0, nullptr, num_data_in_root, cuda_data_indices_.RawData(),
+    dim3(FILL_INDICES_BLOCK_SIZE_DATA_PARTITION), 0, exec_stream_, num_data_in_root, cuda_data_indices_.RawData(),
     cuda_data_index_to_leaf_index_.RawData());
 }
 
@@ -2687,17 +2687,22 @@ void CUDADataPartition::MaterializeHybridLeafMapSubset(const std::vector<int>& l
   if (cuda_materialize_leaf_list_.Size() < leaves.size()) {
     cuda_materialize_leaf_list_.Resize(leaves.size());
   }
-  UploadTreeStartMeta<int>(cuda_materialize_leaf_list_.RawData(), leaves.data(), leaves.size());
+  if (exec_stream_ != nullptr) {
+    TreeStartStreamScope scope(exec_stream_);
+    UploadTreeStartMeta<int>(cuda_materialize_leaf_list_.RawData(), leaves.data(), leaves.size());
+  } else {
+    UploadTreeStartMeta<int>(cuda_materialize_leaf_list_.RawData(), leaves.data(), leaves.size());
+  }
   dim3 grid(64, static_cast<unsigned int>(leaves.size()));
   // cuda_plan key leaf_map_small_blocks: same grid, quarter-size blocks (see the key)
   const int block_dim = FalcataPlan::Get().leaf_map_small_blocks ? 256 : FILL_INDICES_BLOCK_SIZE_DATA_PARTITION;
-  MaterializeLeafMapSubsetKernel<<<grid, block_dim>>>(
+  MaterializeLeafMapSubsetKernel<<<grid, block_dim, 0, exec_stream_>>>(
     cuda_data_indices_.RawData(), cuda_leaf_data_start_.RawData(),
     cuda_leaf_num_data_.RawData(), cuda_materialize_leaf_list_.RawData(),
     cuda_data_index_to_leaf_index_.RawData());
   // cuda_plan key async_tree_start: the map's readers (score update, refit, linear trees) are later GPU work or
-  // synchronous copies, ordered behind this default-stream kernel
-  if (!AsyncTreeStart()) {
+  // synchronous copies, ordered behind this kernel
+  if (exec_stream_ == nullptr && !AsyncTreeStart()) {
     SynchronizeCUDADevice(__FILE__, __LINE__);
   }
   global_timer.Stop("CUDADataPartition::MaterializeHybridLeafMap");
@@ -2712,10 +2717,10 @@ void CUDADataPartition::MaterializeHybridLeafMap(const int num_leaves) {
   const int blocks_x = 64;
   dim3 grid(blocks_x, num_leaves);
   const int block_dim = FalcataPlan::Get().leaf_map_small_blocks ? 256 : FILL_INDICES_BLOCK_SIZE_DATA_PARTITION;
-  MaterializeLeafMapKernel<<<grid, block_dim>>>(
+  MaterializeLeafMapKernel<<<grid, block_dim, 0, exec_stream_>>>(
     cuda_data_indices_.RawData(), cuda_leaf_data_start_.RawData(),
     cuda_leaf_num_data_.RawData(), cuda_data_index_to_leaf_index_.RawData());
-  if (!AsyncTreeStart()) {  // see MaterializeHybridLeafMapSubset
+  if (exec_stream_ == nullptr && !AsyncTreeStart()) {  // see MaterializeHybridLeafMapSubset
     SynchronizeCUDADevice(__FILE__, __LINE__);
   }
   global_timer.Stop("CUDADataPartition::MaterializeHybridLeafMap");
@@ -2777,11 +2782,11 @@ void CUDADataPartition::LaunchAddPredictionToScoreKernel(const double* leaf_valu
   // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the leaf value shrinkage)
   LaunchLevelChainKernel(PdlLevelChainEnabled(),
     use_bagging_ ? AddPredictionToScoreKernel<true> : AddPredictionToScoreKernel<false>, dim3(num_blocks),
-    dim3(FILL_INDICES_BLOCK_SIZE_DATA_PARTITION), 0, nullptr,
+    dim3(FILL_INDICES_BLOCK_SIZE_DATA_PARTITION), 0, exec_stream_,
     cuda_data_indices_.RawData(), leaf_value, cuda_scores, cuda_data_index_to_leaf_index_.RawData(), num_data_in_root);
   // cuda_plan key async_tree_start: the score's consumers (the next gradients, any host copy) are stream-ordered
-  // behind this default-stream kernel, so the host need not wait for it
-  if (!AsyncTreeStart()) {
+  // behind this kernel, so the host need not wait for it
+  if (exec_stream_ == nullptr && !AsyncTreeStart()) {
     SynchronizeCUDADevice(__FILE__, __LINE__);
   }
   global_timer.Stop("CUDADataPartition::AddPredictionToScoreKernel");

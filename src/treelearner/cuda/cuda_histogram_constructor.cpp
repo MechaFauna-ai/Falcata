@@ -97,8 +97,9 @@ CUDAHistogramConstructor::~CUDAHistogramConstructor() {
     if (subtract_done_events_[p] != nullptr) {
       gpuAssert(cudaEventDestroy(subtract_done_events_[p]), __FILE__, __LINE__);
     }
-    if (pipeline_streams_[p] != nullptr) {
-      gpuAssert(cudaStreamDestroy(pipeline_streams_[p]), __FILE__, __LINE__);
+    cudaStream_t to_destroy = exec_stream_active_ ? owned_pipeline_streams_[p] : pipeline_streams_[p];
+    if (to_destroy != nullptr) {
+      gpuAssert(cudaStreamDestroy(to_destroy), __FILE__, __LINE__);
     }
   }
   if (prefetch_stream_ != nullptr) {
@@ -178,10 +179,12 @@ void LaunchInterleaveGradHessKernel(
   const score_t* hessians,
   float2* gradients_hessians,
   data_size_t num_data,
-  uint32_t* absmax_bits);
+  uint32_t* absmax_bits,
+  cudaStream_t stream = nullptr);
 
 void LaunchNonquantFixedScale(const score_t* gradients, const score_t* hessians, const data_size_t n,
-                              const bool absmax_ready, uint32_t* absmax_bits, int* scale, double* inv_scale);
+                              const bool absmax_ready, uint32_t* absmax_bits, int* scale, double* inv_scale,
+                              cudaStream_t stream = nullptr);
 
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;
@@ -208,18 +211,21 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
       bytes > l2_carveout_bytes_ ? static_cast<float>(l2_carveout_bytes_) / bytes : 1.0f;
     attr.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
     attr.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
-    for (int p = 0; p < kNumHistPipelines; ++p) {
-      CUDASUCCESS_OR_FATAL(cudaStreamSetAttribute(pipeline_streams_[p], cudaStreamAttributeAccessPolicyWindow, &attr));
+    if (exec_stream_ != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaStreamSetAttribute(exec_stream_, cudaStreamAttributeAccessPolicyWindow, &attr));
+    } else {
+      for (int p = 0; p < kNumHistPipelines; ++p) {
+        CUDASUCCESS_OR_FATAL(cudaStreamSetAttribute(pipeline_streams_[p], cudaStreamAttributeAccessPolicyWindow, &attr));
+      }
     }
   }
   // interleave (gradient, hessian) into float2 pairs for the dense construct
-  // kernels (one scattered 32B sector per row instead of two). Launched on the
-  // legacy default stream, so it orders before the construct kernels on the
-  // (blocking) histogram streams; a trivial streaming kernel (~0.05ms at 5M rows).
+  // kernels (one scattered 32B sector per row instead of two). Launched on exec_stream_
+  // (or legacy default stream), so it orders before the construct kernels; ~0.05ms at 5M rows.
   gh_interleave_valid_ = false;
   // cuda_plan key nonquant_deterministic: the fixed-point batched construct scales this tree's gradients and
   // hessians by powers of two from their max |value| (the interleave pass below collects it when it runs, else
-  // LaunchNonquantFixedScale does); same legacy-stream ordering
+  // LaunchNonquantFixedScale does)
   const bool nq_fixed = !use_quantized_grad_ && NonquantFixedActive() && gradients != nullptr && hessians != nullptr;
   if (nq_fixed) {
     if (nq_scale_.Size() < 2) {
@@ -227,7 +233,7 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
       nq_inv_scale_.Resize(2);
       nq_absmax_bits_.Resize(2);
     }
-    CUDASUCCESS_OR_FATAL(cudaMemsetAsync(nq_absmax_bits_.RawData(), 0, 2 * sizeof(uint32_t), 0));
+    CUDASUCCESS_OR_FATAL(cudaMemsetAsync(nq_absmax_bits_.RawData(), 0, 2 * sizeof(uint32_t), exec_stream_));
   }
   if (!use_quantized_grad_ && GHInterleaveEnabled() && num_hist_planes_ == 1 &&
       gradients != nullptr && hessians != nullptr) {
@@ -236,38 +242,27 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
     }
     LaunchInterleaveGradHessKernel(gradients, hessians,
                                    cuda_gradients_hessians_.RawData(), num_data_,
-                                   nq_fixed ? nq_absmax_bits_.RawData() : nullptr);
+                                   nq_fixed ? nq_absmax_bits_.RawData() : nullptr, exec_stream_);
     gh_interleave_valid_ = true;
   }
   if (nq_fixed) {
     LaunchNonquantFixedScale(gradients, hessians, num_data_, gh_interleave_valid_, nq_absmax_bits_.RawData(),
-                             nq_scale_.RawData(), nq_inv_scale_.RawData());
+                             nq_scale_.RawData(), nq_inv_scale_.RawData(), exec_stream_);
   }
-  // async memset on the legacy default stream: the construct kernels on the
-  // (blocking) histogram streams implicitly order after it, so no device sync
-  // is needed (SetValue would pay a full device sync on every tree).
-  // Only the leaf slots the previous tree actually used can be dirty (leaf k's
-  // histogram lives at slot k, and every tree assigns slots [0, num_leaves)
-  // consecutively), so zero just those: with num_leaves=1023 buffers trees of
-  // ~100 leaves this cuts >100MB (~65us of GPU memset) per tree.
+  // async memset on exec_stream_ (or legacy default stream)
   const size_t num_slots_to_zero = num_dirty_leaves_ < 0 ?
     static_cast<size_t>(num_leaves_) :
     std::min(static_cast<size_t>(num_dirty_leaves_), static_cast<size_t>(num_leaves_));
-  // cuda_plan key hist_zero_quant_half: a quantized histogram keeps a bin in an int32 (16-bit packed) or an int64
-  // (32-bit packed) at its bin index, so every quantized kernel writes only the first num_total_bin * 8 bytes of a
-  // slot's 2 * num_total_bin hist_t. The rest of each slot was zeroed by the full zeroing of the first tree after
-  // the pool was set up or reset (num_dirty_leaves_ < 0; a switch to or from quantized training is a reset) and
-  // stays zero, so only that first half is zeroed: one 2D memset on the same stream, the same zero pool.
   if (FalcataPlan::Get().hist_zero_quant_half && use_quantized_grad_ && num_hist_planes_ == 1 &&
       num_dirty_leaves_ >= 0) {
-    CUDASUCCESS_OR_FATAL(cudaMemset2D(reinterpret_cast<void*>(cuda_hist_.RawData()),
+    CUDASUCCESS_OR_FATAL(cudaMemset2DAsync(reinterpret_cast<void*>(cuda_hist_.RawData()),
       static_cast<size_t>(2 * num_total_bin_) * sizeof(hist_t), 0,
-      static_cast<size_t>(num_total_bin_) * sizeof(hist_t), num_slots_to_zero));
+      static_cast<size_t>(num_total_bin_) * sizeof(hist_t), num_slots_to_zero, exec_stream_));
     return;
   }
-  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_hist_.RawData()), 0,
+  CUDASUCCESS_OR_FATAL(cudaMemsetAsync(reinterpret_cast<void*>(cuda_hist_.RawData()), 0,
     num_slots_to_zero * static_cast<size_t>(2 * num_total_bin_) *
-    static_cast<size_t>(num_hist_planes_) * sizeof(hist_t)));
+    static_cast<size_t>(num_hist_planes_) * sizeof(hist_t), exec_stream_));
 }
 
 void CUDAHistogramConstructor::SelectGradientPlane(const score_t* gradients, const score_t* hessians,
@@ -294,7 +289,7 @@ void CUDAHistogramConstructor::ZeroHistSlots(const std::vector<int>& slots) {
   for (const int slot : slots) {
     CUDASUCCESS_OR_FATAL(cudaMemsetAsync(
       reinterpret_cast<void*>(cuda_hist_.RawData() + static_cast<size_t>(slot) * slot_size), 0,
-      slot_size * sizeof(hist_t)));
+      slot_size * sizeof(hist_t), exec_stream_));
   }
 }
 
@@ -849,7 +844,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     // blocking stream's earlier work, or on another blocking stream after Train()'s CUDATree constructor, whose
     // legacy-stream cudaMemsets wait for this fill and are waited for in turn. The only non-blocking stream is
     // compact_prefill's, with which AsyncTreeStart() is off.
-    if (!AsyncTreeStart()) {
+    if (exec_stream_ == nullptr && !AsyncTreeStart()) {
       CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
     }
   }

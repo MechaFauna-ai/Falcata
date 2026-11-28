@@ -438,6 +438,22 @@ class CUDADataPartition: public NCCLInfo {
     cuda_streams_[0] = stream;
     return old;
   }
+  /*! \brief cuda_plan key multiclass_concurrent: route all partition launches, memsets, and copies through a
+   *  caller-owned non-blocking stream (nullptr restores the owned streams created in Init). */
+  void SetExecStream(cudaStream_t stream) {
+    if (stream != nullptr) {
+      if (owned_cuda_streams_.empty()) {
+        owned_cuda_streams_ = cuda_streams_;
+      }
+      for (size_t i = 0; i < cuda_streams_.size(); ++i) {
+        cuda_streams_[i] = stream;
+      }
+    } else if (!owned_cuda_streams_.empty()) {
+      cuda_streams_ = owned_cuda_streams_;
+      owned_cuda_streams_.clear();
+    }
+    exec_stream_ = stream;
+  }
 
  private:
   void CalcBlockDim(const data_size_t num_data_in_leaf);
@@ -753,6 +769,11 @@ class CUDADataPartition: public NCCLInfo {
   // CUDA streams
   /*! \brief cuda streams used for asynchronizing kernel computing and memory copy */
   std::vector<cudaStream_t> cuda_streams_;
+  std::vector<cudaStream_t> owned_cuda_streams_;
+  cudaStream_t exec_stream_ = nullptr;
+  std::vector<data_size_t> layout_leaf_num_data_;
+  std::vector<data_size_t> layout_leaf_data_start_;
+  std::vector<data_size_t> layout_leaf_data_end_;
   // recorded on cuda_streams_[2] after CopyDataIndicesKernel; consumed at the next
   // Split() so back-to-back splits (hybrid level growth) don't race on the shared
   // cuda_out_data_indices_in_leaf_ scratch while the copy is still in flight

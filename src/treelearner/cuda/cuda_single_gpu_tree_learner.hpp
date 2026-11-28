@@ -15,6 +15,7 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_device_tree_reason.hpp>
+#include <Falcata/cuda/cuda_tree.hpp>
 
 #include "cuda_leaf_splits.hpp"
 #include "cuda_feature_parallel.hpp"
@@ -95,6 +96,91 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     forest_private_column_view_ = private_column_view;
     forest_row_data_source_ = row_data_source;
   }
+  // ---- cuda_plan key multiclass_concurrent: single-host-thread multi-stream concurrent multiclass rounds ----
+  /*! \brief Before Init: mark a secondary multiclass slot. Shares immutable CUDARowData and uses a private
+   *  CUDAColumnData::InitViewOf, without disabling device_tree or device_level_graph (unlike multi-thread forest slots). */
+  void EnableMulticlassSlot(bool private_column_view, const CUDASingleGPUTreeLearner* row_data_source = nullptr) {
+    forest_private_column_view_ = private_column_view;
+    forest_row_data_source_ = row_data_source;
+  }
+  /*! \brief Redirect this learner's subcomponents onto a private non-blocking execution stream and tree stream. */
+  void EnableMulticlassStream();
+  /*! \brief Restore this learner's subcomponents to their default streams. */
+  void DisableMulticlassStream();
+  /*! \brief Whether this learner's data layout and config support async multi-stream multiclass execution
+   *  (batched level kernels + whole-device-tree or selective-device-tree route). */
+  bool MulticlassConcurrentSupported() const;
+  cudaStream_t multiclass_exec_stream() const {
+    return multiclass_stream_active_ ? multiclass_exec_stream_ : nullptr;
+  }
+  cudaEvent_t multiclass_done_event() const { return multiclass_done_event_; }
+
+  struct HybridPendingPair {
+    int smaller;
+    int larger;
+    int parent;
+    const CUDALeafSplitsStruct* smaller_struct;
+    const CUDALeafSplitsStruct* larger_struct;
+  };
+  struct HybridAppliedSplit {
+    int left;
+    int right;
+    CUDALeafSplitsStruct* smaller_slot;
+    CUDALeafSplitsStruct* larger_slot;
+  };
+
+  struct AsyncTrainState {
+    enum class Phase {
+      kNone,
+      kWholeDeviceTree,
+      kSelectiveWaitRoot,
+      kSelectivePrefix,
+      kSelectiveBody,
+      kSelectiveFinalRead,
+      kSelectiveHostSearch,
+      kSelectiveHostApply,
+      kSelectiveReadyFinalize,
+      kDoneSync,
+    };
+    Phase phase = Phase::kNone;
+    std::unique_ptr<CUDATree> tree;
+    bool is_first_tree = false;
+    bool leaf_map_zero_dead = false;
+    // Whole device tree state
+    int num_levels = 0;
+    bool skip_host_cache = false;
+    bool inline_all_map = false;
+    bool final_map_only = false;
+    bool prefetch_tree_end = false;
+    bool active_prefix_readback = false;
+    bool cat_tree = false;
+    size_t end_counts_offset = 0;
+    int max_total_splits = 0;
+    bool graph_launched = false;
+    // Selective device-tree + lockstep host-tail state
+    int sel_unrolled_levels = 0;
+    int sel_levels_enqueued = 0;
+    int sel_max_total_splits = 0;
+    bool sel_device_boundary = false;
+    bool sel_continues = false;
+    bool sel_leaf_entries_read = false;
+    std::vector<data_size_t> sel_window_start;
+    std::vector<data_size_t> sel_window_num;
+    std::vector<HybridPendingPair> sel_pairs;
+    std::vector<HybridAppliedSplit> sel_applied;
+    HybridPendingPair sel_root_pair{};
+  };
+
+  /*! \brief Launch one tree asynchronously on this learner's multiclass_exec_stream_.
+   *  retained_leaf_buf (optional) is a pre-allocated device buffer of retained_leaf_size doubles adopted by the tree
+   *  so FinalizeTrainAsync performs zero cudaMalloc calls during concurrent wave execution. */
+  void StartTrainAsync(const score_t* gradients, const score_t* hessians, bool is_first_tree,
+                       double* retained_leaf_buf, size_t retained_leaf_size, AsyncTrainState* state);
+  /*! \brief Advance an in-flight async tree by one wave step (used by selective trees).
+   *  Returns true if more async GPU work was enqueued on multiclass_exec_stream_, false if ready for FinalizeTrainAsync. */
+  bool StepTrainAsync(AsyncTrainState* state);
+  /*! \brief Wait on this slot's multiclass_exec_stream_ (if needed) and finalize the host Tree object. */
+  Tree* FinalizeTrainAsync(AsyncTrainState* state);
   /*! \brief The level buffers that grow with the widest level seen, sized now for any level the tree shape allows
    *  (num_leaves / 2 + 2 pairs, fewer under max_depth), each up to an eighth of the device: a growth during training
    *  is a device synchronize, which stalls every forest slot, and holds the old block beside the new one (a forest's
@@ -275,19 +361,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     const CUDALeafSplitsStruct* smaller_struct, const CUDALeafSplitsStruct* larger_struct,
     int smaller_leaf_index, int larger_leaf_index, bool synchronize = true,
     int pipeline = 0, int parent_leaf_index = -1);
-  // One sibling pair of a level awaiting its best-split search. parent is the
-  // pair's parent leaf index (== the split's left leaf; -1 for the root pair):
-  // the quantized path stores the parent's histogram bit width at that index.
-  // Without selective growth right > left always holds, so parent ==
-  // min(smaller, larger); with selective growth right-child indices are
-  // recycled and the explicit field is required.
-  struct HybridPendingPair {
-    int smaller;
-    int larger;
-    int parent;
-    const CUDALeafSplitsStruct* smaller_struct;
-    const CUDALeafSplitsStruct* larger_struct;
-  };
   // Batched replacement for the per-pair EnqueuePairBestSplitSearch loop of one
   // level: builds per-pair descriptors (validity flags, leaf sizes, quantized
   // histogram bit widths), uploads them in a single H2D copy, then runs ONE
@@ -299,15 +372,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void EnqueueLevelBestSplitSearch(const CUDATree* tree,
     const std::vector<HybridPendingPair>& pairs,
     CUDALeafSplitsStruct* vec_plane_slab = nullptr);
-  // One applied split of a level: host-assigned child leaf indices plus the pair
-  // struct slots the batched apply kernels fill (smaller/larger designation is
-  // decided on-device; the host learns it from the deferred readback).
-  struct HybridAppliedSplit {
-    int left;
-    int right;
-    CUDALeafSplitsStruct* smaller_slot;
-    CUDALeafSplitsStruct* larger_slot;
-  };
   // Speculative variant of EnqueueLevelBestSplitSearch used by the single-sync
   // flow: enqueued right after the level's batched apply, BEFORE the child
   // statistics are read back. Descriptors carry only host-known data (struct slot
@@ -791,6 +855,16 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::unique_ptr<CUDAColumnData> private_column_view_;
   std::vector<int> forest_next_sample_;
   bool forest_next_sample_ready_ = false;
+  // cuda_plan key multiclass_concurrent: per-slot non-blocking streams & async state
+  cudaStream_t multiclass_exec_stream_ = nullptr;
+  cudaStream_t multiclass_tree_stream_ = nullptr;
+  cudaEvent_t multiclass_done_event_ = nullptr;
+  bool multiclass_stream_active_ = false;
+  double* pinned_multiclass_root_sums_ = nullptr;
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  void EnqueueSelectiveDeviceReadback(const CUDADeviceLevelConfig& cfg, int splits, cudaStream_t stream);
+  void FinishSelectivePrefixAndStartHostLoop(AsyncTrainState* state);
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   /*! \brief the column view this learner installs its per-tree views into: its private one (forest slots) or the
    *  dataset's */
   CUDAColumnData* ColumnView() const {

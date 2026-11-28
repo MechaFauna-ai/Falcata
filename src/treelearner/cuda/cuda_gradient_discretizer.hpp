@@ -101,6 +101,7 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   // log-magnitude histogram instead of the global max, and the discretize kernel
   // clamps quantized magnitudes to +/-(bins/2) so rare outliers saturate.
   void SetRobustScale(bool robust_scale) { robust_scale_ = robust_scale; }
+  void SetStream(cudaStream_t stream) { stream_ = stream; }
 
   /*! \brief The tree counter (advanced by one per DiscretizeGradients): the Philox stream of the stochastic rounding
    *  noise and, modulo the slot count, the error-feedback slot (cuda_plan key forest_batched sets it per tree) */
@@ -193,6 +194,7 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   int ef_num_slots_ = 1;
   const data_size_t* ef_inbag_indices_ = nullptr;
   data_size_t ef_inbag_count_ = 0;
+  cudaStream_t stream_ = nullptr;
 };
 
 }  // namespace Falcata
