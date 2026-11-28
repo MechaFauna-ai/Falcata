@@ -1363,6 +1363,9 @@ __global__ void __launch_bounds__(kR3ParThreads) SelectiveR3SeedFromR1Kernel(con
   if (tid == 0) {
     s_first_last = num_splits;
   }
+  // every warp must see the initial value before any atomicMin below: without this barrier thread 0's store can
+  // land after another warp's reduction and overwrite the true minimum (the early return above is uniform)
+  __syncthreads();
   for (int i = tid; i < cfg.leaf_capacity; i += kThreads) {
     cfg.leaf_parent[i] = -1;
     cfg.leaf_live[i] = i <= num_splits ? 1 : 0;
