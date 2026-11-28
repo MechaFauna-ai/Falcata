@@ -378,17 +378,17 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
           device = 0;
         }
       }
-      int optin_bytes = 0;
-      if (cudaDeviceGetAttribute(&optin_bytes, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
+      int opt_in_bytes = 0;
+      if (cudaDeviceGetAttribute(&opt_in_bytes, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
         cudaGetLastError();
-        optin_bytes = 0;
+        opt_in_bytes = 0;
       }
       const int dyn_mults[] = {4, 8};
       for (const int mult : dyn_mults) {
         const size_t table_bytes =
             static_cast<size_t>(max_num_bin_per_partition) * static_cast<size_t>(mult) * sizeof(int32_t);
-        const size_t min_optin = mult >= 8 ? table_bytes + 4 * 1024 : table_bytes;
-        if (static_cast<size_t>(optin_bytes) < min_optin) {
+        const size_t min_opt_in = mult >= 8 ? table_bytes + 4 * 1024 : table_bytes;
+        if (static_cast<size_t>(opt_in_bytes) < min_opt_in) {
           continue;
         }
         const int cand_partitions = DivideCUDAFeatureGroupsWithCap(
